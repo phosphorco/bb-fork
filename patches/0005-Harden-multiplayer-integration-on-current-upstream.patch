@@ -1,4 +1,4 @@
-From 495556a4a0af18292c5fb1d42410f81524fd9f3c Mon Sep 17 00:00:00 2001
+From 99b9c6693e02f5c9e29e395156648b4f9fb4ab4c Mon Sep 17 00:00:00 2001
 From: Sawyer Hood <sawyerjhood@gmail.com>
 Date: Mon, 17 Aug 2026 15:59:33 -0400
 Subject: [PATCH] Harden multiplayer integration on current upstream
@@ -27,15 +27,17 @@ Co-authored-by: Rosetta <its-rosetta@users.noreply.github.com>
  packages/db/src/data/events.ts                |    1 +
  packages/db/src/data/index.ts                 |    1 -
  packages/db/src/data/pending-interactions.ts  |   40 +-
+ packages/db/src/migrate.ts                    |  111 +
  packages/db/test/data/events.test.ts          |   38 +-
  .../db/test/data/pending-interactions.test.ts |   15 +-
+ packages/db/test/migrate.test.ts              |   52 +
  .../test/contract.test.ts                     |    4 +-
  .../bundled-types/bb-plugin-sdk.d.ts          |    5 +-
  .../src/generated/plugin-sdk-dts.generated.ts |    2 +-
  .../src/generated/templates.generated.ts      |    2 +-
  .../test/build-thread-timeline.test.ts        |   14 +-
  packages/tunnel-client/src/headers.ts         |    1 -
- 30 files changed, 4486 insertions(+), 148 deletions(-)
+ 32 files changed, 4649 insertions(+), 148 deletions(-)
  create mode 100644 apps/app/src/lib/ws.identity-rebind.test.ts
  create mode 100644 packages/db/drizzle/0093_funny_zeigeist.sql
  create mode 100644 packages/db/drizzle/meta/0093_snapshot.json
@@ -5198,6 +5200,139 @@ index 01d3597998c7a68e493a89e12690f2adbaf25e61..79dfe44bb56f2c5d221b28fd1a64fe8d
      status: "interrupted",
      statusReason: args.statusReason,
    });
+diff --git a/packages/db/src/migrate.ts b/packages/db/src/migrate.ts
+index 54a1af5e584a399a9ffd870e98ac5a38ccaf8897..5d0740f20f664cafafc1fba8384972f31f251621 100644
+--- a/packages/db/src/migrate.ts
++++ b/packages/db/src/migrate.ts
+@@ -1300,6 +1300,110 @@ function restoreStagedConnectMachineIdColumn(db: DbConnection): void {
+   );
+ }
+ 
++const STAGED_MULTIPLAYER_COLLABORATORS =
++  "_bb_multiplayer_collaborators_pending";
++
++const multiplayerAttributionColumns = [
++  { table: "events", column: "actor_handle" },
++  { table: "pending_interactions", column: "resolved_by_handle" },
++  { table: "queued_thread_messages", column: "actor_handle" },
++  { table: "threads", column: "created_by_handle" },
++] as const;
++
++interface StagedMultiplayerSchema {
++  collaborators: boolean;
++  columns: Array<(typeof multiplayerAttributionColumns)[number]>;
++}
++
++/**
++ * The original multiplayer branch shipped these additive fields as its own
++ * 0079 migration. Current upstream later claimed that migration number, so the
++ * rebased queue creates them at 0093. Preserve data from installs that already
++ * ran the branch-local 0079 (and from migration rewind tests) while Drizzle
++ * applies the canonical 0079–0093 sequence.
++ */
++function stageExistingMultiplayerSchema(
++  db: DbConnection,
++  migrationsFolder: string,
++): StagedMultiplayerSchema | null {
++  if (!tableExists(db, "__drizzle_migrations")) {
++    return null;
++  }
++
++  const migration = requireExpectedAppliedMigration(
++    readExpectedAppliedMigrations(migrationsFolder),
++    "0093_funny_zeigeist",
++  );
++  if (readAppliedMigrationCreatedAts(db).has(migration.createdAt)) {
++    return null;
++  }
++
++  const staged: StagedMultiplayerSchema = {
++    collaborators: false,
++    columns: [],
++  };
++  if (tableExists(db, "collaborators")) {
++    db.$client.exec(
++      `ALTER TABLE collaborators RENAME TO ${STAGED_MULTIPLAYER_COLLABORATORS}`,
++    );
++    staged.collaborators = true;
++  }
++
++  for (const spec of multiplayerAttributionColumns) {
++    if (
++      !tableExists(db, spec.table) ||
++      !columnExists(db, spec.table, spec.column)
++    ) {
++      continue;
++    }
++    const stagingTable = `_bb_multiplayer_${spec.table}_${spec.column}`;
++    db.$client.exec(`
++      CREATE TEMP TABLE ${stagingTable} AS
++        SELECT id, ${spec.column} AS value FROM ${spec.table};
++      ALTER TABLE ${spec.table} DROP COLUMN ${spec.column};
++    `);
++    staged.columns.push(spec);
++  }
++
++  return staged.collaborators || staged.columns.length > 0 ? staged : null;
++}
++
++function restoreStagedMultiplayerSchema(
++  db: DbConnection,
++  staged: StagedMultiplayerSchema,
++): void {
++  if (staged.collaborators) {
++    if (tableExists(db, "collaborators")) {
++      db.$client.exec(`
++        INSERT OR REPLACE INTO collaborators
++          SELECT * FROM ${STAGED_MULTIPLAYER_COLLABORATORS};
++        DROP TABLE ${STAGED_MULTIPLAYER_COLLABORATORS};
++      `);
++    } else {
++      db.$client.exec(
++        `ALTER TABLE ${STAGED_MULTIPLAYER_COLLABORATORS} RENAME TO collaborators`,
++      );
++    }
++  }
++
++  for (const spec of staged.columns) {
++    const stagingTable = `_bb_multiplayer_${spec.table}_${spec.column}`;
++    if (!columnExists(db, spec.table, spec.column)) {
++      db.$client.exec(
++        `ALTER TABLE ${spec.table} ADD COLUMN ${spec.column} text`,
++      );
++    }
++    db.$client.exec(`
++      UPDATE ${spec.table}
++      SET ${spec.column} = (
++        SELECT value FROM ${stagingTable}
++        WHERE ${stagingTable}.id = ${spec.table}.id
++      );
++      DROP TABLE ${stagingTable};
++    `);
++  }
++}
++
+ function repairBranchLocalThreadSearchMigrations(db: DbConnection): void {
+   if (!tableExists(db, "__drizzle_migrations")) {
+     return;
+@@ -1503,10 +1607,17 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
+       db,
+       migrationsFolder,
+     );
++    const stagedMultiplayerSchema = stageExistingMultiplayerSchema(
++      db,
++      migrationsFolder,
++    );
+     try {
+       drizzleMigrate(db, { migrationsFolder });
+     } finally {
+       if (stagedConnectMachineId) restoreStagedConnectMachineIdColumn(db);
++      if (stagedMultiplayerSchema) {
++        restoreStagedMultiplayerSchema(db, stagedMultiplayerSchema);
++      }
+     }
+     applyReorderedCleanupMigrations(db, migrationsFolder);
+     applyQueuedMessageGroupingSchema(db);
 diff --git a/packages/db/test/data/events.test.ts b/packages/db/test/data/events.test.ts
 index 6bad1f1f92a67b07dc0fbb1f9602908324b29922..370737dcffbf86f6abae029e2978baaec7ad55e1 100644
 --- a/packages/db/test/data/events.test.ts
@@ -5319,6 +5454,90 @@ index 205a2d7feaaadd792a36591fe01010b21fcfae8f..05cd4840dc82fb36d6b2a6a76d13d3fe
          resolvedByHandle: "bob",
        }),
      ).toBeNull();
+diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
+index 7e65c696c3828f40d83d3be0658738f4dbf553ad..c67c7d0d1ed2b527c21fd20d7f4857c5cc1a8a3c 100644
+--- a/packages/db/test/migrate.test.ts
++++ b/packages/db/test/migrate.test.ts
+@@ -390,6 +390,8 @@ const queuedMessageGroupingMigrationWhen = 1782273194188;
+ const pendingInteractionsMigrationWhen = 1783626227375;
+ const permissionModesMigrationWhen = 1784311522462;
+ const branchLocalThreadTabsMigrationWhen = 1783633750817;
++const branchLocalMultiplayerMigrationWhen = 1784389648607;
++const multiplayerMigrationWhen = 1786996556199;
+ const eventLargeValuesPreOptimizationHash =
+   "bc111f5134183c37cf135af70231ec5a79823f9868818fdd8377e1ab3c05a23f";
+ const queuedMessageSortKeyMigrationPath = resolve(
+@@ -1420,6 +1422,50 @@ describe("migrate", () => {
+     closeConnection(db);
+   });
+ 
++  it("preserves data from the branch-local multiplayer migration", () => {
++    const db = createConnection(":memory:");
++
++    try {
++      migrate(db);
++      db.$client
++        .prepare(
++          `INSERT INTO collaborators
++            (handle, display_name, image_url, first_seen_at, last_seen_at)
++           VALUES ('cole', 'Cole', 'https://example.com/cole.png', 1, 2)`,
++        )
++        .run();
++      db.$client
++        .prepare<DeleteMigrationParameters>(
++          "DELETE FROM __drizzle_migrations WHERE created_at = ?",
++        )
++        .run(multiplayerMigrationWhen);
++      db.$client
++        .prepare<InsertMigrationParameters>(
++          "INSERT OR REPLACE INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
++        )
++        .run("branch-local-multiplayer", branchLocalMultiplayerMigrationWhen);
++
++      migrate(db);
++
++      expect(
++        db.$client
++          .prepare<
++            [],
++            { displayName: string; imageUrl: string | null }
++          >("SELECT display_name AS displayName, image_url AS imageUrl FROM collaborators WHERE handle = 'cole'")
++          .get(),
++      ).toEqual({
++        displayName: "Cole",
++        imageUrl: "https://example.com/cole.png",
++      });
++      expect(readAppliedMigrationCreatedAts(db)).toContain(
++        multiplayerMigrationWhen,
++      );
++    } finally {
++      closeConnection(db);
++    }
++  });
++
+   it("adopts legacy side chats as the side-chat plugin's hidden forks", () => {
+     const db = createConnection(":memory:");
+ 
+@@ -1924,6 +1970,11 @@ describe("migrate", () => {
+           "DELETE FROM __drizzle_migrations WHERE created_at = ?",
+         )
+         .run(pendingInteractionsMigrationWhen);
++      db.$client
++        .prepare<DeleteMigrationParameters>(
++          "DELETE FROM __drizzle_migrations WHERE created_at = ?",
++        )
++        .run(multiplayerMigrationWhen);
+       db.$client
+         .prepare<InsertMigrationParameters>(
+           `
+@@ -3679,6 +3730,7 @@ describe("migrate", () => {
+         "item_kind",
+         "data",
+         "created_at",
++        "actor_handle",
+       ]);
+       const eventIndexNames = readIndexNames({
+         db,
 diff --git a/packages/host-daemon-contract/test/contract.test.ts b/packages/host-daemon-contract/test/contract.test.ts
 index 6b41e9e645e50e1dc2367d9693e94d81c5846aeb..6018f27c143ec9c12086f015aae2ef697486f07d 100644
 --- a/packages/host-daemon-contract/test/contract.test.ts

@@ -12,10 +12,10 @@
 
 - Existing HTTP and SDK behavior remains available; new request/response fields are additive and nullable or optional where legacy data can lack attribution.
 - SQLite changes are additive: one new table and nullable columns. Migration 0093 is generated from the current upstream migration chain.
+- Installs that ran the experimental branch's conflicting `0079_multiplayer-collaborators` migration are staged through canonical upstream migrations and restored without losing collaborator or attribution data.
 - Existing stored events remain readable with `actorHandle: null`.
 - The provider speaker payload extends the host-daemon wire contract. The server and host daemon must therefore deploy together at protocol version 102. This queue is source/API-compatible with existing clients, but it intentionally does **not** claim mixed-version server/daemon compatibility.
 - Claimed identity is not authentication by itself. The Connect membership gate establishes admission; the claimed identity selects an admitted member for attribution.
 - Upstream's removed native side-chat UI is not restored. Identity rendering is integrated into the current native timeline/header/sidebar components and remains compatible with plugin-owned side chat.
 
 The patch queue is the canonical downstream delta. A convenience branch may be regenerated for review, but it is not a release input.
-
