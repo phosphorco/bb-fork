@@ -1,0 +1,58 @@
+name: Validate downstream bb
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: pnpm
+          cache-dependency-path: upstream/pnpm-lock.yaml
+
+      - name: Verify and materialize patch queue
+        run: |
+          ./scripts/verify
+          ./scripts/materialize
+
+      - name: Install dependencies
+        working-directory: build/bb
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate source
+        working-directory: build/bb
+        run: |
+          pnpm typecheck
+          pnpm test
+          pnpm build
+
+      - name: Package immutable bb-app artifact
+        working-directory: build/bb
+        run: |
+          mkdir -p ../../artifacts
+          pnpm bb-app:prepare
+          npm pack --pack-destination ../../artifacts ./packages/bb-app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bb-app-${{ github.sha }}
+          path: artifacts/*.tgz
+          if-no-files-found: error
+

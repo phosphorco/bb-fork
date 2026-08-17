@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+verification_root="$(mktemp -d)"
+materialized="$verification_root/bb"
+
+cleanup() {
+  if git -C "$repo_root/upstream" worktree list --porcelain | grep -Fqx "worktree $materialized"; then
+    git -C "$repo_root/upstream" worktree remove --force "$materialized"
+  fi
+  rmdir "$verification_root" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+"$repo_root/scripts/materialize" "$materialized" >/dev/null
+git -C "$materialized" diff --check "$(cat "$repo_root/upstream.lock")..HEAD"
+echo "patch queue verified at tree $(cat "$repo_root/result-tree.lock")"
+

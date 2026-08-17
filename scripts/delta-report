@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+report_root="$(mktemp -d)"
+materialized="$report_root/bb"
+
+cleanup() {
+  if git -C "$repo_root/upstream" worktree list --porcelain | grep -Fqx "worktree $materialized"; then
+    git -C "$repo_root/upstream" worktree remove --force "$materialized"
+  fi
+  rmdir "$report_root" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+"$repo_root/scripts/materialize" "$materialized" >/dev/null
+upstream_sha="$(cat "$repo_root/upstream.lock")"
+git -C "$materialized" diff --stat "$upstream_sha..HEAD"
+echo
+git -C "$materialized" diff --shortstat "$upstream_sha..HEAD"
+
