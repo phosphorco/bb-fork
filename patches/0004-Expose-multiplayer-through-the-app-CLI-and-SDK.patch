@@ -1,4 +1,4 @@
-From e10307b71ee7cc261d4b710666429a35da69a3e2 Mon Sep 17 00:00:00 2001
+From ea7fff2df3b4b07bac6eb22e8c2e0b26b9241912 Mon Sep 17 00:00:00 2001
 From: Sawyer Hood <sawyerjhood@gmail.com>
 Date: Mon, 17 Aug 2026 15:59:32 -0400
 Subject: [PATCH 4/5] Expose multiplayer through the app CLI and SDK
@@ -19,7 +19,7 @@ Subject: [PATCH 4/5] Expose multiplayer through the app CLI and SDK
  .../GeneratedConversationMessage.test.tsx     |   4 +
  .../thread/timeline/ThreadTimelineRows.tsx    |  45 +++
  .../timeline/UserMessageMarkdown.stories.tsx  |   2 +
- .../timeline/rows/UserMessage.stories.tsx     |  32 ++
+ .../timeline/rows/UserMessage.stories.tsx     |  36 ++
  .../timeline/timeline-message-authors.test.ts |  43 +++
  .../ui/markdown-message-directives.test.tsx   |   2 +
  .../thread-runtime-cache-owner.ts             |   5 +-
@@ -69,7 +69,7 @@ Subject: [PATCH 4/5] Expose multiplayer through the app CLI and SDK
  packages/tunnel-client/src/index.ts           |   1 +
  packages/tunnel-client/src/session.ts         |   2 +
  packages/tunnel-client/test/headers.test.ts   |  37 +++
- 65 files changed, 2645 insertions(+), 78 deletions(-)
+ 65 files changed, 2649 insertions(+), 78 deletions(-)
  create mode 100644 apps/app/src/components/dialogs/ClaimIdentityDialog.tsx
  create mode 100644 apps/app/src/components/settings/IdentitySettingsSection.tsx
  create mode 100644 apps/app/src/components/thread/presence/Presence.stories.tsx
@@ -94,7 +94,7 @@ Subject: [PATCH 4/5] Expose multiplayer through the app CLI and SDK
  create mode 100644 packages/tunnel-client/test/headers.test.ts
 
 diff --git a/apps/app/src/App.tsx b/apps/app/src/App.tsx
-index 43d512215be473915b9781b832cb212f584c60fe..749c3514072c4c2bbd13dd3e30c789cc3e1e3a4b 100644
+index d8f0f3af4553fb44f44d1e86ee1ec3fec295ac62..30cf1b5a0134631671537266f5be6e5b743ee1da 100644
 --- a/apps/app/src/App.tsx
 +++ b/apps/app/src/App.tsx
 @@ -9,6 +9,7 @@ import {
@@ -105,10 +105,10 @@ index 43d512215be473915b9781b832cb212f584c60fe..749c3514072c4c2bbd13dd3e30c789cc
  import { RouteNavigationProvider } from "./components/ui/app-route-anchor";
  import { useAppTheme } from "./hooks/useAppTheme";
  import { useFaviconColorSync } from "./lib/favicon-color-preference";
-@@ -264,6 +265,7 @@ export function App() {
-     <QuickCreateProjectProvider>
+@@ -348,6 +349,7 @@ export function App() {
        <AppCommandProvider>
          <RouteNavigationProvider>
+           <HashNavigationScroll />
 +          <ClaimIdentityDialog />
            <Routes>
              <Route
@@ -316,18 +316,18 @@ index 0000000000000000000000000000000000000000..a742048948ee02cce1b4b2bac0f1ce70
 +  );
 +}
 diff --git a/apps/app/src/components/settings/settings-nav.tsx b/apps/app/src/components/settings/settings-nav.tsx
-index c73da272711f8fe3259b990d9c838554e95aaa29..d9f0c984caf7473aef69204a962e6808a71f2808 100644
+index 70962b461cf1f5b241096d34fb334fd9fc212892..3d1d4b8e4b3fdf6f128866ecba889a3a7b4cf9da 100644
 --- a/apps/app/src/components/settings/settings-nav.tsx
 +++ b/apps/app/src/components/settings/settings-nav.tsx
-@@ -8,6 +8,7 @@ import { useHostDaemon } from "@/hooks/useHostDaemon";
+@@ -3,6 +3,7 @@ import type { IconName } from "@bb/shared-ui/icon";
+ import { useHostDaemon, useLocalHostDaemonAccess } from "@/hooks/useHostDaemon";
  import { usePluginSlots } from "@/lib/plugin-slots";
- import { PluginIcon } from "@/components/plugin/PluginIcon";
- import { useToolsHubExperiment } from "@/components/tools/tools-experiment-context";
+ import { usePluginList } from "@/hooks/queries/plugin-settings-queries";
 +import { isRemoteAppContext } from "@/lib/claimed-identity-store";
  import {
    SETTINGS_MACHINE_ROUTE_PATH,
    SETTINGS_PLUGIN_ROUTE_PATH,
-@@ -22,6 +23,7 @@ import {
+@@ -17,6 +18,7 @@ import {
   */
  export const SETTINGS_NAV_SECTIONS = [
    { icon: "Settings", id: "general", label: "General" },
@@ -335,9 +335,9 @@ index c73da272711f8fe3259b990d9c838554e95aaa29..d9f0c984caf7473aef69204a962e6808
    { icon: "Palette", id: "appearance", label: "Appearance" },
    { icon: "SlidersHorizontal", id: "keyboard", label: "Keyboard" },
    { icon: "ChartColumn", id: "usage", label: "Usage limits" },
-@@ -134,6 +136,11 @@ export function useSettingsNavState(): SettingsNavState {
-     if (section.id === "files") {
-       return hasDaemon || fileOpeners.length > 0;
+@@ -123,6 +125,11 @@ export function useSettingsNavState(): SettingsNavState {
+         hasDaemon || accessState !== "unavailable" || fileOpeners.length > 0
+       );
      }
 +    if (section.id === "identity") {
 +      // Claimed identity only applies to remote sessions; desktop/localhost
@@ -346,9 +346,9 @@ index c73da272711f8fe3259b990d9c838554e95aaa29..d9f0c984caf7473aef69204a962e6808
 +    }
      return true;
    });
-   const pluginEntries = (pluginListQuery.data?.plugins ?? []).filter(
+   // A plugin earns a Settings row by actually having configuration: a
 diff --git a/apps/app/src/components/sidebar/ThreadRow.tsx b/apps/app/src/components/sidebar/ThreadRow.tsx
-index 07201d482830a9802a5b0a7c7fe53d0ab06e552a..02dd220527aa7eeaf0563f1f21dfeaf25002452f 100644
+index 594129037a446049d27ba0ff829a23d45009168f..4679a05ad6f199eb794db659036c412d3d936775 100644
 --- a/apps/app/src/components/sidebar/ThreadRow.tsx
 +++ b/apps/app/src/components/sidebar/ThreadRow.tsx
 @@ -1,6 +1,7 @@
@@ -359,7 +359,7 @@ index 07201d482830a9802a5b0a7c7fe53d0ab06e552a..02dd220527aa7eeaf0563f1f21dfeaf2
    useState,
    type CSSProperties,
    type MouseEventHandler,
-@@ -73,6 +74,9 @@ import { AppCommandShortcutPill } from "@/components/commands/AppCommandShortcut
+@@ -76,6 +77,9 @@ import { AppCommandShortcutPill } from "@/components/commands/AppCommandShortcut
  import { useThreadTitleDisplayText } from "@/components/thread/ThreadTitleMentions";
  import { pluginIconName } from "@/components/plugin/PluginIcon";
  import { usePluginThreadRowStatus } from "@/lib/plugin-thread-row-status";
@@ -367,9 +367,9 @@ index 07201d482830a9802a5b0a7c7fe53d0ab06e552a..02dd220527aa7eeaf0563f1f21dfeaf2
 +import { useClaimedIdentity } from "@/lib/claimed-identity-store";
 +import { useThreadPresenceSummaryHandles } from "@/lib/presence-store";
  
- interface ThreadRowBaseOptions {
-   depth: number;
-@@ -484,6 +488,17 @@ function ThreadRowComponent({
+ const SIDEBAR_TITLE_DOUBLE_CLICK_MS = 400;
+ 
+@@ -507,6 +511,17 @@ function ThreadRowComponent({
    );
    const shortcut = useSidebarThreadShortcut(thread.id);
    const pluginThreadRowStatus = usePluginThreadRowStatus(thread.id);
@@ -387,7 +387,7 @@ index 07201d482830a9802a5b0a7c7fe53d0ab06e552a..02dd220527aa7eeaf0563f1f21dfeaf2
    const showActive = isActive;
    const hasPendingInteraction = thread.hasPendingInteraction;
    const threadRuntimeBusy = isRuntimeBusyThread(thread);
-@@ -654,6 +669,7 @@ function ThreadRowComponent({
+@@ -723,6 +738,7 @@ function ThreadRowComponent({
          ) : null}
        </span>
        <span className="flex shrink-0 items-center gap-0.5">
@@ -728,10 +728,10 @@ index 0000000000000000000000000000000000000000..99139ce22b84633b59596ec3697abc0d
 +  );
 +}
 diff --git a/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx b/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx
-index d6ec524358034c33f122f53f05c5736a4791c0ba..0a03e5d3a3d532b25ba4d7359be1e997c4768556 100644
+index 8453a40d2f4187c6ba047498655da21a70ccbd92..d97ee33f673f8ef6516078c7778afe1454915f3c 100644
 --- a/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx
 +++ b/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx
-@@ -75,6 +75,13 @@ interface ConversationMessageContentBaseProps {
+@@ -79,6 +79,13 @@ interface ConversationMessageContentBaseProps {
  
  export interface ConversationMessageContentUserProps extends ConversationMessageContentBaseProps {
    role: "user";
@@ -745,33 +745,33 @@ index d6ec524358034c33f122f53f05c5736a4791c0ba..0a03e5d3a3d532b25ba4d7359be1e997
    /** Mobile presentation for the regular user message's action footer. */
    mobileActionDisplay?: "inline" | "overflow";
    /**
-@@ -180,10 +187,12 @@ export type ConversationMessageContentProps =
+@@ -184,10 +191,12 @@ export type ConversationMessageContentProps =
    | ConversationMessageContentAssistantProps;
  
  interface UserConversationMessageProps {
 +  actorHandle: string | null;
    addToChatAttachments: readonly PromptDraftAttachment[];
    attachmentItems: ConversationAttachmentItems;
-   childOrigin: ThreadChildOrigin | null;
+   originKind: ThreadOriginKind | null;
    pluginActions?: readonly ThreadTimelinePluginMessageAction[];
 +  showAuthor: boolean;
    initiator: TimelineUserConversationRow["initiator"];
    mentions: readonly PromptTextMention[];
    mobileActionDisplay: "inline" | "overflow";
-@@ -371,10 +380,12 @@ function buildAddToChatAttachments(
+@@ -383,10 +392,12 @@ function buildAddToChatAttachments(
  }
  
  function UserConversationMessage({
 +  actorHandle,
    addToChatAttachments,
    attachmentItems,
-   childOrigin,
+   originKind,
    initiator,
 +  showAuthor,
    mentions,
    mobileActionDisplay,
    onAddToChat,
-@@ -459,10 +470,26 @@ function UserConversationMessage({
+@@ -471,10 +482,26 @@ function UserConversationMessage({
    const mutePrefixLength = computeMutedPrefixLength(initiator, text);
    const messageText = text.trim();
    const requestLabel = turnRequestLabel(turnRequest);
@@ -798,14 +798,14 @@ index d6ec524358034c33f122f53f05c5736a4791c0ba..0a03e5d3a3d532b25ba4d7359be1e997
          {requestLabel ? (
            <div className="mb-1 flex justify-end">
              <TurnRequestLabel
-@@ -708,11 +735,13 @@ export function ConversationMessageContent(
+@@ -710,11 +737,13 @@ export function ConversationMessageContent(
    if (props.role === "user") {
      return (
        <UserConversationMessage
 +        actorHandle={props.actorHandle}
          addToChatAttachments={addToChatAttachments}
          attachmentItems={attachmentItems}
-         childOrigin={props.childOrigin}
+         originKind={props.originKind}
          pluginActions={props.pluginActions}
          initiator={props.initiator}
 +        showAuthor={props.showAuthor}
@@ -813,7 +813,7 @@ index d6ec524358034c33f122f53f05c5736a4791c0ba..0a03e5d3a3d532b25ba4d7359be1e997
          mobileActionDisplay={props.mobileActionDisplay ?? "overflow"}
          onAddToChat={props.onAddToChat}
 diff --git a/apps/app/src/components/thread/timeline/GeneratedConversationMessage.stories.tsx b/apps/app/src/components/thread/timeline/GeneratedConversationMessage.stories.tsx
-index 3c1b593d6592774b07a7d461227c1f0ccb2bdd1f..f44af36e89e57c4334fb55a86ca166ab249aa56a 100644
+index 07b8bafb16e7bacbd6e46bc1e1e5d7fe4cee2dc0..e28c6a9767e77c218aaa4f88a33f15eaf0ae31c0 100644
 --- a/apps/app/src/components/thread/timeline/GeneratedConversationMessage.stories.tsx
 +++ b/apps/app/src/components/thread/timeline/GeneratedConversationMessage.stories.tsx
 @@ -163,7 +163,9 @@ export function Overview() {
@@ -824,7 +824,7 @@ index 3c1b593d6592774b07a7d461227c1f0ccb2bdd1f..f44af36e89e57c4334fb55a86ca166ab
                role="user"
 +              showAuthor={false}
                initiator="system"
-               childOrigin={null}
+               originKind={null}
                senderThreadId={null}
 @@ -187,7 +189,9 @@ export function Overview() {
        >
@@ -834,7 +834,7 @@ index 3c1b593d6592774b07a7d461227c1f0ccb2bdd1f..f44af36e89e57c4334fb55a86ca166ab
              role="user"
 +            showAuthor={false}
              initiator="agent"
-             childOrigin={null}
+             originKind={null}
              senderThreadId="thr_worker2"
 @@ -210,7 +214,9 @@ export function Overview() {
        >
@@ -844,7 +844,7 @@ index 3c1b593d6592774b07a7d461227c1f0ccb2bdd1f..f44af36e89e57c4334fb55a86ca166ab
              role="user"
 +            showAuthor={false}
              initiator="system"
-             childOrigin={null}
+             originKind={null}
              senderThreadId={null}
 @@ -240,7 +246,9 @@ export function ClippedAgentMessage() {
        >
@@ -854,13 +854,13 @@ index 3c1b593d6592774b07a7d461227c1f0ccb2bdd1f..f44af36e89e57c4334fb55a86ca166ab
              role="user"
 +            showAuthor={false}
              initiator="agent"
-             childOrigin={null}
+             originKind={null}
              senderThreadId="thr_host_hermes"
 diff --git a/apps/app/src/components/thread/timeline/GeneratedConversationMessage.test.tsx b/apps/app/src/components/thread/timeline/GeneratedConversationMessage.test.tsx
-index dc0163a9c918ea445fa8faae4af357a5c5428578..659d45bb60f652beb1bf5cd54b3cb9c6fb0fdf1a 100644
+index 9c4525d01598c31fac5d03360c0553e942e9a9ad..11cf71dc29a6d47e3671b2f6285a4b3fd279190b 100644
 --- a/apps/app/src/components/thread/timeline/GeneratedConversationMessage.test.tsx
 +++ b/apps/app/src/components/thread/timeline/GeneratedConversationMessage.test.tsx
-@@ -36,7 +36,9 @@ function renderChildCompleted() {
+@@ -56,7 +56,9 @@ function renderChildCompleted(text = MARKDOWN_BODY) {
      <MemoryRouter>
        <RouteNavigationProvider>
          <ConversationMessageContent
@@ -868,20 +868,20 @@ index dc0163a9c918ea445fa8faae4af357a5c5428578..659d45bb60f652beb1bf5cd54b3cb9c6
            role="user"
 +          showAuthor={false}
            initiator="system"
-           childOrigin={null}
+           originKind={null}
            senderThreadId={null}
-@@ -119,7 +121,9 @@ function renderAgentMessage(
-     <MemoryRouter>
-       <RouteNavigationProvider>
-         <ConversationMessageContent
-+          actorHandle={null}
-           role="user"
-+          showAuthor={false}
-           initiator="agent"
-           childOrigin={null}
-           senderThreadId="thr_agent"
+@@ -191,7 +193,9 @@ function renderAgentMessage(
+           threadById={new Map([[rawMentionTarget.id, rawMentionTarget]])}
+         >
+           <ConversationMessageContent
++            actorHandle={null}
+             role="user"
++            showAuthor={false}
+             initiator="agent"
+             originKind={null}
+             senderThreadId="thr_agent"
 diff --git a/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx b/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
-index 0788f59eee71a4d2db67d8b6317e113904350332..90dbe77afd59f70c4cbd12e7c663464ca834285c 100644
+index 5dadc1e2edfd1dfb758694da67aa2d6793d683b5..86a3462e2246b24b36d49947d20c03742751c642 100644
 --- a/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
 +++ b/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
 @@ -245,6 +245,8 @@ interface TimelineRendererStaticContextValue {
@@ -893,7 +893,7 @@ index 0788f59eee71a4d2db67d8b6317e113904350332..90dbe77afd59f70c4cbd12e7c663464c
    themeType: ThreadTimelineTheme;
    threadId: string | undefined;
    workspaceRootPath: string | undefined;
-@@ -750,6 +752,40 @@ function isForkSeedAnchorRow(row: TimelineConversationViewRow): boolean {
+@@ -769,6 +771,40 @@ function isForkSeedAnchorRow(row: TimelineConversationViewRow): boolean {
    );
  }
  
@@ -934,7 +934,7 @@ index 0788f59eee71a4d2db67d8b6317e113904350332..90dbe77afd59f70c4cbd12e7c663464c
  /**
   * Finds the final assistant row whose action bar is available in the rendered
   * timeline. Completed turn details and delegated-agent output intentionally do
-@@ -927,6 +963,7 @@ function ConversationRow({
+@@ -946,6 +982,7 @@ function ConversationRow({
      resolveSegmentLinkHref,
      resolveUserAttachmentImageSrc,
      threadId,
@@ -942,19 +942,19 @@ index 0788f59eee71a4d2db67d8b6317e113904350332..90dbe77afd59f70c4cbd12e7c663464c
      workspaceRootPath,
    } = useTimelineRendererStaticContext();
    const senderThreadMetadataById = useSenderThreadMetadataContext();
-@@ -1011,9 +1048,11 @@ function ConversationRow({
+@@ -1030,9 +1067,11 @@ function ConversationRow({
        : undefined;
      return (
        <ConversationMessageContent
 +        actorHandle={row.actorHandle}
          attachments={row.attachments}
-         childOrigin={childOrigin}
+         originKind={originKind}
          initiator={row.initiator}
 +        showAuthor={showMessageAuthors}
          mentions={row.mentions}
          mobileActionDisplay={
            row.id === latestActionableUserMessageId ? "inline" : "overflow"
-@@ -1956,6 +1995,10 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
+@@ -1978,6 +2017,10 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
    );
    const projectId = props.projectId;
    const senderThreadMetadataById = useSenderThreadMetadataById();
@@ -965,7 +965,7 @@ index 0788f59eee71a4d2db67d8b6317e113904350332..90dbe77afd59f70c4cbd12e7c663464c
    // Single plugin-slot subscription for the whole timeline; messages read the
    // stable registry from context instead of each opening a store subscription.
    // Provide getServerSnapshot so renderToStaticMarkup / SSR tests work.
-@@ -2101,6 +2144,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
+@@ -2123,6 +2166,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
        resolveMentionLink: props.resolveMentionLink,
        resolveSegmentLinkHref,
        resolveUserAttachmentImageSrc: props.resolveUserAttachmentImageSrc,
@@ -973,7 +973,7 @@ index 0788f59eee71a4d2db67d8b6317e113904350332..90dbe77afd59f70c4cbd12e7c663464c
        themeType,
        threadId: props.threadId,
        workspaceRootPath: props.workspaceRootPath,
-@@ -2129,6 +2173,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
+@@ -2151,6 +2195,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
        props.resolveMentionLink,
        resolveSegmentLinkHref,
        props.resolveUserAttachmentImageSrc,
@@ -982,7 +982,7 @@ index 0788f59eee71a4d2db67d8b6317e113904350332..90dbe77afd59f70c4cbd12e7c663464c
        props.workspaceRootPath,
        themeType,
 diff --git a/apps/app/src/components/thread/timeline/UserMessageMarkdown.stories.tsx b/apps/app/src/components/thread/timeline/UserMessageMarkdown.stories.tsx
-index 17e9e00e4cbb6cb83c6e6b63e72b957d7d90b9ff..e3283ca7758b721845f736798c30f69b3e002259 100644
+index 8d89bc41f0632b041071a42f2d8da9408bded7b3..12260b2ba74268f2f1cdb047d937cac85c632ef1 100644
 --- a/apps/app/src/components/thread/timeline/UserMessageMarkdown.stories.tsx
 +++ b/apps/app/src/components/thread/timeline/UserMessageMarkdown.stories.tsx
 @@ -73,7 +73,9 @@ function UserMessage({
@@ -993,163 +993,182 @@ index 17e9e00e4cbb6cb83c6e6b63e72b957d7d90b9ff..e3283ca7758b721845f736798c30f69b
          role="user"
 +        showAuthor={false}
          initiator="user"
-         childOrigin={null}
+         originKind={null}
          senderThreadId={null}
 diff --git a/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx b/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx
-index 37a4ba9b2f28f6da48bf0c713833525a415e3da0..6af61e74475f5b9cb5b998adb3489619544b7f69 100644
+index 669bf0f21553111626bf60b4a628de7941c3e62f..50fe80f97cc89374e570f4559a03470b65de64b5 100644
 --- a/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx
 +++ b/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx
-@@ -535,7 +535,9 @@ export function Overview() {
+@@ -571,8 +571,10 @@ export function Overview() {
        >
          <TimelineStage>
            <ConversationMessageContent
 +            actorHandle={null}
              role="user"
+             originKind={null}
 +            showAuthor={false}
-             childOrigin={null}
              initiator="user"
              senderThreadId={null}
-@@ -554,7 +556,9 @@ export function Overview() {
+             senderThreadTitle={null}
+@@ -590,8 +592,10 @@ export function Overview() {
        <StoryRow label="short">
          <TimelineStage revealMessageActions>
            <ConversationMessageContent
 +            actorHandle={null}
              role="user"
+             originKind={null}
 +            showAuthor={false}
-             childOrigin={null}
              initiator="user"
              senderThreadId={null}
-@@ -576,7 +580,9 @@ export function Overview() {
+             senderThreadTitle={null}
+@@ -612,8 +616,10 @@ export function Overview() {
        >
          <TimelineStage revealMessageActions>
            <ConversationMessageContent
 +            actorHandle={null}
              role="user"
+             originKind={null}
 +            showAuthor={false}
-             childOrigin={null}
              initiator="user"
              senderThreadId={null}
-@@ -599,7 +605,9 @@ export function Overview() {
+             senderThreadTitle={null}
+@@ -635,8 +641,10 @@ export function Overview() {
        >
          <TimelineStage revealMessageActions>
            <ConversationMessageContent
 +            actorHandle={null}
              role="user"
+             originKind={null}
 +            showAuthor={false}
-             childOrigin={null}
              initiator="user"
              senderThreadId={null}
-@@ -621,7 +629,9 @@ export function Overview() {
+             senderThreadTitle={null}
+@@ -657,8 +665,10 @@ export function Overview() {
        >
          <TimelineStage revealMessageActions>
            <ConversationMessageContent
 +            actorHandle={null}
              role="user"
+             originKind={null}
 +            showAuthor={false}
-             childOrigin={null}
              initiator="user"
              senderThreadId={null}
-@@ -643,7 +653,9 @@ export function Overview() {
+             senderThreadTitle={null}
+@@ -679,8 +689,10 @@ export function Overview() {
        >
          <TimelineStage revealMessageActions>
            <ConversationMessageContent
 +            actorHandle={null}
              role="user"
+             originKind={null}
 +            showAuthor={false}
-             childOrigin={null}
              initiator="user"
              senderThreadId={null}
-@@ -662,7 +674,9 @@ export function Overview() {
+             senderThreadTitle={null}
+@@ -698,8 +710,10 @@ export function Overview() {
        <StoryRow label="with image" hint="single localImage attachment">
          <TimelineStage revealMessageActions>
            <ConversationMessageContent
 +            actorHandle={null}
              role="user"
+             originKind={null}
 +            showAuthor={false}
-             childOrigin={null}
              initiator="user"
              senderThreadId={null}
-@@ -685,7 +699,9 @@ export function Overview() {
+             senderThreadTitle={null}
+@@ -721,8 +735,10 @@ export function Overview() {
        >
          <TimelineStage revealMessageActions>
            <ConversationMessageContent
 +            actorHandle={null}
              role="user"
+             originKind={null}
 +            showAuthor={false}
-             childOrigin={null}
              initiator="user"
              senderThreadId={null}
-@@ -715,7 +731,9 @@ export function Overview() {
+             senderThreadTitle={null}
+@@ -751,8 +767,10 @@ export function Overview() {
        >
          <TimelineStage>
            <ConversationMessageContent
 +            actorHandle={null}
              role="user"
+             originKind={null}
 +            showAuthor={false}
-             childOrigin={null}
              initiator="agent"
              resolveSegmentLinkHref={resolveThreadLink}
-@@ -738,7 +756,9 @@ export function Overview() {
+             senderThreadId="thr_ux3h8sxg65"
+@@ -774,8 +792,10 @@ export function Overview() {
        >
          <TimelineStage>
            <ConversationMessageContent
 +            actorHandle={null}
              role="user"
+             originKind={null}
 +            showAuthor={false}
-             childOrigin={null}
              initiator="agent"
              resolveSegmentLinkHref={resolveThreadLink}
-@@ -762,7 +782,9 @@ export function Overview() {
+             onTitleAction={() => () => undefined}
+@@ -798,8 +818,10 @@ export function Overview() {
        >
          <div className="flex w-full max-w-[760px] flex-col gap-3">
            <ConversationMessageContent
 +            actorHandle={null}
              role="user"
+             originKind={null}
 +            showAuthor={false}
-             childOrigin={null}
              initiator="agent"
              resolveSegmentLinkHref={resolveThreadLink}
-@@ -778,7 +800,9 @@ export function Overview() {
+             senderThreadId="thr_h4u3fgr6be"
+@@ -814,8 +836,10 @@ export function Overview() {
              turnRequest={acceptedSteer}
            />
            <ConversationMessageContent
 +            actorHandle={null}
              role="user"
+             originKind={null}
 +            showAuthor={false}
-             childOrigin={null}
              initiator="system"
              senderThreadId={null}
-@@ -800,7 +824,9 @@ export function Overview() {
+             senderThreadTitle={null}
+@@ -836,8 +860,10 @@ export function Overview() {
        >
          <TimelineStage>
            <ConversationMessageContent
 +            actorHandle={null}
              role="user"
+             originKind={null}
 +            showAuthor={false}
-             childOrigin={null}
              initiator="system"
              senderThreadId={null}
-@@ -822,7 +848,9 @@ export function Overview() {
+             senderThreadTitle={null}
+@@ -858,8 +884,10 @@ export function Overview() {
        >
          <TimelineStage>
            <ConversationMessageContent
 +            actorHandle={null}
              role="user"
+             originKind={null}
 +            showAuthor={false}
-             childOrigin={null}
              initiator="system"
              senderThreadId={null}
-@@ -844,7 +872,9 @@ export function Overview() {
+             senderThreadTitle={null}
+@@ -880,8 +908,14 @@ export function Overview() {
        >
          <TimelineStage>
            <ConversationMessageContent
 +            actorHandle={null}
              role="user"
++<<<<<<< HEAD
+             originKind={null}
++=======
 +            showAuthor={false}
-             childOrigin={null}
++            childOrigin={null}
++>>>>>>> e10307b71 (Expose multiplayer through the app CLI and SDK)
              initiator="system"
              senderThreadId={null}
-@@ -871,7 +901,9 @@ export function ParentChildSystemMessages() {
+             senderThreadTitle={null}
+@@ -907,7 +941,9 @@ export function ParentChildSystemMessages() {
          <StoryRow key={fixture.label} label={fixture.label} hint={fixture.hint}>
            <TimelineStage>
              <ConversationMessageContent
@@ -1209,7 +1228,7 @@ index 0000000000000000000000000000000000000000..4b55821eb9e62a73cc2c4e940fff4c46
 +  });
 +});
 diff --git a/apps/app/src/components/ui/markdown-message-directives.test.tsx b/apps/app/src/components/ui/markdown-message-directives.test.tsx
-index cf3fb72ac5c211e9a0af7f6bf0da7e8e1f1f793e..a12ae7e3d7886166988ab6491029b3c5d99f80d8 100644
+index c04891a06a6bc6f918528f4fd6c5c12530e99281..4095c2d070884749782a160058aa1a42ca1b4d83 100644
 --- a/apps/app/src/components/ui/markdown-message-directives.test.tsx
 +++ b/apps/app/src/components/ui/markdown-message-directives.test.tsx
 @@ -589,7 +589,9 @@ describe("ConversationMessageContent assistant directives", () => {
@@ -1220,7 +1239,7 @@ index cf3fb72ac5c211e9a0af7f6bf0da7e8e1f1f793e..a12ae7e3d7886166988ab6491029b3c5
                role="user"
 +              showAuthor={false}
                attachments={null}
-               childOrigin={null}
+               originKind={null}
                initiator="user"
 diff --git a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
 index 6f31972449662bdee2c9dba6b0c3f20ad8ccdf2f..ae7196acb0f7c0e81f2e6279b5531dc4bf164245 100644
@@ -2057,18 +2076,18 @@ index d996d3f15d9ef4dc710e50ce24648b55562406a5..a2a5504194066fa783125180c8c5224d
     * Return and clear the buffered "open file" intent for a thread, if any. The
     * secondary panel calls this when the thread becomes visible so the file
 diff --git a/apps/app/src/views/SettingsView.tsx b/apps/app/src/views/SettingsView.tsx
-index a3704fb25fd0a55bb24581d02d54ca13affb0c08..f76b5900642cab4fafd7fc67b6e7e823dedb2691 100644
+index 88699466400e00da093d50fddf93566d9b47c027..6faf0ac1cf0da802ca476409d5b218317a25b792 100644
 --- a/apps/app/src/views/SettingsView.tsx
 +++ b/apps/app/src/views/SettingsView.tsx
-@@ -51,6 +51,7 @@ import { KeyboardSettingsSection } from "@/components/settings/KeyboardSettingsS
- import { MachinesSettingsSection } from "@/components/settings/MachinesSettingsSection";
+@@ -50,6 +50,7 @@ import { MachinesSettingsSection } from "@/components/settings/MachinesSettingsS
  import { ArchivedThreadsSettingsSection } from "@/components/settings/ArchivedThreadsSettingsSection";
  import { CliSkillsSettingsSection } from "@/components/settings/CliSkillsSettingsSection";
+ import { MarketplacesSettingsSection } from "@/components/settings/MarketplacesSettingsSection";
 +import { IdentitySettingsSection } from "@/components/settings/IdentitySettingsSection";
  import {
    useUpdateGeneralSettings,
    useUpdateAppearance,
-@@ -1109,6 +1110,8 @@ export function SettingsView() {
+@@ -1191,6 +1192,8 @@ export function SettingsView() {
          }
        />
      );
@@ -2078,27 +2097,27 @@ index a3704fb25fd0a55bb24581d02d54ca13affb0c08..f76b5900642cab4fafd7fc67b6e7e823
      content = (
        <AppearanceSettingsSection
 diff --git a/apps/app/src/views/thread-detail/ThreadDetailHeader.tsx b/apps/app/src/views/thread-detail/ThreadDetailHeader.tsx
-index ed6fe82f0bf5052a709ad254ce2313cee5f2de89..c4dbf9190fbad0baa8d48e12902aa3e8ee6cc392 100644
+index dcd05e41f3912507f752f1ad4809a4a275c6ab76..65fae625aa8867c0d5e862d56f5c62cbf77d590b 100644
 --- a/apps/app/src/views/thread-detail/ThreadDetailHeader.tsx
 +++ b/apps/app/src/views/thread-detail/ThreadDetailHeader.tsx
-@@ -62,6 +62,8 @@ interface ThreadDetailHeaderProps {
+@@ -67,6 +67,8 @@ interface ThreadDetailHeaderProps {
    onToggleSecondaryPanel: () => void;
    /** Plugin-contributed thread action buttons (design §4.9); optional. */
    pluginActions?: ReactNode;
 +  /** Avatar row of the other collaborators currently viewing this thread. */
 +  presenceIndicator?: ReactNode;
    threadHeaderGitActions: ThreadHeaderGitAction[];
+   threadId: string;
    threadTitle: string;
-   workspaceOpenButton?: ReactNode;
-@@ -75,6 +77,7 @@ export function ThreadDetailHeader({
+@@ -81,6 +83,7 @@ export function ThreadDetailHeader({
    onOpenThreadGitAction,
    onToggleSecondaryPanel,
    pluginActions,
 +  presenceIndicator,
    threadHeaderGitActions,
+   threadId,
    threadTitle,
-   workspaceOpenButton,
-@@ -202,6 +205,7 @@ export function ThreadDetailHeader({
+@@ -234,6 +237,7 @@ export function ThreadDetailHeader({
          className="flex items-center gap-1"
          data-thread-header-workflow-actions=""
        >
@@ -2107,10 +2126,10 @@ index ed6fe82f0bf5052a709ad254ce2313cee5f2de89..c4dbf9190fbad0baa8d48e12902aa3e8
          {!usesResponsiveActionOverflow && workspaceOpenButton ? (
            <span className="inline-flex" data-thread-header-responsive-action="">
 diff --git a/apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx b/apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx
-index 173ccc3f3d65c78078d8c8712d25a4922d0801fd..6f173c085ff79cf4e09b9d3756987d0893529c5c 100644
+index a6ecc314576ded00e301499b3eadb2c5310ca1e4..73354b1dac33d149186d30c9f205389972489d43 100644
 --- a/apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx
 +++ b/apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx
-@@ -101,6 +101,8 @@ import {
+@@ -102,6 +102,8 @@ import {
    type FollowUpPromptBoxProps,
    type FollowUpSubmitMode,
  } from "@/components/promptbox/FollowUpPromptBox";
@@ -2119,7 +2138,7 @@ index 173ccc3f3d65c78078d8c8712d25a4922d0801fd..6f173c085ff79cf4e09b9d3756987d08
  import type { SendMessageMutationLike } from "./threadDetailMutationTypes";
  import {
    buildAutoFollowUpRequest,
-@@ -710,6 +712,11 @@ export function ThreadDetailPromptArea({
+@@ -714,6 +716,11 @@ export function ThreadDetailPromptArea({
      }),
      [currentPromptDraft, normalPluginComposerHostBinding],
    );
@@ -2131,19 +2150,19 @@ index 173ccc3f3d65c78078d8c8712d25a4922d0801fd..6f173c085ff79cf4e09b9d3756987d08
    const hasPromptDraftInput = currentPromptDraftInput.length > 0;
    const isPromptEmpty = useCallback(
      () => !hasPromptDraftInput,
-@@ -1409,6 +1416,7 @@ export function ThreadDetailPromptArea({
-   const promptStack = useMemo(
+@@ -1440,6 +1447,7 @@ export function ThreadDetailPromptArea({
      () => (
        <>
+         {childPendingInteractionBanners}
 +        <ThreadTypingIndicator threadId={thread.id} />
          {activeWorkflows.map((workflow) => (
            <ThreadWorkflowCard
              key={workflow.id}
 diff --git a/apps/app/src/views/thread-detail/ThreadDetailView.tsx b/apps/app/src/views/thread-detail/ThreadDetailView.tsx
-index 1294685dc1ec3923e41ea3187a3926596dfb9cb4..a60efcd1b6079a43c8c0abe3c2b4883f57666ffb 100644
+index e8c259cc53ae62ad65f1c3fc5bbb464b722a259a..893c571f0332ec497f18c0c088b8b3784d2ab8eb 100644
 --- a/apps/app/src/views/thread-detail/ThreadDetailView.tsx
 +++ b/apps/app/src/views/thread-detail/ThreadDetailView.tsx
-@@ -72,6 +72,7 @@ import {
+@@ -76,6 +76,7 @@ import {
    type ThreadActionsMenuResponsiveAction,
  } from "@/components/thread/ThreadActionsMenu";
  import { PluginThreadHeaderActions } from "@/components/plugin/PluginThreadHeaderActions";
@@ -2151,14 +2170,14 @@ index 1294685dc1ec3923e41ea3187a3926596dfb9cb4..a60efcd1b6079a43c8c0abe3c2b4883f
  import { ThreadWorkspaceOpenButton } from "@/components/thread/ThreadWorkspaceOpenButton";
  import {
    formatEnvironmentDisplay,
-@@ -2567,6 +2568,7 @@ function ThreadDetailViewInternal(props: ThreadDetailViewInternalProps) {
+@@ -2569,6 +2570,7 @@ function ThreadDetailViewInternal(props: ThreadDetailViewInternalProps) {
            projectId={thread.projectId}
          />
        }
 +      presenceIndicator={<ThreadPresenceHeaderAvatars threadId={thread.id} />}
        threadHeaderGitActions={gitActions.threadHeaderGitActions}
+       threadId={thread.id}
        threadTitle={threadTitle}
-       workspaceOpenButton={workspaceOpenButton}
 diff --git a/apps/cli/src/__tests__/command-output/members.test.ts b/apps/cli/src/__tests__/command-output/members.test.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..da905125a12822009808ccfa981e26d00d36d551
@@ -2394,18 +2413,18 @@ index 0000000000000000000000000000000000000000..7be36f5ea6b8ebdc8df282a79ccc0c83
 +    );
 +}
 diff --git a/apps/cli/src/index.ts b/apps/cli/src/index.ts
-index b08fe0d16892605fb849b520043e8b7dca886e20..abbee445189b496707d6851fbb648876aee3724f 100644
+index 42816b0cc7a70f3b14f5793a46acf80f10b5a529..df6f82d8b549c3f5e3a9fec1b3c36d5ab53bebc3 100644
 --- a/apps/cli/src/index.ts
 +++ b/apps/cli/src/index.ts
-@@ -5,6 +5,7 @@ import { registerEnvironmentCommands } from "./commands/environment.js";
- import { registerFileCommands } from "./commands/file.js";
+@@ -6,6 +6,7 @@ import { registerFileCommands } from "./commands/file.js";
  import { registerGuideCommand } from "./commands/guide.js";
  import { registerManagerCommands } from "./commands/manager.js";
+ import { registerMarketplaceCommands } from "./commands/marketplace.js";
 +import { registerMembersCommands } from "./commands/members.js";
  import { registerMachineCommands } from "./commands/machine.js";
  import { registerProjectCommands } from "./commands/project.js";
  import { registerPluginCommands } from "./commands/plugin.js";
-@@ -88,6 +89,7 @@ registerSettingsCommands(program, getUrl);
+@@ -89,6 +90,7 @@ registerSettingsCommands(program, getUrl);
  registerProjectCommands(program, getUrl);
  registerProviderCommands(program, getUrl);
  registerManagerCommands(program, getUrl);
@@ -3045,7 +3064,7 @@ index 0000000000000000000000000000000000000000..9f90384a2917fba8a39365e1b5ccaba9
 +  });
 +}
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
-index 02906aa1add20d2495d1d12f4a21050e8ae5e83e..a2d7bc7bd0f444eef593de47f9c1398b156787fb 100644
+index 0e0250e3d0a9c6e777c2b471d6bb28d7b2609b8e..39cf32425dc0b4c31d59583dca5048061a619242 100644
 --- a/apps/server/src/server.ts
 +++ b/apps/server/src/server.ts
 @@ -17,6 +17,7 @@ import { registerEnvironmentRoutes } from "./routes/environments.js";
@@ -3056,7 +3075,7 @@ index 02906aa1add20d2495d1d12f4a21050e8ae5e83e..a2d7bc7bd0f444eef593de47f9c1398b
  import { registerProjectRoutes } from "./routes/projects.js";
  import { registerThreadSectionRoutes } from "./routes/thread-sections.js";
  import { registerSystemRoutes } from "./routes/system.js";
-@@ -438,6 +439,7 @@ export function createApp(
+@@ -482,6 +483,7 @@ export function createApp(
    registerEnvironmentRoutes(publicApi, deps);
    registerThreadRoutes(publicApi, deps);
    registerPresenceRoutes(publicApi, deps);
@@ -3065,10 +3084,10 @@ index 02906aa1add20d2495d1d12f4a21050e8ae5e83e..a2d7bc7bd0f444eef593de47f9c1398b
    registerPluginCatalogRoutes(publicApi, pluginCatalogService);
    registerPluginRoutes(publicApi, deps, pluginService);
 diff --git a/apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md b/apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md
-index a3385c7d11c3dd7d2bfaaa90c5148f3b53a86df9..2a83d4472a0cad36c41095f5a0a6538b0b93d670 100644
+index f6207eb1c6db94a9592656999fb55ca1455dee00..8dc11facc1f02924da91c0f04e36d36ba4742a99 100644
 --- a/apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md
 +++ b/apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md
-@@ -47,6 +47,21 @@ message agents, or inspect projects, providers, and environments.
+@@ -50,6 +50,21 @@ message agents, or inspect projects, providers, and environments.
    server does not read the file.
  - Use `bb-app client ssh-target list --json` to inspect mappings.
  
@@ -3216,10 +3235,10 @@ index af054ac3dc78cf7226333c80a6c0ca891d697d31..eaac68120a86555fbf020df88e99607a
      this.providers = sdk.providers;
      this.skills = sdk.skills;
 diff --git a/packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts b/packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts
-index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de3131215e660 100644
+index a9325fafe669e17e1b29583a7c7416ebf6b39e43..b0f04bb6f44050284fdbcfec74809cec0909c13e 100644
 --- a/packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts
 +++ b/packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts
-@@ -2400,9 +2400,9 @@ declare const projectBranchesResponseSchema: z$1.ZodObject<{
+@@ -2419,9 +2419,9 @@ declare const projectBranchesResponseSchema: z$1.ZodObject<{
      selectedBranch: z$1.ZodNullable<z$1.ZodObject<{
          name: z$1.ZodString;
          kind: z$1.ZodEnum<{
@@ -3230,7 +3249,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
          }>;
      }, z$1.core.$strip>>;
      defaultWorktreeBaseBranch: z$1.ZodNullable<z$1.ZodString>;
-@@ -2817,9 +2817,9 @@ declare const environmentDiffBranchesResponseSchema: z$1.ZodObject<{
+@@ -2857,9 +2857,9 @@ declare const environmentDiffBranchesResponseSchema: z$1.ZodObject<{
      selectedBranch: z$1.ZodNullable<z$1.ZodObject<{
          name: z$1.ZodString;
          kind: z$1.ZodEnum<{
@@ -3241,7 +3260,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
          }>;
      }, z$1.core.$strip>>;
  }, z$1.core.$strip>;
-@@ -2904,8 +2904,8 @@ declare const environmentArchiveThreadsResponseSchema: z$1.ZodObject<{
+@@ -2944,8 +2944,8 @@ declare const environmentArchiveThreadsResponseSchema: z$1.ZodObject<{
  type EnvironmentArchiveThreadsResponse = z$1.infer<typeof environmentArchiveThreadsResponseSchema>;
  declare const pullRequestMergeMethodSchema: z$1.ZodEnum<{
      merge: "merge";
@@ -3251,7 +3270,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
  }>;
  type PullRequestMergeMethod = z$1.infer<typeof pullRequestMergeMethodSchema>;
  declare const commitActionResponseSchema: z$1.ZodObject<{
-@@ -2936,8 +2936,8 @@ declare const pullRequestMergeActionResponseSchema: z$1.ZodObject<{
+@@ -2976,8 +2976,8 @@ declare const pullRequestMergeActionResponseSchema: z$1.ZodObject<{
      action: z$1.ZodLiteral<"pull_request_merge">;
      method: z$1.ZodEnum<{
          merge: "merge";
@@ -3261,7 +3280,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
      }>;
      message: z$1.ZodString;
  }, z$1.core.$strip>;
-@@ -3098,10 +3098,10 @@ declare const environmentPullRequestResponseSchema: z$1.ZodDiscriminatedUnion<[z
+@@ -3140,10 +3140,10 @@ declare const environmentPullRequestResponseSchema: z$1.ZodDiscriminatedUnion<[z
          mergeability: z$1.ZodObject<{
              state: z$1.ZodEnum<{
                  unknown: "unknown";
@@ -3273,7 +3292,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
              }>;
              mergeStateStatus: z$1.ZodNullable<z$1.ZodEnum<{
                  BEHIND: "BEHIND";
-@@ -3122,13 +3122,13 @@ declare const environmentPullRequestResponseSchema: z$1.ZodDiscriminatedUnion<[z
+@@ -3164,13 +3164,13 @@ declare const environmentPullRequestResponseSchema: z$1.ZodDiscriminatedUnion<[z
          attention: z$1.ZodEnum<{
              blocked: "blocked";
              none: "none";
@@ -3288,7 +3307,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
              checks_failed: "checks_failed";
              checks_pending: "checks_pending";
              ready_to_merge: "ready_to_merge";
-@@ -3786,8 +3786,8 @@ declare const hostDaemonCommandRegistry: {
+@@ -3828,8 +3828,8 @@ declare const hostDaemonCommandRegistry: {
          }, z$1.core.$strict>], "kind">>;
          disallowedTools: z$1.ZodOptional<z$1.ZodArray<z$1.ZodString>>;
          instructionMode: z$1.ZodEnum<{
@@ -3298,17 +3317,17 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
          }>;
          type: z$1.ZodLiteral<"thread.start">;
          requestId: z$1.ZodString;
-@@ -4287,8 +4287,8 @@ declare const hostDaemonCommandRegistry: {
-                 }>;
-             }, z$1.core.$strip>;
+@@ -4332,8 +4332,8 @@ declare const hostDaemonCommandRegistry: {
+             providerThreadId: z$1.ZodString;
+             providerId: z$1.ZodString;
              instructionMode: z$1.ZodEnum<{
 -                replace: "replace";
                  append: "append";
 +                replace: "replace";
              }>;
-             projectId: z$1.ZodString;
-             providerId: z$1.ZodString;
-@@ -5638,9 +5638,9 @@ declare const hostDaemonCommandRegistry: {
+             acpLaunchSpec: z$1.ZodOptional<z$1.ZodObject<{
+                 displayName: z$1.ZodString;
+@@ -5686,9 +5686,9 @@ declare const hostDaemonCommandRegistry: {
          executablePath: z$1.ZodNullable<z$1.ZodString>;
          installed: z$1.ZodBoolean;
          installSource: z$1.ZodEnum<{
@@ -3319,7 +3338,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
          }>;
          currentVersion: z$1.ZodNullable<z$1.ZodString>;
          latestVersion: z$1.ZodNullable<z$1.ZodString>;
-@@ -5813,13 +5813,13 @@ declare const hostDaemonCommandRegistry: {
+@@ -5865,13 +5865,13 @@ declare const hostDaemonCommandRegistry: {
          outcome: z$1.ZodLiteral<"unavailable">;
          failure: z$1.ZodObject<{
              code: z$1.ZodEnum<{
@@ -3334,7 +3353,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
              }>;
              workspacePath: z$1.ZodString;
              message: z$1.ZodString;
-@@ -5863,13 +5863,13 @@ declare const hostDaemonCommandRegistry: {
+@@ -5916,13 +5916,13 @@ declare const hostDaemonCommandRegistry: {
          outcome: z$1.ZodLiteral<"unavailable">;
          failure: z$1.ZodObject<{
              code: z$1.ZodEnum<{
@@ -3349,7 +3368,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
              }>;
              workspacePath: z$1.ZodString;
              message: z$1.ZodString;
-@@ -5925,13 +5925,13 @@ declare const hostDaemonCommandRegistry: {
+@@ -5980,13 +5980,13 @@ declare const hostDaemonCommandRegistry: {
          outcome: z$1.ZodLiteral<"unavailable">;
          failure: z$1.ZodObject<{
              code: z$1.ZodEnum<{
@@ -3364,7 +3383,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
              }>;
              workspacePath: z$1.ZodString;
              message: z$1.ZodString;
-@@ -5973,13 +5973,13 @@ declare const hostDaemonCommandRegistry: {
+@@ -6028,13 +6028,13 @@ declare const hostDaemonCommandRegistry: {
          outcome: z$1.ZodLiteral<"unavailable">;
          failure: z$1.ZodObject<{
              code: z$1.ZodEnum<{
@@ -3379,7 +3398,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
              }>;
              workspacePath: z$1.ZodString;
              message: z$1.ZodString;
-@@ -6097,9 +6097,9 @@ declare const providerCliStatusResponseSchema: z$1.ZodRecord<z$1.ZodEnum<{
+@@ -6153,9 +6153,9 @@ declare const providerCliStatusResponseSchema: z$1.ZodRecord<z$1.ZodEnum<{
      executablePath: z$1.ZodNullable<z$1.ZodString>;
      installed: z$1.ZodBoolean;
      installSource: z$1.ZodEnum<{
@@ -3390,7 +3409,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
      }>;
      currentVersion: z$1.ZodNullable<z$1.ZodString>;
      latestVersion: z$1.ZodNullable<z$1.ZodString>;
-@@ -6247,14 +6247,24 @@ type HostProviderCliStatusResponse = ProviderCliStatusResponse;
+@@ -6303,14 +6303,24 @@ type HostProviderCliStatusResponse = ProviderCliStatusResponse;
  type HostProviderCliInstallRequest = ProviderCliInstallRequest;
  type HostProviderCliInstallEvent = ProviderCliInstallEvent;
  
@@ -3416,7 +3435,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
      }>;
      devMode: z$1.ZodOptional<z$1.ZodLiteral<true>>;
      installed: z$1.ZodObject<{
-@@ -6321,11 +6331,11 @@ declare const installedPluginSchema: z$1.ZodObject<{
+@@ -6383,11 +6393,11 @@ declare const installedPluginSchema: z$1.ZodObject<{
      sourceDisplay: z$1.ZodString;
      updateState: z$1.ZodObject<{
          outcome: z$1.ZodOptional<z$1.ZodEnum<{
@@ -3427,9 +3446,9 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
              pinned: "pinned";
 -            unavailable: "unavailable";
          }>>;
+         detail: z$1.ZodOptional<z$1.ZodString>;
          availableVersion: z$1.ZodOptional<z$1.ZodString>;
-         blockedVersion: z$1.ZodOptional<z$1.ZodString>;
-@@ -6345,8 +6355,8 @@ declare const installedPluginSchema: z$1.ZodObject<{
+@@ -6408,8 +6418,8 @@ declare const installedPluginSchema: z$1.ZodObject<{
      status: z$1.ZodEnum<{
          error: "error";
          running: "running";
@@ -3439,7 +3458,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
          disabled: "disabled";
          degraded: "degraded";
          "needs-configuration": "needs-configuration";
-@@ -6425,11 +6435,11 @@ declare const pluginListResponseSchema: z$1.ZodObject<{
+@@ -6490,11 +6500,11 @@ declare const pluginListResponseSchema: z$1.ZodObject<{
          sourceDisplay: z$1.ZodString;
          updateState: z$1.ZodObject<{
              outcome: z$1.ZodOptional<z$1.ZodEnum<{
@@ -3450,9 +3469,9 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
                  pinned: "pinned";
 -                unavailable: "unavailable";
              }>>;
+             detail: z$1.ZodOptional<z$1.ZodString>;
              availableVersion: z$1.ZodOptional<z$1.ZodString>;
-             blockedVersion: z$1.ZodOptional<z$1.ZodString>;
-@@ -6449,8 +6459,8 @@ declare const pluginListResponseSchema: z$1.ZodObject<{
+@@ -6515,8 +6525,8 @@ declare const pluginListResponseSchema: z$1.ZodObject<{
          status: z$1.ZodEnum<{
              error: "error";
              running: "running";
@@ -3462,7 +3481,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
              disabled: "disabled";
              degraded: "degraded";
              "needs-configuration": "needs-configuration";
-@@ -6531,11 +6541,11 @@ declare const pluginReloadResponseSchema: z$1.ZodObject<{
+@@ -6599,11 +6609,11 @@ declare const pluginReloadResponseSchema: z$1.ZodObject<{
          sourceDisplay: z$1.ZodString;
          updateState: z$1.ZodObject<{
              outcome: z$1.ZodOptional<z$1.ZodEnum<{
@@ -3473,9 +3492,9 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
                  pinned: "pinned";
 -                unavailable: "unavailable";
              }>>;
+             detail: z$1.ZodOptional<z$1.ZodString>;
              availableVersion: z$1.ZodOptional<z$1.ZodString>;
-             blockedVersion: z$1.ZodOptional<z$1.ZodString>;
-@@ -6555,8 +6565,8 @@ declare const pluginReloadResponseSchema: z$1.ZodObject<{
+@@ -6624,8 +6634,8 @@ declare const pluginReloadResponseSchema: z$1.ZodObject<{
          status: z$1.ZodEnum<{
              error: "error";
              running: "running";
@@ -3485,9 +3504,9 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
              disabled: "disabled";
              degraded: "degraded";
              "needs-configuration": "needs-configuration";
-@@ -6677,6 +6687,23 @@ declare const pluginCatalogSearchResultSchema: z$1.ZodObject<{
+@@ -6874,6 +6884,23 @@ declare const pluginMarketplaceRefreshResultSchema: z$1.ZodObject<{
  }, z$1.core.$strip>;
- type PluginCatalogSearchResult$1 = z$1.infer<typeof pluginCatalogSearchResultSchema>;
+ type PluginMarketplaceRefreshResult$1 = z$1.infer<typeof pluginMarketplaceRefreshResultSchema>;
  
 +/**
 + * Complete current ephemeral viewer rosters, keyed by thread id.
@@ -3509,7 +3528,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
  declare const systemExecutionOptionsResponseSchema: z$1.ZodObject<{
      providers: z$1.ZodArray<z$1.ZodObject<{
          id: z$1.ZodString;
-@@ -7295,9 +7322,9 @@ declare const terminalSessionSchema: z$1.ZodObject<{
+@@ -7514,9 +7541,9 @@ declare const terminalSessionSchema: z$1.ZodObject<{
      cols: z$1.ZodNumber;
      rows: z$1.ZodNumber;
      status: z$1.ZodEnum<{
@@ -3520,7 +3539,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
          exited: "exited";
      }>;
      exitCode: z$1.ZodNullable<z$1.ZodNumber>;
-@@ -7326,9 +7353,9 @@ declare const terminalListResponseSchema: z$1.ZodObject<{
+@@ -7545,9 +7572,9 @@ declare const terminalListResponseSchema: z$1.ZodObject<{
          cols: z$1.ZodNumber;
          rows: z$1.ZodNumber;
          status: z$1.ZodEnum<{
@@ -3531,7 +3550,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
              exited: "exited";
          }>;
          exitCode: z$1.ZodNullable<z$1.ZodNumber>;
-@@ -10152,8 +10179,8 @@ declare const threadTimelineResponseSchema: z$1.ZodObject<{
+@@ -10372,8 +10399,8 @@ declare const threadTimelineResponseSchema: z$1.ZodObject<{
          updatedAt: z$1.ZodNumber;
          objective: z$1.ZodString;
          status: z$1.ZodEnum<{
@@ -3541,7 +3560,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
              budgetLimited: "budgetLimited";
              complete: "complete";
          }>;
-@@ -11898,6 +11925,28 @@ interface HostsArea {
+@@ -12193,6 +12220,28 @@ interface HostsArea {
      update(args: HostUpdateArgs): Promise<HostUpdateResult>;
  }
  
@@ -3570,7 +3589,7 @@ index 76f92e8f8cb2f9ac5092908b4688d3e82399a92b..712a150d953e3ad17c1c1201902de313
  interface ProjectListArgs {
      include?: ProjectListQuery["include"];
      /** Include the singleton personal project. Defaults to false for compatibility. */
-@@ -12878,6 +12927,8 @@ interface BbSdk extends BbRealtime {
+@@ -13255,6 +13304,8 @@ interface BbSdk extends BbRealtime {
      files: FilesArea;
      guide: GuideArea;
      hosts: HostsArea;
@@ -3892,7 +3911,7 @@ index 24df4cc923b7951de80bf9979e297a6ea06b4483..1f02652c7924c94f2d6df54577d75fca
    realtimeUrl?: string;
    runtime: BbSdkRuntime;
 diff --git a/packages/sdk/test/public-types.test.ts b/packages/sdk/test/public-types.test.ts
-index 2c9310327806dcd3bb5407f4a54acb48385613a2..463f2699a61bcd743cb8b0a98bf24da50f8e2284 100644
+index 25fee5c74f89a3acdde667751b23eaac43606dd1..258ea65b61a6f919ed13ffcfa84979b42f0a21da 100644
 --- a/packages/sdk/test/public-types.test.ts
 +++ b/packages/sdk/test/public-types.test.ts
 @@ -223,6 +223,8 @@ type ExpectedBbSdkKey =
@@ -3905,7 +3924,7 @@ index 2c9310327806dcd3bb5407f4a54acb48385613a2..463f2699a61bcd743cb8b0a98bf24da5
    | "projects"
    | "providers"
 diff --git a/packages/sdk/test/sdk.test.ts b/packages/sdk/test/sdk.test.ts
-index dde43b94d9d1c38494b08437ded5746187530359..ff31c248fa1125f7473596f4f0aac3882959ad44 100644
+index 4d27c39ffab0743947aca0599b1d527426841fc2..b68aab6bd804f72a5120ba2677604edd34f3139f 100644
 --- a/packages/sdk/test/sdk.test.ts
 +++ b/packages/sdk/test/sdk.test.ts
 @@ -1,10 +1,16 @@
@@ -4079,7 +4098,7 @@ index 0000000000000000000000000000000000000000..7771cacade8a9b0ab6735bd3c17797a4
 +export const removeMemberRequestSchema = addMemberRequestSchema;
 +export type RemoveMemberRequest = z.infer<typeof removeMemberRequestSchema>;
 diff --git a/packages/server-contract/src/public-api.ts b/packages/server-contract/src/public-api.ts
-index fd5a7e7334ad7ca79b0bfd61db672f002e03eaa4..35b3af69fbc4a7c97c4c723fba5bd92b75d6b5a2 100644
+index 6df89fd685ef68f9685e4d7d5d1f7a4596d9eb59..9d196ca59cf85dac0544282dd5bcb90076afbf87 100644
 --- a/packages/server-contract/src/public-api.ts
 +++ b/packages/server-contract/src/public-api.ts
 @@ -111,6 +111,10 @@ import type {
@@ -4093,7 +4112,7 @@ index fd5a7e7334ad7ca79b0bfd61db672f002e03eaa4..35b3af69fbc4a7c97c4c723fba5bd92b
    ProjectAttachmentContentQuery,
    ProjectAttachmentUploadForm,
    ProjectBranchesQuery,
-@@ -258,6 +262,8 @@ import {
+@@ -259,6 +263,8 @@ import {
    hostPickFolderRequestSchema,
    hostPathsExistRequestSchema,
    hostProviderCliInstallRequestSchema,
@@ -4102,7 +4121,7 @@ index fd5a7e7334ad7ca79b0bfd61db672f002e03eaa4..35b3af69fbc4a7c97c4c723fba5bd92b
    projectAttachmentContentQuerySchema,
    projectBranchesQuerySchema,
    projectCommandsQuerySchema,
-@@ -1336,6 +1342,31 @@ export const publicApiRoutes = {
+@@ -1343,6 +1349,31 @@ export const publicApiRoutes = {
      }),
    },
  
@@ -4135,10 +4154,10 @@ index fd5a7e7334ad7ca79b0bfd61db672f002e03eaa4..35b3af69fbc4a7c97c4c723fba5bd92b
      attention: defineRoute({
        path: "/system/attention",
 diff --git a/packages/templates/src/templates/bb-guide-machines.md b/packages/templates/src/templates/bb-guide-machines.md
-index a99d949544e32dcf3eb444c212fff70a9202fcad..658ad6106fd0b16ea2ffd88b7b47204a6a630b08 100644
+index 3fee7e5c33b46d6a40309a847a286811784ca2c3..1e037dfde1546d73cee9cdc47c1f4580a2c27dd1 100644
 --- a/packages/templates/src/templates/bb-guide-machines.md
 +++ b/packages/templates/src/templates/bb-guide-machines.md
-@@ -84,3 +84,22 @@ selected connected machine. Omit the selector to keep the existing local CLI
+@@ -86,3 +86,22 @@ selected connected machine. Omit the selector to keep the existing local CLI
  machine fallback (normally the primary machine). Pass `--clone` to source add
  instead of `--path` to clone the project's Git remote there; `--remote-url` and
  `--target-path` optionally override the clone inputs.

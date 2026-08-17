@@ -1,4 +1,4 @@
-From 27c1a0adc43a4fe6c0920e373ec7fe382384d589 Mon Sep 17 00:00:00 2001
+From dffa0954f0def0fc7e5795a3e6473f5496a66349 Mon Sep 17 00:00:00 2001
 From: Sawyer Hood <sawyerjhood@gmail.com>
 Date: Mon, 17 Aug 2026 15:59:32 -0400
 Subject: [PATCH 2/5] Add membership admission and request actor plumbing
@@ -855,7 +855,7 @@ index 0000000000000000000000000000000000000000..e040c233b6f5b456656257ac591c57d1
 +  return handleServerMembersWithDb(request, env.BETTER_AUTH_SECRET, db, route);
 +}
 diff --git a/apps/connect/src/worker.test.ts b/apps/connect/src/worker.test.ts
-index bf26c7c2229cd345c4b20d633cca46783bc7cd8c..7374e6f4c563ea6dfec76e6b8f96af8127144d0c 100644
+index e6a9bdd078b3425deceead7cf5a3f35f333c8163..b8a0da69c9c359ccea488b78b7c37d4276f367d5 100644
 --- a/apps/connect/src/worker.test.ts
 +++ b/apps/connect/src/worker.test.ts
 @@ -124,6 +124,16 @@ vi.mock("./machine-label.js", () => ({
@@ -1031,12 +1031,12 @@ index 9935622663109f0e8c60d8f10fb0417a53350278..62f729da976d1bfa87e369680c0c7a1c
  
      const doRequest = requestForTunnelDo(request, target, "session");
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
-index 6fc819610805b1bfef3958506f4fed48089e7289..ebeace60588424cafd126c3df366c536f1225d6b 100644
+index 6d4bafa6031888648b9ba27f8180a4e5bfb9c4f5..257cf7d59e7babca2fd9c0d0384a8285e106cec8 100644
 --- a/apps/server/src/server.ts
 +++ b/apps/server/src/server.ts
-@@ -74,6 +74,12 @@ import {
- import { callHostRetryableOnlineRpc } from "./services/hosts/online-rpc.js";
- import { browserRequestProblem } from "./browser-request-guard.js";
+@@ -81,6 +81,12 @@ import { browserRequestProblem } from "./browser-request-guard.js";
+  */
+ const PLUGIN_WIRE_HTTP_PATH = /^\/api\/v1\/plugins\/[^/]+\/http(?:\/|$)/u;
  import { rankAcceptedAssetEncodings } from "./asset-content-encoding.js";
 +import {
 +  createActorService,
@@ -1047,7 +1047,7 @@ index 6fc819610805b1bfef3958506f4fed48089e7289..ebeace60588424cafd126c3df366c536
  
  export type CloseWebSockets = () => Promise<void>;
  type NodeWebSocketServer = ReturnType<typeof createNodeWebSocket>["wss"];
-@@ -274,6 +280,11 @@ export function createApp(
+@@ -281,6 +287,11 @@ export function createApp(
        dataDir: deps.config.dataDir,
        serverEntryUrl: import.meta.url,
      });
@@ -1059,7 +1059,7 @@ index 6fc819610805b1bfef3958506f4fed48089e7289..ebeace60588424cafd126c3df366c536
  
    app.use("*", async (context, next) => {
      captureTrustedRemoteAddress(context);
-@@ -336,6 +347,7 @@ export function createApp(
+@@ -350,6 +361,7 @@ export function createApp(
      });
    });
    app.use("/api/v1/*", async (context, next) => {
@@ -1067,7 +1067,7 @@ index 6fc819610805b1bfef3958506f4fed48089e7289..ebeace60588424cafd126c3df366c536
      const startedAt = performance.now();
      await next();
      const durationMs = performance.now() - startedAt;
-@@ -453,8 +465,12 @@ export function createApp(
+@@ -497,8 +509,12 @@ export function createApp(
            false,
          );
        }
@@ -1567,10 +1567,10 @@ index 0000000000000000000000000000000000000000..ab5ada424566291763e7de42153da437
 +  return db.select().from(collaborators).all();
 +}
 diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
-index b63ac962850db00fccbfda7c538129c797e97751..336eadac26618d11245d952798a2edc2cde81ee3 100644
+index 246bdad43aaacf82be327dd0af6c691628115857..e09359f3950bc7bfaa4df41a3ebd9658113f9d8d 100644
 --- a/packages/db/src/data/index.ts
 +++ b/packages/db/src/data/index.ts
-@@ -594,3 +594,13 @@ export type {
+@@ -588,3 +588,13 @@ export type {
    DropDeferredLegacyTablesResult,
    RunIncrementalVacuumArgs,
  } from "./maintenance.js";

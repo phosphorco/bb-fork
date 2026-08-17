@@ -2,6 +2,8 @@
 
 This is a thin, auditable deployment overlay for [get-bb/bb](https://github.com/get-bb/bb). It does not carry a second copy of upstream source and it does not treat a long-lived Git branch as the release definition.
 
+The current base is the source commit tagged `desktop-v0.38.0`, matching the deployed `bb-app@0.38.0` npm release. Release tags are preferred over a moving or lagging default branch.
+
 The deployable source is exactly:
 
 1. the commit in `upstream.lock`, also pinned by the `upstream/` submodule;
@@ -35,4 +37,3 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
 The five patches are deliberately organized by product capability, not by the chronology of the original experimental branch. Fixups and generated artifacts are folded into the final hardening patch; implementation-only workflow files are excluded.
-
