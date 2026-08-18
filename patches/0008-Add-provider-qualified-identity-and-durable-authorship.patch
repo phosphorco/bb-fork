@@ -1,6 +1,6 @@
-From bf9fc4926b9e98f2a9644b8f11e012585d347d6a Mon Sep 17 00:00:00 2001
+From 95e8f0ef13a9fecc82ca8a458251761e979dc8fb Mon Sep 17 00:00:00 2001
 From: bb-fork maker <bb-fork@invalid.local>
-Date: Tue, 18 Aug 2026 19:09:57 -0400
+Date: Tue, 18 Aug 2026 19:15:55 -0400
 Subject: [PATCH] Add provider-qualified identity and durable authorship
 
 ---
@@ -13,7 +13,7 @@ Subject: [PATCH] Add provider-qualified identity and durable authorship
  .../server/src/routes/threads/interactions.ts |   27 +-
  apps/server/src/server.ts                     |   90 +-
  apps/server/src/services/actors.ts            |    4 +
- apps/server/src/services/identity.ts          |  347 +
+ apps/server/src/services/identity.ts          |  349 +
  .../server/src/services/plugins/plugin-api.ts |   42 +-
  .../src/services/plugins/plugin-runtime.ts    |    9 +
  .../plugins/plugin-service-internal.ts        |    4 +
@@ -33,7 +33,7 @@ Subject: [PATCH] Add provider-qualified identity and durable authorship
  .../public-authorization-regressions.test.ts  |   39 +
  .../test/public/public-request-actors.test.ts |   13 +-
  .../test/public/public-thread-data.test.ts    |   64 +-
- apps/server/test/services/identity.test.ts    |  412 ++
+ apps/server/test/services/identity.test.ts    |  425 ++
  .../plugins/plugin-agent-tools.test.ts        |  191 +-
  .../plugins/plugin-authoring-docs.test.ts     |    1 +
  .../services/plugins/plugin-service.test.ts   |  184 +-
@@ -72,7 +72,7 @@ Subject: [PATCH] Add provider-qualified identity and durable authorship
  .../src/event-projection-message.ts           |    4 +
  .../thread-view/src/parse-error-message.ts    |    4 +
  .../thread-view/src/user-message-parsing.ts   |    4 +
- 68 files changed, 9393 insertions(+), 3102 deletions(-)
+ 68 files changed, 9408 insertions(+), 3102 deletions(-)
  create mode 100644 apps/server/src/services/identity.ts
  create mode 100644 apps/server/test/services/identity.test.ts
  create mode 100644 packages/db/drizzle/0100_amused_tony_stark.sql
@@ -699,10 +699,10 @@ index 788d2729d..915cf22d3 100644
    p6rDecodeClaimedIdentityHeader,
 diff --git a/apps/server/src/services/identity.ts b/apps/server/src/services/identity.ts
 new file mode 100644
-index 000000000..776a3543f
+index 000000000..37338c8f0
 --- /dev/null
 +++ b/apps/server/src/services/identity.ts
-@@ -0,0 +1,347 @@
+@@ -0,0 +1,349 @@
 +import { performance } from "node:perf_hooks";
 +import {
 +  p6rUpsertActorSnapshot,
@@ -999,14 +999,16 @@ index 000000000..776a3543f
 +    p6rResolveRequest(request) {
 +      const providerResult = p6rResolveProvider(request);
 +      if (providerResult.kind === "authenticated") {
-+        const actor: P6rActorSnapshot = {
++        const actorResult = p6rActorSnapshotSchema.safeParse({
 +          p6rProviderId:
 +            provider?.p6rProviderId ?? P6R_LOCAL_OPERATOR_PROVIDER_ID,
 +          p6rSubject: providerResult.p6rSubject,
 +          p6rHandle: providerResult.p6rHandle,
 +          p6rDisplayName: providerResult.p6rDisplayName,
 +          p6rImageUrl: providerResult.p6rImageUrl,
-+        };
++        });
++        if (!actorResult.success) return { kind: "reject" };
++        const actor: P6rActorSnapshot = actorResult.data;
 +        p6rRecordAuthenticatedActor(actor);
 +        return { kind: "authenticated", p6rActor: actor };
 +      }
@@ -1966,10 +1968,10 @@ index e74b4cdcc..17a670e59 100644
    });
 diff --git a/apps/server/test/services/identity.test.ts b/apps/server/test/services/identity.test.ts
 new file mode 100644
-index 000000000..3df358e93
+index 000000000..001cf31d9
 --- /dev/null
 +++ b/apps/server/test/services/identity.test.ts
-@@ -0,0 +1,412 @@
+@@ -0,0 +1,425 @@
 +import { describe, expect, it } from "vitest";
 +import {
 +  createConnection,
@@ -2132,36 +2134,49 @@ index 000000000..3df358e93
 +    },
 +  );
 +
-+  it("rejects over-limit provider snapshots before persistence", () => {
-+    const db = createConnection(":memory:");
-+    migrate(db);
-+    const p6rSubject = "s".repeat(513);
-+    try {
-+      const identity = boundary(db);
-+      identity.p6rRegisterProvider("p6r-fixture", {
-+        id: "over-limit",
-+        resolve: () => ({
-+          kind: "authenticated",
-+          p6rSubject,
-+          p6rHandle: "over-limit",
-+          p6rDisplayName: "Over Limit",
-+          p6rImageUrl: null,
-+        }),
-+      });
++  it.each([
++    {
++      label: "subject",
++      p6rSubject: "s".repeat(513),
++      p6rHandle: "over-limit",
++    },
++    {
++      label: "handle",
++      p6rSubject: "valid-subject",
++      p6rHandle: "h".repeat(129),
++    },
++  ])(
++    "rejects over-limit provider $label before persistence",
++    ({ p6rSubject, p6rHandle }) => {
++      const db = createConnection(":memory:");
++      migrate(db);
++      try {
++        const identity = boundary(db);
++        identity.p6rRegisterProvider("p6r-fixture", {
++          id: "over-limit",
++          resolve: () => ({
++            kind: "authenticated",
++            p6rSubject,
++            p6rHandle,
++            p6rDisplayName: "Over Limit",
++            p6rImageUrl: null,
++          }),
++        });
 +
-+      expect(identity.p6rResolveRequest(request("http"))).toEqual({
-+        kind: "reject",
-+      });
-+      expect(
-+        p6rGetActorSnapshot(db, {
-+          p6rProviderId: "p6r-fixture/over-limit",
-+          p6rSubject,
-+        }),
-+      ).toBeNull();
-+    } finally {
-+      db.$client.close();
-+    }
-+  });
++        expect(identity.p6rResolveRequest(request("http"))).toEqual({
++          kind: "reject",
++        });
++        expect(
++          p6rGetActorSnapshot(db, {
++            p6rProviderId: "p6r-fixture/over-limit",
++            p6rSubject,
++          }),
++        ).toBeNull();
++      } finally {
++        db.$client.close();
++      }
++    },
++  );
 +
 +  it("uses loopback only when there is no provider or the provider is not applicable", () => {
 +    const db = createConnection(":memory:");
