@@ -1,4 +1,4 @@
-From a974d024fa31554045311e9f675970c78e9c764a Mon Sep 17 00:00:00 2001
+From 141ab1915a06247cadeac3bc22fb3165de6ab9b3 Mon Sep 17 00:00:00 2001
 From: Rosetta <its-rosetta@users.noreply.github.com>
 Date: Mon, 17 Aug 2026 21:01:17 -0400
 Subject: [PATCH] Namespace downstream multiplayer contracts with p6r
@@ -10,7 +10,7 @@ Subject: [PATCH] Namespace downstream multiplayer contracts with p6r
  .../src/components/settings/settings-nav.tsx  |   8 +-
  apps/app/src/components/sidebar/ThreadRow.tsx |  14 +-
  .../thread/presence/Presence.stories.tsx      |  68 ++---
- .../thread/presence/PresenceAvatarRow.tsx     |  66 ++---
+ .../thread/presence/PresenceAvatarRow.tsx     |  66 ++--
  .../thread/presence/SidebarPresenceDots.tsx   |  18 +-
  .../presence/ThreadPresenceIndicators.tsx     |  42 +--
  .../thread/presence/TypingIndicator.tsx       |  22 +-
@@ -52,8 +52,8 @@ Subject: [PATCH] Namespace downstream multiplayer contracts with p6r
  apps/cli/src/client.ts                        |   8 +-
  apps/cli/src/commands/members.ts              |  28 +-
  apps/cli/src/index.ts                         |   4 +-
- apps/connect/src/members.test.ts              | 202 +++++++------
- apps/connect/src/members.ts                   | 203 +++++++------
+ apps/connect/src/members.test.ts              | 202 ++++++------
+ apps/connect/src/members.ts                   | 203 ++++++------
  apps/connect/src/worker.test.ts               |  40 +--
  apps/connect/src/worker.ts                    |  25 +-
  .../src/command-handlers/thread.test.ts       |  16 +-
@@ -64,7 +64,7 @@ Subject: [PATCH] Namespace downstream multiplayer contracts with p6r
  apps/server/src/routes/threads/base.ts        |   6 +-
  .../server/src/routes/threads/interactions.ts |  11 +-
  apps/server/src/server.ts                     |  34 +--
- apps/server/src/services/actors.ts            |  99 ++++---
+ apps/server/src/services/actors.ts            |  99 +++---
  .../interactions/pending-interactions.ts      |  24 +-
  apps/server/src/services/presence.ts          | 122 ++++----
  .../skills/builtin-skills/bb-cli/SKILL.md     |   8 +-
@@ -91,7 +91,7 @@ Subject: [PATCH] Namespace downstream multiplayer contracts with p6r
  .../server/test/public/public-members.test.ts |  38 +--
  .../test/public/public-presence.test.ts       |  30 +-
  .../test/public/public-request-actors.test.ts |  62 ++--
- .../test/public/public-thread-data.test.ts    | 278 +++++++++---------
+ .../test/public/public-thread-data.test.ts    | 289 +++++++++---------
  .../public/public-thread-interactions.test.ts |  64 ++--
  .../public-threads.project-default.test.ts    |  40 +--
  apps/server/test/services/actors.test.ts      |  75 ++---
@@ -106,7 +106,7 @@ Subject: [PATCH] Namespace downstream multiplayer contracts with p6r
  packages/connect-db/src/schema.ts             |  18 +-
  packages/db/drizzle/0099_fair_anthem.sql      |  20 +-
  packages/db/drizzle/meta/0099_snapshot.json   |  42 +--
- packages/db/src/data/collaborators.ts         |  50 ++--
+ packages/db/src/data/collaborators.ts         |  50 +--
  packages/db/src/data/events.ts                |  26 +-
  packages/db/src/data/index.ts                 |  12 +-
  packages/db/src/data/pending-interactions.ts  |  24 +-
@@ -119,7 +119,7 @@ Subject: [PATCH] Namespace downstream multiplayer contracts with p6r
  .../db/test/data/pending-interactions.test.ts |   6 +-
  .../test/data/queued-thread-messages.test.ts  |   4 +-
  packages/db/test/data/threads.test.ts         |   6 +-
- packages/db/test/migrate.test.ts              |  50 ++--
+ packages/db/test/migrate.test.ts              |  50 +--
  packages/db/test/schema.test.ts               |   2 +-
  packages/domain/src/change-kinds.ts           |  72 ++---
  packages/domain/src/claimed-identity.ts       |  32 +-
@@ -167,7 +167,7 @@ Subject: [PATCH] Namespace downstream multiplayer contracts with p6r
  packages/tunnel-client/src/session.ts         |   4 +-
  packages/tunnel-client/test/headers.test.ts   |  14 +-
  .../fake/smoke/timeline-response.test.ts      |   2 +-
- 163 files changed, 2507 insertions(+), 2418 deletions(-)
+ 163 files changed, 2517 insertions(+), 2419 deletions(-)
  create mode 100644 packages/connect-db/migrations/0006_p6r_server_member.sql
  delete mode 100644 packages/connect-db/migrations/0006_server-member.sql
 
@@ -7132,7 +7132,7 @@ index e2f9552014eafc1ad13a6f08b0efdfcc4eba6c5e..5d40792e00db8e8067fb334a2f2c076e
    });
  });
 diff --git a/apps/server/test/public/public-thread-data.test.ts b/apps/server/test/public/public-thread-data.test.ts
-index ba03c8b4a521a934fded7cc2d4a505ea00015b74..b8ceb34114c7cb3854dcb07dedd4792b66e3f3ca 100644
+index ba03c8b4a521a934fded7cc2d4a505ea00015b74..e74b4cdcc7db23b5c3ddfe0b6403470b88037255 100644
 --- a/apps/server/test/public/public-thread-data.test.ts
 +++ b/apps/server/test/public/public-thread-data.test.ts
 @@ -17,8 +17,8 @@ import {
@@ -7181,7 +7181,13 @@ index ba03c8b4a521a934fded7cc2d4a505ea00015b74..b8ceb34114c7cb3854dcb07dedd4792b
      });
    });
  
-@@ -139,11 +139,11 @@ describe("public thread data routes", () => {
+@@ -134,25 +134,34 @@ describe("public thread data routes", () => {
+       const { thread } = seedThreadFixture(harness, {
+         thread: { status: "active" },
+       });
+-      const response = await harness.app.request(
++      const responsePromise = harness.app.request(
+         `/api/v1/threads/${thread.id}/stop`,
          {
            method: "POST",
            headers: {
@@ -7198,7 +7204,17 @@ index ba03c8b4a521a934fded7cc2d4a505ea00015b74..b8ceb34114c7cb3854dcb07dedd4792b
              }),
            },
          },
-@@ -152,7 +152,7 @@ describe("public thread data routes", () => {
+       );
++      const stop = await waitForQueuedCommand(
++        harness,
++        ({ command }) =>
++          command.type === "thread.stop" && command.threadId === thread.id,
++      );
++      await reportQueuedCommandSuccess(harness, stop, {
++        providerCheckpointId: null,
++      });
++      const response = await responsePromise;
+ 
        expect(response.status).toBe(200);
        expect(
          harness.db
@@ -7207,7 +7223,7 @@ index ba03c8b4a521a934fded7cc2d4a505ea00015b74..b8ceb34114c7cb3854dcb07dedd4792b
            .from(events)
            .where(
              and(
-@@ -161,7 +161,7 @@ describe("public thread data routes", () => {
+@@ -161,7 +170,7 @@ describe("public thread data routes", () => {
              ),
            )
            .get(),
@@ -7216,7 +7232,7 @@ index ba03c8b4a521a934fded7cc2d4a505ea00015b74..b8ceb34114c7cb3854dcb07dedd4792b
      });
    });
  
-@@ -1589,146 +1589,142 @@ describe("public thread data routes", () => {
+@@ -1589,146 +1598,142 @@ describe("public thread data routes", () => {
      });
    });
  
@@ -7477,7 +7493,7 @@ index ba03c8b4a521a934fded7cc2d4a505ea00015b74..b8ceb34114c7cb3854dcb07dedd4792b
  
    it("hydrates turn-summary details with future accepted input context", async () => {
      await withTestHarness(async (harness) => {
-@@ -3081,11 +3077,11 @@ describe("public thread data routes", () => {
+@@ -3081,11 +3086,11 @@ describe("public thread data routes", () => {
            method: "POST",
            headers: {
              "content-type": "application/json",
@@ -7494,7 +7510,7 @@ index ba03c8b4a521a934fded7cc2d4a505ea00015b74..b8ceb34114c7cb3854dcb07dedd4792b
              }),
            },
            body: JSON.stringify({
-@@ -3113,7 +3109,7 @@ describe("public thread data routes", () => {
+@@ -3113,7 +3118,7 @@ describe("public thread data routes", () => {
        });
        expect("inputGroups" in queued.command).toBe(false);
        const requestedEvent = harness.db
@@ -7503,7 +7519,7 @@ index ba03c8b4a521a934fded7cc2d4a505ea00015b74..b8ceb34114c7cb3854dcb07dedd4792b
          .from(events)
          .where(
            and(
-@@ -3125,7 +3121,7 @@ describe("public thread data routes", () => {
+@@ -3125,7 +3130,7 @@ describe("public thread data routes", () => {
          .all()
          .at(-1);
        expect(requestedEvent).toBeTruthy();
