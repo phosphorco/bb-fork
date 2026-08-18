@@ -9,50 +9,99 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: downstream-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 22.19.0
+  PNPM_VERSION: 9.15.0
+
 jobs:
-  validate:
+  checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
-
       - uses: pnpm/action-setup@v4
         with:
-          version: 9.15.0
-
+          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.19.0
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
           cache-dependency-path: upstream/pnpm-lock.yaml
-
-      - name: Verify and materialize patch queue
-        run: |
-          ./scripts/verify
-          ./scripts/materialize
-
-      - name: Install dependencies
-        working-directory: build/bb
+      - run: ./scripts/verify && ./scripts/materialize
+      - working-directory: build/bb
         run: pnpm install --frozen-lockfile
-
-      - name: Validate source
+      - name: Build, typecheck, and lint
         working-directory: build/bb
-        run: |
-          pnpm typecheck
-          pnpm test
-          pnpm build
+        run: pnpm exec turbo run build typecheck lint --output-logs=new-only
 
+  tests:
+    name: Tests (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: server
+            filter: --filter=@bb/server
+          - shard: app
+            filter: --filter=@bb/app
+          - shard: integration
+            filter: --filter=@bb/integration-tests
+          - shard: packages
+            filter: --filter='!@bb/server' --filter='!@bb/app' --filter='!@bb/integration-tests'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: upstream/pnpm-lock.yaml
+      - run: ./scripts/verify && ./scripts/materialize
+      - working-directory: build/bb
+        run: pnpm install --frozen-lockfile
+      - name: Test
+        working-directory: build/bb
+        run: pnpm exec turbo run test ${{ matrix.filter }} --output-logs=new-only
+
+  package:
+    needs: [checks, tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: upstream/pnpm-lock.yaml
+      - run: ./scripts/verify && ./scripts/materialize
+      - working-directory: build/bb
+        run: pnpm install --frozen-lockfile
       - name: Package immutable bb-app artifact
         working-directory: build/bb
         run: |
           mkdir -p ../../artifacts
           pnpm bb-app:prepare
           npm pack --pack-destination ../../artifacts ./packages/bb-app
-
       - uses: actions/upload-artifact@v4
         with:
           name: bb-app-${{ github.sha }}
           path: artifacts/*.tgz
           if-no-files-found: error
-
