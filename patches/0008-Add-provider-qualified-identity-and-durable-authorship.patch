@@ -1,6 +1,6 @@
-From 09772f44efa566746e3c133bfcee3b57f883897d Mon Sep 17 00:00:00 2001
+From 77e2b2e8a4b2d5d262145bca41389f3275df501d Mon Sep 17 00:00:00 2001
 From: bb-fork maker <bb-fork@invalid.local>
-Date: Tue, 18 Aug 2026 19:31:32 -0400
+Date: Tue, 18 Aug 2026 19:42:31 -0400
 Subject: [PATCH] Add provider-qualified identity and durable authorship
 
 ---
@@ -32,6 +32,7 @@ Subject: [PATCH] Add provider-qualified identity and durable authorship
  .../src/services/plugins/plugin-runtime.ts    |    9 +
  .../plugins/plugin-service-internal.ts        |    4 +
  .../src/services/plugins/plugin-service.ts    |   20 +-
+ .../bb-plugin-authoring/SKILL.md              |   26 +
  .../src/services/threads/queued-messages.ts   |   11 +-
  .../services/threads/thread-create-request.ts |    3 +
  .../src/services/threads/thread-create.ts     |    4 +
@@ -90,7 +91,7 @@ Subject: [PATCH] Add provider-qualified identity and durable authorship
  .../thread-view/src/parse-error-message.ts    |    4 +
  .../thread-view/src/user-message-parsing.ts   |    4 +
  .../test/timeline-progression.test.ts         |    2 +
- 86 files changed, 9450 insertions(+), 3098 deletions(-)
+ 87 files changed, 9476 insertions(+), 3098 deletions(-)
  create mode 100644 apps/server/src/services/identity.ts
  create mode 100644 apps/server/test/services/identity.test.ts
  create mode 100644 packages/db/drizzle/0100_amused_tony_stark.sql
@@ -1492,6 +1493,43 @@ index 38b06b242..370eff25d 100644
          const parsedOutput = await validateRpcValue(
            handler.outputSchema,
            result,
+diff --git a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
+index 7fbed3a61..466eed267 100644
+--- a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
++++ b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
+@@ -325,6 +325,32 @@ instruction providers or mention providers are rejected.
+ Listeners are different: `bb.events.on`, settings `onChange`, and `onDispose`
+ are additive, so registering multiple listeners is supported.
+ 
++### bb.p6rIdentity — verified inbound identity
++
++`bb.p6rIdentity.registerProvider({ id, resolve })` is exclusive: only one
++provider registration can own the boundary. Registration is staged on the
++candidate plugin generation and activated only at its atomic commit. A
++successful same-plugin reload replaces the old provider once; a failed
++candidate leaves the old provider live, a competing plugin is rejected without
++disposing that live provider, and disable/removal releases the registration.
++
++`resolve(request)` is synchronous and returns exactly `authenticated`,
++`not-applicable`, or `reject`. Core composes the provider id from the owning
++plugin id and registration id. The provider's `p6rSubject` is an exact opaque,
++immutable, nonblank identity; it is not trimmed or otherwise canonicalized.
++Reject, throw, malformed output, and timeout all fail closed as `reject`. On a
++provider-owned remote path, loopback local-operator fallback cannot rescue
++those outcomes. Only no-provider or `not-applicable` resolution can yield an
++anonymous nullable principal for ordinary route policy; authored mutations
++still require an authenticated actor.
++
++Plugin HTTP/RPC handlers receive only the shared-boundary ambient nullable
++`p6rRequestPrincipal`. Agent tools receive only the separate durable nullable
++`p6rTurnAuthor` from the accepted authored unit that initiated the turn. The
++two carriers are not interchangeable: neither may be supplied by client
++claims, URL/query/body/header identity, the internal transport caller, or
++transcript parsing of `[from=...]`.
++
+ ### bb.log
+ 
+ `bb.log.debug|info|warn|error(message: string)` — goes to the server log
 diff --git a/apps/server/src/services/threads/queued-messages.ts b/apps/server/src/services/threads/queued-messages.ts
 index 5e5050773..cc4d03583 100644
 --- a/apps/server/src/services/threads/queued-messages.ts
