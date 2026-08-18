@@ -57,6 +57,11 @@ const forbiddenAddedPatterns = [
   /["']identity["']/u,
   /\bp6rP6r|\bP6rP6r|\bP6R_P6R_/u,
 ];
+const forbiddenOperationalDbPatterns = [
+  /\bactor_handle\b/u,
+  /\bcreated_by_handle\b/u,
+  /\bresolved_by_handle\b/u,
+];
 
 for (const line of diff.split("\n")) {
   if (line.startsWith("+++ b/")) {
@@ -69,6 +74,16 @@ for (const line of diff.split("\n")) {
   for (const pattern of forbiddenAddedPatterns) {
     if (pattern.test(added)) {
       failures.push(`${file}: forbidden downstream identifier: ${added.trim()}`);
+    }
+  }
+
+  if (!file.includes("/test/") && file !== "packages/db/src/migrate.ts") {
+    for (const pattern of forbiddenOperationalDbPatterns) {
+      if (pattern.test(added)) {
+        failures.push(
+          `${file}: unprefixed downstream database identifier: ${added.trim()}`,
+        );
+      }
     }
   }
 

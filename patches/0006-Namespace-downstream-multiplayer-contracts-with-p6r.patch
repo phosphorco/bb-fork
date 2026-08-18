@@ -1,7 +1,7 @@
-From b5384e246fba75af9852d596d1d8cfd4d29d0b1d Mon Sep 17 00:00:00 2001
+From a974d024fa31554045311e9f675970c78e9c764a Mon Sep 17 00:00:00 2001
 From: Rosetta <its-rosetta@users.noreply.github.com>
 Date: Mon, 17 Aug 2026 21:01:17 -0400
-Subject: [PATCH 6/6] Namespace downstream multiplayer contracts with p6r
+Subject: [PATCH] Namespace downstream multiplayer contracts with p6r
 
 ---
  apps/app/src/App.tsx                          |   4 +-
@@ -107,7 +107,7 @@ Subject: [PATCH 6/6] Namespace downstream multiplayer contracts with p6r
  packages/db/drizzle/0099_fair_anthem.sql      |  20 +-
  packages/db/drizzle/meta/0099_snapshot.json   |  42 +--
  packages/db/src/data/collaborators.ts         |  50 ++--
- packages/db/src/data/events.ts                |  24 +-
+ packages/db/src/data/events.ts                |  26 +-
  packages/db/src/data/index.ts                 |  12 +-
  packages/db/src/data/pending-interactions.ts  |  24 +-
  .../db/src/data/queued-thread-messages.ts     |   6 +-
@@ -167,7 +167,7 @@ Subject: [PATCH 6/6] Namespace downstream multiplayer contracts with p6r
  packages/tunnel-client/src/session.ts         |   4 +-
  packages/tunnel-client/test/headers.test.ts   |  14 +-
  .../fake/smoke/timeline-response.test.ts      |   2 +-
- 163 files changed, 2506 insertions(+), 2417 deletions(-)
+ 163 files changed, 2507 insertions(+), 2418 deletions(-)
  create mode 100644 packages/connect-db/migrations/0006_p6r_server_member.sql
  delete mode 100644 packages/connect-db/migrations/0006_server-member.sql
 
@@ -8793,7 +8793,7 @@ index ab5ada424566291763e7de42153da437cb6bc97d..e57966903b82126527e9123bdddc85f9
 +  return db.select().from(p6rCollaborators).all();
  }
 diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
-index 3b3db2231910ec0182c041c96bbb6786e0052eea..b1434005d3103782de72ecb854453d3824f704b6 100644
+index 3b3db2231910ec0182c041c96bbb6786e0052eea..dd2c2a4d8b61061b4609db77e0dd3d1e4fe97e88 100644
 --- a/packages/db/src/data/events.ts
 +++ b/packages/db/src/data/events.ts
 @@ -116,7 +116,7 @@ const isNotNestedTurnUsageEvent = sql`NOT EXISTS (
@@ -8814,11 +8814,13 @@ index 3b3db2231910ec0182c041c96bbb6786e0052eea..b1434005d3103782de72ecb854453d38
      data: StoredThreadEventDataForType<TEventType>;
      environmentId?: string | null;
      providerThreadId?: string | null;
-@@ -304,7 +304,7 @@ export function insertEvents(
+@@ -303,8 +303,8 @@ export function insertEvents(
+     const createdAt = input.createdAt ?? Date.now();
      const turnId = getThreadEventScopeTurnId(input.scope) ?? null;
      const result = db.run(
-       sql`INSERT OR IGNORE INTO events (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, actor_handle, data, created_at)
+-      sql`INSERT OR IGNORE INTO events (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, actor_handle, data, created_at)
 -          VALUES (${id}, ${input.threadId}, ${input.environmentId ?? null}, ${input.scope.kind}, ${turnId}, ${input.providerThreadId ?? null}, ${input.sequence}, ${input.type}, ${input.itemId}, ${input.itemKind}, ${input.actorHandle ?? null}, ${input.data}, ${createdAt})`,
++      sql`INSERT OR IGNORE INTO events (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, p6r_actor_handle, data, created_at)
 +          VALUES (${id}, ${input.threadId}, ${input.environmentId ?? null}, ${input.scope.kind}, ${turnId}, ${input.providerThreadId ?? null}, ${input.sequence}, ${input.type}, ${input.itemId}, ${input.itemKind}, ${input.p6rActorHandle ?? null}, ${input.data}, ${createdAt})`,
      );
      if (result.changes > 0) {
