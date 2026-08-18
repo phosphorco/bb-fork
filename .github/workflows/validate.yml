@@ -36,7 +36,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        task: [build, typecheck, lint]
+        include:
+          - task: build
+            args: ""
+          - task: typecheck
+            args: --concurrency=2
+          - task: lint
+            args: ""
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,7 +60,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: ${{ matrix.task }}
         working-directory: build/bb
-        run: pnpm exec turbo run ${{ matrix.task }} --output-logs=new-only
+        run: pnpm exec turbo run ${{ matrix.task }} ${{ matrix.args }} --output-logs=new-only
 
   tests:
     name: Tests (${{ matrix.shard }})
