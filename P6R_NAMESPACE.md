@@ -4,6 +4,8 @@ Every reusable or externally observable identifier introduced by this overlay
 must identify itself as downstream-owned:
 
 - values, functions, methods, fields, and props use `p6r...`;
+- React hooks use `useP6r...`, preserving React's required `use` prefix while
+  keeping the downstream namespace explicit;
 - types and components use `P6r...`;
 - constants use `P6R_...`;
 - HTTP paths, WebSocket discriminators, headers, CLI commands, persistence

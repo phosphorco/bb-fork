@@ -8,6 +8,7 @@
 4. **App, CLI, and SDK surfaces** adds identity claiming, author avatars, presence indicators, member administration, and additive SDK methods.
 5. **Current-upstream hardening** folds in race fixes, regenerated migration 0099, generated declarations/templates, and fixtures for upstream timeline changes.
 6. **Phosphor namespace boundary** prefixes downstream contracts, UI props, wire fields, routes, persistence, CLI commands, and SDK surfaces with `p6r` while retaining migration support for the earlier unprefixed experimental schema.
+7. **React hook naming** keeps downstream hooks visibly namespaced as `useP6r...` while preserving the `use` prefix required by React tooling and the compiler.
 
 ## Compatibility boundaries
 
