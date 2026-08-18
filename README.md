@@ -37,4 +37,4 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The seven patches are deliberately organized by product capability, not by the chronology of the original experimental branch. The sixth patch applies the [Phosphor namespace policy](P6R_NAMESPACE.md) as an independently reviewable compatibility boundary; the final patch preserves that namespace while restoring React's required hook naming convention. Implementation-only workflow files are excluded.
+The eight patches are deliberately organized by product capability, not by the chronology of the original experimental branch. The sixth patch applies the [Phosphor namespace policy](P6R_NAMESPACE.md) as an independently reviewable compatibility boundary; the final two patches preserve that namespace while restoring React's required hook naming convention and adding the verified-identity/durable-authorship kernel. Implementation-only workflow files are excluded.

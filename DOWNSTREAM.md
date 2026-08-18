@@ -9,6 +9,7 @@
 5. **Current-upstream hardening** folds in race fixes, regenerated migration 0099, generated declarations/templates, and fixtures for upstream timeline changes.
 6. **Phosphor namespace boundary** prefixes downstream contracts, UI props, wire fields, routes, persistence, CLI commands, and SDK surfaces with `p6r` while retaining migration support for the earlier unprefixed experimental schema.
 7. **React hook naming** keeps downstream hooks visibly namespaced as `useP6r...` while preserving the `use` prefix required by React tooling and the compiler.
+8. **Verified identity and durable authorship kernel** replaces client-claimed transport identity with one bounded, provider-qualified resolver; carries separate resolver request and durable turn-author facets; and preserves queued authored units through edit, grouping, reorder, delay, and dispatch into timeline rows.
 
 ## Compatibility boundaries
 
@@ -16,6 +17,24 @@
 - SQLite changes are additive: one new table and nullable columns. Migration 0099 is generated from the `desktop-v0.38.0` migration chain.
 - Installs that ran the experimental branch's conflicting `0079_multiplayer-collaborators` migration are staged through canonical upstream migrations and restored without losing collaborator or attribution data.
 - Existing stored events remain readable with `actorHandle: null`.
+- Migration 0100 adds the nullable `p6r_actors` snapshot table and nullable
+  canonical actor columns to events and queued messages. Old rows and
+  no-provider installations remain readable with nullable structured actor
+  data; historical actor reads use the stored snapshot without a live provider.
+- The exclusive plugin provider boundary composes `pluginId/registrationId`
+  ids and fails closed on rejection, throw, malformed output, or timeout.
+  Loopback local-operator fallback is available only after no-provider or
+  not-applicable resolution. Client URL/query/body/header claims are never
+  accepted on provider-owned paths.
+- Plugin HTTP/RPC handlers receive nullable `p6rRequestPrincipal` from the
+  shared HTTP/WebSocket resolver. Agent tools receive nullable
+  `p6rTurnAuthor` only from the durable accepted authored unit; the transport
+  principal is not an author fallback and transcript `[from=...]` is write-only
+  presentation.
+- Queue edits by another authenticated actor re-stamp the queued actor, and
+  canonical provider/subject keys prevent cross-actor grouping. The accepted
+  timeline user row carries the same nullable structured actor as the queued
+  authored unit.
 - New downstream contracts follow [P6R_NAMESPACE.md](P6R_NAMESPACE.md), preventing plugins from silently depending on APIs absent from upstream bb.
 - The provider speaker payload extends the host-daemon wire contract. The server and host daemon must therefore deploy together at protocol version 124. This queue is source/API-compatible with existing clients, but it intentionally does **not** claim mixed-version server/daemon compatibility.
 - Claimed identity is not authentication by itself. The Connect membership gate establishes admission; the claimed identity selects an admitted member for attribution.
