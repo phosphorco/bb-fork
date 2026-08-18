@@ -23,9 +23,12 @@
   data; historical actor reads use the stored snapshot without a live provider.
 - The exclusive plugin provider boundary composes `pluginId/registrationId`
   ids and fails closed on rejection, throw, malformed output, or timeout.
-  Loopback local-operator fallback is available only after no-provider or
-  not-applicable resolution. Client URL/query/body/header claims are never
-  accepted on provider-owned paths.
+  No-provider and provider-not-applicable resolve to an anonymous nullable
+  principal so ordinary reads and plugin `auth:none`/`auth:token` policy can
+  run; authored mutations require an authenticated actor. Loopback
+  local-operator fallback is available only after no-provider or
+  not-applicable resolution, and never rescues provider rejection. Client
+  URL/query/body/header claims are never accepted on provider-owned paths.
 - Plugin HTTP/RPC handlers receive nullable `p6rRequestPrincipal` from the
   shared HTTP/WebSocket resolver. Agent tools receive nullable
   `p6rTurnAuthor` only from the durable accepted authored unit; the transport
