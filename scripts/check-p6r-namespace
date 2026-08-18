@@ -1,0 +1,129 @@
+#!/usr/bin/env node
+
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+const checkout = resolve(process.argv[2] ?? "build/bb");
+const base = process.argv[3];
+if (!base) {
+  console.error("usage: check-p6r-namespace <materialized-bb> <upstream-sha>");
+  process.exit(2);
+}
+
+function git(args) {
+  return execFileSync("git", ["-C", checkout, ...args], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+}
+
+const diff = git([
+  "diff",
+  "--unified=0",
+  `${base}..HEAD`,
+  "--",
+  ":(glob)**/*.ts",
+  ":(glob)**/*.tsx",
+]);
+const failures = [];
+const upstreamFiles = new Map();
+let file = null;
+
+function upstreamSource(path) {
+  if (upstreamFiles.has(path)) return upstreamFiles.get(path);
+  let source = "";
+  try {
+    source = git(["show", `${base}:${path}`]);
+  } catch {
+    // A downstream-only file has no upstream source.
+  }
+  upstreamFiles.set(path, source);
+  return source;
+}
+
+const forbiddenAddedPatterns = [
+  /\bshowAuthor\b/u,
+  /\bshowMessageAuthors\b/u,
+  /\bactorHandle\b/u,
+  /\bcreatedByHandle\b/u,
+  /\bresolvedByHandle\b/u,
+  /\bclaimedIdentity(?:Header)?\b/u,
+  /\bmarkTunnelOrigin\b/u,
+  /["']x-bb-claimed-identity["']/u,
+  /["']x-bb-via-tunnel["']/u,
+  /["']\/api\/v1\/(?:members|presence)["']/u,
+  /["'](?:typing|thread-presence|presence-summary)["']/u,
+  /["']identity["']/u,
+  /\bp6rP6r|\bP6rP6r|\bP6R_P6R_/u,
+];
+
+for (const line of diff.split("\n")) {
+  if (line.startsWith("+++ b/")) {
+    file = line.slice(6);
+    continue;
+  }
+  if (!file || !line.startsWith("+") || line.startsWith("+++")) continue;
+
+  const added = line.slice(1);
+  for (const pattern of forbiddenAddedPatterns) {
+    if (pattern.test(added)) {
+      failures.push(`${file}: forbidden downstream identifier: ${added.trim()}`);
+    }
+  }
+
+  const declaration = added.match(
+    /^\s*export\s+(?:declare\s+)?(?:const|function|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/u,
+  );
+  if (!declaration) continue;
+  const name = declaration[1];
+  if (/^(?:p6r|P6r|P6R_)/u.test(name)) continue;
+
+  const existedUpstream = new RegExp(
+    `export\\s+(?:declare\\s+)?(?:const|function|class|interface|type|enum)\\s+${name}\\b`,
+    "u",
+  ).test(upstreamSource(file));
+  if (!existedUpstream) {
+    failures.push(`${file}: new exported symbol '${name}' is not p6r-prefixed`);
+  }
+}
+
+const sdkPath = resolve(
+  checkout,
+  "packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts",
+);
+const sdk = readFileSync(sdkPath, "utf8");
+for (const token of [
+  "p6rMembers: P6rMembersArea",
+  "p6rPresence: P6rPresenceArea",
+  "p6rActorHandle",
+]) {
+  if (!sdk.includes(token)) failures.push(`${sdkPath}: missing '${token}'`);
+}
+
+const conversationMessage = readFileSync(
+  resolve(
+    checkout,
+    "apps/app/src/components/thread/timeline/ConversationMessageContent.tsx",
+  ),
+  "utf8",
+);
+if (!conversationMessage.includes("p6rShowAuthor")) {
+  failures.push("ConversationMessageContent is missing 'p6rShowAuthor'");
+}
+for (const pattern of [
+  /\bmembers:\s*MembersArea\b/u,
+  /\bpresence:\s*PresenceArea\b/u,
+  /\bactorHandle\b/u,
+  /\bshowAuthor\b/u,
+  /\bshowMessageAuthors\b/u,
+]) {
+  if (pattern.test(sdk)) failures.push(`${sdkPath}: leaked ${pattern}`);
+}
+
+if (failures.length > 0) {
+  console.error(failures.join("\n"));
+  process.exit(1);
+}
+
+console.log("p6r downstream namespace verified");

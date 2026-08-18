@@ -16,6 +16,7 @@ Materialize a disposable checkout with:
 git submodule update --init
 ./scripts/verify
 ./scripts/materialize
+./scripts/check-p6r-namespace build/bb "$(cat upstream.lock)"
 cd build/bb
 pnpm install --frozen-lockfile
 pnpm typecheck
@@ -36,4 +37,4 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The five patches are deliberately organized by product capability, not by the chronology of the original experimental branch. Fixups and generated artifacts are folded into the final hardening patch; implementation-only workflow files are excluded.
+The six patches are deliberately organized by product capability, not by the chronology of the original experimental branch. The final patch applies the [Phosphor namespace policy](P6R_NAMESPACE.md) as an independently reviewable compatibility boundary; implementation-only workflow files are excluded.
