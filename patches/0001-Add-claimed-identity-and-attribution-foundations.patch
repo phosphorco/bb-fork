@@ -1,7 +1,7 @@
-From 70f1e1e06bcc27cd693eb22baa92d73ed0016f4c Mon Sep 17 00:00:00 2001
+From 4fd2c2ca5d93eb1a1fe875d103a992c4c509df48 Mon Sep 17 00:00:00 2001
 From: Sawyer Hood <sawyerjhood@gmail.com>
 Date: Mon, 17 Aug 2026 15:59:32 -0400
-Subject: [PATCH 1/6] Add claimed identity and attribution foundations
+Subject: [PATCH 01/10] Add claimed identity and attribution foundations
 
 ---
  apps/server/src/ws/client-protocol.ts         |   5 +
@@ -38,10 +38,10 @@ index 943b3ee4c7ed5bc10e268f8c9371024b8df5b6e9..dd110d068d9b696c2eedd64870aaf685
        const _exhaustive: never = parsed;
        throw new Error(`Unhandled client message: ${_exhaustive}`);
 diff --git a/apps/server/test/services/threads/thread-runtime-display.test.ts b/apps/server/test/services/threads/thread-runtime-display.test.ts
-index bd09626f3f4a20781b52ba5694f061b0cea46be1..1a41d8ebb7c3c9817cee78a5ad623a8f03eac36d 100644
+index 3d4e7b2b1d5aa31f596fd456d01941d2c340b059..de25544a9c598f2023f83bca6229ca8b801820b9 100644
 --- a/apps/server/test/services/threads/thread-runtime-display.test.ts
 +++ b/apps/server/test/services/threads/thread-runtime-display.test.ts
-@@ -205,6 +205,7 @@ function createThreadListEntry(
+@@ -210,6 +210,7 @@ function createThreadListEntry(
  ): ThreadWithPendingInteractionState {
    return {
      ...args.thread,
@@ -1055,7 +1055,7 @@ index 1b9234becfa658911d699980a4245ad0e99edfcd..81f51a6a638d46074dbebe947f8c3944
  }
 \ No newline at end of file
 diff --git a/packages/connect-db/src/schema.ts b/packages/connect-db/src/schema.ts
-index b350ca3a7f379b507af5099576e6581e358f81b1..8bbf7191aa6b4cf67f3bf4cc287d5deb678228e6 100644
+index 07384c11e60a6b04bf989c74422a3d81d90ea06d..fad0640a25bd3a2ad2bd073bee62c83280f52b16 100644
 --- a/packages/connect-db/src/schema.ts
 +++ b/packages/connect-db/src/schema.ts
 @@ -14,6 +14,7 @@ import { sql } from "drizzle-orm";
@@ -1109,7 +1109,7 @@ index b350ca3a7f379b507af5099576e6581e358f81b1..8bbf7191aa6b4cf67f3bf4cc287d5deb
    connectCode,
    auditLog,
 diff --git a/packages/db/src/migrate.ts b/packages/db/src/migrate.ts
-index e29f4c649b426e922a27392e7854f325ca666abc..54a1af5e584a399a9ffd870e98ac5a38ccaf8897 100644
+index c14ca55f48db96188ab834424b5609228e8ed5da..6d2532f3da7851fb35541cf973c4b78510e6d984 100644
 --- a/packages/db/src/migrate.ts
 +++ b/packages/db/src/migrate.ts
 @@ -190,6 +190,12 @@ const pendingInteractionColumns: ExpectedColumn[] = [
@@ -1126,10 +1126,10 @@ index e29f4c649b426e922a27392e7854f325ca666abc..54a1af5e584a399a9ffd870e98ac5a38
      name: "status_reason",
      type: "text",
 diff --git a/packages/db/src/schema.ts b/packages/db/src/schema.ts
-index c62ee270b3d0b64e30187978f4a8811c3cbfca32..5353ae29f36855b0964868a8b483362e1d8a481b 100644
+index 5ae7265dc3613fbd2fdf46e593ddb883e4839115..f3a67769ef21aaad95e18b53f1eb8e8fc4daa1d1 100644
 --- a/packages/db/src/schema.ts
 +++ b/packages/db/src/schema.ts
-@@ -576,6 +576,9 @@ export const threads = sqliteTable(
+@@ -578,6 +578,9 @@ export const threads = sqliteTable(
      // Id of the plugin that spawned this thread (create origin "plugin").
      // NULL for every other origin.
      originPluginId: text("origin_plugin_id"),
@@ -1139,7 +1139,7 @@ index c62ee270b3d0b64e30187978f4a8811c3cbfca32..5353ae29f36855b0964868a8b483362e
      visibility: text("visibility", { enum: threadVisibilityValues })
        .notNull()
        .default("visible"),
-@@ -701,6 +704,23 @@ export const threadDynamicContextFileStates = sqliteTable(
+@@ -703,6 +706,23 @@ export const threadDynamicContextFileStates = sqliteTable(
    ],
  );
  
@@ -1163,7 +1163,7 @@ index c62ee270b3d0b64e30187978f4a8811c3cbfca32..5353ae29f36855b0964868a8b483362e
  export const events = sqliteTable(
    "events",
    {
-@@ -718,6 +738,9 @@ export const events = sqliteTable(
+@@ -720,6 +740,9 @@ export const events = sqliteTable(
      type: text("type").$type<ThreadEventType>().notNull(),
      itemId: text("item_id"),
      itemKind: text("item_kind").$type<ThreadEventItemType>(),
@@ -1173,7 +1173,7 @@ index c62ee270b3d0b64e30187978f4a8811c3cbfca32..5353ae29f36855b0964868a8b483362e
      data: text("data").notNull().default("{}"),
      createdAt: integer("created_at").notNull(),
    },
-@@ -841,6 +864,10 @@ export const queuedThreadMessages = sqliteTable(
+@@ -855,6 +878,10 @@ export const queuedThreadMessages = sqliteTable(
        .references(() => threads.id, { onDelete: "cascade" }),
      content: text("content").notNull(),
      senderThreadId: text("sender_thread_id"),
@@ -1184,7 +1184,7 @@ index c62ee270b3d0b64e30187978f4a8811c3cbfca32..5353ae29f36855b0964868a8b483362e
      model: text("model").notNull(),
      reasoningLevel: text("reasoning_level").notNull(),
      permissionMode: text("permission_mode").$type<PermissionMode>().notNull(),
-@@ -971,6 +998,9 @@ export const pendingInteractions = sqliteTable(
+@@ -985,6 +1012,9 @@ export const pendingInteractions = sqliteTable(
      status: text("status").$type<PendingInteractionStatus>().notNull(),
      payload: text("payload").notNull(),
      resolution: text("resolution"),
@@ -1221,10 +1221,10 @@ index 66f7fa73e43755de23efcd479face2218310f92e..3c6507e4d0328ec29f806996e2aa42dd
          { name: "created_at", type: "integer", notNull: 1, primaryKey: 0 },
          { name: "expires_at", type: "integer", notNull: 0, primaryKey: 0 },
 diff --git a/packages/domain/src/change-kinds.ts b/packages/domain/src/change-kinds.ts
-index 1c0270da77677ac273cfdadee5c3810fb605a726..8eeb4ef4545cda61f7d153e2fe0b8831efc32d41 100644
+index bd21bfc9998295f5a6a157a4de6b366d9f1a4b87..c3be6bf3b4e855c02bcf0f04258e8340fbf9e32d 100644
 --- a/packages/domain/src/change-kinds.ts
 +++ b/packages/domain/src/change-kinds.ts
-@@ -131,9 +131,22 @@ export const unsubscribeMessageSchema = z.object({
+@@ -132,9 +132,22 @@ export const unsubscribeMessageSchema = z.object({
  });
  export type UnsubscribeMessage = z.infer<typeof unsubscribeMessageSchema>;
  
@@ -1247,7 +1247,7 @@ index 1c0270da77677ac273cfdadee5c3810fb605a726..8eeb4ef4545cda61f7d153e2fe0b8831
  ]);
  export type ClientMessage = z.infer<typeof clientMessageSchema>;
  
-@@ -240,6 +253,44 @@ export const systemChangedMessageSchema = z
+@@ -241,6 +254,44 @@ export const systemChangedMessageSchema = z
    .strict();
  export type SystemChangedMessage = z.infer<typeof systemChangedMessageSchema>;
  
@@ -1292,7 +1292,7 @@ index 1c0270da77677ac273cfdadee5c3810fb605a726..8eeb4ef4545cda61f7d153e2fe0b8831
  export const changedMessageSchema = z.discriminatedUnion("entity", [
    threadChangedMessageSchema,
    projectChangedMessageSchema,
-@@ -326,3 +377,27 @@ export const changedMessageLenientSchema = z.discriminatedUnion("entity", [
+@@ -327,3 +378,27 @@ export const changedMessageLenientSchema = z.discriminatedUnion("entity", [
    hostChangedMessageLenientSchema,
    systemChangedMessageLenientSchema,
  ]);
@@ -1394,7 +1394,7 @@ index 0000000000000000000000000000000000000000..d14be9b11392a9855ae8a8b5a45e0dbe
 +  return { ...result.data, handle };
 +}
 diff --git a/packages/domain/src/index.ts b/packages/domain/src/index.ts
-index 4035d35f58b89de226a45c763370f20eb1c8d110..022e6d70fa1404e5f7b6f87c3bbac3e182db82f0 100644
+index 2d648f184987c008cd11fdba8f7445b472ab81b9..8d5a03ab175ebcda826a40f9fe39445f5d403802 100644
 --- a/packages/domain/src/index.ts
 +++ b/packages/domain/src/index.ts
 @@ -9,6 +9,7 @@ export * from "./app-keybindings.js";

@@ -2,7 +2,7 @@
 
 This is a thin, auditable deployment overlay for [get-bb/bb](https://github.com/get-bb/bb). It does not carry a second copy of upstream source and it does not treat a long-lived Git branch as the release definition.
 
-The current base is the source commit tagged `desktop-v0.38.0`, matching the deployed `bb-app@0.38.0` npm release. Release tags are preferred over a moving or lagging default branch.
+The current base is the exact source commit tagged `desktop-v0.39.0` at `b33abbff098ac4c857578e7350d492dcaa65d489`, matching the deployed `bb-app@0.39.0` npm release. Release tags are preferred over a moving or lagging default branch.
 
 The deployable source is exactly:
 
@@ -37,4 +37,4 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The eight patches are deliberately organized by product capability, not by the chronology of the original experimental branch. The sixth patch applies the [Phosphor namespace policy](P6R_NAMESPACE.md) as an independently reviewable compatibility boundary; the final two patches preserve that namespace while restoring React's required hook naming convention and adding the verified-identity/durable-authorship kernel. Implementation-only workflow files are excluded.
+The ten patches are deliberately organized by product capability and receipt boundary, not by the chronology of the original experimental branch. The sixth patch applies the [Phosphor namespace policy](P6R_NAMESPACE.md) as an independently reviewable compatibility boundary; the seventh preserves React's required hook naming convention, the eighth adds the verified-identity/durable-authorship kernel, and the final two refresh the exact-tag contracts, migration receipt, workspace gates, and canonical provider-input authorship witness. Implementation-only workflow files are excluded.
