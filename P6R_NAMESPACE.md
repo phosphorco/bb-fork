@@ -11,6 +11,14 @@ must identify itself as downstream-owned:
 - HTTP paths, WebSocket discriminators, headers, CLI commands, persistence
   keys, tables, and columns contain `p6r`.
 
+Identity kernel additions follow the same rule: the immutable principal key is
+`(p6rProviderId, p6rSubject)`, while `p6rHandle`, `p6rDisplayName`, and
+`p6rImageUrl` are mutable presentation snapshot fields. Agent tools receive
+only nullable `p6rTurnAuthor` from durable accepted-unit data. Plugin HTTP/RPC
+handlers receive only nullable `p6rRequestPrincipal` from the shared inbound
+resolver; neither carrier is reconstructed from transcript `[from=...]`
+presentation or from a client claim.
+
 This includes internal contracts shared between bb packages, even when they are
 not currently exported by `@get-bb/plugin-sdk`. Ordinary implementation locals
 such as `request`, `response`, or `rows` do not become a contract merely because
@@ -20,6 +28,11 @@ The purpose is compatibility hygiene. A plugin author should never mistake a
 Phosphor-only API for an upstream bb API. For example, the overlay exposes
 `bb.sdk.p6rMembers`, `p6rShowAuthor`, and `p6rActorHandle`; it must never expose
 those additions as `bb.sdk.members`, `showAuthor`, or `actorHandle`.
+
+The identity provider registration is exclusive and core-composed as
+`pluginId/registrationId`. Provider rejection, throw, malformed output, and
+timeout are terminal for provider-owned paths; the local operator is an
+explicit loopback fallback only after no-provider or not-applicable resolution.
 
 Legacy unprefixed database names may appear only in migration compatibility
 code that upgrades checkouts of the earlier experimental multiplayer branch.
