@@ -1,4 +1,4 @@
-From 77e2b2e8a4b2d5d262145bca41389f3275df501d Mon Sep 17 00:00:00 2001
+From 1f1dfe252cb3105e5d10e34609b373eb6ae75045 Mon Sep 17 00:00:00 2001
 From: bb-fork maker <bb-fork@invalid.local>
 Date: Tue, 18 Aug 2026 19:42:31 -0400
 Subject: [PATCH] Add provider-qualified identity and durable authorship
@@ -20,6 +20,8 @@ Subject: [PATCH] Add provider-qualified identity and durable authorship
  apps/app/src/lib/ws.ts                        |   34 +-
  .../src/test/fixtures/thread-timeline-rows.ts |    1 +
  .../ThreadDetailPromptArea.test.tsx           |    1 +
+ .../command-output/thread-log.test.ts         |    1 +
+ .../helpers/command-output-fixtures.ts        |    1 +
  apps/server/src/internal/tool-calls.ts        |    5 +
  apps/server/src/routes/plugins.ts             |    2 +
  apps/server/src/routes/threads/actions.ts     |   42 +-
@@ -47,7 +49,9 @@ Subject: [PATCH] Add provider-qualified identity and durable authorship
  apps/server/test/helpers/seed.ts              |    3 +
  .../public-authorization-regressions.test.ts  |   39 +
  .../test/public/public-request-actors.test.ts |   13 +-
- .../test/public/public-thread-data.test.ts    |   64 +-
+ .../test/public/public-thread-data.test.ts    |   71 +-
+ .../public/public-thread-interactions.test.ts |   11 +-
+ .../public-threads.project-default.test.ts    |    3 +-
  apps/server/test/services/identity.test.ts    |  425 ++
  .../plugins/plugin-agent-tools.test.ts        |  191 +-
  .../plugins/plugin-authoring-docs.test.ts     |    1 +
@@ -68,6 +72,8 @@ Subject: [PATCH] Add provider-qualified identity and durable authorship
  packages/db/src/schema.ts                     |   29 +-
  packages/db/test/data/actors.test.ts          |  123 +
  .../test/data/queued-thread-messages.test.ts  |   87 +-
+ packages/db/test/migrate.test.ts              |   43 +
+ packages/db/test/query-plans.test.ts          |   16 +-
  packages/domain/src/index.ts                  |    1 +
  packages/domain/src/p6r-identity.ts           |   24 +
  packages/domain/src/stored-thread-event.ts    |   12 +
@@ -91,7 +97,8 @@ Subject: [PATCH] Add provider-qualified identity and durable authorship
  .../thread-view/src/parse-error-message.ts    |    4 +
  .../thread-view/src/user-message-parsing.ts   |    4 +
  .../test/timeline-progression.test.ts         |    2 +
- 87 files changed, 9476 insertions(+), 3098 deletions(-)
+ .../fake/smoke/timeline-response.test.ts      |    1 +
+ 94 files changed, 9551 insertions(+), 3106 deletions(-)
  create mode 100644 apps/server/src/services/identity.ts
  create mode 100644 apps/server/test/services/identity.test.ts
  create mode 100644 packages/db/drizzle/0100_amused_tony_stark.sql
@@ -451,6 +458,30 @@ index 3a2e1c8d4..423ebea7a 100644
    };
  }
  
+diff --git a/apps/cli/src/__tests__/command-output/thread-log.test.ts b/apps/cli/src/__tests__/command-output/thread-log.test.ts
+index 6d3fe8ebf..25722b509 100644
+--- a/apps/cli/src/__tests__/command-output/thread-log.test.ts
++++ b/apps/cli/src/__tests__/command-output/thread-log.test.ts
+@@ -63,6 +63,7 @@ describe("bb thread log command output", () => {
+       fixtures.makeTimelineResponse([
+         {
+           p6rActorHandle: null,
++          p6rActor: null,
+           ...fixtures.makeTimelineBase({
+             id: "user-1",
+             sourceSeqStart: 1,
+diff --git a/apps/cli/src/__tests__/helpers/command-output-fixtures.ts b/apps/cli/src/__tests__/helpers/command-output-fixtures.ts
+index 996c4b9b7..1b15f2c15 100644
+--- a/apps/cli/src/__tests__/helpers/command-output-fixtures.ts
++++ b/apps/cli/src/__tests__/helpers/command-output-fixtures.ts
+@@ -86,6 +86,7 @@ export function makeTimelineResponse(
+ export function makePendingSteerTimelineRow(): TimelineUserConversationRow {
+   return {
+     p6rActorHandle: null,
++    p6rActor: null,
+     ...makeTimelineBase({
+       id: "pending-steer-1",
+       sourceSeqStart: 12,
 diff --git a/apps/server/src/internal/tool-calls.ts b/apps/server/src/internal/tool-calls.ts
 index 6160fa1b0..11f04cd78 100644
 --- a/apps/server/src/internal/tool-calls.ts
@@ -2078,7 +2109,7 @@ index 5d40792e0..84db3eaff 100644
    });
  });
 diff --git a/apps/server/test/public/public-thread-data.test.ts b/apps/server/test/public/public-thread-data.test.ts
-index e74b4cdcc..17a670e59 100644
+index e74b4cdcc..e50971c2a 100644
 --- a/apps/server/test/public/public-thread-data.test.ts
 +++ b/apps/server/test/public/public-thread-data.test.ts
 @@ -8,6 +8,7 @@ import {
@@ -2097,7 +2128,15 @@ index e74b4cdcc..17a670e59 100644
    P6R_CLAIMED_IDENTITY_HEADER,
    p6rEncodeClaimedIdentityHeader,
    encodeClientTurnRequestIdNumber,
-@@ -85,6 +87,14 @@ const clientTurnRequestedDataSchema = z.object({
+@@ -41,6 +43,7 @@ import { renderTemplate } from "@bb/templates";
+ import { z } from "zod";
+ import { describe, expect, it, vi } from "vitest";
+ import type { TelemetryService } from "../../src/services/system/telemetry.js";
++import { p6rCreateLocalOperatorIdentity } from "../../src/services/actors.js";
+ import { loadActiveThreadProvisionContext } from "../../src/services/threads/thread-provisioning-environment.js";
+ import {
+   reportQueuedCommandError,
+@@ -85,6 +88,14 @@ const clientTurnRequestedDataSchema = z.object({
  
  type TimelineTurnRow = Extract<TimelineRow, { kind: "turn" }>;
  
@@ -2112,35 +2151,41 @@ index e74b4cdcc..17a670e59 100644
  describe("public thread data routes", () => {
    it("attributes direct human sends to the resolved request actor", async () => {
      await withTestHarness(async (harness) => {
-@@ -125,7 +135,8 @@ describe("public thread data routes", () => {
+@@ -125,7 +136,10 @@ describe("public thread data routes", () => {
              ),
            )
            .get(),
 -      ).toEqual({ p6rActorHandle: "alice" });
 +      // A client claim is ignored by the no-provider loopback fallback.
-+      ).toEqual({ p6rActorHandle: "ubuntu" });
++      ).toEqual({
++        p6rActorHandle: p6rCreateLocalOperatorIdentity().p6rHandle,
++      });
      });
    });
  
-@@ -170,7 +181,7 @@ describe("public thread data routes", () => {
+@@ -170,7 +184,9 @@ describe("public thread data routes", () => {
              ),
            )
            .get(),
 -      ).toEqual({ p6rActorHandle: "alice" });
-+      ).toEqual({ p6rActorHandle: "ubuntu" });
++      ).toEqual({
++        p6rActorHandle: p6rCreateLocalOperatorIdentity().p6rHandle,
++      });
      });
    });
  
-@@ -3130,7 +3141,7 @@ describe("public thread data routes", () => {
+@@ -3130,7 +3146,9 @@ describe("public thread data routes", () => {
          .all()
          .at(-1);
        expect(requestedEvent).toBeTruthy();
 -      expect(requestedEvent?.p6rActorHandle).toBe("alice");
-+      expect(requestedEvent?.p6rActorHandle).toBe("ubuntu");
++      expect(requestedEvent?.p6rActorHandle).toBe(
++        p6rCreateLocalOperatorIdentity().p6rHandle,
++      );
        expect(
          Object.hasOwn(JSON.parse(requestedEvent!.data), "inputGroups"),
        ).toBe(false);
-@@ -3154,10 +3165,12 @@ describe("public thread data routes", () => {
+@@ -3154,10 +3172,12 @@ describe("public thread data routes", () => {
        const firstQueuedMessage = seedQueuedMessage(harness.deps, {
          threadId: thread.id,
          content: textInput("First grouped queued message"),
@@ -2153,7 +2198,7 @@ index e74b4cdcc..17a670e59 100644
        });
        const thirdQueuedMessage = seedQueuedMessage(harness.deps, {
          threadId: thread.id,
-@@ -3242,19 +3255,56 @@ describe("public thread data routes", () => {
+@@ -3242,19 +3262,56 @@ describe("public thread data routes", () => {
          "Second grouped queued message",
        ]);
  
@@ -2212,6 +2257,84 @@ index e74b4cdcc..17a670e59 100644
 +          turnRequest: expect.objectContaining({ status: "accepted" }),
 +        }),
        ]);
+     });
+   });
+diff --git a/apps/server/test/public/public-thread-interactions.test.ts b/apps/server/test/public/public-thread-interactions.test.ts
+index 5f29d2509..462de05f7 100644
+--- a/apps/server/test/public/public-thread-interactions.test.ts
++++ b/apps/server/test/public/public-thread-interactions.test.ts
+@@ -44,6 +44,7 @@ import {
+ } from "../helpers/seed.js";
+ import { withTestHarness } from "../helpers/test-app.js";
+ import { appendThreadEvent } from "../../src/services/threads/thread-events.js";
++import { p6rCreateLocalOperatorIdentity } from "../../src/services/actors.js";
+ 
+ function registerPendingInteraction(
+   deps: Pick<AppDeps, "db" | "hub">,
+@@ -363,7 +364,7 @@ describe("public thread interaction routes", () => {
+       expect(
+         getPendingInteraction(harness.db, registered.interaction.id)
+           ?.p6rResolvedByHandle,
+-      ).toBe("alice");
++      ).toBe(p6rCreateLocalOperatorIdentity().p6rHandle);
+ 
+       const duplicateResolveResponse = await harness.app.request(
+         `/api/v1/threads/${thread.id}/interactions/${registered.interaction.id}/resolve`,
+@@ -390,7 +391,7 @@ describe("public thread interaction routes", () => {
+       expect(
+         getPendingInteraction(harness.db, registered.interaction.id)
+           ?.p6rResolvedByHandle,
+-      ).toBe("alice");
++      ).toBe(p6rCreateLocalOperatorIdentity().p6rHandle);
+ 
+       const conflictingResolveResponse = await harness.app.request(
+         `/api/v1/threads/${thread.id}/interactions/${registered.interaction.id}/resolve`,
+@@ -476,7 +477,7 @@ describe("public thread interaction routes", () => {
+       expect(
+         getPendingInteraction(harness.db, firstInteraction.id)
+           ?.p6rResolvedByHandle,
+-      ).toBe("alice");
++      ).toBe(p6rCreateLocalOperatorIdentity().p6rHandle);
+ 
+       const duplicateResponse = await harness.app.request(
+         `/api/v1/threads/${thread.id}/interactions/${firstInteraction.id}/respond`,
+@@ -498,7 +499,7 @@ describe("public thread interaction routes", () => {
+       expect(
+         getPendingInteraction(harness.db, firstInteraction.id)
+           ?.p6rResolvedByHandle,
+-      ).toBe("alice");
++      ).toBe(p6rCreateLocalOperatorIdentity().p6rHandle);
+ 
+       const cancelledResult =
+         harness.deps.pendingInteractions.requestPluginInteraction({
+@@ -538,7 +539,7 @@ describe("public thread interaction routes", () => {
+       expect(
+         getPendingInteraction(harness.db, cancelledInteraction.id)
+           ?.p6rResolvedByHandle,
+-      ).toBe("bob");
++      ).toBe(p6rCreateLocalOperatorIdentity().p6rHandle);
+     });
+   });
+ 
+diff --git a/apps/server/test/public/public-threads.project-default.test.ts b/apps/server/test/public/public-threads.project-default.test.ts
+index eb8ffe53e..c38b247de 100644
+--- a/apps/server/test/public/public-threads.project-default.test.ts
++++ b/apps/server/test/public/public-threads.project-default.test.ts
+@@ -9,6 +9,7 @@ import {
+ } from "@bb/domain";
+ import { describe, expect, it } from "vitest";
+ import { resolveProjectDefaultThreadEnvironment } from "../../src/services/threads/thread-default-policy.js";
++import { p6rCreateLocalOperatorIdentity } from "../../src/services/actors.js";
+ import { getActiveThreadProvisionContext } from "../../src/services/threads/thread-provisioning-active-context.js";
+ import {
+   requireManagedWorktreeEnvironmentProvisionLiveCommand,
+@@ -278,7 +279,7 @@ describe("plugin thread attribution", () => {
+       expect(response.status).toBe(201);
+       const created = threadSchema.parse(await readJson(response));
+       expect(getThread(harness.db, created.id)?.p6rCreatedByHandle).toBe(
+-        "alice",
++        p6rCreateLocalOperatorIdentity().p6rHandle,
+       );
      });
    });
 diff --git a/apps/server/test/services/identity.test.ts b/apps/server/test/services/identity.test.ts
@@ -8115,6 +8238,181 @@ index d8819c833..b36c9c48f 100644
    it("lists queued messages by thread", () => {
      const { db, thread } = setup();
      createQueuedThreadMessage(db, noopNotifier, {
+diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
+index b8176bd47..020e851f6 100644
+--- a/packages/db/test/migrate.test.ts
++++ b/packages/db/test/migrate.test.ts
+@@ -278,6 +278,36 @@ function restoreWideExperimentsTable(db: DbConnection): void {
+   `);
+ }
+ 
++function dropIdentityMigrationState(db: DbConnection): void {
++  // 0100 adds the provider-qualified actor table and canonical snapshot
++  // columns. Rewind fixtures must remove both the schema and its ledger row so
++  // a subsequent forward replay exercises the identity migration itself.
++  db.$client.prepare("DROP TABLE IF EXISTS p6r_actors").run();
++  for (const table of ["events", "queued_thread_messages"] as const) {
++    const columns = new Set(
++      db.$client
++        .prepare<[], TableInfoRow>(`PRAGMA table_info(${table})`)
++        .all()
++        .map((column) => column.name),
++    );
++    for (const column of [
++      "p6r_actor_provider_id",
++      "p6r_actor_subject",
++      "p6r_actor_display_name",
++      "p6r_actor_image_url",
++    ]) {
++      if (columns.has(column)) {
++        db.$client
++          .prepare(`ALTER TABLE ${table} DROP COLUMN ${column}`)
++          .run();
++      }
++    }
++  }
++  db.$client
++    .prepare("DELETE FROM __drizzle_migrations WHERE created_at = ?")
++    .run(identityMigrationWhen);
++}
++
+ function dropRewindAddedTables(db: DbConnection): void {
+   // Several tests migrate to head, rewind the schema to a legacy state, then
+   // re-apply forward. Tables added by recent migrations must be dropped as part
+@@ -299,6 +329,7 @@ function dropRewindAddedTables(db: DbConnection): void {
+   db.$client.prepare("DROP TABLE IF EXISTS plugin_kv").run();
+   db.$client.prepare("DROP TABLE IF EXISTS plugin_settings").run();
+   db.$client.prepare("DROP TABLE IF EXISTS plugin_schedules").run();
++  dropIdentityMigrationState(db);
+   db.$client
+     .prepare("ALTER TABLE hosts DROP COLUMN last_rejected_protocol_version")
+     .run();
+@@ -398,6 +429,7 @@ const permissionModesMigrationWhen = 1784311522462;
+ const branchLocalThreadTabsMigrationWhen = 1783633750817;
+ const branchLocalMultiplayerMigrationWhen = 1784389648607;
+ const multiplayerMigrationWhen = 1786998114856;
++const identityMigrationWhen = 1787090005295;
+ const eventLargeValuesPreOptimizationHash =
+   "bc111f5134183c37cf135af70231ec5a79823f9868818fdd8377e1ab3c05a23f";
+ const queuedMessageSortKeyMigrationPath = resolve(
+@@ -749,6 +781,7 @@ function dropQueuedMessageSenderThreadIdColumn(db: DbConnection): void {
+ 
+ /** Tables created by migrations after 0023, dropped so migrate() re-applies. */
+ function dropPost0023Tables(db: DbConnection): void {
++  dropIdentityMigrationState(db);
+   dropEnvironmentRetireRequestedAtColumn(db);
+   dropPluginArtifactGitCheckoutRootColumn(db);
+   dropProjectGitRemoteUrlColumn(db);
+@@ -1523,6 +1556,7 @@ describe("migrate", () => {
+     dropEnvironmentRetireRequestedAtColumn(db);
+     dropPluginArtifactGitCheckoutRootColumn(db);
+     dropMarketplaceCatalogSchema(db);
++    dropIdentityMigrationState(db);
+     // Delete by the journal timestamp, not a hash substring: migration hashes
+     // are hex and can contain "0085" by coincidence.
+     db.$client
+@@ -1609,6 +1643,7 @@ describe("migrate", () => {
+           "INSERT OR REPLACE INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
+         )
+         .run("branch-local-multiplayer", branchLocalMultiplayerMigrationWhen);
++      dropIdentityMigrationState(db);
+ 
+       migrate(db);
+ 
+@@ -1872,6 +1907,7 @@ describe("migrate", () => {
+       dropEnvironmentRetireRequestedAtColumn(db);
+       dropPluginArtifactGitCheckoutRootColumn(db);
+       dropMarketplaceCatalogSchema(db);
++      dropIdentityMigrationState(db);
+ 
+       restoreLegacyThreadOriginColumn(db);
+       migrate(db);
+@@ -2152,6 +2188,7 @@ describe("migrate", () => {
+           `,
+         )
+         .run("branch-local-thread-tabs", branchLocalThreadTabsMigrationWhen);
++      dropIdentityMigrationState(db);
+ 
+       migrate(db);
+ 
+@@ -2279,6 +2316,7 @@ describe("migrate", () => {
+       dropEnvironmentRetireRequestedAtColumn(db);
+       dropPluginArtifactGitCheckoutRootColumn(db);
+       dropMarketplaceCatalogSchema(db);
++      dropIdentityMigrationState(db);
+ 
+       restoreLegacyThreadOriginColumn(db);
+       expect(
+@@ -2378,6 +2416,7 @@ describe("migrate", () => {
+       dropEnvironmentRetireRequestedAtColumn(db);
+       dropPluginArtifactGitCheckoutRootColumn(db);
+       dropMarketplaceCatalogSchema(db);
++      dropIdentityMigrationState(db);
+ 
+       restoreLegacyThreadOriginColumn(db);
+       expect(() => migrate(db)).not.toThrow();
+@@ -3909,6 +3948,10 @@ describe("migrate", () => {
+         "data",
+         "created_at",
+         "p6r_actor_handle",
++        "p6r_actor_provider_id",
++        "p6r_actor_subject",
++        "p6r_actor_display_name",
++        "p6r_actor_image_url",
+       ]);
+       const eventIndexNames = readIndexNames({
+         db,
+diff --git a/packages/db/test/query-plans.test.ts b/packages/db/test/query-plans.test.ts
+index 3e4b7d516..e2348a2c6 100644
+--- a/packages/db/test/query-plans.test.ts
++++ b/packages/db/test/query-plans.test.ts
+@@ -88,6 +88,7 @@ interface AssertEmittedQueryPlanUsesIndexArgs {
+   debugLog: LoggedDebug;
+   indexName: string;
+   params: readonly SqliteParameter[];
++  sql?: string;
+ }
+ 
+ class CapturingSlowQueryLogger implements SlowDbQueryLogger {
+@@ -204,7 +205,9 @@ function assertEmittedQueryPlanUsesIndex(
+   const details = queryPlanDetails({
+     db: args.db,
+     params: args.params,
+-    sql: args.debugLog.fields.sql,
++    // Slow-query fields intentionally redact and truncate SQL for logging.
++    // EXPLAIN the exact prepared source when the statement was captured.
++    sql: args.sql ?? args.debugLog.fields.sql,
+   });
+   expect(
+     details.includes(`USING INDEX ${args.indexName}`) ||
+@@ -243,17 +246,26 @@ describe("slow query index plans", () => {
+   it("uses selective indexes for conversation-outline events", () => {
+     const { db, logger, thread } = setup();
+ 
+-    listStoredConversationOutlineEventRows(db, { threadId: thread.id });
++    const captured = captureStatements(db, () => {
++      listStoredConversationOutlineEventRows(db, { threadId: thread.id });
++    });
+ 
+     const debugLog = findOnlyDebugLog({
+       logger,
+       predicate: (fields) =>
+         fields.operation === "all" && fields.sql.includes('from "events"'),
+     });
++    const statement = captured.find((entry) =>
++      entry.sql.includes('from "events"'),
++    );
++    if (!statement) {
++      throw new Error("Expected the conversation-outline SQL");
++    }
+     assertEmittedQueryPlanUsesIndex({
+       db,
+       debugLog,
+       indexName: "events_thread_type_item_kind_sequence_idx",
++      sql: statement.sql,
+       params: [
+         thread.id,
+         "client/turn/requested",
 diff --git a/packages/domain/src/index.ts b/packages/domain/src/index.ts
 index 022e6d70f..4cd96a8a4 100644
 --- a/packages/domain/src/index.ts
@@ -15451,3 +15749,15 @@ index 4ab100337..3961804ff 100644
          systemMessageKind: "unlabeled",
          systemMessageSubject: null,
          turnRequest: { isGrouped: false, kind: "steer", status: "pending" },
+diff --git a/tests/integration/fake/smoke/timeline-response.test.ts b/tests/integration/fake/smoke/timeline-response.test.ts
+index 817d81cfc..cc9e73c30 100644
+--- a/tests/integration/fake/smoke/timeline-response.test.ts
++++ b/tests/integration/fake/smoke/timeline-response.test.ts
+@@ -36,6 +36,7 @@ const USER_ROW = {
+   initiator: "user",
+   senderThreadId: null,
+   p6rActorHandle: null,
++  p6rActor: null,
+   systemMessageKind: "unlabeled",
+   systemMessageSubject: null,
+   turnRequest: { isGrouped: false, kind: "message", status: "accepted" },
