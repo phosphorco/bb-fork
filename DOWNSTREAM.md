@@ -6,21 +6,31 @@
 2. **Membership admission and request actors** verifies server membership and carries the resolved actor through HTTP and WebSocket request boundaries.
 3. **Attributed messaging and presence** stamps user-originated events and interactions, projects authors into timeline data, emits presence, and supplies provider-facing speaker context.
 4. **App, CLI, and SDK surfaces** adds identity claiming, author avatars, presence indicators, member administration, and additive SDK methods.
-5. **Current-upstream hardening** folds in race fixes, regenerated migration 0099, generated declarations/templates, and fixtures for upstream timeline changes.
+5. **Current-upstream hardening** folds in race fixes, generated declarations/templates, and fixtures for upstream timeline changes.
 6. **Phosphor namespace boundary** prefixes downstream contracts, UI props, wire fields, routes, persistence, CLI commands, and SDK surfaces with `p6r` while retaining migration support for the earlier unprefixed experimental schema.
 7. **React hook naming** keeps downstream hooks visibly namespaced as `useP6r...` while preserving the `use` prefix required by React tooling and the compiler.
 8. **Verified identity and durable authorship kernel** replaces client-claimed transport identity with one bounded, provider-qualified resolver; carries separate resolver request and durable turn-author facets; and preserves queued authored units through edit, grouping, reorder, delay, and dispatch into timeline rows.
+9. **Exact-tag contract and migration receipt** regenerates the overlay contracts and templates, records the current `0101_p6r_identity_authorship` migration, and pins the exact `desktop-v0.39.0` source receipt.
+10. **Exact workspace gate receipt** carries the candidate-only fixture and generated declaration updates required by the exact `bb-app@0.39.0` workspace gate environment.
+
+## Exact 0.39 receipt
+
+- Upstream: `desktop-v0.39.0` at `b33abbff098ac4c857578e7350d492dcaa65d489`.
+- Materialized package: `bb-app@0.39.0`.
+- Patch queue: ten patches in `patches/series`.
+- Result tree: `1152fa6e6b6708007fd89fe49e02b7a84a5a6795`.
 
 ## Compatibility boundaries
 
 - Existing HTTP and SDK behavior remains available; new request/response fields are additive and nullable or optional where legacy data can lack attribution.
-- SQLite changes are additive: one new table and nullable columns. Migration 0099 is generated from the `desktop-v0.38.0` migration chain.
+- SQLite changes are additive: the current downstream identity migration is `0101_p6r_identity_authorship`, adding the provider-qualified actor and collaborator snapshots plus nullable actor facets on events, pending interactions, queued messages, and threads.
 - Installs that ran the experimental branch's conflicting `0079_multiplayer-collaborators` migration are staged through canonical upstream migrations and restored without losing collaborator or attribution data.
 - Existing stored events remain readable with `actorHandle: null`.
-- Migration 0100 adds the nullable `p6r_actors` snapshot table and nullable
-  canonical actor columns to events and queued messages. Old rows and
-  no-provider installations remain readable with nullable structured actor
-  data; historical actor reads use the stored snapshot without a live provider.
+- Migration `0101_p6r_identity_authorship` adds the nullable `p6r_actors` and
+  `p6r_collaborators` snapshot tables and nullable canonical actor columns to
+  events and queued messages. Old rows and no-provider installations remain
+  readable with nullable structured actor data; historical actor reads use the
+  stored snapshot without a live provider.
 - The exclusive plugin provider boundary composes `pluginId/registrationId`
   ids and fails closed on rejection, throw, malformed output, or timeout.
   No-provider and provider-not-applicable resolve to an anonymous nullable
