@@ -1,7 +1,7 @@
-From ea7fff2df3b4b07bac6eb22e8c2e0b26b9241912 Mon Sep 17 00:00:00 2001
-From: Sawyer Hood <sawyerjhood@gmail.com>
-Date: Mon, 17 Aug 2026 15:59:32 -0400
-Subject: [PATCH 4/6] Expose multiplayer through the app CLI and SDK
+From 8fb92702d5c4b6ca9d2d63ea177f222235f29d88 Mon Sep 17 00:00:00 2001
+From: bb-fork recut <bb-fork@invalid.local>
+Date: Wed, 19 Aug 2026 09:52:29 -0400
+Subject: [PATCH 4/9] Add identity and presence client surfaces
 
 ---
  apps/app/src/App.tsx                          |   2 +
@@ -19,7 +19,7 @@ Subject: [PATCH 4/6] Expose multiplayer through the app CLI and SDK
  .../GeneratedConversationMessage.test.tsx     |   4 +
  .../thread/timeline/ThreadTimelineRows.tsx    |  45 +++
  .../timeline/UserMessageMarkdown.stories.tsx  |   2 +
- .../timeline/rows/UserMessage.stories.tsx     |  36 ++
+ .../timeline/rows/UserMessage.stories.tsx     |  32 ++
  .../timeline/timeline-message-authors.test.ts |  43 +++
  .../ui/markdown-message-directives.test.tsx   |   2 +
  .../thread-runtime-cache-owner.ts             |   5 +-
@@ -49,7 +49,7 @@ Subject: [PATCH 4/6] Expose multiplayer through the app CLI and SDK
  .../skills/builtin-skills/bb-cli/SKILL.md     |  15 +
  .../server/test/public/public-members.test.ts |  95 ++++++
  packages/bb-app/src/public-sdk.ts             |   4 +
- .../bundled-types/bb-plugin-sdk.d.ts          |  99 ++++--
+ .../bundled-types/bb-plugin-sdk.d.ts          |  26 +-
  packages/sdk/src/areas/members.ts             |  42 +++
  packages/sdk/src/areas/presence.ts            |  16 +
  packages/sdk/src/browser.ts                   |   3 +
@@ -69,7 +69,7 @@ Subject: [PATCH 4/6] Expose multiplayer through the app CLI and SDK
  packages/tunnel-client/src/index.ts           |   1 +
  packages/tunnel-client/src/session.ts         |   2 +
  packages/tunnel-client/test/headers.test.ts   |  37 +++
- 65 files changed, 2649 insertions(+), 78 deletions(-)
+ 65 files changed, 2595 insertions(+), 55 deletions(-)
  create mode 100644 apps/app/src/components/dialogs/ClaimIdentityDialog.tsx
  create mode 100644 apps/app/src/components/settings/IdentitySettingsSection.tsx
  create mode 100644 apps/app/src/components/thread/presence/Presence.stories.tsx
@@ -348,7 +348,7 @@ index 70962b461cf1f5b241096d34fb334fd9fc212892..3d1d4b8e4b3fdf6f128866ecba889a3a
    });
    // A plugin earns a Settings row by actually having configuration: a
 diff --git a/apps/app/src/components/sidebar/ThreadRow.tsx b/apps/app/src/components/sidebar/ThreadRow.tsx
-index 594129037a446049d27ba0ff829a23d45009168f..4679a05ad6f199eb794db659036c412d3d936775 100644
+index 1c11b9e70434284a0bac64f93ac28bfc29058a7e..8886764445a32496fe29d516fdeea6aa4f125e9e 100644
 --- a/apps/app/src/components/sidebar/ThreadRow.tsx
 +++ b/apps/app/src/components/sidebar/ThreadRow.tsx
 @@ -1,6 +1,7 @@
@@ -359,8 +359,8 @@ index 594129037a446049d27ba0ff829a23d45009168f..4679a05ad6f199eb794db659036c412d
    useState,
    type CSSProperties,
    type MouseEventHandler,
-@@ -76,6 +77,9 @@ import { AppCommandShortcutPill } from "@/components/commands/AppCommandShortcut
- import { useThreadTitleDisplayText } from "@/components/thread/ThreadTitleMentions";
+@@ -81,6 +82,9 @@ import {
+ } from "@/components/thread/ThreadTitleMentions";
  import { pluginIconName } from "@/components/plugin/PluginIcon";
  import { usePluginThreadRowStatus } from "@/lib/plugin-thread-row-status";
 +import { SidebarPresenceDots } from "@/components/thread/presence/SidebarPresenceDots";
@@ -369,7 +369,7 @@ index 594129037a446049d27ba0ff829a23d45009168f..4679a05ad6f199eb794db659036c412d
  
  const SIDEBAR_TITLE_DOUBLE_CLICK_MS = 400;
  
-@@ -507,6 +511,17 @@ function ThreadRowComponent({
+@@ -516,6 +520,17 @@ function ThreadRowComponent({
    );
    const shortcut = useSidebarThreadShortcut(thread.id);
    const pluginThreadRowStatus = usePluginThreadRowStatus(thread.id);
@@ -387,7 +387,7 @@ index 594129037a446049d27ba0ff829a23d45009168f..4679a05ad6f199eb794db659036c412d
    const showActive = isActive;
    const hasPendingInteraction = thread.hasPendingInteraction;
    const threadRuntimeBusy = isRuntimeBusyThread(thread);
-@@ -723,6 +738,7 @@ function ThreadRowComponent({
+@@ -764,6 +779,7 @@ function ThreadRowComponent({
          ) : null}
        </span>
        <span className="flex shrink-0 items-center gap-0.5">
@@ -728,7 +728,7 @@ index 0000000000000000000000000000000000000000..99139ce22b84633b59596ec3697abc0d
 +  );
 +}
 diff --git a/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx b/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx
-index 8453a40d2f4187c6ba047498655da21a70ccbd92..d97ee33f673f8ef6516078c7778afe1454915f3c 100644
+index b6567670fb066ce6df71fb6b2109dbf0777d2dab..4688973462ff3f8d07885d0e8241dcfa225f9913 100644
 --- a/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx
 +++ b/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx
 @@ -79,6 +79,13 @@ interface ConversationMessageContentBaseProps {
@@ -745,7 +745,7 @@ index 8453a40d2f4187c6ba047498655da21a70ccbd92..d97ee33f673f8ef6516078c7778afe14
    /** Mobile presentation for the regular user message's action footer. */
    mobileActionDisplay?: "inline" | "overflow";
    /**
-@@ -184,10 +191,12 @@ export type ConversationMessageContentProps =
+@@ -186,10 +193,12 @@ export type ConversationMessageContentProps =
    | ConversationMessageContentAssistantProps;
  
  interface UserConversationMessageProps {
@@ -758,7 +758,7 @@ index 8453a40d2f4187c6ba047498655da21a70ccbd92..d97ee33f673f8ef6516078c7778afe14
    initiator: TimelineUserConversationRow["initiator"];
    mentions: readonly PromptTextMention[];
    mobileActionDisplay: "inline" | "overflow";
-@@ -383,10 +392,12 @@ function buildAddToChatAttachments(
+@@ -386,10 +395,12 @@ function buildAddToChatAttachments(
  }
  
  function UserConversationMessage({
@@ -771,7 +771,7 @@ index 8453a40d2f4187c6ba047498655da21a70ccbd92..d97ee33f673f8ef6516078c7778afe14
    mentions,
    mobileActionDisplay,
    onAddToChat,
-@@ -471,10 +482,26 @@ function UserConversationMessage({
+@@ -477,10 +488,26 @@ function UserConversationMessage({
    const mutePrefixLength = computeMutedPrefixLength(initiator, text);
    const messageText = text.trim();
    const requestLabel = turnRequestLabel(turnRequest);
@@ -798,7 +798,7 @@ index 8453a40d2f4187c6ba047498655da21a70ccbd92..d97ee33f673f8ef6516078c7778afe14
          {requestLabel ? (
            <div className="mb-1 flex justify-end">
              <TurnRequestLabel
-@@ -710,11 +737,13 @@ export function ConversationMessageContent(
+@@ -716,11 +743,13 @@ export function ConversationMessageContent(
    if (props.role === "user") {
      return (
        <UserConversationMessage
@@ -881,7 +881,7 @@ index 9c4525d01598c31fac5d03360c0553e942e9a9ad..11cf71dc29a6d47e3671b2f6285a4b3f
              originKind={null}
              senderThreadId="thr_agent"
 diff --git a/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx b/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
-index 5dadc1e2edfd1dfb758694da67aa2d6793d683b5..86a3462e2246b24b36d49947d20c03742751c642 100644
+index f024f5ac1456f614b4114706744f4f3c007c1b15..98743726e520ed49c74d88f13b357f64b5c30ace 100644
 --- a/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
 +++ b/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
 @@ -245,6 +245,8 @@ interface TimelineRendererStaticContextValue {
@@ -954,7 +954,7 @@ index 5dadc1e2edfd1dfb758694da67aa2d6793d683b5..86a3462e2246b24b36d49947d20c0374
          mentions={row.mentions}
          mobileActionDisplay={
            row.id === latestActionableUserMessageId ? "inline" : "overflow"
-@@ -1978,6 +2017,10 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
+@@ -1979,6 +2018,10 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
    );
    const projectId = props.projectId;
    const senderThreadMetadataById = useSenderThreadMetadataById();
@@ -965,7 +965,7 @@ index 5dadc1e2edfd1dfb758694da67aa2d6793d683b5..86a3462e2246b24b36d49947d20c0374
    // Single plugin-slot subscription for the whole timeline; messages read the
    // stable registry from context instead of each opening a store subscription.
    // Provide getServerSnapshot so renderToStaticMarkup / SSR tests work.
-@@ -2123,6 +2166,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
+@@ -2124,6 +2167,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
        resolveMentionLink: props.resolveMentionLink,
        resolveSegmentLinkHref,
        resolveUserAttachmentImageSrc: props.resolveUserAttachmentImageSrc,
@@ -973,7 +973,7 @@ index 5dadc1e2edfd1dfb758694da67aa2d6793d683b5..86a3462e2246b24b36d49947d20c0374
        themeType,
        threadId: props.threadId,
        workspaceRootPath: props.workspaceRootPath,
-@@ -2151,6 +2195,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
+@@ -2152,6 +2196,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
        props.resolveMentionLink,
        resolveSegmentLinkHref,
        props.resolveUserAttachmentImageSrc,
@@ -996,7 +996,7 @@ index 8d89bc41f0632b041071a42f2d8da9408bded7b3..12260b2ba74268f2f1cdb047d937cac8
          originKind={null}
          senderThreadId={null}
 diff --git a/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx b/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx
-index 669bf0f21553111626bf60b4a628de7941c3e62f..50fe80f97cc89374e570f4559a03470b65de64b5 100644
+index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89622e056d 100644
 --- a/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx
 +++ b/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx
 @@ -571,8 +571,10 @@ export function Overview() {
@@ -1153,22 +1153,18 @@ index 669bf0f21553111626bf60b4a628de7941c3e62f..50fe80f97cc89374e570f4559a03470b
              initiator="system"
              senderThreadId={null}
              senderThreadTitle={null}
-@@ -880,8 +908,14 @@ export function Overview() {
+@@ -880,8 +908,10 @@ export function Overview() {
        >
          <TimelineStage>
            <ConversationMessageContent
 +            actorHandle={null}
              role="user"
-+<<<<<<< HEAD
              originKind={null}
-+=======
 +            showAuthor={false}
-+            childOrigin={null}
-+>>>>>>> e10307b71 (Expose multiplayer through the app CLI and SDK)
              initiator="system"
              senderThreadId={null}
              senderThreadTitle={null}
-@@ -907,7 +941,9 @@ export function ParentChildSystemMessages() {
+@@ -907,7 +937,9 @@ export function ParentChildSystemMessages() {
          <StoryRow key={fixture.label} label={fixture.label} hint={fixture.hint}>
            <TimelineStage>
              <ConversationMessageContent
@@ -2076,7 +2072,7 @@ index d996d3f15d9ef4dc710e50ce24648b55562406a5..a2a5504194066fa783125180c8c5224d
     * Return and clear the buffered "open file" intent for a thread, if any. The
     * secondary panel calls this when the thread becomes visible so the file
 diff --git a/apps/app/src/views/SettingsView.tsx b/apps/app/src/views/SettingsView.tsx
-index 88699466400e00da093d50fddf93566d9b47c027..6faf0ac1cf0da802ca476409d5b218317a25b792 100644
+index 36e07f6378a0237767ed313afd1b2695bbbc8677..07a9c0f91406720fdbb280cd2273d6e49ee18f25 100644
 --- a/apps/app/src/views/SettingsView.tsx
 +++ b/apps/app/src/views/SettingsView.tsx
 @@ -50,6 +50,7 @@ import { MachinesSettingsSection } from "@/components/settings/MachinesSettingsS
@@ -2087,7 +2083,7 @@ index 88699466400e00da093d50fddf93566d9b47c027..6faf0ac1cf0da802ca476409d5b21831
  import {
    useUpdateGeneralSettings,
    useUpdateAppearance,
-@@ -1191,6 +1192,8 @@ export function SettingsView() {
+@@ -1148,6 +1149,8 @@ export function SettingsView() {
          }
        />
      );
@@ -2126,7 +2122,7 @@ index dcd05e41f3912507f752f1ad4809a4a275c6ab76..65fae625aa8867c0d5e862d56f5c62cb
          {!usesResponsiveActionOverflow && workspaceOpenButton ? (
            <span className="inline-flex" data-thread-header-responsive-action="">
 diff --git a/apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx b/apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx
-index a6ecc314576ded00e301499b3eadb2c5310ca1e4..73354b1dac33d149186d30c9f205389972489d43 100644
+index bc28154139b1e5d7eca5a4d4b8b93474791389b6..ff927ace668fec47061e0f8954c3e73b19b8bfdc 100644
 --- a/apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx
 +++ b/apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx
 @@ -102,6 +102,8 @@ import {
@@ -2150,7 +2146,7 @@ index a6ecc314576ded00e301499b3eadb2c5310ca1e4..73354b1dac33d149186d30c9f2053899
    const hasPromptDraftInput = currentPromptDraftInput.length > 0;
    const isPromptEmpty = useCallback(
      () => !hasPromptDraftInput,
-@@ -1440,6 +1447,7 @@ export function ThreadDetailPromptArea({
+@@ -1438,6 +1445,7 @@ export function ThreadDetailPromptArea({
      () => (
        <>
          {childPendingInteractionBanners}
@@ -2159,10 +2155,10 @@ index a6ecc314576ded00e301499b3eadb2c5310ca1e4..73354b1dac33d149186d30c9f2053899
            <ThreadWorkflowCard
              key={workflow.id}
 diff --git a/apps/app/src/views/thread-detail/ThreadDetailView.tsx b/apps/app/src/views/thread-detail/ThreadDetailView.tsx
-index e8c259cc53ae62ad65f1c3fc5bbb464b722a259a..893c571f0332ec497f18c0c088b8b3784d2ab8eb 100644
+index 9bcf1e247511e201af5d61c62bab1c75d00dfba8..5dbf3fb623f4c8f7898eb453781d2240038d56d8 100644
 --- a/apps/app/src/views/thread-detail/ThreadDetailView.tsx
 +++ b/apps/app/src/views/thread-detail/ThreadDetailView.tsx
-@@ -76,6 +76,7 @@ import {
+@@ -85,6 +85,7 @@ import {
    type ThreadActionsMenuResponsiveAction,
  } from "@/components/thread/ThreadActionsMenu";
  import { PluginThreadHeaderActions } from "@/components/plugin/PluginThreadHeaderActions";
@@ -2170,7 +2166,7 @@ index e8c259cc53ae62ad65f1c3fc5bbb464b722a259a..893c571f0332ec497f18c0c088b8b378
  import { ThreadWorkspaceOpenButton } from "@/components/thread/ThreadWorkspaceOpenButton";
  import {
    formatEnvironmentDisplay,
-@@ -2569,6 +2570,7 @@ function ThreadDetailViewInternal(props: ThreadDetailViewInternalProps) {
+@@ -2618,6 +2619,7 @@ function ThreadDetailViewInternal(props: ThreadDetailViewInternalProps) {
            projectId={thread.projectId}
          />
        }
@@ -2301,20 +2297,21 @@ index 9996250ba23a89c512a8ee35771bdca8994a5442..98aac677ae454de9e4009f57f9386a56
  
      const commands = collectLeafCommands(program);
 diff --git a/apps/cli/src/client.ts b/apps/cli/src/client.ts
-index 03db38ab7e481856d9f0c43ab1413a2e2be6b47a..f6250bc5f817fa584593bccaab7d4fe65c412862 100644
+index af46f61e48db19b5e44434655cd3debd7b2be729..5588bd90a41bb46860eea058412781e2fac8407a 100644
 --- a/apps/cli/src/client.ts
 +++ b/apps/cli/src/client.ts
-@@ -1,7 +1,9 @@
+@@ -1,8 +1,10 @@
  import { createNodeBbSdk, type BbSdk, type BbSdkContext } from "@bb/sdk/node";
 +import type { ClaimedIdentity } from "@bb/domain";
+ import type { Dispatcher } from "undici";
  
  export interface CreateCliBbSdkOptions {
    context?: BbSdkContext;
 +  claimedIdentity?: ClaimedIdentity;
  }
  
- export function cliFetch(
-@@ -18,6 +20,9 @@ export function createCliBbSdk(
+ /**
+@@ -25,6 +27,9 @@ export function createCliBbSdk(
    return createNodeBbSdk({
      baseUrl,
      context: options.context,
@@ -3064,7 +3061,7 @@ index 0000000000000000000000000000000000000000..9f90384a2917fba8a39365e1b5ccaba9
 +  });
 +}
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
-index 0e0250e3d0a9c6e777c2b471d6bb28d7b2609b8e..39cf32425dc0b4c31d59583dca5048061a619242 100644
+index 17218d961bddbdccc3353b5c53f92bb8f83f1b3b..ccd8fc1d8dfb204900b86225d9cb1f12529e413e 100644
 --- a/apps/server/src/server.ts
 +++ b/apps/server/src/server.ts
 @@ -17,6 +17,7 @@ import { registerEnvironmentRoutes } from "./routes/environments.js";
@@ -3075,7 +3072,7 @@ index 0e0250e3d0a9c6e777c2b471d6bb28d7b2609b8e..39cf32425dc0b4c31d59583dca504806
  import { registerProjectRoutes } from "./routes/projects.js";
  import { registerThreadSectionRoutes } from "./routes/thread-sections.js";
  import { registerSystemRoutes } from "./routes/system.js";
-@@ -482,6 +483,7 @@ export function createApp(
+@@ -494,6 +495,7 @@ export function createApp(
    registerEnvironmentRoutes(publicApi, deps);
    registerThreadRoutes(publicApi, deps);
    registerPresenceRoutes(publicApi, deps);
@@ -3084,7 +3081,7 @@ index 0e0250e3d0a9c6e777c2b471d6bb28d7b2609b8e..39cf32425dc0b4c31d59583dca504806
    registerPluginCatalogRoutes(publicApi, pluginCatalogService);
    registerPluginRoutes(publicApi, deps, pluginService);
 diff --git a/apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md b/apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md
-index f6207eb1c6db94a9592656999fb55ca1455dee00..8dc11facc1f02924da91c0f04e36d36ba4742a99 100644
+index 198d6fe6faecffb784cfcc26250e043c5f704de2..1a0a814172f08d08ef0a66e22f0ed900fdf9cf23 100644
 --- a/apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md
 +++ b/apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md
 @@ -50,6 +50,21 @@ message agents, or inspect projects, providers, and environments.
@@ -3235,32 +3232,10 @@ index af054ac3dc78cf7226333c80a6c0ca891d697d31..eaac68120a86555fbf020df88e99607a
      this.providers = sdk.providers;
      this.skills = sdk.skills;
 diff --git a/packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts b/packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts
-index a9325fafe669e17e1b29583a7c7416ebf6b39e43..b0f04bb6f44050284fdbcfec74809cec0909c13e 100644
+index 5653a35f07f37d78085e6e077b82d0f55ab946a5..1432a4d9efa01a58376d58c7c926ce424b03afb8 100644
 --- a/packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts
 +++ b/packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts
-@@ -2419,9 +2419,9 @@ declare const projectBranchesResponseSchema: z$1.ZodObject<{
-     selectedBranch: z$1.ZodNullable<z$1.ZodObject<{
-         name: z$1.ZodString;
-         kind: z$1.ZodEnum<{
--            missing: "missing";
-             local: "local";
-             remote: "remote";
-+            missing: "missing";
-         }>;
-     }, z$1.core.$strip>>;
-     defaultWorktreeBaseBranch: z$1.ZodNullable<z$1.ZodString>;
-@@ -2857,9 +2857,9 @@ declare const environmentDiffBranchesResponseSchema: z$1.ZodObject<{
-     selectedBranch: z$1.ZodNullable<z$1.ZodObject<{
-         name: z$1.ZodString;
-         kind: z$1.ZodEnum<{
--            missing: "missing";
-             local: "local";
-             remote: "remote";
-+            missing: "missing";
-         }>;
-     }, z$1.core.$strip>>;
- }, z$1.core.$strip>;
-@@ -2944,8 +2944,8 @@ declare const environmentArchiveThreadsResponseSchema: z$1.ZodObject<{
+@@ -2957,8 +2957,8 @@ declare const environmentArchiveThreadsResponseSchema: z$1.ZodObject<{
  type EnvironmentArchiveThreadsResponse = z$1.infer<typeof environmentArchiveThreadsResponseSchema>;
  declare const pullRequestMergeMethodSchema: z$1.ZodEnum<{
      merge: "merge";
@@ -3270,297 +3245,7 @@ index a9325fafe669e17e1b29583a7c7416ebf6b39e43..b0f04bb6f44050284fdbcfec74809cec
  }>;
  type PullRequestMergeMethod = z$1.infer<typeof pullRequestMergeMethodSchema>;
  declare const commitActionResponseSchema: z$1.ZodObject<{
-@@ -2976,8 +2976,8 @@ declare const pullRequestMergeActionResponseSchema: z$1.ZodObject<{
-     action: z$1.ZodLiteral<"pull_request_merge">;
-     method: z$1.ZodEnum<{
-         merge: "merge";
--        squash: "squash";
-         rebase: "rebase";
-+        squash: "squash";
-     }>;
-     message: z$1.ZodString;
- }, z$1.core.$strip>;
-@@ -3140,10 +3140,10 @@ declare const environmentPullRequestResponseSchema: z$1.ZodDiscriminatedUnion<[z
-         mergeability: z$1.ZodObject<{
-             state: z$1.ZodEnum<{
-                 unknown: "unknown";
--                blocked: "blocked";
-                 draft: "draft";
-                 mergeable: "mergeable";
-                 conflicts: "conflicts";
-+                blocked: "blocked";
-             }>;
-             mergeStateStatus: z$1.ZodNullable<z$1.ZodEnum<{
-                 BEHIND: "BEHIND";
-@@ -3164,13 +3164,13 @@ declare const environmentPullRequestResponseSchema: z$1.ZodDiscriminatedUnion<[z
-         attention: z$1.ZodEnum<{
-             blocked: "blocked";
-             none: "none";
--            blocked: "blocked";
-             merged: "merged";
-             draft: "draft";
-             closed: "closed";
-             changes_requested: "changes_requested";
-             review_requested: "review_requested";
-             conflicts: "conflicts";
-+            blocked: "blocked";
-             checks_failed: "checks_failed";
-             checks_pending: "checks_pending";
-             ready_to_merge: "ready_to_merge";
-@@ -3828,8 +3828,8 @@ declare const hostDaemonCommandRegistry: {
-         }, z$1.core.$strict>], "kind">>;
-         disallowedTools: z$1.ZodOptional<z$1.ZodArray<z$1.ZodString>>;
-         instructionMode: z$1.ZodEnum<{
--            replace: "replace";
-             append: "append";
-+            replace: "replace";
-         }>;
-         type: z$1.ZodLiteral<"thread.start">;
-         requestId: z$1.ZodString;
-@@ -4332,8 +4332,8 @@ declare const hostDaemonCommandRegistry: {
-             providerThreadId: z$1.ZodString;
-             providerId: z$1.ZodString;
-             instructionMode: z$1.ZodEnum<{
--                replace: "replace";
-                 append: "append";
-+                replace: "replace";
-             }>;
-             acpLaunchSpec: z$1.ZodOptional<z$1.ZodObject<{
-                 displayName: z$1.ZodString;
-@@ -5686,9 +5686,9 @@ declare const hostDaemonCommandRegistry: {
-         executablePath: z$1.ZodNullable<z$1.ZodString>;
-         installed: z$1.ZodBoolean;
-         installSource: z$1.ZodEnum<{
-+            external: "external";
-             notInstalled: "notInstalled";
-             npmGlobal: "npmGlobal";
--            external: "external";
-         }>;
-         currentVersion: z$1.ZodNullable<z$1.ZodString>;
-         latestVersion: z$1.ZodNullable<z$1.ZodString>;
-@@ -5865,13 +5865,13 @@ declare const hostDaemonCommandRegistry: {
-         outcome: z$1.ZodLiteral<"unavailable">;
-         failure: z$1.ZodObject<{
-             code: z$1.ZodEnum<{
--                unknown: "unknown";
-                 path_not_found: "path_not_found";
-                 not_git_repo: "not_git_repo";
-                 not_worktree: "not_worktree";
-                 workspace_type_mismatch: "workspace_type_mismatch";
-                 permission_denied: "permission_denied";
-                 unknown_environment: "unknown_environment";
-+                unknown: "unknown";
-             }>;
-             workspacePath: z$1.ZodString;
-             message: z$1.ZodString;
-@@ -5916,13 +5916,13 @@ declare const hostDaemonCommandRegistry: {
-         outcome: z$1.ZodLiteral<"unavailable">;
-         failure: z$1.ZodObject<{
-             code: z$1.ZodEnum<{
--                unknown: "unknown";
-                 path_not_found: "path_not_found";
-                 not_git_repo: "not_git_repo";
-                 not_worktree: "not_worktree";
-                 workspace_type_mismatch: "workspace_type_mismatch";
-                 permission_denied: "permission_denied";
-                 unknown_environment: "unknown_environment";
-+                unknown: "unknown";
-             }>;
-             workspacePath: z$1.ZodString;
-             message: z$1.ZodString;
-@@ -5980,13 +5980,13 @@ declare const hostDaemonCommandRegistry: {
-         outcome: z$1.ZodLiteral<"unavailable">;
-         failure: z$1.ZodObject<{
-             code: z$1.ZodEnum<{
--                unknown: "unknown";
-                 path_not_found: "path_not_found";
-                 not_git_repo: "not_git_repo";
-                 not_worktree: "not_worktree";
-                 workspace_type_mismatch: "workspace_type_mismatch";
-                 permission_denied: "permission_denied";
-                 unknown_environment: "unknown_environment";
-+                unknown: "unknown";
-             }>;
-             workspacePath: z$1.ZodString;
-             message: z$1.ZodString;
-@@ -6028,13 +6028,13 @@ declare const hostDaemonCommandRegistry: {
-         outcome: z$1.ZodLiteral<"unavailable">;
-         failure: z$1.ZodObject<{
-             code: z$1.ZodEnum<{
--                unknown: "unknown";
-                 path_not_found: "path_not_found";
-                 not_git_repo: "not_git_repo";
-                 not_worktree: "not_worktree";
-                 workspace_type_mismatch: "workspace_type_mismatch";
-                 permission_denied: "permission_denied";
-                 unknown_environment: "unknown_environment";
-+                unknown: "unknown";
-             }>;
-             workspacePath: z$1.ZodString;
-             message: z$1.ZodString;
-@@ -6153,9 +6153,9 @@ declare const providerCliStatusResponseSchema: z$1.ZodRecord<z$1.ZodEnum<{
-     executablePath: z$1.ZodNullable<z$1.ZodString>;
-     installed: z$1.ZodBoolean;
-     installSource: z$1.ZodEnum<{
-+        external: "external";
-         notInstalled: "notInstalled";
-         npmGlobal: "npmGlobal";
--        external: "external";
-     }>;
-     currentVersion: z$1.ZodNullable<z$1.ZodString>;
-     latestVersion: z$1.ZodNullable<z$1.ZodString>;
-@@ -6303,14 +6303,24 @@ type HostProviderCliStatusResponse = ProviderCliStatusResponse;
- type HostProviderCliInstallRequest = ProviderCliInstallRequest;
- type HostProviderCliInstallEvent = ProviderCliInstallEvent;
- 
-+declare const memberSchema: z$1.ZodObject<{
-+    userId: z$1.ZodString;
-+    handle: z$1.ZodString;
-+    displayName: z$1.ZodString;
-+    imageUrl: z$1.ZodNullable<z$1.ZodString>;
-+    addedByUserId: z$1.ZodString;
-+    createdAt: z$1.ZodNumber;
-+}, z$1.core.$strict>;
-+type Member = z$1.infer<typeof memberSchema>;
-+
- declare const pluginUpdateCheckEntrySchema: z$1.ZodObject<{
-     id: z$1.ZodString;
-     outcome: z$1.ZodEnum<{
-+        unavailable: "unavailable";
-         incompatible: "incompatible";
-         current: "current";
-         "update-available": "update-available";
-         pinned: "pinned";
--        unavailable: "unavailable";
-     }>;
-     devMode: z$1.ZodOptional<z$1.ZodLiteral<true>>;
-     installed: z$1.ZodObject<{
-@@ -6383,11 +6393,11 @@ declare const installedPluginSchema: z$1.ZodObject<{
-     sourceDisplay: z$1.ZodString;
-     updateState: z$1.ZodObject<{
-         outcome: z$1.ZodOptional<z$1.ZodEnum<{
-+            unavailable: "unavailable";
-             incompatible: "incompatible";
-             current: "current";
-             "update-available": "update-available";
-             pinned: "pinned";
--            unavailable: "unavailable";
-         }>>;
-         detail: z$1.ZodOptional<z$1.ZodString>;
-         availableVersion: z$1.ZodOptional<z$1.ZodString>;
-@@ -6408,8 +6418,8 @@ declare const installedPluginSchema: z$1.ZodObject<{
-     status: z$1.ZodEnum<{
-         error: "error";
-         running: "running";
--        incompatible: "incompatible";
-         missing: "missing";
-+        incompatible: "incompatible";
-         disabled: "disabled";
-         degraded: "degraded";
-         "needs-configuration": "needs-configuration";
-@@ -6490,11 +6500,11 @@ declare const pluginListResponseSchema: z$1.ZodObject<{
-         sourceDisplay: z$1.ZodString;
-         updateState: z$1.ZodObject<{
-             outcome: z$1.ZodOptional<z$1.ZodEnum<{
-+                unavailable: "unavailable";
-                 incompatible: "incompatible";
-                 current: "current";
-                 "update-available": "update-available";
-                 pinned: "pinned";
--                unavailable: "unavailable";
-             }>>;
-             detail: z$1.ZodOptional<z$1.ZodString>;
-             availableVersion: z$1.ZodOptional<z$1.ZodString>;
-@@ -6515,8 +6525,8 @@ declare const pluginListResponseSchema: z$1.ZodObject<{
-         status: z$1.ZodEnum<{
-             error: "error";
-             running: "running";
--            incompatible: "incompatible";
-             missing: "missing";
-+            incompatible: "incompatible";
-             disabled: "disabled";
-             degraded: "degraded";
-             "needs-configuration": "needs-configuration";
-@@ -6599,11 +6609,11 @@ declare const pluginReloadResponseSchema: z$1.ZodObject<{
-         sourceDisplay: z$1.ZodString;
-         updateState: z$1.ZodObject<{
-             outcome: z$1.ZodOptional<z$1.ZodEnum<{
-+                unavailable: "unavailable";
-                 incompatible: "incompatible";
-                 current: "current";
-                 "update-available": "update-available";
-                 pinned: "pinned";
--                unavailable: "unavailable";
-             }>>;
-             detail: z$1.ZodOptional<z$1.ZodString>;
-             availableVersion: z$1.ZodOptional<z$1.ZodString>;
-@@ -6624,8 +6634,8 @@ declare const pluginReloadResponseSchema: z$1.ZodObject<{
-         status: z$1.ZodEnum<{
-             error: "error";
-             running: "running";
--            incompatible: "incompatible";
-             missing: "missing";
-+            incompatible: "incompatible";
-             disabled: "disabled";
-             degraded: "degraded";
-             "needs-configuration": "needs-configuration";
-@@ -6874,6 +6884,23 @@ declare const pluginMarketplaceRefreshResultSchema: z$1.ZodObject<{
- }, z$1.core.$strip>;
- type PluginMarketplaceRefreshResult$1 = z$1.infer<typeof pluginMarketplaceRefreshResultSchema>;
- 
-+/**
-+ * Complete current ephemeral viewer rosters, keyed by thread id.
-+ *
-+ * Unlike this HTTP snapshot, realtime `presence-summary` messages are partial
-+ * patches: merge each supplied thread entry into the local summary, and remove
-+ * an entry when its supplied handle array is empty.
-+ */
-+declare const presenceSnapshotResponseSchema: z$1.ZodObject<{
-+    threads: z$1.ZodRecord<z$1.ZodString, z$1.ZodReadonly<z$1.ZodArray<z$1.ZodObject<{
-+        handle: z$1.ZodString;
-+        displayName: z$1.ZodString;
-+        imageUrl: z$1.ZodNullable<z$1.ZodString>;
-+        typing: z$1.ZodBoolean;
-+    }, z$1.core.$strict>>>>;
-+}, z$1.core.$strict>;
-+type PresenceSnapshotResponse = z$1.infer<typeof presenceSnapshotResponseSchema>;
-+
- declare const systemExecutionOptionsResponseSchema: z$1.ZodObject<{
-     providers: z$1.ZodArray<z$1.ZodObject<{
-         id: z$1.ZodString;
-@@ -7514,9 +7541,9 @@ declare const terminalSessionSchema: z$1.ZodObject<{
-     cols: z$1.ZodNumber;
-     rows: z$1.ZodNumber;
-     status: z$1.ZodEnum<{
--        running: "running";
-         starting: "starting";
-         disconnected: "disconnected";
-+        running: "running";
-         exited: "exited";
-     }>;
-     exitCode: z$1.ZodNullable<z$1.ZodNumber>;
-@@ -7545,9 +7572,9 @@ declare const terminalListResponseSchema: z$1.ZodObject<{
-         cols: z$1.ZodNumber;
-         rows: z$1.ZodNumber;
-         status: z$1.ZodEnum<{
--            running: "running";
-             starting: "starting";
-             disconnected: "disconnected";
-+            running: "running";
-             exited: "exited";
-         }>;
-         exitCode: z$1.ZodNullable<z$1.ZodNumber>;
-@@ -10372,8 +10399,8 @@ declare const threadTimelineResponseSchema: z$1.ZodObject<{
-         updatedAt: z$1.ZodNumber;
-         objective: z$1.ZodString;
-         status: z$1.ZodEnum<{
--            paused: "paused";
-             active: "active";
-+            paused: "paused";
-             budgetLimited: "budgetLimited";
-             complete: "complete";
-         }>;
-@@ -12193,6 +12220,28 @@ interface HostsArea {
+@@ -12559,6 +12559,28 @@ interface HostsArea {
      update(args: HostUpdateArgs): Promise<HostUpdateResult>;
  }
  
@@ -3589,7 +3274,7 @@ index a9325fafe669e17e1b29583a7c7416ebf6b39e43..b0f04bb6f44050284fdbcfec74809cec
  interface ProjectListArgs {
      include?: ProjectListQuery["include"];
      /** Include the singleton personal project. Defaults to false for compatibility. */
-@@ -13255,6 +13304,8 @@ interface BbSdk extends BbRealtime {
+@@ -13620,6 +13642,8 @@ interface BbSdk extends BbRealtime {
      files: FilesArea;
      guide: GuideArea;
      hosts: HostsArea;
@@ -3911,7 +3596,7 @@ index 24df4cc923b7951de80bf9979e297a6ea06b4483..1f02652c7924c94f2d6df54577d75fca
    realtimeUrl?: string;
    runtime: BbSdkRuntime;
 diff --git a/packages/sdk/test/public-types.test.ts b/packages/sdk/test/public-types.test.ts
-index 25fee5c74f89a3acdde667751b23eaac43606dd1..258ea65b61a6f919ed13ffcfa84979b42f0a21da 100644
+index 96234a1beb33955e1f4d66a930203f0b4dc11221..b15b70e8cc98e7cfacb9cc948018acf12b75583a 100644
 --- a/packages/sdk/test/public-types.test.ts
 +++ b/packages/sdk/test/public-types.test.ts
 @@ -223,6 +223,8 @@ type ExpectedBbSdkKey =
@@ -3924,7 +3609,7 @@ index 25fee5c74f89a3acdde667751b23eaac43606dd1..258ea65b61a6f919ed13ffcfa84979b4
    | "projects"
    | "providers"
 diff --git a/packages/sdk/test/sdk.test.ts b/packages/sdk/test/sdk.test.ts
-index 4d27c39ffab0743947aca0599b1d527426841fc2..b68aab6bd804f72a5120ba2677604edd34f3139f 100644
+index ad85ccd291a5a95b89edee0e1abcaec3002a1d4c..68029723ee773de4ad5ee99f9c2fdc73028360bc 100644
 --- a/packages/sdk/test/sdk.test.ts
 +++ b/packages/sdk/test/sdk.test.ts
 @@ -1,10 +1,16 @@
@@ -4098,10 +3783,10 @@ index 0000000000000000000000000000000000000000..7771cacade8a9b0ab6735bd3c17797a4
 +export const removeMemberRequestSchema = addMemberRequestSchema;
 +export type RemoveMemberRequest = z.infer<typeof removeMemberRequestSchema>;
 diff --git a/packages/server-contract/src/public-api.ts b/packages/server-contract/src/public-api.ts
-index 6df89fd685ef68f9685e4d7d5d1f7a4596d9eb59..9d196ca59cf85dac0544282dd5bcb90076afbf87 100644
+index 4417ce8455eeb9640034423546a5016301835313..1a6572ab6192f04369e5a4ac5a87ac1de075db65 100644
 --- a/packages/server-contract/src/public-api.ts
 +++ b/packages/server-contract/src/public-api.ts
-@@ -111,6 +111,10 @@ import type {
+@@ -109,6 +109,10 @@ import type {
    HostProviderCliInstallRequest,
    HostProviderCliStatusResponse,
    HostRetryUpdateResponse,
@@ -4112,7 +3797,7 @@ index 6df89fd685ef68f9685e4d7d5d1f7a4596d9eb59..9d196ca59cf85dac0544282dd5bcb900
    ProjectAttachmentContentQuery,
    ProjectAttachmentUploadForm,
    ProjectBranchesQuery,
-@@ -259,6 +263,8 @@ import {
+@@ -255,6 +259,8 @@ import {
    hostPickFolderRequestSchema,
    hostPathsExistRequestSchema,
    hostProviderCliInstallRequestSchema,
@@ -4121,7 +3806,7 @@ index 6df89fd685ef68f9685e4d7d5d1f7a4596d9eb59..9d196ca59cf85dac0544282dd5bcb900
    projectAttachmentContentQuerySchema,
    projectBranchesQuerySchema,
    projectCommandsQuerySchema,
-@@ -1343,6 +1349,31 @@ export const publicApiRoutes = {
+@@ -1325,6 +1331,31 @@ export const publicApiRoutes = {
      }),
    },
  
