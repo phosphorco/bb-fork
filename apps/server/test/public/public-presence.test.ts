@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { networkInterfaces } from "node:os";
 import WebSocket from "ws";
 import {
   P6R_CLAIMED_IDENTITY_HEADER,
@@ -64,6 +65,17 @@ function websocketUrl(baseUrl: string): string {
   const url = new URL("/ws", baseUrl);
   url.protocol = "ws:";
   return url.href;
+}
+
+function nonLoopbackIpv4Address(): string {
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const address of addresses ?? []) {
+      if (address.family === "IPv4" && !address.internal) {
+        return address.address;
+      }
+    }
+  }
+  throw new Error("public no-provider presence test requires a non-loopback IPv4 address");
 }
 
 async function openIdentitySocket(
@@ -210,7 +222,7 @@ describe("GET /api/v1/p6r-presence", () => {
     }
   });
 
-  it("coalesces claimed presentations under the authenticated WebSocket principal", async () => {
+  it("keeps loopback WebSockets on the local operator despite client claims", async () => {
     const server = await startTestServer();
     try {
       const alice = await openClaimedIdentitySocket(server);
@@ -250,15 +262,82 @@ describe("GET /api/v1/p6r-presence", () => {
       const viewers = p6rPresenceSnapshotResponseSchema.parse(
         await response.json(),
       ).p6rThreads["thread-1"];
+      const localOperator = p6rCreateLocalOperatorIdentity();
       expect(viewers).toEqual([
         {
-          p6rPrincipalKey: p6rCreateLocalOperatorIdentity().p6rPrincipalKey,
-          p6rHandle: "alice",
-          p6rDisplayName: "Alice",
+          p6rPrincipalKey: localOperator.p6rPrincipalKey,
+          p6rHandle: localOperator.p6rHandle,
+          p6rDisplayName: localOperator.p6rDisplayName,
           p6rImageUrl: null,
           p6rTyping: false,
         },
       ]);
+      await closeIdentitySocket(alice);
+      await closeIdentitySocket(bob);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("keeps remote no-provider claimed identities distinct with server-authored PrincipalKeys", async () => {
+    const connectHost = nonLoopbackIpv4Address();
+    const server = await startTestServer({
+      testServerListenHost: "0.0.0.0",
+      testServerConnectHost: connectHost,
+    });
+    try {
+      const alice = await openClaimedIdentitySocket(server);
+      const bob = await openClaimedIdentitySocket(server);
+      const claim = (args: {
+        p6rHandle: string;
+        p6rDisplayName: string;
+        p6rClientId: string;
+      }) =>
+        JSON.stringify({
+          type: "p6r-claimed-identity",
+          p6rClaimedIdentity: {
+            ...args,
+            p6rImageUrl: null,
+          },
+        });
+
+      alice.send(
+        claim({
+          p6rHandle: "shared",
+          p6rDisplayName: "Shared Human",
+          p6rClientId: "alice-browser",
+        }),
+      );
+      await subscribeToThread(alice);
+      bob.send(
+        claim({
+          p6rHandle: "shared",
+          p6rDisplayName: "Shared Human",
+          p6rClientId: "bob-browser",
+        }),
+      );
+      await subscribeToThread(bob);
+
+      const response = await fetch(
+        new URL("/api/v1/p6r-presence", server.baseUrl),
+      );
+      expect(response.status).toBe(200);
+      const viewers = p6rPresenceSnapshotResponseSchema.parse(
+        await response.json(),
+      ).p6rThreads["thread-1"];
+      expect(viewers).toHaveLength(2);
+      expect(viewers.map((viewer) => viewer.p6rPrincipalKey)).toEqual([
+        expect.stringMatching(/^claimed:/u),
+        expect.stringMatching(/^claimed:/u),
+      ]);
+      expect(viewers[0]?.p6rPrincipalKey).not.toBe(
+        viewers[1]?.p6rPrincipalKey,
+      );
+      expect(viewers).toMatchObject([
+        { p6rHandle: "shared", p6rDisplayName: "Shared Human" },
+        { p6rHandle: "shared", p6rDisplayName: "Shared Human" },
+      ]);
+
       await closeIdentitySocket(alice);
       await closeIdentitySocket(bob);
     } finally {

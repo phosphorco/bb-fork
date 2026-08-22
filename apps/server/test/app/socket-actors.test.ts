@@ -4,6 +4,8 @@ import {
   p6rGetSocketActor,
   p6rRegisterSocketActor,
   p6rReleaseSocketActor,
+  p6rRestoreSocketActor,
+  p6rSetSocketActor,
 } from "../../src/ws/socket-actors.js";
 
 const actor: P6rClaimedIdentity = {
@@ -21,6 +23,19 @@ describe("socket actors", () => {
     p6rRegisterSocketActor(socket, actor);
     expect(p6rGetSocketActor(socket)).toBe(actor);
     p6rReleaseSocketActor(socket);
+    expect(p6rGetSocketActor(socket)).toBeNull();
+  });
+
+  it("lets an explicitly claimable anonymous socket claim and clear a server-authored actor", () => {
+    const socket = {};
+    p6rRegisterSocketActor(socket, null, {
+      p6rAllowClaimedIdentity: true,
+    });
+
+    expect(p6rGetSocketActor(socket)).toBeNull();
+    p6rSetSocketActor(socket, actor);
+    expect(p6rGetSocketActor(socket)).toBe(actor);
+    p6rRestoreSocketActor(socket);
     expect(p6rGetSocketActor(socket)).toBeNull();
   });
 });

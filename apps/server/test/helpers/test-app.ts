@@ -74,6 +74,8 @@ export type TestAppHarnessConfigOverrides = Partial<ServerRuntimeConfig> & {
    * registration collides with the pre-registered copy.
    */
   seedFirstPartyProviders?: boolean;
+  testServerListenHost?: string;
+  testServerConnectHost?: string;
 };
 
 export const testLogger = {
@@ -142,6 +144,8 @@ export async function createTestAppHarness(
     appVersionService,
     terminalCloseTimeoutMs,
     seedFirstPartyProviders = true,
+    testServerListenHost: _testServerListenHost,
+    testServerConnectHost: _testServerConnectHost,
     ...configOverrides
   } = overrides;
   const dataDir = await mkdtemp(join(tmpdir(), "bb-server-test-"));
@@ -306,6 +310,8 @@ export async function startTestServer(
   overrides: TestAppHarnessConfigOverrides = {},
 ): Promise<RunningTestServer> {
   const harness = await createTestAppHarness(overrides);
+  const listenHost = overrides.testServerListenHost ?? TEST_SERVER_HOST;
+  const connectHost = overrides.testServerConnectHost ?? TEST_SERVER_HOST;
   let addressInfo: AddressInfo | null = null;
   const { app, closeWebSockets, injectWebSocket, pluginService } = createApp(
     harness.deps,
@@ -316,7 +322,7 @@ export async function startTestServer(
       // 127.0.0.1 too. If we leave the host unspecified, this server can end
       // up on ::1 while another local process owns 127.0.0.1 on the same
       // port, and the client will hit that other process instead.
-      hostname: TEST_SERVER_HOST,
+      hostname: listenHost,
       port: 0,
       fetch: app.fetch,
     },
@@ -336,7 +342,7 @@ export async function startTestServer(
     ...harness,
     app,
     pluginService,
-    baseUrl: `http://${TEST_SERVER_HOST}:${resolvedAddress.port}`,
+    baseUrl: `http://${connectHost}:${resolvedAddress.port}`,
     async close(): Promise<void> {
       const closeServer = new Promise<void>((resolve, reject) => {
         server.close((error) => {

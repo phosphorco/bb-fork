@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { hostname, userInfo } from "node:os";
 import { p6rUpsertCollaborator, type DbConnection } from "@bb/db";
 // Claimed presentation compatibility helpers. The request/upgrade middleware
@@ -7,10 +8,13 @@ import {
   P6R_CLAIMED_IDENTITY_HEADER,
   p6rClaimedIdentitySchema,
   p6rCreateLocalPrincipalKey,
+  p6rCreateProviderPrincipalKey,
   p6rDecodeClaimedIdentityHeader,
   p6rNormalizeHandle,
+  type P6rActorSnapshot,
   type P6rClaimedIdentityClaim,
   type P6rClaimedIdentity,
+  type P6rPrincipalKey,
 } from "@bb/domain";
 import type { Context } from "hono";
 
@@ -29,10 +33,10 @@ interface P6rCollaboratorWrite {
 
 export interface P6rActorService {
   p6rResolveRequest(reader: P6rClaimedIdentityHeaderReader): P6rClaimedIdentity;
-  p6rResolveClaimedIdentity(
-    claim: P6rClaimedIdentityClaim,
-    authenticatedActor: P6rClaimedIdentity,
-  ): P6rClaimedIdentity;
+  p6rResolveClaimedRequest(
+    reader: P6rClaimedIdentityHeaderReader,
+  ): P6rClaimedIdentity | null;
+  p6rResolveClaimedIdentity(claim: P6rClaimedIdentityClaim): P6rClaimedIdentity;
 }
 
 interface P6rCreateActorServiceArgs {
@@ -68,33 +72,35 @@ export function p6rCreateLocalOperatorIdentity(): P6rClaimedIdentity {
 
 function p6rServerAuthorClaimedIdentity(
   identity: P6rClaimedIdentity,
-  authenticatedActor: P6rClaimedIdentity,
+  principalKeysByClientId: Map<string, P6rPrincipalKey>,
 ): P6rClaimedIdentity {
+  let p6rPrincipalKey = principalKeysByClientId.get(identity.p6rClientId);
+  if (p6rPrincipalKey === undefined) {
+    p6rPrincipalKey = p6rCreateProviderPrincipalKey("claimed", randomUUID());
+    principalKeysByClientId.set(identity.p6rClientId, p6rPrincipalKey);
+  }
   const { p6rPrincipalKey: _ignored, ...presentation } = identity;
-  return {
-    ...presentation,
-    ...(authenticatedActor.p6rPrincipalKey === undefined
-      ? {}
-      : { p6rPrincipalKey: authenticatedActor.p6rPrincipalKey }),
-  };
+  return { ...presentation, p6rPrincipalKey };
 }
 
 export function p6rResolveRequestActor(
   reader: P6rClaimedIdentityHeaderReader,
   defaultActor: P6rClaimedIdentity,
+  principalKeysByClientId = new Map<string, P6rPrincipalKey>(),
 ): P6rClaimedIdentity {
   const identity = p6rDecodeClaimedIdentityHeader(
     reader.header(P6R_CLAIMED_IDENTITY_HEADER),
   );
   return identity === null
     ? defaultActor
-    : p6rServerAuthorClaimedIdentity(identity, defaultActor);
+    : p6rServerAuthorClaimedIdentity(identity, principalKeysByClientId);
 }
 
 export function p6rCreateActorService(
   args: P6rCreateActorServiceArgs,
 ): P6rActorService {
   const recentWrites = new Map<string, P6rCollaboratorWrite>();
+  const principalKeysByClientId = new Map<string, P6rPrincipalKey>();
 
   function persistActor(actor: P6rClaimedIdentity): P6rClaimedIdentity {
     const now = args.now();
@@ -127,17 +133,53 @@ export function p6rCreateActorService(
 
   return {
     p6rResolveRequest(reader): P6rClaimedIdentity {
-      return persistActor(p6rResolveRequestActor(reader, args.defaultActor));
+      return persistActor(
+        p6rResolveRequestActor(
+          reader,
+          args.defaultActor,
+          principalKeysByClientId,
+        ),
+      );
     },
-    p6rResolveClaimedIdentity(claim, authenticatedActor): P6rClaimedIdentity {
+    p6rResolveClaimedRequest(reader): P6rClaimedIdentity | null {
+      const identity = p6rDecodeClaimedIdentityHeader(
+        reader.header(P6R_CLAIMED_IDENTITY_HEADER),
+      );
+      return identity === null
+        ? null
+        : persistActor(
+            p6rServerAuthorClaimedIdentity(identity, principalKeysByClientId),
+          );
+    },
+    p6rResolveClaimedIdentity(claim): P6rClaimedIdentity {
       const identity = p6rClaimedIdentitySchema.parse({
         ...claim,
         p6rHandle: p6rNormalizeHandle(claim.p6rHandle),
       });
       return persistActor(
-        p6rServerAuthorClaimedIdentity(identity, authenticatedActor),
+        p6rServerAuthorClaimedIdentity(identity, principalKeysByClientId),
       );
     },
+  };
+}
+
+export function p6rClaimedIdentityToActorSnapshot(
+  identity: P6rClaimedIdentity,
+): P6rActorSnapshot | null {
+  const principalKey = identity.p6rPrincipalKey;
+  if (principalKey === undefined || !principalKey.startsWith("claimed:")) {
+    return null;
+  }
+  const p6rSubject = principalKey.slice("claimed:".length);
+  if (p6rSubject.length === 0) {
+    return null;
+  }
+  return {
+    p6rProviderId: "claimed",
+    p6rSubject,
+    p6rHandle: identity.p6rHandle,
+    p6rDisplayName: identity.p6rDisplayName,
+    p6rImageUrl: identity.p6rImageUrl,
   };
 }
 

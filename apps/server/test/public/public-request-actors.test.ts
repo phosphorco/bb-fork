@@ -78,4 +78,33 @@ describe("public request actors", () => {
       );
     });
   });
+
+  it("accepts only the presentation claim on a remote no-provider request", async () => {
+    await withTestHarness(async (harness) => {
+      const response = await harness.app.request(
+        "http://100.64.0.10/api/v1/does-not-exist",
+        {
+          headers: {
+            [P6R_CLAIMED_IDENTITY_HEADER]: p6rEncodeClaimedIdentityHeader({
+              p6rHandle: "Sawyer",
+              p6rDisplayName: "Sawyer Hood",
+              p6rImageUrl: null,
+              p6rClientId: "browser-1",
+            }),
+          },
+        },
+      );
+
+      expect(response.status).toBe(404);
+      expect(p6rListCollaborators(harness.db)).toEqual([
+        {
+          p6rHandle: "sawyer",
+          p6rDisplayName: "Sawyer Hood",
+          p6rImageUrl: null,
+          p6rFirstSeenAt: expect.any(Number),
+          p6rLastSeenAt: expect.any(Number),
+        },
+      ]);
+    });
+  });
 });

@@ -92,12 +92,12 @@ import { rankAcceptedAssetEncodings } from "./asset-content-encoding.js";
 import { apiJsonCompression } from "./api-response-compression.js";
 
 import {
+  p6rClaimedIdentityToActorSnapshot,
   p6rCreateActorService,
   p6rCreateLocalOperatorIdentity,
   p6rSetRequestActor,
 } from "./services/actors.js";
 import {
-  P6R_LOCAL_OPERATOR_PROVIDER_ID,
   p6rCreateIdentityBoundary,
   p6rPrincipalKeyForActor,
   p6rRequestInputFromContext,
@@ -420,16 +420,31 @@ export function createApp(
       );
     }
     if (resolution.kind === "authenticated") {
-      p6rSetRequestPrincipal(context, resolution.p6rActor);
-      p6rSetRequestActor(context, {
-        p6rHandle: resolution.p6rActor.p6rHandle,
-        p6rDisplayName: resolution.p6rActor.p6rDisplayName,
-        p6rImageUrl: resolution.p6rActor.p6rImageUrl,
-        p6rClientId: "p6r-resolved",
-        p6rPrincipalKey: p6rPrincipalKeyForActor(resolution.p6rActor),
-      });
+      const requestPrincipal = resolution.p6rActor;
+      p6rSetRequestPrincipal(context, requestPrincipal);
+      p6rSetRequestActor(
+        context,
+        {
+          p6rHandle: requestPrincipal.p6rHandle,
+          p6rDisplayName: requestPrincipal.p6rDisplayName,
+          p6rImageUrl: requestPrincipal.p6rImageUrl,
+          p6rClientId: "p6r-resolved",
+          p6rPrincipalKey: p6rPrincipalKeyForActor(requestPrincipal),
+        },
+      );
     } else {
-      p6rSetRequestPrincipal(context, null);
+      const p6rClaimedIdentity = actorService.p6rResolveClaimedRequest({
+        header: (name) => context.req.header(name),
+      });
+      p6rSetRequestPrincipal(
+        context,
+        p6rClaimedIdentity === null
+          ? null
+          : p6rClaimedIdentityToActorSnapshot(p6rClaimedIdentity),
+      );
+      if (p6rClaimedIdentity !== null) {
+        p6rSetRequestActor(context, p6rClaimedIdentity);
+      }
     }
     const startedAt = performance.now();
     await next();
@@ -625,16 +640,12 @@ export function createApp(
               p6rPrincipalKey: p6rPrincipalKeyForActor(resolution.p6rActor),
             }
           : null;
-      const acceptsClaimedIdentity =
-        resolution.kind === "authenticated" &&
-        resolution.p6rActor.p6rProviderId === P6R_LOCAL_OPERATOR_PROVIDER_ID;
+      const acceptsClaimedIdentity = resolution.kind === "not-applicable";
       return {
         onOpen: (_event, socket) => {
-          if (actor !== null) {
-            p6rRegisterSocketActor(socket, actor, {
-              p6rAllowClaimedIdentity: acceptsClaimedIdentity,
-            });
-          }
+          p6rRegisterSocketActor(socket, actor, {
+            p6rAllowClaimedIdentity: acceptsClaimedIdentity,
+          });
           onClientSocketOpen(deps.hub, socket);
         },
         onMessage: (event, socket) =>
@@ -642,19 +653,13 @@ export function createApp(
             {
               ...deps,
               p6rApplyClaimedIdentity: (targetSocket, p6rClaimedIdentity) => {
-                if (actor === null) {
-                  return;
-                }
                 if (p6rClaimedIdentity === null) {
                   p6rRestoreSocketActor(targetSocket);
                   return;
                 }
                 p6rSetSocketActor(
                   targetSocket,
-                  actorService.p6rResolveClaimedIdentity(
-                    p6rClaimedIdentity,
-                    actor,
-                  ),
+                  actorService.p6rResolveClaimedIdentity(p6rClaimedIdentity),
                 );
               },
             },

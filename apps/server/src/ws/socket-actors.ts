@@ -10,11 +10,16 @@ interface P6rRegisterSocketActorOptions {
 
 export function p6rRegisterSocketActor(
   socket: object,
-  actor: P6rClaimedIdentity,
+  actor: P6rClaimedIdentity | null,
   options: P6rRegisterSocketActorOptions = {},
 ): void {
-  socketActors.set(socket, actor);
-  baseSocketActors.set(socket, actor);
+  if (actor === null) {
+    socketActors.delete(socket);
+    baseSocketActors.delete(socket);
+  } else {
+    socketActors.set(socket, actor);
+    baseSocketActors.set(socket, actor);
+  }
   if (options.p6rAllowClaimedIdentity === true) {
     claimedIdentitySockets.add(socket);
   } else {
@@ -39,6 +44,8 @@ export function p6rRestoreSocketActor(socket: object): void {
   const actor = baseSocketActors.get(socket);
   if (actor !== undefined && p6rCanSetSocketActor(socket)) {
     socketActors.set(socket, actor);
+  } else if (p6rCanSetSocketActor(socket)) {
+    socketActors.delete(socket);
   }
 }
 
