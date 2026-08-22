@@ -1,0 +1,533 @@
+From 1aec2b6d14086a5dbee432d38f4763d759266089 Mon Sep 17 00:00:00 2001
+From: Rosetta <cole@phosphor.co>
+Date: Sat, 22 Aug 2026 07:38:12 -0400
+Subject: [PATCH] Expose durable thread participants in sidebar
+
+Project ordered participants from durable authored-event actor snapshots using provider-qualified PrincipalKey equality, with latest presentation retained in first-authored order. Carry the additive legacy-readable participant contract through the thread list and render ordered labeled names and avatars in the native row without presence or Notifications joins. Focused public producer, order/rehydration, sidebar, and typecheck verification passed.
+---
+ .../src/components/sidebar/ThreadRow.test.tsx |  43 +++++-
+ apps/app/src/components/sidebar/ThreadRow.tsx |  85 ++++++++++-
+ .../threads/thread-runtime-display.ts         |  77 ++++++++++
+ .../test/public/public-thread-data.test.ts    | 133 ++++++++++++++++++
+ packages/domain/src/thread.ts                 |  13 ++
+ 5 files changed, 343 insertions(+), 8 deletions(-)
+
+diff --git a/apps/app/src/components/sidebar/ThreadRow.test.tsx b/apps/app/src/components/sidebar/ThreadRow.test.tsx
+index 6fdf2359f2529f8c08a1e4f75f89378435633852..a8bd8fc3dcb977cbacb69583774ad68d1f15029c 100644
+--- a/apps/app/src/components/sidebar/ThreadRow.test.tsx
++++ b/apps/app/src/components/sidebar/ThreadRow.test.tsx
+@@ -6,11 +6,12 @@ import {
+   fireEvent,
+   render,
+   screen,
++  within,
+ } from "@testing-library/react";
+ import { MemoryRouter } from "react-router-dom";
+ import type { ReactNode } from "react";
+ import { createStore, Provider } from "jotai";
+-import type { ThreadListEntry } from "@bb/domain";
++import { p6rPrincipalKeySchema, type ThreadListEntry } from "@bb/domain";
+ import type { PluginComposerThreadRowStatus } from "@get-bb/plugin-sdk";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+ import {
+@@ -94,6 +95,7 @@ function createThread(
+     environmentName: null,
+     environmentBranchName: null,
+     environmentWorkspaceDisplayKind: "other",
++    participants: [],
+     runtime: {
+       displayStatus: "idle",
+       hostReconnectGraceExpiresAt: null,
+@@ -259,6 +261,45 @@ afterEach(() => {
+ });
+ 
+ describe("ThreadRow", () => {
++  it("renders the supplied participant profiles in server order", () => {
++    renderThreadRow({
++      thread: createThread({
++        participants: [
++          {
++            p6rPrincipalKey: p6rPrincipalKeySchema.parse("p6r:github/alice"),
++            p6rDisplayName: "Alice Chen",
++            p6rImageUrl: "https://example.test/alice.png",
++          },
++          {
++            p6rPrincipalKey: p6rPrincipalKeySchema.parse("p6r:google/bob"),
++            p6rDisplayName: "Bob Stone",
++            p6rImageUrl: "https://example.test/bob.png",
++          },
++        ],
++      }),
++    });
++
++    const participants = screen.getByRole("group", {
++      name: "Thread participants: Alice Chen, Bob Stone",
++    });
++    const renderedText = participants.textContent ?? "";
++    expect(renderedText).toContain("Alice Chen");
++    expect(renderedText).toContain("Bob Stone");
++    expect(renderedText.indexOf("Alice Chen")).toBeLessThan(
++      renderedText.indexOf("Bob Stone"),
++    );
++    expect(
++      within(participants)
++        .getByRole("img", { name: "Alice Chen" })
++        .getAttribute("src"),
++    ).toBe("https://example.test/alice.png");
++    expect(
++      within(participants)
++        .getByRole("img", { name: "Bob Stone" })
++        .getAttribute("src"),
++    ).toBe("https://example.test/bob.png");
++  });
++
+   const splitWorkingCases: Array<{
+     label: string;
+     pluginStatus?: PluginComposerThreadRowStatus;
+diff --git a/apps/app/src/components/sidebar/ThreadRow.tsx b/apps/app/src/components/sidebar/ThreadRow.tsx
+index 87e9affe88cac3e95e3cfe23994e368c1f0809fc..2379d5cbcf0827678125e1f0f99975572f78e1ed 100644
+--- a/apps/app/src/components/sidebar/ThreadRow.tsx
++++ b/apps/app/src/components/sidebar/ThreadRow.tsx
+@@ -10,7 +10,10 @@ import {
+   useRef,
+ } from "react";
+ import { useSetAtom } from "jotai";
+-import type { ThreadListEntry } from "@bb/domain";
++import type {
++  P6rThreadParticipantProfile,
++  ThreadListEntry,
++} from "@bb/domain";
+ import type { PluginComposerThreadRowStatus } from "@get-bb/plugin-sdk";
+ import { getThreadConversationCollapsedAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
+ import { Icon } from "@bb/shared-ui/icon";
+@@ -83,6 +86,7 @@ import {
+ import { pluginIconName } from "@/components/plugin/PluginIcon";
+ import { usePluginThreadRowStatus } from "@/lib/plugin-thread-row-status";
+ import { P6rSidebarPresenceDots } from "@/components/thread/presence/SidebarPresenceDots";
++import { p6rPresenceInitials } from "@/components/thread/presence/PresenceAvatarRow";
+ import { useP6rClaimedIdentity } from "@/lib/claimed-identity-store";
+ import { useP6rThreadPresenceSummaryHandles } from "@/lib/presence-store";
+ 
+@@ -184,6 +188,70 @@ function ThreadDraftIndicator({
+   );
+ }
+ 
++const MAX_VISIBLE_THREAD_PARTICIPANTS = 3;
++
++function ThreadRowParticipants({
++  participants,
++}: {
++  participants: readonly P6rThreadParticipantProfile[];
++}) {
++  if (participants.length === 0) {
++    return null;
++  }
++  const visible = participants.slice(0, MAX_VISIBLE_THREAD_PARTICIPANTS);
++  const overflow = participants.length - visible.length;
++  const orderedNames = participants
++    .map((participant) => participant.p6rDisplayName)
++    .join(", ");
++
++  return (
++    <span
++      role="group"
++      aria-label={`Thread participants: ${orderedNames}`}
++      data-testid="sidebar-thread-participants"
++      className="relative z-10 inline-flex min-w-0 shrink items-center gap-1 text-xs text-muted-foreground"
++    >
++      {visible.map((participant) => (
++        <span
++          key={participant.p6rPrincipalKey}
++          title={participant.p6rDisplayName}
++          className="inline-flex min-w-0 shrink items-center gap-1"
++        >
++          {participant.p6rImageUrl === null ? (
++            <span
++              role="img"
++              aria-label={participant.p6rDisplayName}
++              className="inline-flex size-4 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-surface-recessed text-[8px] font-medium leading-none"
++            >
++              {p6rPresenceInitials(participant.p6rDisplayName)}
++            </span>
++          ) : (
++            <img
++              src={participant.p6rImageUrl}
++              alt={participant.p6rDisplayName}
++              className="size-4 shrink-0 rounded-full object-cover"
++            />
++          )}
++          <span className="truncate">{participant.p6rDisplayName}</span>
++        </span>
++      ))}
++      {overflow > 0 ? (
++        <span
++          role="img"
++          aria-label={`${overflow} more participants: ${participants
++            .slice(MAX_VISIBLE_THREAD_PARTICIPANTS)
++            .map((participant) => participant.p6rDisplayName)
++            .join(", ")}`}
++          title={orderedNames}
++          className="shrink-0"
++        >
++          +{overflow}
++        </span>
++      ) : null}
++    </span>
++  );
++}
++
+ function PluginThreadRowStatusIndicator({
+   status,
+ }: {
+@@ -737,12 +805,15 @@ function ThreadRowComponent({
+             {editor}
+           </span>
+         ) : (
+-          <span
+-            className="min-w-0 truncate"
+-            title={labelTitle}
+-            onDoubleClick={startTitleEditing}
+-          >
+-            <SidebarThreadTitle title={visibleTitle} />
++          <span className="flex min-w-0 items-center gap-1.5">
++            <span
++              className="min-w-0 truncate"
++              title={labelTitle}
++              onDoubleClick={startTitleEditing}
++            >
++              <SidebarThreadTitle title={visibleTitle} />
++            </span>
++            <ThreadRowParticipants participants={thread.participants ?? []} />
+           </span>
+         )}
+         {crossProjectLabel !== null ? (
+diff --git a/apps/server/src/services/threads/thread-runtime-display.ts b/apps/server/src/services/threads/thread-runtime-display.ts
+index 42ac9ae68be8c4641a8518f716ffe4b4625d9087..968e7deb656aec1382d306890c989543bc9f508a 100644
+--- a/apps/server/src/services/threads/thread-runtime-display.ts
++++ b/apps/server/src/services/threads/thread-runtime-display.ts
+@@ -7,6 +7,7 @@ import {
+   listLatestSessionsForHosts,
+   listOpenTurnInputAcceptedRowsByThreadIds,
+   listStoredClientTurnRequestRowsByKeys,
++  listStoredEventRowsByThreadIdsAndTypes,
+   type DbConnection,
+   type HostDaemonSessionRow,
+   type StoredEventRow,
+@@ -19,8 +20,10 @@ import type {
+   ThreadListEntry,
+   ThreadRuntimeState,
+   ThreadStatus,
++  P6rThreadParticipantProfile,
+   ThreadWithRuntime,
+ } from "@bb/domain";
++import { p6rActorSnapshotSchema } from "@bb/domain";
+ import {
+   extractThreadTimelineActivePlanTurn,
+   extractThreadTimelineGoal,
+@@ -29,6 +32,7 @@ import {
+ import type { ThreadResponse } from "@bb/server-contract";
+ import { DAEMON_ACTIVE_WORK_DISCONNECT_GRACE_MS } from "../../constants.js";
+ import type { NotificationHub } from "../../ws/hub.js";
++import { p6rPrincipalKeyForActor } from "../identity.js";
+ import { resolveProviderPlanCommand } from "../providers/provider-plan-command.js";
+ import type { ProviderRegistryService } from "../providers/provider-registry.js";
+ import { parseStoredEvent } from "./thread-data.js";
+@@ -87,6 +91,7 @@ interface ToThreadListEntryResponseFromLatestSessionArgs {
+   hostConnected: boolean;
+   latestSession: HostDaemonSessionRow | null;
+   now?: number;
++  participants: readonly P6rThreadParticipantProfile[];
+   thread: ThreadWithPendingInteractionState;
+ }
+ 
+@@ -105,6 +110,72 @@ const EMPTY_THREAD_ACTIVITY: ThreadActivityState = {
+   activeWorkflowCount: 0,
+ };
+ 
++const PARTICIPANT_EVENT_TYPES = [
++  "client/thread/start",
++  "client/turn/requested",
++  "client/turn/start",
++] as const;
++
++function buildThreadParticipantsByThreadId(
++  deps: ThreadRuntimeDisplayDeps,
++  threads: readonly ThreadWithPendingInteractionState[],
++): Map<string, P6rThreadParticipantProfile[]> {
++  const rows = listStoredEventRowsByThreadIdsAndTypes(deps.db, {
++    threadIds: threads.map((thread) => thread.id),
++    types: PARTICIPANT_EVENT_TYPES,
++  });
++  const participantsByThreadId = new Map<
++    string,
++    P6rThreadParticipantProfile[]
++  >();
++  const participantIndexesByThreadId = new Map<string, Map<string, number>>();
++
++  for (const row of rows) {
++    if (row.p6rActorProviderId === null || row.p6rActorSubject === null) {
++      continue;
++    }
++    const displayName = row.p6rActorDisplayName ?? row.p6rActorHandle;
++    if (displayName === null) {
++      continue;
++    }
++    const actorResult = p6rActorSnapshotSchema.safeParse({
++      p6rProviderId: row.p6rActorProviderId,
++      p6rSubject: row.p6rActorSubject,
++      p6rHandle: row.p6rActorHandle ?? displayName,
++      p6rDisplayName: displayName,
++      p6rImageUrl: row.p6rActorImageUrl,
++    });
++    if (!actorResult.success) {
++      continue;
++    }
++    const principalKey = p6rPrincipalKeyForActor(actorResult.data);
++    const participant: P6rThreadParticipantProfile = {
++      p6rPrincipalKey: principalKey,
++      p6rDisplayName: actorResult.data.p6rDisplayName,
++      p6rImageUrl: actorResult.data.p6rImageUrl,
++    };
++    const participants = participantsByThreadId.get(row.threadId);
++    const indexes = participantIndexesByThreadId.get(row.threadId);
++    if (participants && indexes) {
++      const existingIndex = indexes.get(principalKey);
++      if (existingIndex === undefined) {
++        indexes.set(principalKey, participants.length);
++        participants.push(participant);
++      } else {
++        participants[existingIndex] = participant;
++      }
++      continue;
++    }
++    participantsByThreadId.set(row.threadId, [participant]);
++    participantIndexesByThreadId.set(
++      row.threadId,
++      new Map([[principalKey, 0]]),
++    );
++  }
++
++  return participantsByThreadId;
++}
++
+ function threadStatusRuntimeState(status: ThreadStatus): ThreadRuntimeState {
+   switch (status) {
+     case "starting":
+@@ -413,6 +484,10 @@ export function toThreadListEntryResponses(
+   );
+   const promptBannerActivityByThreadId =
+     buildThreadPromptBannerActivityByThreadId(deps, args.threads);
++  const participantsByThreadId = buildThreadParticipantsByThreadId(
++    deps,
++    args.threads,
++  );
+   const activeHostIds = [
+     ...new Set(
+       args.threads.flatMap((thread) =>
+@@ -462,6 +537,7 @@ export function toThreadListEntryResponses(
+           ? null
+           : (latestSessionByHostId.get(thread.environmentHostId) ?? null),
+       now: args.now,
++      participants: participantsByThreadId.get(thread.id) ?? [],
+       thread,
+     });
+   });
+@@ -481,6 +557,7 @@ function toThreadListEntryResponseFromLatestSession(
+     environmentWorkspaceDisplayKind:
+       args.thread.environmentWorkspaceDisplayKind,
+     hasPendingInteraction: args.thread.hasPendingInteraction,
++    participants: [...args.participants],
+     runtime: resolveThreadRuntimeStateFromLatestSession({
+       environmentHostId: args.thread.environmentHostId,
+       hostConnected: args.hostConnected,
+diff --git a/apps/server/test/public/public-thread-data.test.ts b/apps/server/test/public/public-thread-data.test.ts
+index 0ef40c358f145c11887411c750621f969a0be712..b9c794a778ae721c5b8eb250a3701ecea580a7a6 100644
+--- a/apps/server/test/public/public-thread-data.test.ts
++++ b/apps/server/test/public/public-thread-data.test.ts
+@@ -30,6 +30,7 @@ import {
+ import {
+   type TimelineRow,
+   sidebarBootstrapResponseSchema,
++  threadListResponseSchema,
+   threadSectionMutationResponseSchema,
+   threadSectionSchema,
+   threadConversationOutlineResponseSchema,
+@@ -97,6 +98,138 @@ const queuedActor: P6rActorSnapshot = {
+ };
+ 
+ describe("public thread data routes", () => {
++  it("exposes ordered canonical participants in native thread-list entries", async () => {
++    await withTestHarness(async (harness) => {
++      const { project, thread } = seedThreadFixture(harness);
++      const firstSequence =
++        getLatestThreadSequence(harness.db, { threadId: thread.id }) + 1;
++      insertEvents(harness.db, harness.hub, [
++        {
++          threadId: thread.id,
++          scope: threadScope(),
++          sequence: firstSequence,
++          type: "client/turn/requested",
++          itemId: null,
++          itemKind: null,
++          data: JSON.stringify({
++            initiator: "user",
++            input: [],
++            senderThreadId: null,
++          }),
++          p6rActorHandle: "same-presentation",
++          p6rActorProviderId: "github",
++          p6rActorSubject: "acct-42",
++          p6rActorDisplayName: "Same Person",
++          p6rActorImageUrl: "https://example.test/same.png",
++        },
++        {
++          threadId: thread.id,
++          scope: threadScope(),
++          sequence: firstSequence + 1,
++          type: "client/turn/requested",
++          itemId: null,
++          itemKind: null,
++          data: JSON.stringify({
++            initiator: "user",
++            input: [],
++            senderThreadId: null,
++          }),
++          p6rActorHandle: "same-presentation",
++          p6rActorProviderId: "google",
++          p6rActorSubject: "acct-42",
++          p6rActorDisplayName: "Same Person",
++          p6rActorImageUrl: "https://example.test/same.png",
++        },
++      ]);
++
++      const response = await harness.app.request(
++        `/api/v1/threads?projectId=${project.id}`,
++      );
++      expect(response.status).toBe(200);
++      const listedThreads = threadListResponseSchema.parse(await readJson(response));
++      expect(listedThreads).toEqual(
++        expect.arrayContaining([
++          expect.objectContaining({
++            id: thread.id,
++            participants: [
++              {
++                p6rPrincipalKey: "p6r:github/acct-42",
++                p6rDisplayName: "Same Person",
++                p6rImageUrl: "https://example.test/same.png",
++              },
++              {
++                p6rPrincipalKey: "p6r:google/acct-42",
++                p6rDisplayName: "Same Person",
++                p6rImageUrl: "https://example.test/same.png",
++              },
++            ],
++          }),
++        ]),
++      );
++    });
++  });
++
++  it("refreshes repeated participant snapshots without changing authored order", async () => {
++    await withTestHarness(async (harness) => {
++      const { project, thread } = seedThreadFixture(harness);
++      const firstSequence =
++        getLatestThreadSequence(harness.db, { threadId: thread.id }) + 1;
++      const actorEvent = (
++        sequence: number,
++        providerId: string,
++        displayName: string,
++        imageUrl: string,
++      ) => ({
++        threadId: thread.id,
++        scope: threadScope(),
++        sequence,
++        type: "client/turn/requested" as const,
++        itemId: null,
++        itemKind: null,
++        data: JSON.stringify({
++          initiator: "user",
++          input: [],
++          senderThreadId: null,
++        }),
++        p6rActorHandle: "same-presentation",
++        p6rActorProviderId: providerId,
++        p6rActorSubject: "acct-42",
++        p6rActorDisplayName: displayName,
++        p6rActorImageUrl: imageUrl,
++      });
++      insertEvents(harness.db, harness.hub, [
++        actorEvent(firstSequence, "github", "GitHub Initial", "old.png"),
++        actorEvent(firstSequence + 1, "google", "Google Person", "google.png"),
++        actorEvent(firstSequence + 2, "github", "GitHub Updated", "new.png"),
++      ]);
++
++      const response = await harness.app.request(
++        `/api/v1/threads?projectId=${project.id}`,
++      );
++      expect(response.status).toBe(200);
++      const listedThreads = threadListResponseSchema.parse(await readJson(response));
++      expect(listedThreads).toEqual(
++        expect.arrayContaining([
++          expect.objectContaining({
++            id: thread.id,
++            participants: [
++              {
++                p6rPrincipalKey: "p6r:github/acct-42",
++                p6rDisplayName: "GitHub Updated",
++                p6rImageUrl: "new.png",
++              },
++              {
++                p6rPrincipalKey: "p6r:google/acct-42",
++                p6rDisplayName: "Google Person",
++                p6rImageUrl: "google.png",
++              },
++            ],
++          }),
++        ]),
++      );
++    });
++  });
++
+   it("attributes direct human sends to the resolved request actor", async () => {
+     await withTestHarness(async (harness) => {
+       const { thread } = seedThreadFixture(harness);
+diff --git a/packages/domain/src/thread.ts b/packages/domain/src/thread.ts
+index f0033bb4b787fa4b1f5f4adf72f64d842eebfa19..d1d692cb47f448d5cb0f39d2d598170b3ae26c61 100644
+--- a/packages/domain/src/thread.ts
++++ b/packages/domain/src/thread.ts
+@@ -10,6 +10,7 @@ import {
+ import { threadStatusSchema, threadStatusValues } from "./thread-status.js";
+ import { threadOriginKindSchema } from "./thread-origin-kind.js";
+ import { threadVisibilitySchema } from "./thread-visibility.js";
++import { p6rPrincipalKeySchema } from "./claimed-identity.js";
+ import { p6rActorSnapshotSchema } from "./p6r-identity.js";
+ export { threadStatusSchema, threadStatusValues } from "./thread-status.js";
+ export type { ThreadStatus } from "./thread-status.js";
+@@ -404,6 +405,17 @@ export const threadWithRuntimeSchema = threadSchema.extend({
+ });
+ export type ThreadWithRuntime = z.infer<typeof threadWithRuntimeSchema>;
+ 
++export const p6rThreadParticipantProfileSchema = z
++  .object({
++    p6rPrincipalKey: p6rPrincipalKeySchema,
++    p6rDisplayName: z.string().min(1).max(256),
++    p6rImageUrl: z.string().max(2048).nullable(),
++  })
++  .strict();
++export type P6rThreadParticipantProfile = z.infer<
++  typeof p6rThreadParticipantProfileSchema
++>;
++
+ export const threadListEntrySchema = threadWithRuntimeSchema.extend({
+   activity: threadActivityStateSchema,
+   pinSortKey: z.string().nullable(),
+@@ -412,5 +424,6 @@ export const threadListEntrySchema = threadWithRuntimeSchema.extend({
+   environmentName: z.string().nullable(),
+   environmentBranchName: z.string().nullable(),
+   environmentWorkspaceDisplayKind: environmentWorkspaceDisplayKindSchema,
++  participants: z.array(p6rThreadParticipantProfileSchema).optional(),
+ });
+ export type ThreadListEntry = z.infer<typeof threadListEntrySchema>;
+-- 
+2.43.0
+
