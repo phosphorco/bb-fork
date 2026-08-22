@@ -87,8 +87,8 @@ import {
 import { pluginIconName } from "@/components/plugin/PluginIcon";
 import { usePluginThreadRowStatus } from "@/lib/plugin-thread-row-status";
 import { P6rSidebarPresenceDots } from "@/components/thread/presence/SidebarPresenceDots";
-import { p6rPresenceInitials } from "@/components/thread/presence/PresenceAvatarRow";
 import { useP6rClaimedIdentity } from "@/lib/claimed-identity-store";
+import { P6rAvatar } from "@/components/identity/P6rAvatar";
 import { useP6rThreadPresenceSummaryViewers } from "@/lib/presence-store";
 import { FacetParticipantAvatarGroup } from "./FacetParticipantAvatarGroup";
 
@@ -212,18 +212,11 @@ function ThreadRowParticipantAvatar({
           onPointerDown={(event) => event.stopPropagation()}
           onKeyDown={(event) => event.stopPropagation()}
         >
-          {participant.p6rImageUrl === null ? (
-            <span aria-hidden="true" title={participant.p6rDisplayName}>
-              {p6rPresenceInitials(participant.p6rDisplayName)}
-            </span>
-          ) : (
-            <img
-              src={participant.p6rImageUrl}
-              alt={participant.p6rDisplayName}
-              title={participant.p6rDisplayName}
-              className="size-full object-cover"
-            />
-          )}
+          <P6rAvatar
+            p6rDisplayName={participant.p6rDisplayName}
+            p6rImageUrl={participant.p6rImageUrl}
+            className="size-full object-cover"
+          />
         </button>
       </TooltipTrigger>
       <TooltipContent side="top">{participant.p6rDisplayName}</TooltipContent>

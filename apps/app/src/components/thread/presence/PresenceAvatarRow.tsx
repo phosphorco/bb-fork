@@ -1,6 +1,7 @@
 import type { P6rPresenceViewer } from "@bb/server-contract";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
+import { P6rAvatar, p6rAvatarInitials } from "@/components/identity/P6rAvatar";
 
 const P6R_MAX_VISIBLE_AVATARS = 4;
 
@@ -20,12 +21,7 @@ function p6rAvatarSizeClass(size: P6rPresenceAvatarSize): string {
   return size === "md" ? "size-5 text-[10px]" : "size-4 text-[9px]";
 }
 
-export function p6rPresenceInitials(p6rDisplayName: string): string {
-  const words = p6rDisplayName.trim().split(/\s+/u).filter(Boolean);
-  const first = words[0]?.[0] ?? "?";
-  const second = words.length > 1 ? (words.at(-1)?.[0] ?? "") : "";
-  return `${first}${second}`.toUpperCase();
-}
+export const p6rPresenceInitials = p6rAvatarInitials;
 
 // A viewer with an avatar renders the image; without one, initials on a
 // recessed surface (per the claimed-identity contract, p6rImageUrl null = no
@@ -42,15 +38,11 @@ function P6rPresenceAvatar({ viewer, size }: P6rPresenceAvatarProps) {
             p6rAvatarSizeClass(size),
           )}
         >
-          {viewer.p6rImageUrl === null ? (
-            p6rPresenceInitials(viewer.p6rDisplayName)
-          ) : (
-            <img
-              src={viewer.p6rImageUrl}
-              alt=""
-              className="size-full object-cover"
-            />
-          )}
+          <P6rAvatar
+            p6rDisplayName={viewer.p6rDisplayName}
+            p6rImageUrl={viewer.p6rImageUrl}
+            className="size-full object-cover"
+          />
         </span>
       </TooltipTrigger>
       <TooltipContent side="bottom">{viewer.p6rDisplayName}</TooltipContent>
