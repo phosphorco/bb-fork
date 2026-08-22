@@ -18,13 +18,18 @@
 14. **Attributed presence preservation** groups sockets by exact PrincipalKey, keeps same-key coalescing, and applies exact viewer-relative suppression without presentation-field equality.
 15. **Principal-aware typing surface** projects resolved display labels into human typing copy and uses the existing browser-safe client-id constructor.
 16. **Server-authored p6r PrincipalKeys** derives local and provider-qualified keys at the identity boundary and strips client-supplied key claims before presence publication.
+17. **Durable thread participant projection** derives ordered participants from stored authored events without joining on presentation.
+18. **Sidebar plugin participant projection** exposes the same ordered PrincipalKeys through the plugin thread contract.
+19. **Claimed WebSocket presentation** carries the server-issued claimed principal through the shared realtime resolver while rejecting client-authored keys.
+20. **Sidebar presence principal preservation** retains provider-qualified presence identity at the sidebar boundary.
+21. **Plugin request principal context** carries the server-authored PrincipalKey beside the authenticated actor and gives a registered identity provider a provider-scoped subject denotation handle.
 
 ## Exact 0.39 receipt
 
 - Upstream: `desktop-v0.39.0` at `b33abbff098ac4c857578e7350d492dcaa65d489`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: twelve patches in `patches/series`.
-- Result tree: `f871fe320a0dff02462901ae10bdf7366f8510b1`.
+- Patch queue: twenty-one patches in `patches/series`.
+- Result tree: `96da35ba58bd802f9a89fe4f72800dd133a77824`.
 
 ## Compatibility boundaries
 
@@ -45,8 +50,10 @@
   local-operator fallback is available only after no-provider or
   not-applicable resolution, and never rescues provider rejection. Client
   URL/query/body/header claims are never accepted on provider-owned paths.
-- Plugin HTTP/RPC handlers receive nullable `p6rRequestPrincipal` from the
-  shared HTTP/WebSocket resolver. Agent tools receive nullable
+- Plugin HTTP/RPC handlers receive nullable `p6rRequestPrincipal` and its
+  server-authored `p6rRequestPrincipalKey` from the shared HTTP/WebSocket
+  resolver. Registered identity providers may denote another subject only
+  inside their core-composed provider namespace. Agent tools receive nullable
   `p6rTurnAuthor` only from the durable accepted authored unit; the transport
   principal is not an author fallback and transcript `[from=...]` is write-only
   presentation.
