@@ -1,0 +1,231 @@
+From 0f67d8c2d5b33bf6645e803164b5bd2893a85563 Mon Sep 17 00:00:00 2001
+From: Rosetta <its-rosetta@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 15:30:12 -0400
+Subject: [PATCH] Render provider avatars through a safe fallback
+
+---
+ .../components/identity/P6rAvatar.test.tsx    | 48 ++++++++++++++
+ .../app/src/components/identity/P6rAvatar.tsx | 66 +++++++++++++++++++
+ apps/app/src/components/sidebar/ThreadRow.tsx | 22 ++-----
+ .../thread/presence/PresenceAvatarRow.tsx     | 22 ++-----
+ 4 files changed, 127 insertions(+), 31 deletions(-)
+ create mode 100644 apps/app/src/components/identity/P6rAvatar.test.tsx
+ create mode 100644 apps/app/src/components/identity/P6rAvatar.tsx
+
+diff --git a/apps/app/src/components/identity/P6rAvatar.test.tsx b/apps/app/src/components/identity/P6rAvatar.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..aff2759b7f19a0a4aeebe16cf6ba8d7fbf3589cf
+--- /dev/null
++++ b/apps/app/src/components/identity/P6rAvatar.test.tsx
+@@ -0,0 +1,48 @@
++// @vitest-environment jsdom
++
++import { cleanup, fireEvent, render, screen } from "@testing-library/react";
++import { afterEach, describe, expect, it } from "vitest";
++import { P6rAvatar, p6rSafeAvatarUrl } from "./P6rAvatar";
++
++afterEach(cleanup);
++
++describe("P6rAvatar", () => {
++  it("accepts only HTTPS provider presentation", () => {
++    expect(p6rSafeAvatarUrl("https://images.example.test/alice.png")).toBe(
++      "https://images.example.test/alice.png",
++    );
++    expect(p6rSafeAvatarUrl("http://images.example.test/alice.png")).toBeNull();
++    expect(p6rSafeAvatarUrl("data:image/png;base64,abc")).toBeNull();
++    expect(p6rSafeAvatarUrl("not a url")).toBeNull();
++    expect(p6rSafeAvatarUrl(null)).toBeNull();
++  });
++
++  it("requests a safe image without credentials or referrer", () => {
++    render(
++      <P6rAvatar
++        p6rDisplayName="Alice Chen"
++        p6rImageUrl="https://images.example.test/alice.png"
++        className="avatar"
++      />,
++    );
++
++    const image = screen.getByRole("img", { name: "Alice Chen" });
++    expect(image.getAttribute("crossorigin")).toBe("anonymous");
++    expect(image.getAttribute("referrerpolicy")).toBe("no-referrer");
++  });
++
++  it("renders an accessible neutral fallback when loading fails", () => {
++    render(
++      <P6rAvatar
++        p6rDisplayName="Alice Chen"
++        p6rImageUrl="https://images.example.test/missing.png"
++        className="avatar"
++      />,
++    );
++
++    fireEvent.error(screen.getByRole("img", { name: "Alice Chen" }));
++    expect(screen.getByRole("img", { name: "Alice Chen" }).textContent).toBe(
++      "AC",
++    );
++  });
++});
+diff --git a/apps/app/src/components/identity/P6rAvatar.tsx b/apps/app/src/components/identity/P6rAvatar.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..67a6d2da34ebd14320694c8a3d5d359d1e7eb034
+--- /dev/null
++++ b/apps/app/src/components/identity/P6rAvatar.tsx
+@@ -0,0 +1,66 @@
++import { useEffect, useMemo, useState } from "react";
++
++export function p6rAvatarInitials(p6rDisplayName: string): string {
++  const words = p6rDisplayName.trim().split(/\s+/u).filter(Boolean);
++  const first = words[0]?.[0] ?? "?";
++  const second = words.length > 1 ? (words.at(-1)?.[0] ?? "") : "";
++  return `${first}${second}`.toUpperCase();
++}
++
++export function p6rSafeAvatarUrl(p6rImageUrl: string | null): string | null {
++  if (p6rImageUrl === null) return null;
++  try {
++    const url = new URL(p6rImageUrl);
++    return url.protocol === "https:" ? url.href : null;
++  } catch {
++    return null;
++  }
++}
++
++/**
++ * Presentation-only avatar for a server-authored profile. The image request is
++ * anonymous and carries no referrer; an absent, unsafe, or failed image falls
++ * back without changing the profile's identity or availability.
++ */
++export function P6rAvatar({
++  p6rDisplayName,
++  p6rImageUrl,
++  className,
++}: {
++  p6rDisplayName: string;
++  p6rImageUrl: string | null;
++  className: string;
++}) {
++  const safeImageUrl = useMemo(
++    () => p6rSafeAvatarUrl(p6rImageUrl),
++    [p6rImageUrl],
++  );
++  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
++
++  useEffect(() => {
++    setFailedImageUrl(null);
++  }, [safeImageUrl]);
++
++  if (safeImageUrl !== null && failedImageUrl !== safeImageUrl) {
++    return (
++      <img
++        src={safeImageUrl}
++        alt={p6rDisplayName}
++        className={className}
++        crossOrigin="anonymous"
++        referrerPolicy="no-referrer"
++        onError={() => setFailedImageUrl(safeImageUrl)}
++      />
++    );
++  }
++
++  return (
++    <span
++      role="img"
++      aria-label={p6rDisplayName}
++      className={`${className} inline-flex items-center justify-center`}
++    >
++      {p6rAvatarInitials(p6rDisplayName)}
++    </span>
++  );
++}
+diff --git a/apps/app/src/components/sidebar/ThreadRow.tsx b/apps/app/src/components/sidebar/ThreadRow.tsx
+index 2ea4c2dfa6aa64c15bac50db1c81dfe593d9ef31..4964ceb74fdeb434b7eaa7d279bf098e241b123d 100644
+--- a/apps/app/src/components/sidebar/ThreadRow.tsx
++++ b/apps/app/src/components/sidebar/ThreadRow.tsx
+@@ -83,8 +83,8 @@ import {
+ import { pluginIconName } from "@/components/plugin/PluginIcon";
+ import { usePluginThreadRowStatus } from "@/lib/plugin-thread-row-status";
+ import { P6rSidebarPresenceDots } from "@/components/thread/presence/SidebarPresenceDots";
+-import { p6rPresenceInitials } from "@/components/thread/presence/PresenceAvatarRow";
+ import { useP6rClaimedIdentity } from "@/lib/claimed-identity-store";
++import { P6rAvatar } from "@/components/identity/P6rAvatar";
+ import { useP6rThreadPresenceSummaryViewers } from "@/lib/presence-store";
+ 
+ const SIDEBAR_TITLE_DOUBLE_CLICK_MS = 400;
+@@ -214,21 +214,11 @@ function ThreadRowParticipants({
+           title={participant.p6rDisplayName}
+           className="inline-flex min-w-0 shrink items-center gap-1"
+         >
+-          {participant.p6rImageUrl === null ? (
+-            <span
+-              role="img"
+-              aria-label={participant.p6rDisplayName}
+-              className="inline-flex size-4 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-surface-recessed text-[8px] font-medium leading-none"
+-            >
+-              {p6rPresenceInitials(participant.p6rDisplayName)}
+-            </span>
+-          ) : (
+-            <img
+-              src={participant.p6rImageUrl}
+-              alt={participant.p6rDisplayName}
+-              className="size-4 shrink-0 rounded-full object-cover"
+-            />
+-          )}
++          <P6rAvatar
++            p6rDisplayName={participant.p6rDisplayName}
++            p6rImageUrl={participant.p6rImageUrl}
++            className="inline-flex size-4 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-surface-recessed text-[8px] font-medium leading-none object-cover"
++          />
+           <span className="truncate">{participant.p6rDisplayName}</span>
+         </span>
+       ))}
+diff --git a/apps/app/src/components/thread/presence/PresenceAvatarRow.tsx b/apps/app/src/components/thread/presence/PresenceAvatarRow.tsx
+index 15beea767eebf8d9235dfbb5fc0a03e97a17bbf2..89b382e602a6414880f694c6780e3c28ae7bfb69 100644
+--- a/apps/app/src/components/thread/presence/PresenceAvatarRow.tsx
++++ b/apps/app/src/components/thread/presence/PresenceAvatarRow.tsx
+@@ -1,6 +1,7 @@
+ import type { P6rPresenceViewer } from "@bb/server-contract";
+ import { cn } from "@bb/shared-ui/lib/utils";
+ import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
++import { P6rAvatar, p6rAvatarInitials } from "@/components/identity/P6rAvatar";
+ 
+ const P6R_MAX_VISIBLE_AVATARS = 4;
+ 
+@@ -20,12 +21,7 @@ function p6rAvatarSizeClass(size: P6rPresenceAvatarSize): string {
+   return size === "md" ? "size-5 text-[10px]" : "size-4 text-[9px]";
+ }
+ 
+-export function p6rPresenceInitials(p6rDisplayName: string): string {
+-  const words = p6rDisplayName.trim().split(/\s+/u).filter(Boolean);
+-  const first = words[0]?.[0] ?? "?";
+-  const second = words.length > 1 ? (words.at(-1)?.[0] ?? "") : "";
+-  return `${first}${second}`.toUpperCase();
+-}
++export const p6rPresenceInitials = p6rAvatarInitials;
+ 
+ // A viewer with an avatar renders the image; without one, initials on a
+ // recessed surface (per the claimed-identity contract, p6rImageUrl null = no
+@@ -42,15 +38,11 @@ function P6rPresenceAvatar({ viewer, size }: P6rPresenceAvatarProps) {
+             p6rAvatarSizeClass(size),
+           )}
+         >
+-          {viewer.p6rImageUrl === null ? (
+-            p6rPresenceInitials(viewer.p6rDisplayName)
+-          ) : (
+-            <img
+-              src={viewer.p6rImageUrl}
+-              alt=""
+-              className="size-full object-cover"
+-            />
+-          )}
++          <P6rAvatar
++            p6rDisplayName={viewer.p6rDisplayName}
++            p6rImageUrl={viewer.p6rImageUrl}
++            className="size-full object-cover"
++          />
+         </span>
+       </TooltipTrigger>
+       <TooltipContent side="bottom">{viewer.p6rDisplayName}</TooltipContent>
+-- 
+2.43.0
+

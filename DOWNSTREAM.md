@@ -31,7 +31,7 @@
 
 - Upstream: `desktop-v0.39.0` at `b33abbff098ac4c857578e7350d492dcaa65d489`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: twenty-four patches in `patches/series`.
+- Patch queue: twenty-five patches in `patches/series`.
 - Result tree: `603e723a469a7db4b7e08799c911260ca2aafab0`.
 
 ## Compatibility boundaries
