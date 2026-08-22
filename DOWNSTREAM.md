@@ -25,13 +25,14 @@
 21. **Plugin request principal context** carries the server-authored PrincipalKey beside the authenticated actor and gives a registered identity provider a provider-scoped subject denotation handle.
 22. **Participant overflow tooltip lint repair** retains the accessible participant names while removing the redundant native tooltip rejected by the application lint boundary.
 23. **Generated plugin SDK template receipt** embeds the PrincipalKey request context and provider-scoped subject denotation handle in the exact bb-app plugin declaration templates.
+24. **Distinct no-provider identity modes** keeps loopback on the local operator while remote no-provider requests and sockets may carry only an explicit claimed presentation with a server-authored claimed PrincipalKey.
 
 ## Exact 0.39 receipt
 
 - Upstream: `desktop-v0.39.0` at `b33abbff098ac4c857578e7350d492dcaa65d489`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: twenty-three patches in `patches/series`.
-- Result tree: `3fe00a4adc5e5bfd79ca1f11ebd0622dd7580b02`.
+- Patch queue: twenty-four patches in `patches/series`.
+- Result tree: `603e723a469a7db4b7e08799c911260ca2aafab0`.
 
 ## Compatibility boundaries
 
