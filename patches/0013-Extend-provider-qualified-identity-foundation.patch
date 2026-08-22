@@ -1,0 +1,170 @@
+From 4f2ebee390915566938da87e06fef565280f3872 Mon Sep 17 00:00:00 2001
+From: Sawyer Hood <sawyerjhood@gmail.com>
+Date: Sat, 22 Aug 2026 06:47:46 -0400
+Subject: [PATCH 13/16] Extend provider-qualified identity foundation
+
+---
+ packages/domain/src/change-kinds.ts           |  3 ++
+ packages/domain/src/claimed-identity.ts       | 31 ++++++++++-
+ .../server-contract/test/presence.test.ts     | 52 +++++++++++++++++++
+ 3 files changed, 84 insertions(+), 2 deletions(-)
+
+diff --git a/packages/domain/src/change-kinds.ts b/packages/domain/src/change-kinds.ts
+index f3e0cdfae90d74f153ef04f81578a4e025ce5bdd..f3d21cab1d94555ac20974b634f31c47e2801a07 100644
+--- a/packages/domain/src/change-kinds.ts
++++ b/packages/domain/src/change-kinds.ts
+@@ -1,4 +1,5 @@
+ import { z } from "zod";
++import { p6rPrincipalKeySchema } from "./claimed-identity.js";
+ import {
+   threadEventTypeSchema,
+   threadEventTypeValues,
+@@ -263,6 +264,7 @@ export type SystemChangedMessage = z.infer<typeof systemChangedMessageSchema>;
+  */
+ export const p6rPresenceViewerSchema = z
+   .object({
++    p6rPrincipalKey: p6rPrincipalKeySchema.optional(),
+     p6rHandle: z.string().min(1),
+     p6rDisplayName: z.string().min(1),
+     // null = no avatar; clients render initials.
+@@ -392,6 +394,7 @@ export const p6rThreadPresenceMessageLenientSchema = z.object({
+   p6rThreadId: z.string().min(1),
+   p6rViewers: z.array(
+     z.object({
++      p6rPrincipalKey: p6rPrincipalKeySchema.optional(),
+       p6rHandle: z.string().min(1),
+       p6rDisplayName: z.string().min(1),
+       p6rImageUrl: z.string().nullable().catch(null),
+diff --git a/packages/domain/src/claimed-identity.ts b/packages/domain/src/claimed-identity.ts
+index 9df4aab36dfb5f1132d934e29993b068e69d3522..923ca4907e27927c4d8e227cadee96ed99383531 100644
+--- a/packages/domain/src/claimed-identity.ts
++++ b/packages/domain/src/claimed-identity.ts
+@@ -1,5 +1,14 @@
+ import { z } from "zod";
+ 
++/** Provider-qualified identity equality. Presentation fields are not identity. */
++export const p6rPrincipalKeySchema = z
++  .string()
++  .min(3)
++  .max(256)
++  .regex(/^[a-z][a-z0-9+.-]*:[^\s]+$/u)
++  .brand<"P6rPrincipalKey">();
++export type P6rPrincipalKey = z.infer<typeof p6rPrincipalKeySchema>;
++
+ /**
+  * Multiplayer identity is CLAIMED, not verified: every client self-asserts who
+  * it is via this header, on API requests and the /ws upgrade. Admission is
+@@ -9,8 +18,8 @@ import { z } from "zod";
+  * The only verified record is the connect gate's admission audit log.
+  *
+  * Collaborators are keyed by normalized handle: the same handle on two devices
+- * is the same person. `clientId` is a per-device hint used only for presence
+- * bookkeeping, never for identity.
++ * is the same person. `clientId` is a per-device hint presented to the server
++ * identity boundary; it is never itself a PrincipalKey.
+  */
+ export const P6R_CLAIMED_IDENTITY_HEADER = "x-p6r-claimed-identity";
+ 
+@@ -21,6 +30,8 @@ export const p6rClaimedIdentitySchema = z
+     // null = this person has no avatar; clients render initials instead.
+     p6rImageUrl: z.string().max(2048).nullable(),
+     p6rClientId: z.string().min(1).max(64),
++    // Legacy records omit this field. New server-authored identities carry it.
++    p6rPrincipalKey: p6rPrincipalKeySchema.optional(),
+   })
+   .strict();
+ export type P6rClaimedIdentity = z.infer<typeof p6rClaimedIdentitySchema>;
+@@ -33,6 +44,22 @@ export function p6rNormalizeHandle(raw: string): string {
+   return raw.normalize("NFKC").trim().toLowerCase();
+ }
+ 
++export function p6rCreateProviderPrincipalKey(
++  provider: string,
++  subject: string,
++): P6rPrincipalKey {
++  return p6rPrincipalKeySchema.parse(`${provider}:${subject}`);
++}
++
++export function p6rCreateLocalPrincipalKey(
++  operatorSubject: string,
++): P6rPrincipalKey {
++  return p6rCreateProviderPrincipalKey(
++    "local",
++    p6rNormalizeHandle(operatorSubject),
++  );
++}
++
+ /** Header value: URI-encoded JSON (ASCII-safe, portable browser/node). */
+ export function p6rEncodeClaimedIdentityHeader(
+   identity: P6rClaimedIdentity,
+diff --git a/packages/server-contract/test/presence.test.ts b/packages/server-contract/test/presence.test.ts
+index 442bad827a1a730cc1f45d0e5374e3b31404972a..f1b05a88cdea833ed8bd1e6643f6bee91a4a9bf5 100644
+--- a/packages/server-contract/test/presence.test.ts
++++ b/packages/server-contract/test/presence.test.ts
+@@ -1,4 +1,10 @@
+ import { describe, expect, it } from "vitest";
++import {
++  p6rClaimedIdentitySchema,
++  p6rDecodeClaimedIdentityHeader,
++  p6rEncodeClaimedIdentityHeader,
++  p6rPrincipalKeySchema,
++} from "@bb/domain";
+ import {
+   p6rPresenceSummaryMessageSchema,
+   p6rPresenceSnapshotResponseSchema,
+@@ -7,6 +13,52 @@ import {
+ } from "../src/index.js";
+ 
+ describe("presence contracts", () => {
++  it("preserves provider-qualified PrincipalKeys and legacy omission", () => {
++    const principalKey = "github:acct-42";
++    const identity = p6rClaimedIdentitySchema.parse({
++      p6rHandle: "sawyer",
++      p6rDisplayName: "Sawyer",
++      p6rImageUrl: null,
++      p6rClientId: "client-1",
++      p6rPrincipalKey: principalKey,
++    });
++    expect(p6rPrincipalKeySchema.parse(principalKey)).toBe(principalKey);
++    expect(
++      p6rDecodeClaimedIdentityHeader(p6rEncodeClaimedIdentityHeader(identity)),
++    ).toEqual(identity);
++
++    for (const malformed of [
++      "github",
++      ":acct-42",
++      "github:",
++      "github:acct 42",
++    ]) {
++      expect(p6rPrincipalKeySchema.safeParse(malformed).success).toBe(false);
++    }
++
++    const legacy = {
++      p6rHandle: "sawyer",
++      p6rDisplayName: "Sawyer",
++      p6rImageUrl: null,
++      p6rClientId: "client-1",
++    };
++    expect(p6rClaimedIdentitySchema.parse(legacy)).toEqual(legacy);
++    expect(
++      p6rPresenceSnapshotResponseSchema.parse({
++        p6rThreads: {
++          "thread-1": [
++            {
++              p6rHandle: "sawyer",
++              p6rDisplayName: "Sawyer",
++              p6rImageUrl: null,
++              p6rTyping: false,
++            },
++          ],
++        },
++      }),
++    ).toBeTruthy();
++  });
++
+   it("validates strict snapshots and realtime messages", () => {
+     const viewer = {
+       p6rHandle: "sawyer",
+-- 
+2.43.0
+

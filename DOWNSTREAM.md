@@ -14,6 +14,10 @@
 10. **Exact workspace and provider-input contract receipt** carries the candidate-only fixture and generated declaration updates required by the exact `bb-app@0.39.0` workspace gate environment, plus the ready-turn authorship handoff and its canonical provider-input witnesses.
 11. **Sparse multiplayer migration staging** preserves only explicit legacy attribution values and restores them through indexed event-id lookups, leaving unknown historical authorship null.
 12. **Managed daemon deployment and update guidance** advances the host-daemon protocol to 136 so enrolled auto-update daemons fetch the server's exact distribution and restart, while Settings and `bb updates` direct primary-server replacement through Rosetta machine deployment instead of npm latest.
+13. **Provider-qualified identity foundation extension** carries an additive PrincipalKey value through p6r identity and presence contracts while retaining reader-tolerant legacy records.
+14. **Attributed presence preservation** groups sockets by exact PrincipalKey, keeps same-key coalescing, and applies exact viewer-relative suppression without presentation-field equality.
+15. **Principal-aware typing surface** projects resolved display labels into human typing copy and uses the existing browser-safe client-id constructor.
+16. **Server-authored p6r PrincipalKeys** derives local and provider-qualified keys at the identity boundary and strips client-supplied key claims before presence publication.
 
 ## Exact 0.39 receipt
 
