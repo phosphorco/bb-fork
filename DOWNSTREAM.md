@@ -23,13 +23,14 @@
 19. **Claimed WebSocket presentation** carries the server-issued claimed principal through the shared realtime resolver while rejecting client-authored keys.
 20. **Sidebar presence principal preservation** retains provider-qualified presence identity at the sidebar boundary.
 21. **Plugin request principal context** carries the server-authored PrincipalKey beside the authenticated actor and gives a registered identity provider a provider-scoped subject denotation handle.
+22. **Participant overflow tooltip lint repair** retains the accessible participant names while removing the redundant native tooltip rejected by the application lint boundary.
 
 ## Exact 0.39 receipt
 
 - Upstream: `desktop-v0.39.0` at `b33abbff098ac4c857578e7350d492dcaa65d489`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: twenty-one patches in `patches/series`.
-- Result tree: `96da35ba58bd802f9a89fe4f72800dd133a77824`.
+- Patch queue: twenty-two patches in `patches/series`.
+- Result tree: `465b8e1bfff7c7074d5ee3f81f8c6856e0391be0`.
 
 ## Compatibility boundaries
 
