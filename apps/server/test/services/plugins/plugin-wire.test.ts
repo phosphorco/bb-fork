@@ -32,12 +32,15 @@ const WIRE_SOURCE = `
     cyclicResult: { input: z.null(), output: z.any() },
     nonFiniteResult: { input: z.null(), output: z.any() },
     validated: { input: z.object({ value: z.string().min(1) }), output: z.string() },
-    identity: { input: z.null(), output: z.object({ principal: z.unknown() }) },
+    identity: {
+      input: z.null(),
+      output: z.object({ principal: z.unknown(), principalKey: z.unknown() }),
+    },
   });
   export default function plugin(bb: any) {
     bb.http.route("GET", "/hello", (c: any) => c.json({ message: "hello v1" }));
     bb.http.route("GET", "/identity", (c: any, ctx: any) =>
-      c.json({ principal: ctx.p6rRequestPrincipal }));
+      c.json({ principal: ctx.p6rRequestPrincipal, principalKey: ctx.p6rRequestPrincipalKey }));
     bb.http.route("POST", "/echo", async (c: any) =>
       c.json({ echoed: await c.req.json() }));
     bb.http.route("GET", "/guarded", (c: any) => c.json({ guarded: true }), {
@@ -115,6 +118,7 @@ const WIRE_SOURCE = `
       },
       identity: (_input: null, ctx: any) => ({
         principal: ctx.p6rRequestPrincipal,
+        principalKey: ctx.p6rRequestPrincipalKey,
       }),
     });
   }
@@ -196,6 +200,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
     expect(noProviderIdentity.status).toBe(200);
     const noProviderBody = (await noProviderIdentity.json()) as {
       principal: Record<string, unknown>;
+      principalKey: unknown;
     };
     expect(noProviderBody.principal).toMatchObject({
       p6rProviderId: "p6r-local-operator",
@@ -204,6 +209,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
     expect(noProviderBody.principal.p6rHandle).toEqual(
       noProviderBody.principal.p6rSubject,
     );
+    expect(noProviderBody.principalKey).toMatch(/^local:/u);
 
     const sameOrigin = await harness.app.request(
       `${BASE}/api/v1/plugins/wire/http/hello`,
@@ -222,7 +228,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
   it("passes only the shared resolver principal to HTTP and RPC plugin edges", async () => {
     const api = harness.pluginService.getApi("wire");
     if (!api) throw new Error("wire plugin API was not loaded");
-    api.p6rIdentity.registerProvider({
+    const provider = api.p6rIdentity.registerProvider({
       id: "fixture",
       resolve: () => ({
         kind: "authenticated",
@@ -232,6 +238,12 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
         p6rImageUrl: null,
       }),
     });
+    expect(provider.p6rPrincipalKeyForSubject("verified-subject")).toBe(
+      "p6r:wire/fixture/verified-subject",
+    );
+    expect(provider.p6rPrincipalKeyForSubject("other-subject")).toBe(
+      "p6r:wire/fixture/other-subject",
+    );
     expect(() =>
       api.p6rIdentity.registerProvider({
         id: "second",
@@ -256,6 +268,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
         p6rDisplayName: "Verified Actor",
         p6rImageUrl: null,
       },
+      principalKey: "p6r:wire/fixture/verified-subject",
     });
 
     const rpcResponse = await harness.app.request(
@@ -280,6 +293,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
           p6rDisplayName: "Verified Actor",
           p6rImageUrl: null,
         },
+        principalKey: "p6r:wire/fixture/verified-subject",
       },
     });
   });

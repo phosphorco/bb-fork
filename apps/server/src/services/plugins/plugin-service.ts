@@ -116,6 +116,7 @@ import { createPluginRuntime, forgetMutableRoot } from "./plugin-runtime.js";
 import { createPluginUpdates } from "./plugin-updates.js";
 
 import { pluginUpdateCheckEntrySchema } from "./plugin-service-internal.js";
+import { p6rPrincipalKeyForActor } from "../identity.js";
 import type {
   LoadedPlugin,
   PluginAgentToolContribution,
@@ -2041,9 +2042,14 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
         id,
         `http ${route.method} ${route.path}`,
         async () => {
+          const p6rRequestPrincipal =
+            context.get("p6rRequestPrincipal") ?? null;
           const response = await route.handler(context, {
-            p6rRequestPrincipal:
-              context.get("p6rRequestPrincipal") ?? null,
+            p6rRequestPrincipal,
+            p6rRequestPrincipalKey:
+              p6rRequestPrincipal === null
+                ? null
+                : p6rPrincipalKeyForActor(p6rRequestPrincipal),
           });
           return adoptHttpRouteResponse(response);
         },
@@ -2060,7 +2066,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       method,
       handler,
       input,
-      p6rRequestContext = { p6rRequestPrincipal: null },
+      p6rRequestContext = {
+        p6rRequestPrincipal: null,
+        p6rRequestPrincipalKey: null,
+      },
     ) {
       const outcome = await invokeWrapped(id, `rpc ${method}`, async () => {
         const parsedInput = await validateRpcValue(

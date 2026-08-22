@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { Context } from "hono";
 import type * as z from "zod";
+import type { P6rActorSnapshot, P6rPrincipalKey } from "@bb/domain";
 import type { ProviderFork } from "@bb/domain/provider-fork";
 import type { BbSdk, ThreadGetResult, ThreadListResult } from "@bb/sdk";
 import type { ThreadResponse } from "@bb/server-contract";
@@ -179,6 +180,8 @@ export type PluginHttpAuthMode = "local" | "token" | "none";
 export interface P6rPluginRequestContext {
   /** Null means no authenticated actor was available for this request. */
   p6rRequestPrincipal: P6rActorSnapshot | null;
+  /** Server-authored equality key for the same principal. */
+  p6rRequestPrincipalKey: P6rPrincipalKey | null;
 }
 
 export type PluginHttpHandler = (
@@ -1238,5 +1241,12 @@ export interface P6rIdentityProviderRegistration {
 }
 
 export interface P6rIdentityApi {
-  registerProvider(registration: P6rIdentityProviderRegistration): void;
+  registerProvider(
+    registration: P6rIdentityProviderRegistration,
+  ): P6rIdentityProviderHandle;
+}
+
+/** Provider-scoped denotation only; this does not authenticate a request. */
+export interface P6rIdentityProviderHandle {
+  p6rPrincipalKeyForSubject(subject: string): P6rPrincipalKey;
 }

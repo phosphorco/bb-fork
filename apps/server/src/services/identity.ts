@@ -7,6 +7,7 @@ import {
 import type { Context } from "hono";
 import {
   p6rActorSnapshotSchema,
+  p6rCreateProviderPrincipalKey,
   p6rPrincipalKeyForActorSnapshot,
   type P6rPrincipalKey,
   type P6rActorSnapshot,
@@ -52,6 +53,7 @@ export type P6rBoundaryResolution =
 export interface P6rIdentityProviderLease {
   p6rActivate(): void;
   p6rRelease(): void;
+  p6rPrincipalKeyForSubject(subject: string): P6rPrincipalKey;
 }
 
 export interface P6rIdentityRequestInput extends P6rIdentityProviderRequest {
@@ -242,6 +244,12 @@ export function p6rCreateIdentityBoundary(args: {
           if (provider === registrationRecord) provider = undefined;
         }
         state = "released";
+      },
+      p6rPrincipalKeyForSubject(subject) {
+        return p6rCreateProviderPrincipalKey(
+          "p6r",
+          `${registrationRecord.p6rProviderId}/${subject}`,
+        );
       },
     };
   }

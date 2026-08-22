@@ -526,7 +526,13 @@ export function createPluginApi(options: {
   p6rStageProvider: (
     pluginId: string,
     registration: P6rIdentityProviderRegistration,
-  ) => { p6rActivate(): void; p6rRelease(): void };
+  ) => {
+    p6rActivate(): void;
+    p6rRelease(): void;
+    p6rPrincipalKeyForSubject(
+      subject: string,
+    ): import("@bb/domain").P6rPrincipalKey;
+  };
   logger: ServerLogger;
   db: DbConnection;
   dataDir: string;
@@ -615,7 +621,13 @@ export function createPluginApi(options: {
   let facetAuthorityRevoked = false;
   let wrappedSdk: BbSdk | undefined;
   let p6rIdentityProviderLease:
-    | { p6rActivate(): void; p6rRelease(): void }
+    | {
+        p6rActivate(): void;
+        p6rRelease(): void;
+        p6rPrincipalKeyForSubject(
+          subject: string,
+        ): import("@bb/domain").P6rPrincipalKey;
+      }
     | undefined;
   let pendingNeedsConfiguration: string | null = null;
   const pendingAgentToolProblems: string[] = [];
@@ -1106,6 +1118,10 @@ export function createPluginApi(options: {
       // factory work; preserve the existing direct SDK behavior. Candidate
       // handles remain staged until plugin-runtime reaches commit.
       if (activated) p6rIdentityProviderLease.p6rActivate();
+      return {
+        p6rPrincipalKeyForSubject: (subject) =>
+          p6rIdentityProviderLease!.p6rPrincipalKeyForSubject(subject),
+      };
     },
   };
 

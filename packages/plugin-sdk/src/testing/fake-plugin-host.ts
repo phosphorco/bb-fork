@@ -6,6 +6,7 @@ import { CronExpressionParser } from "cron-parser";
 import { Hono } from "hono";
 import { z } from "zod";
 import { PLUGIN_INTERACTION_MAX_TITLE_LENGTH } from "@bb/domain/plugin-interaction-limits";
+import { p6rCreateProviderPrincipalKey } from "@bb/domain";
 import {
   AGENT_TOOL_NAME_PATTERN,
   assertNoRecursiveJsonSchemaReferences,
@@ -1035,7 +1036,7 @@ function createFakePluginHostInternal(
 
   let p6rIdentityProvider: P6rIdentityProviderRegistration | null = null;
   const p6rIdentity = {
-    registerProvider(registration: P6rIdentityProviderRegistration): void {
+    registerProvider(registration: P6rIdentityProviderRegistration) {
       assertLive();
       if (p6rIdentityProvider !== null) {
         throw new Error(
@@ -1043,6 +1044,13 @@ function createFakePluginHostInternal(
         );
       }
       p6rIdentityProvider = registration;
+      return {
+        p6rPrincipalKeyForSubject: (subject: string) =>
+          p6rCreateProviderPrincipalKey(
+            "p6r",
+            `${pluginId}/${registration.id}/${subject}`,
+          ),
+      };
     },
   };
 
@@ -2442,6 +2450,7 @@ function createFakePluginHostInternal(
       try {
         result = await record.handler(validatedInput as never, {
           p6rRequestPrincipal: null,
+          p6rRequestPrincipalKey: null,
         });
       } catch (error) {
         return throwRpcError({
@@ -2509,7 +2518,10 @@ function createFakePluginHostInternal(
       app.on(route.method, route.path, async (context) => {
         try {
           return adoptHttpRouteResponse(
-            await route.handler(context, { p6rRequestPrincipal: null }),
+            await route.handler(context, {
+              p6rRequestPrincipal: null,
+              p6rRequestPrincipalKey: null,
+            }),
           );
         } catch (error) {
           const message = errorMessage(error);

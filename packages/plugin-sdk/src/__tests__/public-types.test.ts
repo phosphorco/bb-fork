@@ -57,6 +57,7 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
   "PluginHttpAuthMode",
   "PluginHttpHandler",
   "P6rIdentityApi",
+  "P6rIdentityProviderHandle",
   "P6rIdentityProviderRegistration",
   "P6rIdentityProviderRequest",
   "P6rIdentityProviderResolution",

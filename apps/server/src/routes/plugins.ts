@@ -26,7 +26,10 @@ import {
   pluginTokenRequestSchema,
   pluginUpdateCheckRequestSchema,
 } from "@bb/server-contract";
-import { p6rGetRequestPrincipal } from "../services/identity.js";
+import {
+  p6rGetRequestPrincipal,
+  p6rPrincipalKeyForActor,
+} from "../services/identity.js";
 
 /** The slice of server deps the "local" auth checks need (origin allowlist). */
 interface PluginRoutesDeps {
@@ -669,12 +672,19 @@ export function registerPluginRoutes(
         404,
       );
     }
+    const p6rRequestPrincipal = p6rGetRequestPrincipal(context);
     const outcome = await plugins.invokeRpcHandler(
       id,
       method,
       lookup.value,
       input,
-      { p6rRequestPrincipal: p6rGetRequestPrincipal(context) },
+      {
+        p6rRequestPrincipal,
+        p6rRequestPrincipalKey:
+          p6rRequestPrincipal === null
+            ? null
+            : p6rPrincipalKeyForActor(p6rRequestPrincipal),
+      },
     );
     if (!outcome.ok) {
       return context.json(
