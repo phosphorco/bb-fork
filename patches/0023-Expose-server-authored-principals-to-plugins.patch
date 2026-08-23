@@ -1,0 +1,354 @@
+From d0a32433a20ae986441915a88095c1552e52afc9 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.invalid>
+Date: Sat, 22 Aug 2026 14:48:21 -0400
+Subject: [PATCH 23/32] Expose server-authored principals to plugins
+
+Carry the authenticated actor's canonical p6r PrincipalKey through HTTP and RPC plugin request contexts. Return a provider-scoped denotation handle so identity providers can project their directory subjects without duplicating key serialization or authenticating browser input. Keep anonymous contexts nullable and cover the public SDK contract plus shared wire behavior.
+---
+ apps/server/src/routes/plugins.ts             | 14 +++++++++++--
+ apps/server/src/services/identity.ts          |  7 +++++++
+ .../server/src/services/plugins/plugin-api.ts | 20 +++++++++++++++++--
+ .../src/services/plugins/plugin-service.ts    | 14 +++++++++++--
+ .../test/services/plugins/plugin-wire.test.ts | 20 ++++++++++++++++---
+ .../src/__tests__/public-types.test.ts        |  1 +
+ packages/plugin-sdk/src/backend-contract.ts   | 13 ++++++++++--
+ .../src/testing/fake-plugin-host.ts           | 16 +++++++++++++--
+ 8 files changed, 92 insertions(+), 13 deletions(-)
+
+diff --git a/apps/server/src/routes/plugins.ts b/apps/server/src/routes/plugins.ts
+index ada56d8567aeffcd1b45b5e5dda81d028d74be8f..1178ccf1d2515c3205c70f55c268b1240ef6eafa 100644
+--- a/apps/server/src/routes/plugins.ts
++++ b/apps/server/src/routes/plugins.ts
+@@ -26,7 +26,10 @@ import {
+   pluginTokenRequestSchema,
+   pluginUpdateCheckRequestSchema,
+ } from "@bb/server-contract";
+-import { p6rGetRequestPrincipal } from "../services/identity.js";
++import {
++  p6rGetRequestPrincipal,
++  p6rPrincipalKeyForActor,
++} from "../services/identity.js";
+ 
+ /** The slice of server deps the "local" auth checks need (origin allowlist). */
+ interface PluginRoutesDeps {
+@@ -659,12 +662,19 @@ export function registerPluginRoutes(
+         404,
+       );
+     }
++    const p6rRequestPrincipal = p6rGetRequestPrincipal(context);
+     const outcome = await plugins.invokeRpcHandler(
+       id,
+       method,
+       lookup.value,
+       input,
+-      { p6rRequestPrincipal: p6rGetRequestPrincipal(context) },
++      {
++        p6rRequestPrincipal,
++        p6rRequestPrincipalKey:
++          p6rRequestPrincipal === null
++            ? null
++            : p6rPrincipalKeyForActor(p6rRequestPrincipal),
++      },
+     );
+     if (!outcome.ok) {
+       return context.json(
+diff --git a/apps/server/src/services/identity.ts b/apps/server/src/services/identity.ts
+index 8d21fe4119d816a0c52652e4bb73510a7ddaa1be..6f660b349a63d2720416e757d4efcddb2f69ba65 100644
+--- a/apps/server/src/services/identity.ts
++++ b/apps/server/src/services/identity.ts
+@@ -62,6 +62,7 @@ export type P6rBoundaryResolution =
+ export interface P6rIdentityProviderLease {
+   p6rActivate(): void;
+   p6rRelease(): void;
++  p6rPrincipalKeyForSubject(subject: string): P6rPrincipalKey;
+ }
+ 
+ export interface P6rIdentityRequestInput extends P6rIdentityProviderRequest {
+@@ -253,6 +254,12 @@ export function p6rCreateIdentityBoundary(args: {
+         }
+         state = "released";
+       },
++      p6rPrincipalKeyForSubject(subject) {
++        return p6rCreateProviderPrincipalKey(
++          "p6r",
++          `${registrationRecord.p6rProviderId}/${subject}`,
++        );
++      },
+     };
+   }
+ 
+diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
+index 4676086341f29546e8f9fc31dd41c041fa0281bb..107c7e8070b289d6d7710b6e503e4350dac0827e 100644
+--- a/apps/server/src/services/plugins/plugin-api.ts
++++ b/apps/server/src/services/plugins/plugin-api.ts
+@@ -346,7 +346,13 @@ export function createPluginApi(options: {
+   p6rStageProvider: (
+     pluginId: string,
+     registration: P6rIdentityProviderRegistration,
+-  ) => { p6rActivate(): void; p6rRelease(): void };
++  ) => {
++    p6rActivate(): void;
++    p6rRelease(): void;
++    p6rPrincipalKeyForSubject(
++      subject: string,
++    ): import("@bb/domain").P6rPrincipalKey;
++  };
+   logger: ServerLogger;
+   db: DbConnection;
+   dataDir: string;
+@@ -434,7 +440,13 @@ export function createPluginApi(options: {
+   let activated = false;
+   let wrappedSdk: BbSdk | undefined;
+   let p6rIdentityProviderLease:
+-    | { p6rActivate(): void; p6rRelease(): void }
++    | {
++        p6rActivate(): void;
++        p6rRelease(): void;
++        p6rPrincipalKeyForSubject(
++          subject: string,
++        ): import("@bb/domain").P6rPrincipalKey;
++      }
+     | undefined;
+   let pendingNeedsConfiguration: string | null = null;
+   const pendingAgentToolProblems: string[] = [];
+@@ -704,6 +716,10 @@ export function createPluginApi(options: {
+       // factory work; preserve the existing direct SDK behavior. Candidate
+       // handles remain staged until plugin-runtime reaches commit.
+       if (activated) p6rIdentityProviderLease.p6rActivate();
++      return {
++        p6rPrincipalKeyForSubject: (subject) =>
++          p6rIdentityProviderLease!.p6rPrincipalKeyForSubject(subject),
++      };
+     },
+   };
+ 
+diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
+index 3699f132f1d89edcc714a5860345cfb858167f08..bc015f08b46bd71ef7399de07983c87de4a1e129 100644
+--- a/apps/server/src/services/plugins/plugin-service.ts
++++ b/apps/server/src/services/plugins/plugin-service.ts
+@@ -113,6 +113,7 @@ import { createPluginRuntime, forgetMutableRoot } from "./plugin-runtime.js";
+ import { createPluginUpdates } from "./plugin-updates.js";
+ 
+ import { pluginUpdateCheckEntrySchema } from "./plugin-service-internal.js";
++import { p6rPrincipalKeyForActor } from "../identity.js";
+ import type {
+   LoadedPlugin,
+   PluginAgentToolContribution,
+@@ -1964,8 +1965,14 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+         id,
+         `http ${route.method} ${route.path}`,
+         async () => {
++          const p6rRequestPrincipal =
++            context.get("p6rRequestPrincipal") ?? null;
+           const response = await route.handler(context, {
+-            p6rRequestPrincipal: context.get("p6rRequestPrincipal") ?? null,
++            p6rRequestPrincipal,
++            p6rRequestPrincipalKey:
++              p6rRequestPrincipal === null
++                ? null
++                : p6rPrincipalKeyForActor(p6rRequestPrincipal),
+           });
+           return adoptHttpRouteResponse(response);
+         },
+@@ -1982,7 +1989,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+       method,
+       handler,
+       input,
+-      p6rRequestContext = { p6rRequestPrincipal: null },
++      p6rRequestContext = {
++        p6rRequestPrincipal: null,
++        p6rRequestPrincipalKey: null,
++      },
+     ) {
+       const outcome = await invokeWrapped(id, `rpc ${method}`, async () => {
+         const parsedInput = await validateRpcValue(
+diff --git a/apps/server/test/services/plugins/plugin-wire.test.ts b/apps/server/test/services/plugins/plugin-wire.test.ts
+index 71dfa87f4e9a09a8be125d2f2e62b21ac172b4c4..adb29f3c542b5755ef96ced7c729565de9007a3f 100644
+--- a/apps/server/test/services/plugins/plugin-wire.test.ts
++++ b/apps/server/test/services/plugins/plugin-wire.test.ts
+@@ -32,12 +32,15 @@ const WIRE_SOURCE = `
+     cyclicResult: { input: z.null(), output: z.any() },
+     nonFiniteResult: { input: z.null(), output: z.any() },
+     validated: { input: z.object({ value: z.string().min(1) }), output: z.string() },
+-    identity: { input: z.null(), output: z.object({ principal: z.unknown() }) },
++    identity: {
++      input: z.null(),
++      output: z.object({ principal: z.unknown(), principalKey: z.unknown() }),
++    },
+   });
+   export default function plugin(bb: any) {
+     bb.http.route("GET", "/hello", (c: any) => c.json({ message: "hello v1" }));
+     bb.http.route("GET", "/identity", (c: any, ctx: any) =>
+-      c.json({ principal: ctx.p6rRequestPrincipal }));
++      c.json({ principal: ctx.p6rRequestPrincipal, principalKey: ctx.p6rRequestPrincipalKey }));
+     bb.http.route("POST", "/echo", async (c: any) =>
+       c.json({ echoed: await c.req.json() }));
+     bb.http.route("GET", "/guarded", (c: any) => c.json({ guarded: true }), {
+@@ -115,6 +118,7 @@ const WIRE_SOURCE = `
+       },
+       identity: (_input: null, ctx: any) => ({
+         principal: ctx.p6rRequestPrincipal,
++        principalKey: ctx.p6rRequestPrincipalKey,
+       }),
+     });
+   }
+@@ -196,6 +200,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
+     expect(noProviderIdentity.status).toBe(200);
+     const noProviderBody = (await noProviderIdentity.json()) as {
+       principal: Record<string, unknown>;
++      principalKey: unknown;
+     };
+     expect(noProviderBody.principal).toMatchObject({
+       p6rProviderId: "p6r-local-operator",
+@@ -204,6 +209,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
+     expect(noProviderBody.principal.p6rHandle).toEqual(
+       noProviderBody.principal.p6rSubject,
+     );
++    expect(noProviderBody.principalKey).toMatch(/^local:/u);
+ 
+     const sameOrigin = await harness.app.request(
+       `${BASE}/api/v1/plugins/wire/http/hello`,
+@@ -222,7 +228,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
+   it("passes only the shared resolver principal to HTTP and RPC plugin edges", async () => {
+     const api = harness.pluginService.getApi("wire");
+     if (!api) throw new Error("wire plugin API was not loaded");
+-    api.p6rIdentity.registerProvider({
++    const provider = api.p6rIdentity.registerProvider({
+       id: "fixture",
+       resolve: () => ({
+         kind: "authenticated",
+@@ -232,6 +238,12 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
+         p6rImageUrl: null,
+       }),
+     });
++    expect(provider.p6rPrincipalKeyForSubject("verified-subject")).toBe(
++      "p6r:wire/fixture/verified-subject",
++    );
++    expect(provider.p6rPrincipalKeyForSubject("other-subject")).toBe(
++      "p6r:wire/fixture/other-subject",
++    );
+     expect(() =>
+       api.p6rIdentity.registerProvider({
+         id: "second",
+@@ -256,6 +268,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
+         p6rDisplayName: "Verified Actor",
+         p6rImageUrl: null,
+       },
++      principalKey: "p6r:wire/fixture/verified-subject",
+     });
+ 
+     const rpcResponse = await harness.app.request(
+@@ -280,6 +293,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
+           p6rDisplayName: "Verified Actor",
+           p6rImageUrl: null,
+         },
++        principalKey: "p6r:wire/fixture/verified-subject",
+       },
+     });
+   });
+diff --git a/packages/plugin-sdk/src/__tests__/public-types.test.ts b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+index 85d84f2383647b57b73d8a3a81fd82f4cd73aa30..4a267bbd9734de271cab65687f555d882729ff91 100644
+--- a/packages/plugin-sdk/src/__tests__/public-types.test.ts
++++ b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+@@ -47,6 +47,7 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
+   "PluginHttpAuthMode",
+   "PluginHttpHandler",
+   "P6rIdentityApi",
++  "P6rIdentityProviderHandle",
+   "P6rIdentityProviderRegistration",
+   "P6rIdentityProviderRequest",
+   "P6rIdentityProviderResolution",
+diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
+index 3e7d1d3af151308f6381df9074d440170d1f07eb..6a1ed066f619c086dcf1066eed6cb350f0aeff05 100644
+--- a/packages/plugin-sdk/src/backend-contract.ts
++++ b/packages/plugin-sdk/src/backend-contract.ts
+@@ -1,7 +1,7 @@
+ import type Database from "better-sqlite3";
+ import type { Context } from "hono";
+ import type * as z from "zod";
+-import type { P6rActorSnapshot } from "@bb/domain";
++import type { P6rActorSnapshot, P6rPrincipalKey } from "@bb/domain";
+ import type { ProviderFork } from "@bb/domain/provider-fork";
+ import type { BbSdk } from "@bb/sdk";
+ import type { ThreadResponse } from "@bb/server-contract";
+@@ -174,6 +174,8 @@ export type PluginHttpAuthMode = "local" | "token" | "none";
+ export interface P6rPluginRequestContext {
+   /** Null means no authenticated actor was available for this request. */
+   p6rRequestPrincipal: P6rActorSnapshot | null;
++  /** Server-authored equality key for the same principal. */
++  p6rRequestPrincipalKey: P6rPrincipalKey | null;
+ }
+ 
+ export type PluginHttpHandler = (
+@@ -944,5 +946,12 @@ export interface P6rIdentityProviderRegistration {
+ }
+ 
+ export interface P6rIdentityApi {
+-  registerProvider(registration: P6rIdentityProviderRegistration): void;
++  registerProvider(
++    registration: P6rIdentityProviderRegistration,
++  ): P6rIdentityProviderHandle;
++}
++
++/** Provider-scoped denotation only; this does not authenticate a request. */
++export interface P6rIdentityProviderHandle {
++  p6rPrincipalKeyForSubject(subject: string): P6rPrincipalKey;
+ }
+diff --git a/packages/plugin-sdk/src/testing/fake-plugin-host.ts b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+index 00a14de416ee94ac0fdb5e16e8c8ca0198d46e91..a4d613b2a2c57d379893717c5fb9b32b6b67689e 100644
+--- a/packages/plugin-sdk/src/testing/fake-plugin-host.ts
++++ b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+@@ -6,6 +6,7 @@ import { CronExpressionParser } from "cron-parser";
+ import { Hono } from "hono";
+ import { z } from "zod";
+ import { PLUGIN_INTERACTION_MAX_TITLE_LENGTH } from "@bb/domain/plugin-interaction-limits";
++import { p6rCreateProviderPrincipalKey } from "@bb/domain";
+ import {
+   AGENT_TOOL_NAME_PATTERN,
+   assertNoRecursiveJsonSchemaReferences,
+@@ -969,7 +970,7 @@ function createFakePluginHostInternal(
+ 
+   let p6rIdentityProvider: P6rIdentityProviderRegistration | null = null;
+   const p6rIdentity = {
+-    registerProvider(registration: P6rIdentityProviderRegistration): void {
++    registerProvider(registration: P6rIdentityProviderRegistration) {
+       assertLive();
+       if (p6rIdentityProvider !== null) {
+         throw new Error(
+@@ -977,6 +978,13 @@ function createFakePluginHostInternal(
+         );
+       }
+       p6rIdentityProvider = registration;
++      return {
++        p6rPrincipalKeyForSubject: (subject: string) =>
++          p6rCreateProviderPrincipalKey(
++            "p6r",
++            `${pluginId}/${registration.id}/${subject}`,
++          ),
++      };
+     },
+   };
+ 
+@@ -1944,6 +1952,7 @@ function createFakePluginHostInternal(
+       try {
+         result = await record.handler(validatedInput as never, {
+           p6rRequestPrincipal: null,
++          p6rRequestPrincipalKey: null,
+         });
+       } catch (error) {
+         return throwRpcError({
+@@ -2011,7 +2020,10 @@ function createFakePluginHostInternal(
+       app.on(route.method, route.path, async (context) => {
+         try {
+           return adoptHttpRouteResponse(
+-            await route.handler(context, { p6rRequestPrincipal: null }),
++            await route.handler(context, {
++              p6rRequestPrincipal: null,
++              p6rRequestPrincipalKey: null,
++            }),
+           );
+         } catch (error) {
+           const message = errorMessage(error);
+-- 
+2.43.0
+

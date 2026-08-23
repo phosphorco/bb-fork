@@ -1,7 +1,7 @@
-From 1aec2b6d14086a5dbee432d38f4763d759266089 Mon Sep 17 00:00:00 2001
+From 79ec667c75a73e94ef1eddb5cbfba634e008af9f Mon Sep 17 00:00:00 2001
 From: Rosetta <cole@phosphor.co>
 Date: Sat, 22 Aug 2026 07:38:12 -0400
-Subject: [PATCH] Expose durable thread participants in sidebar
+Subject: [PATCH 19/32] Expose durable thread participants in sidebar
 
 Project ordered participants from durable authored-event actor snapshots using provider-qualified PrincipalKey equality, with latest presentation retained in first-authored order. Carry the additive legacy-readable participant contract through the thread list and render ordered labeled names and avatars in the native row without presence or Notifications joins. Focused public producer, order/rehydration, sidebar, and typecheck verification passed.
 ---
@@ -13,7 +13,7 @@ Project ordered participants from durable authored-event actor snapshots using p
  5 files changed, 343 insertions(+), 8 deletions(-)
 
 diff --git a/apps/app/src/components/sidebar/ThreadRow.test.tsx b/apps/app/src/components/sidebar/ThreadRow.test.tsx
-index 6fdf2359f2529f8c08a1e4f75f89378435633852..a8bd8fc3dcb977cbacb69583774ad68d1f15029c 100644
+index 396f56ed4ec97cdfeb3ab09c9824f529d76f9e8c..882661e4318737ec4daccd2d9de07f289302ada9 100644
 --- a/apps/app/src/components/sidebar/ThreadRow.test.tsx
 +++ b/apps/app/src/components/sidebar/ThreadRow.test.tsx
 @@ -6,11 +6,12 @@ import {
@@ -30,7 +30,7 @@ index 6fdf2359f2529f8c08a1e4f75f89378435633852..a8bd8fc3dcb977cbacb69583774ad68d
  import type { PluginComposerThreadRowStatus } from "@get-bb/plugin-sdk";
  import { afterEach, describe, expect, it, vi } from "vitest";
  import {
-@@ -94,6 +95,7 @@ function createThread(
+@@ -91,6 +92,7 @@ function createThread(
      environmentName: null,
      environmentBranchName: null,
      environmentWorkspaceDisplayKind: "other",
@@ -38,7 +38,7 @@ index 6fdf2359f2529f8c08a1e4f75f89378435633852..a8bd8fc3dcb977cbacb69583774ad68d
      runtime: {
        displayStatus: "idle",
        hostReconnectGraceExpiresAt: null,
-@@ -259,6 +261,45 @@ afterEach(() => {
+@@ -250,6 +252,45 @@ afterEach(() => {
  });
  
  describe("ThreadRow", () => {
@@ -85,7 +85,7 @@ index 6fdf2359f2529f8c08a1e4f75f89378435633852..a8bd8fc3dcb977cbacb69583774ad68d
      label: string;
      pluginStatus?: PluginComposerThreadRowStatus;
 diff --git a/apps/app/src/components/sidebar/ThreadRow.tsx b/apps/app/src/components/sidebar/ThreadRow.tsx
-index 87e9affe88cac3e95e3cfe23994e368c1f0809fc..2379d5cbcf0827678125e1f0f99975572f78e1ed 100644
+index 3b08ad78db2997e040afbed615cc11bb9b58e13e..12156aabc7a83f6a15da918fee1db09a3f38d3ad 100644
 --- a/apps/app/src/components/sidebar/ThreadRow.tsx
 +++ b/apps/app/src/components/sidebar/ThreadRow.tsx
 @@ -10,7 +10,10 @@ import {
@@ -100,7 +100,7 @@ index 87e9affe88cac3e95e3cfe23994e368c1f0809fc..2379d5cbcf0827678125e1f0f9997557
  import type { PluginComposerThreadRowStatus } from "@get-bb/plugin-sdk";
  import { getThreadConversationCollapsedAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
  import { Icon } from "@bb/shared-ui/icon";
-@@ -83,6 +86,7 @@ import {
+@@ -86,6 +89,7 @@ import {
  import { pluginIconName } from "@/components/plugin/PluginIcon";
  import { usePluginThreadRowStatus } from "@/lib/plugin-thread-row-status";
  import { P6rSidebarPresenceDots } from "@/components/thread/presence/SidebarPresenceDots";
@@ -108,7 +108,7 @@ index 87e9affe88cac3e95e3cfe23994e368c1f0809fc..2379d5cbcf0827678125e1f0f9997557
  import { useP6rClaimedIdentity } from "@/lib/claimed-identity-store";
  import { useP6rThreadPresenceSummaryHandles } from "@/lib/presence-store";
  
-@@ -184,6 +188,70 @@ function ThreadDraftIndicator({
+@@ -183,6 +187,70 @@ function ThreadDraftIndicator({
    );
  }
  
@@ -179,7 +179,7 @@ index 87e9affe88cac3e95e3cfe23994e368c1f0809fc..2379d5cbcf0827678125e1f0f9997557
  function PluginThreadRowStatusIndicator({
    status,
  }: {
-@@ -737,12 +805,15 @@ function ThreadRowComponent({
+@@ -738,12 +806,15 @@ function ThreadRowComponent({
              {editor}
            </span>
          ) : (
@@ -188,21 +188,21 @@ index 87e9affe88cac3e95e3cfe23994e368c1f0809fc..2379d5cbcf0827678125e1f0f9997557
 -            title={labelTitle}
 -            onDoubleClick={startTitleEditing}
 -          >
--            <SidebarThreadTitle title={visibleTitle} />
+-            <ThreadTitleMentions title={threadTitle} />
 +          <span className="flex min-w-0 items-center gap-1.5">
 +            <span
 +              className="min-w-0 truncate"
 +              title={labelTitle}
 +              onDoubleClick={startTitleEditing}
 +            >
-+              <SidebarThreadTitle title={visibleTitle} />
++              <ThreadTitleMentions title={threadTitle} />
 +            </span>
 +            <ThreadRowParticipants participants={thread.participants ?? []} />
            </span>
          )}
          {crossProjectLabel !== null ? (
 diff --git a/apps/server/src/services/threads/thread-runtime-display.ts b/apps/server/src/services/threads/thread-runtime-display.ts
-index 42ac9ae68be8c4641a8518f716ffe4b4625d9087..968e7deb656aec1382d306890c989543bc9f508a 100644
+index 4514ee79e486be515752e7724fe462f262b4ac90..1604f0a0d3bf2d4ed54b483a4fddfb295ae0c4df 100644
 --- a/apps/server/src/services/threads/thread-runtime-display.ts
 +++ b/apps/server/src/services/threads/thread-runtime-display.ts
 @@ -7,6 +7,7 @@ import {
@@ -231,7 +231,7 @@ index 42ac9ae68be8c4641a8518f716ffe4b4625d9087..968e7deb656aec1382d306890c989543
 +import { p6rPrincipalKeyForActor } from "../identity.js";
  import { resolveProviderPlanCommand } from "../providers/provider-plan-command.js";
  import type { ProviderRegistryService } from "../providers/provider-registry.js";
- import { parseStoredEvent } from "./thread-data.js";
+ import { canThreadSpawnChild } from "./thread-parent.js";
 @@ -87,6 +91,7 @@ interface ToThreadListEntryResponseFromLatestSessionArgs {
    hostConnected: boolean;
    latestSession: HostDaemonSessionRow | null;
@@ -313,7 +313,7 @@ index 42ac9ae68be8c4641a8518f716ffe4b4625d9087..968e7deb656aec1382d306890c989543
  function threadStatusRuntimeState(status: ThreadStatus): ThreadRuntimeState {
    switch (status) {
      case "starting":
-@@ -413,6 +484,10 @@ export function toThreadListEntryResponses(
+@@ -397,6 +468,10 @@ export function toThreadListEntryResponses(
    );
    const promptBannerActivityByThreadId =
      buildThreadPromptBannerActivityByThreadId(deps, args.threads);
@@ -324,7 +324,7 @@ index 42ac9ae68be8c4641a8518f716ffe4b4625d9087..968e7deb656aec1382d306890c989543
    const activeHostIds = [
      ...new Set(
        args.threads.flatMap((thread) =>
-@@ -462,6 +537,7 @@ export function toThreadListEntryResponses(
+@@ -446,6 +521,7 @@ export function toThreadListEntryResponses(
            ? null
            : (latestSessionByHostId.get(thread.environmentHostId) ?? null),
        now: args.now,
@@ -332,7 +332,7 @@ index 42ac9ae68be8c4641a8518f716ffe4b4625d9087..968e7deb656aec1382d306890c989543
        thread,
      });
    });
-@@ -481,6 +557,7 @@ function toThreadListEntryResponseFromLatestSession(
+@@ -465,6 +541,7 @@ function toThreadListEntryResponseFromLatestSession(
      environmentWorkspaceDisplayKind:
        args.thread.environmentWorkspaceDisplayKind,
      hasPendingInteraction: args.thread.hasPendingInteraction,
@@ -341,7 +341,7 @@ index 42ac9ae68be8c4641a8518f716ffe4b4625d9087..968e7deb656aec1382d306890c989543
        environmentHostId: args.thread.environmentHostId,
        hostConnected: args.hostConnected,
 diff --git a/apps/server/test/public/public-thread-data.test.ts b/apps/server/test/public/public-thread-data.test.ts
-index 0ef40c358f145c11887411c750621f969a0be712..b9c794a778ae721c5b8eb250a3701ecea580a7a6 100644
+index 4a782a203bfa29179cc08b38ac4d5e5d3f3ff361..6ee8c84e7a12e11ca31f9aa85c082ecc453766d8 100644
 --- a/apps/server/test/public/public-thread-data.test.ts
 +++ b/apps/server/test/public/public-thread-data.test.ts
 @@ -30,6 +30,7 @@ import {
@@ -352,7 +352,7 @@ index 0ef40c358f145c11887411c750621f969a0be712..b9c794a778ae721c5b8eb250a3701ece
    threadSectionMutationResponseSchema,
    threadSectionSchema,
    threadConversationOutlineResponseSchema,
-@@ -97,6 +98,138 @@ const queuedActor: P6rActorSnapshot = {
+@@ -98,6 +99,138 @@ const queuedActor: P6rActorSnapshot = {
  };
  
  describe("public thread data routes", () => {
@@ -492,7 +492,7 @@ index 0ef40c358f145c11887411c750621f969a0be712..b9c794a778ae721c5b8eb250a3701ece
      await withTestHarness(async (harness) => {
        const { thread } = seedThreadFixture(harness);
 diff --git a/packages/domain/src/thread.ts b/packages/domain/src/thread.ts
-index f0033bb4b787fa4b1f5f4adf72f64d842eebfa19..d1d692cb47f448d5cb0f39d2d598170b3ae26c61 100644
+index dc26c8be1ea4104b07d2de956104c0c32292ad97..e421800c2972acf1056d20ee4ac8623e8a78ceeb 100644
 --- a/packages/domain/src/thread.ts
 +++ b/packages/domain/src/thread.ts
 @@ -10,6 +10,7 @@ import {
@@ -503,7 +503,7 @@ index f0033bb4b787fa4b1f5f4adf72f64d842eebfa19..d1d692cb47f448d5cb0f39d2d598170b
  import { p6rActorSnapshotSchema } from "./p6r-identity.js";
  export { threadStatusSchema, threadStatusValues } from "./thread-status.js";
  export type { ThreadStatus } from "./thread-status.js";
-@@ -404,6 +405,17 @@ export const threadWithRuntimeSchema = threadSchema.extend({
+@@ -394,6 +395,17 @@ export const threadWithRuntimeSchema = threadSchema.extend({
  });
  export type ThreadWithRuntime = z.infer<typeof threadWithRuntimeSchema>;
  
@@ -521,7 +521,7 @@ index f0033bb4b787fa4b1f5f4adf72f64d842eebfa19..d1d692cb47f448d5cb0f39d2d598170b
  export const threadListEntrySchema = threadWithRuntimeSchema.extend({
    activity: threadActivityStateSchema,
    pinSortKey: z.string().nullable(),
-@@ -412,5 +424,6 @@ export const threadListEntrySchema = threadWithRuntimeSchema.extend({
+@@ -402,5 +414,6 @@ export const threadListEntrySchema = threadWithRuntimeSchema.extend({
    environmentName: z.string().nullable(),
    environmentBranchName: z.string().nullable(),
    environmentWorkspaceDisplayKind: environmentWorkspaceDisplayKindSchema,

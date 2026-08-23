@@ -1,7 +1,7 @@
-From d7d64b924e8a14cbd6f5a75e3fa893cd4e54e063 Mon Sep 17 00:00:00 2001
+From cc3a37203d342cfde3851af24078610ad980af78 Mon Sep 17 00:00:00 2001
 From: bb-fork recut <bb-fork@invalid.local>
 Date: Wed, 19 Aug 2026 09:54:19 -0400
-Subject: [PATCH 05/16] Harden multiplayer integration on current upstream
+Subject: [PATCH 05/13] Harden multiplayer integration on current upstream
 
 ---
  .../ConversationMessageContent.test.tsx       |  12 ++
@@ -28,17 +28,16 @@ Subject: [PATCH 05/16] Harden multiplayer integration on current upstream
  packages/db/test/data/events.test.ts          |  38 ++--
  .../db/test/data/pending-interactions.test.ts |  15 +-
  packages/db/test/migrate.test.ts              |  52 +++++
- .../src/generated/templates.generated.ts      |   2 +-
  .../test/build-thread-timeline.test.ts        |  14 +-
  packages/tunnel-client/src/headers.ts         |   1 -
- 27 files changed, 1118 insertions(+), 142 deletions(-)
+ 26 files changed, 1117 insertions(+), 141 deletions(-)
  create mode 100644 apps/app/src/lib/ws.identity-rebind.test.ts
 
 diff --git a/apps/app/src/components/thread/timeline/ConversationMessageContent.test.tsx b/apps/app/src/components/thread/timeline/ConversationMessageContent.test.tsx
-index c4a5219f262875bd0fd6323bd9bb6d3e59f0cedb..0a53cd3282d8a77cc0b7799c8844e2073509fd51 100644
+index 236beb09f815f96878b2a9584960aae9eb53779b..ca47148d7f9a5905cd4c2bceaa9f3c23d1d58c0c 100644
 --- a/apps/app/src/components/thread/timeline/ConversationMessageContent.test.tsx
 +++ b/apps/app/src/components/thread/timeline/ConversationMessageContent.test.tsx
-@@ -164,7 +164,9 @@ describe("ConversationMessageContent long user messages", () => {
+@@ -160,7 +160,9 @@ describe("ConversationMessageContent long user messages", () => {
              threadById={new Map([[mentionedThread.id, mentionedThread]])}
            >
              <ConversationMessageContent
@@ -48,7 +47,7 @@ index c4a5219f262875bd0fd6323bd9bb6d3e59f0cedb..0a53cd3282d8a77cc0b7799c8844e207
                attachments={null}
                originKind={null}
                initiator="user"
-@@ -197,6 +199,7 @@ describe("ConversationMessageContent long user messages", () => {
+@@ -193,6 +195,7 @@ describe("ConversationMessageContent long user messages", () => {
          <RouteNavigationProvider>
            <ConversationMessageContent
              role="user"
@@ -56,7 +55,7 @@ index c4a5219f262875bd0fd6323bd9bb6d3e59f0cedb..0a53cd3282d8a77cc0b7799c8844e207
              attachments={null}
              originKind={null}
              initiator="user"
-@@ -206,6 +209,7 @@ describe("ConversationMessageContent long user messages", () => {
+@@ -202,6 +205,7 @@ describe("ConversationMessageContent long user messages", () => {
              senderIsPluginSideChat={false}
              systemMessageKind="unlabeled"
              systemMessageSubject={null}
@@ -64,7 +63,7 @@ index c4a5219f262875bd0fd6323bd9bb6d3e59f0cedb..0a53cd3282d8a77cc0b7799c8844e207
              text={text}
              turnRequest={{
                isGrouped: false,
-@@ -308,7 +312,9 @@ describe("ConversationMessageContent user thread mentions", () => {
+@@ -304,7 +308,9 @@ describe("ConversationMessageContent user thread mentions", () => {
              threadById={new Map([[mentionedThread.id, mentionedThread]])}
            >
              <ConversationMessageContent
@@ -74,7 +73,7 @@ index c4a5219f262875bd0fd6323bd9bb6d3e59f0cedb..0a53cd3282d8a77cc0b7799c8844e207
                attachments={null}
                originKind={null}
                initiator="user"
-@@ -353,7 +359,9 @@ describe("ConversationMessageContent user thread mentions", () => {
+@@ -349,7 +355,9 @@ describe("ConversationMessageContent user thread mentions", () => {
              threadById={new Map([[mentionedThread.id, mentionedThread]])}
            >
              <ConversationMessageContent
@@ -84,7 +83,7 @@ index c4a5219f262875bd0fd6323bd9bb6d3e59f0cedb..0a53cd3282d8a77cc0b7799c8844e207
                attachments={null}
                originKind={null}
                initiator="user"
-@@ -400,6 +408,7 @@ describe("ConversationMessageContent user thread mentions", () => {
+@@ -396,6 +404,7 @@ describe("ConversationMessageContent user thread mentions", () => {
            >
              <ConversationMessageContent
                role="user"
@@ -92,7 +91,7 @@ index c4a5219f262875bd0fd6323bd9bb6d3e59f0cedb..0a53cd3282d8a77cc0b7799c8844e207
                attachments={null}
                originKind={null}
                initiator="user"
-@@ -409,6 +418,7 @@ describe("ConversationMessageContent user thread mentions", () => {
+@@ -405,6 +414,7 @@ describe("ConversationMessageContent user thread mentions", () => {
                senderIsPluginSideChat={false}
                systemMessageKind="unlabeled"
                systemMessageSubject={null}
@@ -100,7 +99,7 @@ index c4a5219f262875bd0fd6323bd9bb6d3e59f0cedb..0a53cd3282d8a77cc0b7799c8844e207
                text="Why was @thread:thr_ti4st72wgs not a pill?"
                turnRequest={{
                  isGrouped: false,
-@@ -445,6 +455,7 @@ describe("ConversationMessageContent user thread mentions", () => {
+@@ -441,6 +451,7 @@ describe("ConversationMessageContent user thread mentions", () => {
            >
              <ConversationMessageContent
                role="user"
@@ -108,7 +107,7 @@ index c4a5219f262875bd0fd6323bd9bb6d3e59f0cedb..0a53cd3282d8a77cc0b7799c8844e207
                attachments={null}
                originKind={null}
                initiator="user"
-@@ -459,6 +470,7 @@ describe("ConversationMessageContent user thread mentions", () => {
+@@ -455,6 +466,7 @@ describe("ConversationMessageContent user thread mentions", () => {
                senderIsPluginSideChat={false}
                systemMessageKind="unlabeled"
                systemMessageSubject={null}
@@ -117,10 +116,10 @@ index c4a5219f262875bd0fd6323bd9bb6d3e59f0cedb..0a53cd3282d8a77cc0b7799c8844e207
                turnRequest={{
                  isGrouped: false,
 diff --git a/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx b/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx
-index bd096f7ac0dc45bfdcd4cfcfae7e1f89622e056d..3e08d63716de32a3b69f6bce514d9fc1bf8c4cd8 100644
+index 2abef1c72d1498bd36e5afa58e737cebe4a95261..8f0ac3305bd7cba3cc8404a5af869a3c5e77730a 100644
 --- a/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx
 +++ b/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx
-@@ -549,7 +549,9 @@ export function Overview() {
+@@ -573,7 +573,9 @@ export function Overview() {
          >
            <TimelineStage>
              <ConversationMessageContent
@@ -131,10 +130,10 @@ index bd096f7ac0dc45bfdcd4cfcfae7e1f89622e056d..3e08d63716de32a3b69f6bce514d9fc1
                initiator="user"
                senderThreadId={null}
 diff --git a/apps/app/src/components/thread/timeline/useThreadTimelineController.test.tsx b/apps/app/src/components/thread/timeline/useThreadTimelineController.test.tsx
-index 79f94c601e148200627173c375e19520d9a328fd..9c1b5240d87f281ee4a53aab0e51eed9b546e6ad 100644
+index 3190db9f6c2c63f966e1045f6275c99ceccfbb2a..f57350758eeca0abccf7e1802269dc55d7aea83c 100644
 --- a/apps/app/src/components/thread/timeline/useThreadTimelineController.test.tsx
 +++ b/apps/app/src/components/thread/timeline/useThreadTimelineController.test.tsx
-@@ -71,6 +71,7 @@ function makeUserRow(
+@@ -69,6 +69,7 @@ function makeUserRow(
      sourceSeqEnd: sourceSeq,
      startedAt: 1,
      createdAt: 1,
@@ -578,13 +577,13 @@ index 0000000000000000000000000000000000000000..f624c5e7f9b26546074eef4124da4d4c
 +  });
 +});
 diff --git a/apps/app/src/lib/ws.ts b/apps/app/src/lib/ws.ts
-index a2a5504194066fa783125180c8c5224d4f424abc..26b3e01fcfffb6f4b9d376516d6877c788c5e2a2 100644
+index 37993a238f830eeafbbbc2bb47c714c46b2cb78e..5f6e3f2e75d27f1bf02c7752d315eabe10ad2f40 100644
 --- a/apps/app/src/lib/ws.ts
 +++ b/apps/app/src/lib/ws.ts
-@@ -20,7 +20,10 @@ import type {
-   ThreadPresenceMessage,
- } from "@bb/server-contract";
- import { buildDevWebSocketUrl } from "./dev-websocket-url";
+@@ -25,7 +25,10 @@ import {
+   isDocumentVisible,
+   subscribeToDocumentVisibility,
+ } from "./document-visibility";
 -import { getClaimedIdentityHeaderValue } from "./claimed-identity-store";
 +import {
 +  getClaimedIdentityHeaderValue,
@@ -593,18 +592,18 @@ index a2a5504194066fa783125180c8c5224d4f424abc..26b3e01fcfffb6f4b9d376516d6877c7
  
  type ChangeCallback = (message: ChangedMessage) => void;
  type ThreadOpenCallback = (signal: ThreadOpenSignal) => void;
-@@ -57,6 +60,8 @@ export class WebSocketManager {
-   private connectionStateCallbacks = new Set<ConnectionStateCallback>();
-   private hasConnected = false;
-   private connectionState: WebSocketConnectionState = "connecting";
+@@ -117,6 +120,8 @@ export class WebSocketManager {
+   private disconnectedAt: number | null = null;
+   private pingTimer: ReturnType<typeof setInterval> | null = null;
+   private pongTimer: ReturnType<typeof setTimeout> | null = null;
 +  private unsubscribeIdentity: (() => void) | null = null;
 +  private lastIdentityHeaderValue: string | null = null;
  
-   connect(): void {
-     if (this.socket) return;
-@@ -107,6 +112,20 @@ export class WebSocketManager {
-         this.hasConnected ? "reconnecting" : "connecting",
-       );
+   constructor(browserEvents?: WebSocketManagerBrowserEvents) {
+     this.browserEvents = browserEvents ?? createDefaultBrowserEvents();
+@@ -243,6 +248,20 @@ export class WebSocketManager {
+       unsubscribeVisibility();
+       unsubscribeOnline();
      };
 +
 +    // The claimed identity is bound at upgrade time via ?identity=, so a
@@ -622,11 +621,11 @@ index a2a5504194066fa783125180c8c5224d4f424abc..26b3e01fcfffb6f4b9d376516d6877c7
 +    });
    }
  
-   /**
-@@ -191,6 +210,8 @@ export class WebSocketManager {
-   }
- 
-   disconnect(): void {
+   private handleVisibilityChange(): void {
+@@ -431,6 +450,8 @@ export class WebSocketManager {
+       this.unsubscribeBrowserEvents();
+       this.unsubscribeBrowserEvents = null;
+     }
 +    this.unsubscribeIdentity?.();
 +    this.unsubscribeIdentity = null;
      if (this.socket) {
@@ -903,10 +902,10 @@ index 3013b460194120afb71e45ce33037a5f6fa13ffb..646bd0b4467a8be108b4cee318f0ae90
  
  async function resolveOwnerSessionUserId(
 diff --git a/apps/connect/src/worker.test.ts b/apps/connect/src/worker.test.ts
-index b8a0da69c9c359ccea488b78b7c37d4276f367d5..4dd5a1cece39635769ef6063b4ecfd7098a40276 100644
+index c4f5b9bf465f9f9c9d05f26da40b0bd0292b39aa..4ed9ee0283b05f6106dc484c6f1929103b78fb95 100644
 --- a/apps/connect/src/worker.test.ts
 +++ b/apps/connect/src/worker.test.ts
-@@ -1029,6 +1029,70 @@ describe("gate worker share hosts", () => {
+@@ -1141,6 +1141,70 @@ describe("gate worker share hosts", () => {
      expect(captured).toHaveLength(1);
    });
  
@@ -978,10 +977,10 @@ index b8a0da69c9c359ccea488b78b7c37d4276f367d5..4dd5a1cece39635769ef6063b4ecfd70
      mockParseCookie.mockImplementation((_header, name) =>
        name === DESKTOP_SESSION_COOKIE ? "desktop-token" : null,
 diff --git a/apps/connect/src/worker.ts b/apps/connect/src/worker.ts
-index 62f729da976d1bfa87e369680c0c7a1cf9c6e22f..e593a9237fd8ae0a49e652118af1f4243833168f 100644
+index c1afc440c1f8738d0a9a98c213e117796c29bbe4..ba29278ad62efe40b5c9afe0a46953b520d7828a 100644
 --- a/apps/connect/src/worker.ts
 +++ b/apps/connect/src/worker.ts
-@@ -264,6 +264,13 @@ function isHostManagementMutation(request: Request, pathname: string): boolean {
+@@ -269,6 +269,13 @@ function isHostManagementMutation(request: Request, pathname: string): boolean {
    );
  }
  
@@ -995,7 +994,7 @@ index 62f729da976d1bfa87e369680c0c7a1cf9c6e22f..e593a9237fd8ae0a49e652118af1f424
  /** Cache namespace for a resolved routing key plus optional share target. */
  export function cacheNamespace(
    routingKey: string,
-@@ -467,6 +474,17 @@ export default {
+@@ -487,6 +494,17 @@ export default {
        if (!isMember) return text("bb connect: not your server\n", 403);
      }
  
@@ -1058,10 +1057,10 @@ index eecbf2afed327580d952dd9edb33d127ee49a9e8..4e28f5dd5ccf3695ced775f824b546ad
          interactionId: parsePendingInteractionId(
            context.req.param("interactionId"),
 diff --git a/apps/server/src/services/interactions/pending-interactions.ts b/apps/server/src/services/interactions/pending-interactions.ts
-index 2f66106263684a50ee393f77c64262095450ceb7..eeff4c07c5ce791a52526ea7a32efeebd3117ac3 100644
+index 873798356c59fbe8b6e143a6a5e2347184330ea5..ae2189193449057352f49760a3d4d565ed624888 100644
 --- a/apps/server/src/services/interactions/pending-interactions.ts
 +++ b/apps/server/src/services/interactions/pending-interactions.ts
-@@ -69,12 +69,14 @@ interface RegisterPendingInteractionArgs {
+@@ -68,12 +68,14 @@ interface RegisterPendingInteractionArgs {
  }
  
  interface ResolvePendingInteractionArgs {
@@ -1076,7 +1075,7 @@ index 2f66106263684a50ee393f77c64262095450ceb7..eeff4c07c5ce791a52526ea7a32efeeb
    interaction: PendingInteraction;
    resolution: PendingInteractionResolution;
  }
-@@ -527,6 +529,7 @@ export class PendingInteractionLifecycle {
+@@ -526,6 +528,7 @@ export class PendingInteractionLifecycle {
    }
  
    respondToPluginInteraction(args: {
@@ -1084,7 +1083,7 @@ index 2f66106263684a50ee393f77c64262095450ceb7..eeff4c07c5ce791a52526ea7a32efeeb
      interactionId: string;
      threadId: string;
      value: JsonValue;
-@@ -539,6 +542,9 @@ export class PendingInteractionLifecycle {
+@@ -538,6 +541,9 @@ export class PendingInteractionLifecycle {
      const updated = setPendingInteractionResolved(this.deps.db, {
        id: current.id,
        resolution: JSON.stringify({ kind: "plugin_submitted" }),
@@ -1094,7 +1093,7 @@ index 2f66106263684a50ee393f77c64262095450ceb7..eeff4c07c5ce791a52526ea7a32efeeb
      });
      if (!updated)
        throw buildResolveConflictError(this.requireInteraction(current.id));
-@@ -552,6 +558,7 @@ export class PendingInteractionLifecycle {
+@@ -551,6 +557,7 @@ export class PendingInteractionLifecycle {
    }
  
    cancelPluginInteraction(args: {
@@ -1102,7 +1101,7 @@ index 2f66106263684a50ee393f77c64262095450ceb7..eeff4c07c5ce791a52526ea7a32efeeb
      interactionId: string;
      threadId: string;
      reason: PluginInteractionCancelReason;
-@@ -565,6 +572,9 @@ export class PendingInteractionLifecycle {
+@@ -564,6 +571,9 @@ export class PendingInteractionLifecycle {
      }
      const updated = setPendingInteractionInterrupted(this.deps.db, {
        id: current.id,
@@ -1112,7 +1111,7 @@ index 2f66106263684a50ee393f77c64262095450ceb7..eeff4c07c5ce791a52526ea7a32efeeb
        statusReason: args.reason,
      });
      if (!updated)
-@@ -612,6 +622,9 @@ export class PendingInteractionLifecycle {
+@@ -611,6 +621,9 @@ export class PendingInteractionLifecycle {
      validatePendingInteractionResolution(current, args.resolution);
  
      const updated = this.queueInteractionResolutionCommand({
@@ -1122,7 +1121,7 @@ index 2f66106263684a50ee393f77c64262095450ceb7..eeff4c07c5ce791a52526ea7a32efeeb
        interaction: current,
        resolution: args.resolution,
      });
-@@ -820,6 +833,9 @@ export class PendingInteractionLifecycle {
+@@ -819,6 +832,9 @@ export class PendingInteractionLifecycle {
        const resolving = setPendingInteractionResolving(tx, {
          id: args.interaction.id,
          resolution: resolutionJson,
@@ -1547,10 +1546,10 @@ index df1bd3c71050417871796a7cf9c64fc8f0c1be9a..b9f3866da254ae23d0a381d337ae53b9
        const multiplayer = await prepareTurnSubmitCommandPayload(harness.deps, {
          actorHandle: "bob",
 diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
-index 3a5ef18b959e4ca28eeb9d00a231f6f164fb24f1..78d2910f4b661cc7c52ad24a274faf663ccaea66 100644
+index 5099a28ab02bc295ed870028ba9df5b1eab08adc..1f5b7fd028f39fed550372de1563286cd0607b84 100644
 --- a/packages/db/src/data/events.ts
 +++ b/packages/db/src/data/events.ts
-@@ -861,6 +861,7 @@ export function countDistinctThreadEventActors(
+@@ -910,6 +910,7 @@ export function countDistinctThreadEventActors(
      .where(
        and(
          eq(events.threadId, args.threadId),
@@ -1559,19 +1558,19 @@ index 3a5ef18b959e4ca28eeb9d00a231f6f164fb24f1..78d2910f4b661cc7c52ad24a274faf66
          args.excludedHandle === undefined
            ? undefined
 diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
-index 6aa953606104c0539765993b4a34ccaf41cca867..d6fba298750dec9547178f9fee220777aafa8696 100644
+index 4ac57f10511a3e892a6da479848cf674b6a44ad7..45556c1d3c49ab36439ae56d49620bd5b0502db9 100644
 --- a/packages/db/src/data/index.ts
 +++ b/packages/db/src/data/index.ts
-@@ -479,7 +479,6 @@ export {
+@@ -333,7 +333,6 @@ export {
    setPendingInteractionInterrupted,
    setPendingInteractionResolving,
    setPendingInteractionResolved,
 -  setPendingInteractionResolvedByHandle,
  } from "./pending-interactions.js";
  export type {
-   CreatePendingInteractionInput,
+   PendingInteractionRow,
 diff --git a/packages/db/src/data/pending-interactions.ts b/packages/db/src/data/pending-interactions.ts
-index 01d3597998c7a68e493a89e12690f2adbaf25e61..79dfe44bb56f2c5d221b28fd1a64fe8dc4f30774 100644
+index 6f7896c8b5dd40e34a5e40e98615031614959b09..c5aaec0e1bb121bae888f0b8eda40611ab144731 100644
 --- a/packages/db/src/data/pending-interactions.ts
 +++ b/packages/db/src/data/pending-interactions.ts
 @@ -1,4 +1,4 @@
@@ -1596,7 +1595,7 @@ index 01d3597998c7a68e493a89e12690f2adbaf25e61..79dfe44bb56f2c5d221b28fd1a64fe8d
  }
  
  export interface InterruptPendingInteractionsForThreadsArgs {
-@@ -119,6 +121,9 @@ function updatePendingInteractionTerminalState(
+@@ -106,6 +108,9 @@ function updatePendingInteractionTerminalState(
          resolution: args.resolution,
          statusReason: args.statusReason,
          resolvedAt: args.resolvedAt ?? now,
@@ -1606,7 +1605,7 @@ index 01d3597998c7a68e493a89e12690f2adbaf25e61..79dfe44bb56f2c5d221b28fd1a64fe8d
          updatedAt: now,
        })
        .where(
-@@ -274,39 +279,21 @@ export function setPendingInteractionResolved(
+@@ -249,39 +254,21 @@ export function setPendingInteractionResolved(
    args: {
      id: string;
      resolution: string;
@@ -1650,7 +1649,7 @@ index 01d3597998c7a68e493a89e12690f2adbaf25e61..79dfe44bb56f2c5d221b28fd1a64fe8d
  export function setPendingInteractionResolving(
    db: PendingInteractionWriteConnection,
    args: SetPendingInteractionResolvingArgs,
-@@ -320,6 +307,9 @@ export function setPendingInteractionResolving(
+@@ -295,6 +282,9 @@ export function setPendingInteractionResolving(
          status: "resolving",
          resolution: args.resolution,
          statusReason: null,
@@ -1660,7 +1659,7 @@ index 01d3597998c7a68e493a89e12690f2adbaf25e61..79dfe44bb56f2c5d221b28fd1a64fe8d
          updatedAt: now,
        })
        .where(
-@@ -337,6 +327,7 @@ export function setPendingInteractionInterrupted(
+@@ -312,6 +302,7 @@ export function setPendingInteractionInterrupted(
    db: PendingInteractionWriteConnection,
    args: {
      id: string;
@@ -1668,7 +1667,7 @@ index 01d3597998c7a68e493a89e12690f2adbaf25e61..79dfe44bb56f2c5d221b28fd1a64fe8d
      statusReason: string;
    },
  ): PendingInteractionRow | null {
-@@ -344,6 +335,9 @@ export function setPendingInteractionInterrupted(
+@@ -319,6 +310,9 @@ export function setPendingInteractionInterrupted(
      id: args.id,
      allowedCurrentStatuses: ["pending", "resolving"],
      resolution: null,
@@ -1810,10 +1809,10 @@ index 6d2532f3da7851fb35541cf973c4b78510e6d984..86796d26b040c0fb3c4e3c3626dcf9d1
      applyReorderedCleanupMigrations(db, migrationsFolder);
      applyQueuedMessageGroupingSchema(db);
 diff --git a/packages/db/test/data/events.test.ts b/packages/db/test/data/events.test.ts
-index 3340099dee58a2683c090579bfc851d8829b963d..8f52e848f324f3c223011006b59eb4c7004fbe27 100644
+index 24bde2f2c29448c3d1c3fb2a542d8aa4b75d1500..5c1bcfe5804b474c8586c75ab337a25fed97b742 100644
 --- a/packages/db/test/data/events.test.ts
 +++ b/packages/db/test/data/events.test.ts
-@@ -206,49 +206,63 @@ describe("events", () => {
+@@ -208,49 +208,63 @@ describe("events", () => {
      expect(all).toHaveLength(2);
    });
  
@@ -1931,22 +1930,22 @@ index 205a2d7feaaadd792a36591fe01010b21fcfae8f..05cd4840dc82fb36d6b2a6a76d13d3fe
        }),
      ).toBeNull();
 diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
-index f32e2d2d607ef56700fe9a95a7fc99e0eb495955..63c50ec59b3eee7eef08e6525fd2eb0d4017c325 100644
+index 12e45b5e5794f72ada04358bc9e233d9337eb51e..bf209a07ac8ae34cc010db83c3a7cc441ef74eaa 100644
 --- a/packages/db/test/migrate.test.ts
 +++ b/packages/db/test/migrate.test.ts
-@@ -396,6 +396,8 @@ const queuedMessageGroupingMigrationWhen = 1782273194188;
- const pendingInteractionsMigrationWhen = 1783626227375;
- const permissionModesMigrationWhen = 1784311522462;
- const branchLocalThreadTabsMigrationWhen = 1783633750817;
+@@ -415,6 +415,8 @@ const branchLocalThreadTabsMigrationWhen = 1783633750817;
+ const eventParentToolCallMigrationWhen = 1787181956957;
+ const eventParentToolCallPreJsonValidMigrationHash =
+   "79d39e7b68d1db8ba02614fe4cc227cc0c154d77c7183f2e37ed2d8475412993";
 +const branchLocalMultiplayerMigrationWhen = 1784389648607;
 +const multiplayerMigrationWhen = 1786998114856;
  const eventLargeValuesPreOptimizationHash =
    "bc111f5134183c37cf135af70231ec5a79823f9868818fdd8377e1ab3c05a23f";
  const queuedMessageSortKeyMigrationPath = resolve(
-@@ -1573,6 +1575,50 @@ describe("migrate", () => {
-     closeConnection(db);
-   });
- 
+@@ -1695,6 +1697,50 @@ describe("migrate", () => {
+   // Side chats used to be their own origin kind. 0084 hands every existing one
+   // to the builtin side-chat plugin, so old side chats keep opening in the
+   // plugin's panel instead of stranding on a removed origin kind.
 +  it("preserves data from the branch-local multiplayer migration", () => {
 +    const db = createConnection(":memory:");
 +
@@ -1994,7 +1993,7 @@ index f32e2d2d607ef56700fe9a95a7fc99e0eb495955..63c50ec59b3eee7eef08e6525fd2eb0d
    it("adopts legacy side chats as the side-chat plugin's hidden forks", () => {
      const db = createConnection(":memory:");
  
-@@ -2081,6 +2127,11 @@ describe("migrate", () => {
+@@ -2205,6 +2251,11 @@ describe("migrate", () => {
            "DELETE FROM __drizzle_migrations WHERE created_at = ?",
          )
          .run(pendingInteractionsMigrationWhen);
@@ -2006,32 +2005,19 @@ index f32e2d2d607ef56700fe9a95a7fc99e0eb495955..63c50ec59b3eee7eef08e6525fd2eb0d
        db.$client
          .prepare<InsertMigrationParameters>(
            `
-@@ -3845,6 +3896,7 @@ describe("migrate", () => {
-         "item_kind",
+@@ -3974,6 +4025,7 @@ describe("migrate", () => {
          "data",
          "created_at",
+         "parent_tool_call_id",
 +        "actor_handle",
        ]);
        const eventIndexNames = readIndexNames({
          db,
-diff --git a/packages/templates/src/generated/templates.generated.ts b/packages/templates/src/generated/templates.generated.ts
-index ed9b512054598324bde1081eb4ccd71b1cbc3cd2..c5086b54e90f06e11ebf9e773760ce121b2370aa 100644
---- a/packages/templates/src/generated/templates.generated.ts
-+++ b/packages/templates/src/generated/templates.generated.ts
-@@ -61,7 +61,7 @@ export const templateDefinitions = [
-   },
-   {
-     "id": "bbGuideMachines",
--    "body": "Machine commands\n\nA machine is a host daemon that can run thread environments. Add remote\nmachines under Settings → Machines.\n\nThe server listens on loopback by default. Remote execution machines need the\naccount-gated bb connect route or a private Tailscale Serve URL; generate their\ninstaller while using that reachable server URL.\n\nThe Settings installer first uses the exact `bb-app` tarball served by that bb\nserver at `/install/bb-app.tgz`; only servers that do not implement the route\n(HTTP 404) fall back to the npm registry. npm installs bb-app under this\nmachine enrollment's bb data directory, so the installer needs neither `sudo`\nnor a global npm configuration. Installed launchd/systemd services pass\n`--auto-update`. On a newer server protocol mismatch, the daemon downloads that\nsame artifact, updates its private install, and exits for the service manager to\nrestart. Failed attempts use a persisted exponential backoff that starts at 5\nseconds and caps at 5 minutes. A daemon never auto-downgrades to an older server\nprotocol. Use Settings → Machines or `bb machine retry-update` to bypass the\ncurrent backoff after a transient failure.\n\nTo opt out, remove `--auto-update` from the launchd plist or systemd user unit\nand reload that service. Foreground/manual `bb-app host-daemon` runs leave it off\nunless you pass `--auto-update` explicitly.\n\n  bb machine list                         List machines with ID, connection\n                                          status, and relative last-seen time\n    --json                                Print the raw host list\n  bb machine show <id-or-name>            Show machine details\n  bb machine join-code                    Create a machine pairing code\n  bb machine rename <id-or-name> <name>   Rename a machine\n  bb machine retry-update <id-or-name>    Retry a pending daemon update now\n  bb machine remove <id-or-name> [--yes]  Revoke and remove a machine\n  bb machine provider-cli status <machine>\n  bb machine provider-cli install <machine> <claudeCode|codex|cursor>\n    --action <install|update>\n\nEach machine has a permission limit: the highest permission mode any thread on\nthat machine can run with. The default is Full Access. A thread that asks for\nmore resolves down to the limit, and a provider that supports no mode under the\nlimit cannot run there. Set it in Settings → Machines → the machine → Permission\nlimit; that page also shows the machine's projects, provider CLIs, update state,\nand rename/remove. There is no CLI or SDK command to set it, and a paired\nmachine cannot set it for any machine, so a sandbox machine can stay at Full\nAccess while your laptop stays lower. `bb machine list --json` and `bb machine\nshow` report the current limit.\n\nUpdates commands\n\nOne consolidated view of bb and provider CLI updates across machines — the\nCLI counterpart of Settings → Updates and the sidebar Updates badge.\n\n  bb updates [status]                     Show bb-app and provider CLI update\n                                          status for every machine\n    --machine <id-or-name>                Limit to one machine\n    --json                                Print the aggregate as JSON\n  bb updates apply                        Run every available provider CLI\n                                          install/update, one at a time\n    --machine <id-or-name>                Limit to one machine\n    --json                                Print per-target results as JSON\n\n`bb updates apply` covers provider CLIs only. Update bb-app itself with the\nprinted upgrade command (`npx bb-app@latest`) or the desktop app's relaunch;\nconnected daemons then follow the server version automatically.\n\nMachine selectors accept either an exact machine ID or an unambiguous machine\nname. `--host` is an alias for `--machine`.\n\n  bb thread spawn --project <id> --machine <id-or-name> --prompt \"...\"\n  bb project create --name \"...\" --root <path> --machine <id-or-name>\n  bb project source add <projectId> --machine <id-or-name> --path <path>\n\nFor thread spawning, machine targeting works with an unmanaged workspace path,\na new managed worktree, or the personal workspace. Do not combine it with an\nexisting environment ID: the reused environment already selects its machine.\n\nFor project creation and sources, `--root`/`--path` refers to a path on the\nselected connected machine. Omit the selector to keep the existing local CLI\nmachine fallback (normally the primary machine). Pass `--clone` to source add\ninstead of `--path` to clone the project's Git remote there; `--remote-url` and\n`--target-path` optionally override the clone inputs.",
-+    "body": "Machine commands\n\nA machine is a host daemon that can run thread environments. Add remote\nmachines under Settings → Machines.\n\nThe server listens on loopback by default. Remote execution machines need the\naccount-gated bb connect route or a private Tailscale Serve URL; generate their\ninstaller while using that reachable server URL.\n\nThe Settings installer first uses the exact `bb-app` tarball served by that bb\nserver at `/install/bb-app.tgz`; only servers that do not implement the route\n(HTTP 404) fall back to the npm registry. npm installs bb-app under this\nmachine enrollment's bb data directory, so the installer needs neither `sudo`\nnor a global npm configuration. Installed launchd/systemd services pass\n`--auto-update`. On a newer server protocol mismatch, the daemon downloads that\nsame artifact, updates its private install, and exits for the service manager to\nrestart. Failed attempts use a persisted exponential backoff that starts at 5\nseconds and caps at 5 minutes. A daemon never auto-downgrades to an older server\nprotocol. Use Settings → Machines or `bb machine retry-update` to bypass the\ncurrent backoff after a transient failure.\n\nTo opt out, remove `--auto-update` from the launchd plist or systemd user unit\nand reload that service. Foreground/manual `bb-app host-daemon` runs leave it off\nunless you pass `--auto-update` explicitly.\n\n  bb machine list                         List machines with ID, connection\n                                          status, and relative last-seen time\n    --json                                Print the raw host list\n  bb machine show <id-or-name>            Show machine details\n  bb machine join-code                    Create a machine pairing code\n  bb machine rename <id-or-name> <name>   Rename a machine\n  bb machine retry-update <id-or-name>    Retry a pending daemon update now\n  bb machine remove <id-or-name> [--yes]  Revoke and remove a machine\n  bb machine provider-cli status <machine>\n  bb machine provider-cli install <machine> <claudeCode|codex|cursor>\n    --action <install|update>\n\nEach machine has a permission limit: the highest permission mode any thread on\nthat machine can run with. The default is Full Access. A thread that asks for\nmore resolves down to the limit, and a provider that supports no mode under the\nlimit cannot run there. Set it in Settings → Machines → the machine → Permission\nlimit; that page also shows the machine's projects, provider CLIs, update state,\nand rename/remove. There is no CLI or SDK command to set it, and a paired\nmachine cannot set it for any machine, so a sandbox machine can stay at Full\nAccess while your laptop stays lower. `bb machine list --json` and `bb machine\nshow` report the current limit.\n\nUpdates commands\n\nOne consolidated view of bb and provider CLI updates across machines — the\nCLI counterpart of Settings → Updates and the sidebar Updates badge.\n\n  bb updates [status]                     Show bb-app and provider CLI update\n                                          status for every machine\n    --machine <id-or-name>                Limit to one machine\n    --json                                Print the aggregate as JSON\n  bb updates apply                        Run every available provider CLI\n                                          install/update, one at a time\n    --machine <id-or-name>                Limit to one machine\n    --json                                Print per-target results as JSON\n\n`bb updates apply` covers provider CLIs only. Update bb-app itself with the\nprinted upgrade command (`npx bb-app@latest`) or the desktop app's relaunch;\nconnected daemons then follow the server version automatically.\n\nMachine selectors accept either an exact machine ID or an unambiguous machine\nname. `--host` is an alias for `--machine`.\n\n  bb thread spawn --project <id> --machine <id-or-name> --prompt \"...\"\n  bb project create --name \"...\" --root <path> --machine <id-or-name>\n  bb project source add <projectId> --machine <id-or-name> --path <path>\n\nFor thread spawning, machine targeting works with an unmanaged workspace path,\na new managed worktree, or the personal workspace. Do not combine it with an\nexisting environment ID: the reused environment already selects its machine.\n\nFor project creation and sources, `--root`/`--path` refers to a path on the\nselected connected machine. Omit the selector to keep the existing local CLI\nmachine fallback (normally the primary machine). Pass `--clone` to source add\ninstead of `--path` to clone the project's Git remote there; `--remote-url` and\n`--target-path` optionally override the clone inputs.\n\n## Multiplayer Members\n\nOwners can invite other Connect accounts to their bb. Members admitted through\nthe gate use the full app; their messages and actions are attributed to their\nclaimed identity, and presence (who is viewing which thread, who is typing)\nappears in the thread header and sidebar.\n\n  bb members list                 List members admitted through Connect\n  bb members add <handle>         Add a Connect account by handle\n  bb members remove <handle>      Remove a member by handle\n    --json                        Machine-readable output (all subcommands)\n\nMember management is owner-console-only: it works from the machine itself and\nis rejected for sessions arriving through the Connect tunnel. The Connect\naudit log records verified admissions and membership changes. Identity inside\nbb is claimed, not verified — clients self-assert a handle (the app prompts\nremote visitors for a display name); attribution is honor-system by design\nbecause anyone admitted has full access anyway.",
-     "fileName": "bb-guide-machines.md",
-     "kind": "instruction",
-     "title": "bb Guide — Machines",
 diff --git a/packages/thread-view/test/build-thread-timeline.test.ts b/packages/thread-view/test/build-thread-timeline.test.ts
-index bb139e782778460c2aa2b10f2dd6437478eac7c3..1c0bd1ab877af36d71f07a90684655bbede04b86 100644
+index 44492f621c4758468d847bec98074b061cf5dff2..5f7b20f91c9d4829c8b784102058c0ccfcad11af 100644
 --- a/packages/thread-view/test/build-thread-timeline.test.ts
 +++ b/packages/thread-view/test/build-thread-timeline.test.ts
-@@ -2604,7 +2604,7 @@ describe("buildThreadTimelineFromEvents", () => {
+@@ -2617,7 +2617,7 @@ describe("buildThreadTimelineFromEvents", () => {
          providerThreadId: "provider-thread-1",
          scope: turnScope("turn-2"),
        },
@@ -2040,7 +2026,7 @@ index bb139e782778460c2aa2b10f2dd6437478eac7c3..1c0bd1ab877af36d71f07a90684655bb
      };
      const turn2FileChange: ThreadEventWithMeta = {
        event: {
-@@ -2626,7 +2626,7 @@ describe("buildThreadTimelineFromEvents", () => {
+@@ -2639,7 +2639,7 @@ describe("buildThreadTimelineFromEvents", () => {
            approvalStatus: null,
          },
        },
@@ -2049,7 +2035,7 @@ index bb139e782778460c2aa2b10f2dd6437478eac7c3..1c0bd1ab877af36d71f07a90684655bb
      };
  
      const rows = collectFileChangeRows(
-@@ -2677,7 +2677,12 @@ describe("buildThreadTimelineFromEvents", () => {
+@@ -2690,7 +2690,12 @@ describe("buildThreadTimelineFromEvents", () => {
              providerThreadId: "provider-thread-1",
              scope,
            },
@@ -2063,7 +2049,7 @@ index bb139e782778460c2aa2b10f2dd6437478eac7c3..1c0bd1ab877af36d71f07a90684655bb
          },
          {
            event: {
-@@ -2697,6 +2702,7 @@ describe("buildThreadTimelineFromEvents", () => {
+@@ -2710,6 +2715,7 @@ describe("buildThreadTimelineFromEvents", () => {
              id: `event-${startSeq + 1}`,
              seq: startSeq + 1,
              createdAt: startSeq + 1,
@@ -2071,7 +2057,7 @@ index bb139e782778460c2aa2b10f2dd6437478eac7c3..1c0bd1ab877af36d71f07a90684655bb
            },
          },
          {
-@@ -2712,6 +2718,7 @@ describe("buildThreadTimelineFromEvents", () => {
+@@ -2725,6 +2731,7 @@ describe("buildThreadTimelineFromEvents", () => {
              id: `event-${startSeq + 2}`,
              seq: startSeq + 2,
              createdAt: startSeq + 2,
@@ -2079,7 +2065,7 @@ index bb139e782778460c2aa2b10f2dd6437478eac7c3..1c0bd1ab877af36d71f07a90684655bb
            },
          },
          {
-@@ -2732,6 +2739,7 @@ describe("buildThreadTimelineFromEvents", () => {
+@@ -2745,6 +2752,7 @@ describe("buildThreadTimelineFromEvents", () => {
              id: `event-${startSeq + 3}`,
              seq: startSeq + 3,
              createdAt: startSeq + 3,
@@ -2088,7 +2074,7 @@ index bb139e782778460c2aa2b10f2dd6437478eac7c3..1c0bd1ab877af36d71f07a90684655bb
          },
        ];
 diff --git a/packages/tunnel-client/src/headers.ts b/packages/tunnel-client/src/headers.ts
-index 939c1443124427c8c68837e9ce334c6d52f3d43a..ee04cac609f8b6c372e007b9addc61a97aacdc7e 100644
+index 5173a78fe2aa1520b901a5a5c5dc1174506c6c42..d8aff37ba4347667db3ff893963c26e2ca94f85a 100644
 --- a/packages/tunnel-client/src/headers.ts
 +++ b/packages/tunnel-client/src/headers.ts
 @@ -4,7 +4,6 @@ const SKIP_REQUEST_HEADERS = new Set([
@@ -2099,6 +2085,3 @@ index 939c1443124427c8c68837e9ce334c6d52f3d43a..ee04cac609f8b6c372e007b9addc61a9
    "x-bb-via-tunnel",
  ]);
  
--- 
-2.43.0
-

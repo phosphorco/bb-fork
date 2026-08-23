@@ -1,10 +1,10 @@
-From 62a350d60a82d2a2a8a1302b29fda5e5348443cb Mon Sep 17 00:00:00 2001
+From fd0af7ef8951a84f9f7095414f2b6f83fcea14e1 Mon Sep 17 00:00:00 2001
 From: bb-fork recut <bb-fork@invalid.local>
 Date: Wed, 19 Aug 2026 09:52:29 -0400
-Subject: [PATCH 04/16] Add identity and presence client surfaces
+Subject: [PATCH 04/13] Add identity and presence client surfaces
 
 ---
- apps/app/src/App.tsx                          |   2 +
+ apps/app/src/App.tsx                          |   9 +-
  .../dialogs/ClaimIdentityDialog.tsx           | 107 ++++++
  .../settings/IdentitySettingsSection.tsx      |  83 +++++
  .../src/components/settings/settings-nav.tsx  |   7 +
@@ -17,7 +17,7 @@ Subject: [PATCH 04/16] Add identity and presence client surfaces
  .../timeline/ConversationMessageContent.tsx   |  29 ++
  .../GeneratedConversationMessage.stories.tsx  |   8 +
  .../GeneratedConversationMessage.test.tsx     |   4 +
- .../thread/timeline/ThreadTimelineRows.tsx    |  45 +++
+ .../thread/timeline/ThreadTimelineRows.tsx    |  47 +++
  .../timeline/UserMessageMarkdown.stories.tsx  |   2 +
  .../timeline/rows/UserMessage.stories.tsx     |  32 ++
  .../timeline/timeline-message-authors.test.ts |  43 +++
@@ -37,19 +37,18 @@ Subject: [PATCH 04/16] Add identity and presence client surfaces
  .../views/thread-detail/ThreadDetailView.tsx  |   2 +
  .../__tests__/command-output/members.test.ts  |  96 ++++++
  .../__tests__/json-flag-enforcement.test.ts   |   2 +
- apps/cli/src/client.ts                        |   5 +
+ apps/cli/src/client.ts                        |  22 +-
  apps/cli/src/commands/members.ts              |  82 +++++
- apps/cli/src/index.ts                         |   2 +
+ apps/cli/src/index.ts                         |   4 +-
  apps/connect/src/members.test.ts              | 102 +++++-
  apps/connect/src/members.ts                   |  71 +++-
  apps/connect/src/servers.test.ts              |  30 +-
- apps/connect/src/servers.ts                   |   5 +-
+ apps/connect/src/servers.ts                   |   7 +-
  apps/server/src/routes/members.ts             | 311 ++++++++++++++++++
  apps/server/src/server.ts                     |   2 +
  .../skills/builtin-skills/bb-cli/SKILL.md     |  15 +
  .../server/test/public/public-members.test.ts |  95 ++++++
  packages/bb-app/src/public-sdk.ts             |   4 +
- .../bundled-types/bb-plugin-sdk.d.ts          |  26 +-
  packages/sdk/src/areas/members.ts             |  42 +++
  packages/sdk/src/areas/presence.ts            |  16 +
  packages/sdk/src/browser.ts                   |   3 +
@@ -58,7 +57,7 @@ Subject: [PATCH 04/16] Add identity and presence client surfaces
  packages/sdk/src/public-types.ts              |   2 +
  packages/sdk/src/realtime-url.ts              |  49 +--
  packages/sdk/src/transport-http.ts            |  28 +-
- packages/sdk/src/transport.ts                 |   8 +-
+ packages/sdk/src/transport.ts                 |   3 +
  packages/sdk/test/public-types.test.ts        |   2 +
  packages/sdk/test/sdk.test.ts                 | 109 +++++-
  packages/server-contract/src/api-types.ts     |   1 +
@@ -66,10 +65,10 @@ Subject: [PATCH 04/16] Add identity and presence client surfaces
  packages/server-contract/src/public-api.ts    |  31 ++
  .../src/templates/bb-guide-machines.md        |  19 ++
  packages/tunnel-client/src/headers.ts         |  15 +-
- packages/tunnel-client/src/index.ts           |   1 +
+ packages/tunnel-client/src/index.ts           |   7 +-
  packages/tunnel-client/src/session.ts         |   2 +
  packages/tunnel-client/test/headers.test.ts   |  37 +++
- 65 files changed, 2595 insertions(+), 55 deletions(-)
+ 64 files changed, 2597 insertions(+), 58 deletions(-)
  create mode 100644 apps/app/src/components/dialogs/ClaimIdentityDialog.tsx
  create mode 100644 apps/app/src/components/settings/IdentitySettingsSection.tsx
  create mode 100644 apps/app/src/components/thread/presence/Presence.stories.tsx
@@ -94,7 +93,7 @@ Subject: [PATCH 04/16] Add identity and presence client surfaces
  create mode 100644 packages/tunnel-client/test/headers.test.ts
 
 diff --git a/apps/app/src/App.tsx b/apps/app/src/App.tsx
-index d8f0f3af4553fb44f44d1e86ee1ec3fec295ac62..30cf1b5a0134631671537266f5be6e5b743ee1da 100644
+index 1596e886814f4719e86d12faa02d968ad63ca02d..0f001737dfe24d302b9df542d1e2c87035424ade 100644
 --- a/apps/app/src/App.tsx
 +++ b/apps/app/src/App.tsx
 @@ -9,6 +9,7 @@ import {
@@ -103,16 +102,30 @@ index d8f0f3af4553fb44f44d1e86ee1ec3fec295ac62..30cf1b5a0134631671537266f5be6e5b
  import { QuickCreateProjectProvider } from "./hooks/useQuickCreateProject";
 +import { ClaimIdentityDialog } from "./components/dialogs/ClaimIdentityDialog";
  import { RouteNavigationProvider } from "./components/ui/app-route-anchor";
- import { useAppTheme } from "./hooks/useAppTheme";
- import { useFaviconColorSync } from "./lib/favicon-color-preference";
-@@ -348,6 +349,7 @@ export function App() {
-       <AppCommandProvider>
-         <RouteNavigationProvider>
-           <HashNavigationScroll />
-+          <ClaimIdentityDialog />
-           <Routes>
-             <Route
-               path={AUTH_CALLBACK_ROUTE_PATH}
+ import { AppNavigationUrlHost } from "./lib/url-open-routing";
+ import { AppFileExternalNavigationHost } from "./components/plugin/AppFileExternalNavigationHost";
+@@ -385,6 +386,7 @@ export function App() {
+           <AppNavigationUrlHost>
+             <AppFileExternalNavigationHost>
+               <HashNavigationScroll />
++              <ClaimIdentityDialog />
+               <Routes>
+                 <Route
+                   path={AUTH_CALLBACK_ROUTE_PATH}
+@@ -395,8 +397,11 @@ export function App() {
+               {/* Outside <Routes>: a provider CLI install outlives the page that
+                 started it, so its failure toast can be clicked from any route —
+                 including auth callback, which renders no app shell. */}
+-               <ProviderCliInstallLogDialogHost />
+-             </AppFileExternalNavigationHost>
++              <ProviderCliInstallLogDialogHost />
++              {/* First-run onboarding. Outside <Routes> so it is not tied to a
++                  page. It self-gates on the experiment and completion timestamp. */}
++              <OnboardingHost />
++            </AppFileExternalNavigationHost>
+           </AppNavigationUrlHost>
+         </RouteNavigationProvider>
+       </AppCommandProvider>
 diff --git a/apps/app/src/components/dialogs/ClaimIdentityDialog.tsx b/apps/app/src/components/dialogs/ClaimIdentityDialog.tsx
 new file mode 100644
 index 0000000000000000000000000000000000000000..2a1dd2c3313979c0541170c3af5b47943e3de048
@@ -316,7 +329,7 @@ index 0000000000000000000000000000000000000000..a742048948ee02cce1b4b2bac0f1ce70
 +  );
 +}
 diff --git a/apps/app/src/components/settings/settings-nav.tsx b/apps/app/src/components/settings/settings-nav.tsx
-index 70962b461cf1f5b241096d34fb334fd9fc212892..3d1d4b8e4b3fdf6f128866ecba889a3a7b4cf9da 100644
+index 8fbfa473742dbb5b864f6c445c2f3f7cadab5ce3..339d8279f278b135fa9df18d3f8c3811a22ea790 100644
 --- a/apps/app/src/components/settings/settings-nav.tsx
 +++ b/apps/app/src/components/settings/settings-nav.tsx
 @@ -3,6 +3,7 @@ import type { IconName } from "@bb/shared-ui/icon";
@@ -335,7 +348,7 @@ index 70962b461cf1f5b241096d34fb334fd9fc212892..3d1d4b8e4b3fdf6f128866ecba889a3a
    { icon: "Palette", id: "appearance", label: "Appearance" },
    { icon: "SlidersHorizontal", id: "keyboard", label: "Keyboard" },
    { icon: "ChartColumn", id: "usage", label: "Usage limits" },
-@@ -123,6 +125,11 @@ export function useSettingsNavState(): SettingsNavState {
+@@ -121,6 +123,11 @@ export function useSettingsNavState(): SettingsNavState {
          hasDaemon || accessState !== "unavailable" || fileOpeners.length > 0
        );
      }
@@ -348,7 +361,7 @@ index 70962b461cf1f5b241096d34fb334fd9fc212892..3d1d4b8e4b3fdf6f128866ecba889a3a
    });
    // A plugin earns a Settings row by actually having configuration: a
 diff --git a/apps/app/src/components/sidebar/ThreadRow.tsx b/apps/app/src/components/sidebar/ThreadRow.tsx
-index 1c11b9e70434284a0bac64f93ac28bfc29058a7e..8886764445a32496fe29d516fdeea6aa4f125e9e 100644
+index 11f207869ce1b6f8764f84583b20fdcd2d17d241..eaa4c25114913717d03d5a361abe33ac35d8c7b3 100644
 --- a/apps/app/src/components/sidebar/ThreadRow.tsx
 +++ b/apps/app/src/components/sidebar/ThreadRow.tsx
 @@ -1,6 +1,7 @@
@@ -359,7 +372,7 @@ index 1c11b9e70434284a0bac64f93ac28bfc29058a7e..8886764445a32496fe29d516fdeea6aa
    useState,
    type CSSProperties,
    type MouseEventHandler,
-@@ -81,6 +82,9 @@ import {
+@@ -84,6 +85,9 @@ import {
  } from "@/components/thread/ThreadTitleMentions";
  import { pluginIconName } from "@/components/plugin/PluginIcon";
  import { usePluginThreadRowStatus } from "@/lib/plugin-thread-row-status";
@@ -369,7 +382,7 @@ index 1c11b9e70434284a0bac64f93ac28bfc29058a7e..8886764445a32496fe29d516fdeea6aa
  
  const SIDEBAR_TITLE_DOUBLE_CLICK_MS = 400;
  
-@@ -516,6 +520,17 @@ function ThreadRowComponent({
+@@ -513,6 +517,17 @@ function ThreadRowComponent({
    );
    const shortcut = useSidebarThreadShortcut(thread.id);
    const pluginThreadRowStatus = usePluginThreadRowStatus(thread.id);
@@ -387,7 +400,7 @@ index 1c11b9e70434284a0bac64f93ac28bfc29058a7e..8886764445a32496fe29d516fdeea6aa
    const showActive = isActive;
    const hasPendingInteraction = thread.hasPendingInteraction;
    const threadRuntimeBusy = isRuntimeBusyThread(thread);
-@@ -764,6 +779,7 @@ function ThreadRowComponent({
+@@ -765,6 +780,7 @@ function ThreadRowComponent({
          ) : null}
        </span>
        <span className="flex shrink-0 items-center gap-0.5">
@@ -728,12 +741,12 @@ index 0000000000000000000000000000000000000000..99139ce22b84633b59596ec3697abc0d
 +  );
 +}
 diff --git a/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx b/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx
-index 8453a40d2f4187c6ba047498655da21a70ccbd92..d97ee33f673f8ef6516078c7778afe1454915f3c 100644
+index d61e66cc5b9eb965ff9eef3b07b6428dc2c7c62e..1b64e6f289b33d718bb4927fc4a92bdffe0f810a 100644
 --- a/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx
 +++ b/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx
-@@ -79,6 +79,13 @@ interface ConversationMessageContentBaseProps {
+@@ -80,6 +80,13 @@ interface ConversationMessageContentBaseProps {
  
- export interface ConversationMessageContentUserProps extends ConversationMessageContentBaseProps {
+ interface ConversationMessageContentUserProps extends ConversationMessageContentBaseProps {
    role: "user";
 +  /** Claimed handle of the human who sent this row; null = unattributed. */
 +  actorHandle: string | null;
@@ -745,7 +758,7 @@ index 8453a40d2f4187c6ba047498655da21a70ccbd92..d97ee33f673f8ef6516078c7778afe14
    /** Mobile presentation for the regular user message's action footer. */
    mobileActionDisplay?: "inline" | "overflow";
    /**
-@@ -184,10 +191,12 @@ export type ConversationMessageContentProps =
+@@ -202,10 +209,12 @@ type ConversationMessageContentProps =
    | ConversationMessageContentAssistantProps;
  
  interface UserConversationMessageProps {
@@ -758,7 +771,7 @@ index 8453a40d2f4187c6ba047498655da21a70ccbd92..d97ee33f673f8ef6516078c7778afe14
    initiator: TimelineUserConversationRow["initiator"];
    mentions: readonly PromptTextMention[];
    mobileActionDisplay: "inline" | "overflow";
-@@ -383,10 +392,12 @@ function buildAddToChatAttachments(
+@@ -402,10 +411,12 @@ function buildAddToChatAttachments(
  }
  
  function UserConversationMessage({
@@ -771,7 +784,7 @@ index 8453a40d2f4187c6ba047498655da21a70ccbd92..d97ee33f673f8ef6516078c7778afe14
    mentions,
    mobileActionDisplay,
    onAddToChat,
-@@ -471,10 +482,26 @@ function UserConversationMessage({
+@@ -493,10 +504,26 @@ function UserConversationMessage({
    const mutePrefixLength = computeMutedPrefixLength(initiator, text);
    const messageText = text.trim();
    const requestLabel = turnRequestLabel(turnRequest);
@@ -781,7 +794,7 @@ index 8453a40d2f4187c6ba047498655da21a70ccbd92..d97ee33f673f8ef6516078c7778afe14
  
    return (
      <div className="w-full">
-       <div className="group/message ml-auto w-fit max-w-[70%]">
+       <div className="group/message ml-auto flex w-fit max-w-[70%] flex-col items-end">
 +        {authorChipHandle !== null ? (
 +          <div className="mb-1 flex items-center justify-end gap-1">
 +            <span className="inline-flex size-4 select-none items-center justify-center rounded-full border border-border bg-surface-recessed text-[9px] font-medium uppercase leading-none text-muted-foreground">
@@ -798,7 +811,7 @@ index 8453a40d2f4187c6ba047498655da21a70ccbd92..d97ee33f673f8ef6516078c7778afe14
          {requestLabel ? (
            <div className="mb-1 flex justify-end">
              <TurnRequestLabel
-@@ -710,11 +737,13 @@ export function ConversationMessageContent(
+@@ -753,11 +780,13 @@ export function ConversationMessageContent(
    if (props.role === "user") {
      return (
        <UserConversationMessage
@@ -857,7 +870,7 @@ index 07b8bafb16e7bacbd6e46bc1e1e5d7fe4cee2dc0..e28c6a9767e77c218aaa4f88a33f15ea
              originKind={null}
              senderThreadId="thr_host_hermes"
 diff --git a/apps/app/src/components/thread/timeline/GeneratedConversationMessage.test.tsx b/apps/app/src/components/thread/timeline/GeneratedConversationMessage.test.tsx
-index 9c4525d01598c31fac5d03360c0553e942e9a9ad..11cf71dc29a6d47e3671b2f6285a4b3fd279190b 100644
+index 5eb154eb1357a4c2e2a706df77570f8768c45cf4..df392d717a456439118543cece5cfbbe1d07879b 100644
 --- a/apps/app/src/components/thread/timeline/GeneratedConversationMessage.test.tsx
 +++ b/apps/app/src/components/thread/timeline/GeneratedConversationMessage.test.tsx
 @@ -56,7 +56,9 @@ function renderChildCompleted(text = MARKDOWN_BODY) {
@@ -881,19 +894,20 @@ index 9c4525d01598c31fac5d03360c0553e942e9a9ad..11cf71dc29a6d47e3671b2f6285a4b3f
              originKind={null}
              senderThreadId="thr_agent"
 diff --git a/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx b/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
-index 5dadc1e2edfd1dfb758694da67aa2d6793d683b5..86a3462e2246b24b36d49947d20c03742751c642 100644
+index 24463489f4a952789e35b468adba52a224982310..7eca5bb665228769297f4149a02ab699d563bbce 100644
 --- a/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
 +++ b/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
-@@ -245,6 +245,8 @@ interface TimelineRendererStaticContextValue {
+@@ -261,6 +261,9 @@ interface TimelineRendererStaticContextValue {
    resolveMentionLink: PromptMentionLinkResolver | undefined;
    resolveSegmentLinkHref: TimelineTitleLinkResolver | undefined;
    resolveUserAttachmentImageSrc: UserAttachmentImageSrcResolver | undefined;
 +  /** True when 2+ distinct authors are loaded; user rows then show author chips. */
 +  showMessageAuthors: boolean;
-   themeType: ThreadTimelineTheme;
++  themeType: ThreadTimelineTheme;
    threadId: string | undefined;
    workspaceRootPath: string | undefined;
-@@ -769,6 +771,40 @@ function isForkSeedAnchorRow(row: TimelineConversationViewRow): boolean {
+ }
+@@ -810,6 +813,40 @@ function isForkSeedAnchorRow(row: TimelineConversationViewRow): boolean {
    );
  }
  
@@ -934,7 +948,7 @@ index 5dadc1e2edfd1dfb758694da67aa2d6793d683b5..86a3462e2246b24b36d49947d20c0374
  /**
   * Finds the final assistant row whose action bar is available in the rendered
   * timeline. Completed turn details and delegated-agent output intentionally do
-@@ -946,6 +982,7 @@ function ConversationRow({
+@@ -1079,6 +1116,7 @@ const ConversationRowContent = memo(function ConversationRowContent({
      resolveSegmentLinkHref,
      resolveUserAttachmentImageSrc,
      threadId,
@@ -942,7 +956,7 @@ index 5dadc1e2edfd1dfb758694da67aa2d6793d683b5..86a3462e2246b24b36d49947d20c0374
      workspaceRootPath,
    } = useTimelineRendererStaticContext();
    const senderThreadMetadataById = useSenderThreadMetadataContext();
-@@ -1030,9 +1067,11 @@ function ConversationRow({
+@@ -1156,9 +1194,11 @@ const ConversationRowContent = memo(function ConversationRowContent({
        : undefined;
      return (
        <ConversationMessageContent
@@ -952,9 +966,9 @@ index 5dadc1e2edfd1dfb758694da67aa2d6793d683b5..86a3462e2246b24b36d49947d20c0374
          initiator={row.initiator}
 +        showAuthor={showMessageAuthors}
          mentions={row.mentions}
-         mobileActionDisplay={
-           row.id === latestActionableUserMessageId ? "inline" : "overflow"
-@@ -1978,6 +2017,10 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
+         mobileActionDisplay={mobileActionDisplay}
+         onAddToChat={onSelectionAddToChat}
+@@ -2269,6 +2309,10 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
    );
    const projectId = props.projectId;
    const senderThreadMetadataById = useSenderThreadMetadataById();
@@ -965,22 +979,23 @@ index 5dadc1e2edfd1dfb758694da67aa2d6793d683b5..86a3462e2246b24b36d49947d20c0374
    // Single plugin-slot subscription for the whole timeline; messages read the
    // stable registry from context instead of each opening a store subscription.
    // Provide getServerSnapshot so renderToStaticMarkup / SSR tests work.
-@@ -2123,6 +2166,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
+@@ -2414,6 +2458,8 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
        resolveMentionLink: props.resolveMentionLink,
        resolveSegmentLinkHref,
        resolveUserAttachmentImageSrc: props.resolveUserAttachmentImageSrc,
 +      showMessageAuthors,
-       themeType,
++      themeType,
        threadId: props.threadId,
        workspaceRootPath: props.workspaceRootPath,
-@@ -2151,6 +2195,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
+     }),
+@@ -2441,6 +2487,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
        props.resolveMentionLink,
        resolveSegmentLinkHref,
        props.resolveUserAttachmentImageSrc,
 +      showMessageAuthors,
        props.threadId,
        props.workspaceRootPath,
-       themeType,
+     ],
 diff --git a/apps/app/src/components/thread/timeline/UserMessageMarkdown.stories.tsx b/apps/app/src/components/thread/timeline/UserMessageMarkdown.stories.tsx
 index 8d89bc41f0632b041071a42f2d8da9408bded7b3..12260b2ba74268f2f1cdb047d937cac85c632ef1 100644
 --- a/apps/app/src/components/thread/timeline/UserMessageMarkdown.stories.tsx
@@ -996,10 +1011,10 @@ index 8d89bc41f0632b041071a42f2d8da9408bded7b3..12260b2ba74268f2f1cdb047d937cac8
          originKind={null}
          senderThreadId={null}
 diff --git a/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx b/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx
-index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89622e056d 100644
+index 2dbe76b729003aceff31bc619819bf085ff35636..2abef1c72d1498bd36e5afa58e737cebe4a95261 100644
 --- a/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx
 +++ b/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx
-@@ -571,8 +571,10 @@ export function Overview() {
+@@ -595,8 +595,10 @@ export function Overview() {
        >
          <TimelineStage>
            <ConversationMessageContent
@@ -1010,7 +1025,7 @@ index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89
              initiator="user"
              senderThreadId={null}
              senderThreadTitle={null}
-@@ -590,8 +592,10 @@ export function Overview() {
+@@ -614,8 +616,10 @@ export function Overview() {
        <StoryRow label="short">
          <TimelineStage revealMessageActions>
            <ConversationMessageContent
@@ -1021,7 +1036,7 @@ index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89
              initiator="user"
              senderThreadId={null}
              senderThreadTitle={null}
-@@ -612,8 +616,10 @@ export function Overview() {
+@@ -636,8 +640,10 @@ export function Overview() {
        >
          <TimelineStage revealMessageActions>
            <ConversationMessageContent
@@ -1032,7 +1047,7 @@ index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89
              initiator="user"
              senderThreadId={null}
              senderThreadTitle={null}
-@@ -635,8 +641,10 @@ export function Overview() {
+@@ -659,8 +665,10 @@ export function Overview() {
        >
          <TimelineStage revealMessageActions>
            <ConversationMessageContent
@@ -1043,7 +1058,7 @@ index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89
              initiator="user"
              senderThreadId={null}
              senderThreadTitle={null}
-@@ -657,8 +665,10 @@ export function Overview() {
+@@ -681,8 +689,10 @@ export function Overview() {
        >
          <TimelineStage revealMessageActions>
            <ConversationMessageContent
@@ -1054,7 +1069,7 @@ index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89
              initiator="user"
              senderThreadId={null}
              senderThreadTitle={null}
-@@ -679,8 +689,10 @@ export function Overview() {
+@@ -703,8 +713,10 @@ export function Overview() {
        >
          <TimelineStage revealMessageActions>
            <ConversationMessageContent
@@ -1065,7 +1080,7 @@ index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89
              initiator="user"
              senderThreadId={null}
              senderThreadTitle={null}
-@@ -698,8 +710,10 @@ export function Overview() {
+@@ -722,8 +734,10 @@ export function Overview() {
        <StoryRow label="with image" hint="single localImage attachment">
          <TimelineStage revealMessageActions>
            <ConversationMessageContent
@@ -1076,7 +1091,7 @@ index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89
              initiator="user"
              senderThreadId={null}
              senderThreadTitle={null}
-@@ -721,8 +735,10 @@ export function Overview() {
+@@ -745,8 +759,10 @@ export function Overview() {
        >
          <TimelineStage revealMessageActions>
            <ConversationMessageContent
@@ -1087,7 +1102,7 @@ index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89
              initiator="user"
              senderThreadId={null}
              senderThreadTitle={null}
-@@ -751,8 +767,10 @@ export function Overview() {
+@@ -775,8 +791,10 @@ export function Overview() {
        >
          <TimelineStage>
            <ConversationMessageContent
@@ -1098,7 +1113,7 @@ index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89
              initiator="agent"
              resolveSegmentLinkHref={resolveThreadLink}
              senderThreadId="thr_ux3h8sxg65"
-@@ -774,8 +792,10 @@ export function Overview() {
+@@ -798,8 +816,10 @@ export function Overview() {
        >
          <TimelineStage>
            <ConversationMessageContent
@@ -1109,7 +1124,7 @@ index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89
              initiator="agent"
              resolveSegmentLinkHref={resolveThreadLink}
              onTitleAction={() => () => undefined}
-@@ -798,8 +818,10 @@ export function Overview() {
+@@ -822,8 +842,10 @@ export function Overview() {
        >
          <div className="flex w-full max-w-[760px] flex-col gap-3">
            <ConversationMessageContent
@@ -1120,7 +1135,7 @@ index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89
              initiator="agent"
              resolveSegmentLinkHref={resolveThreadLink}
              senderThreadId="thr_h4u3fgr6be"
-@@ -814,8 +836,10 @@ export function Overview() {
+@@ -838,8 +860,10 @@ export function Overview() {
              turnRequest={acceptedSteer}
            />
            <ConversationMessageContent
@@ -1131,7 +1146,7 @@ index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89
              initiator="system"
              senderThreadId={null}
              senderThreadTitle={null}
-@@ -836,8 +860,10 @@ export function Overview() {
+@@ -860,8 +884,10 @@ export function Overview() {
        >
          <TimelineStage>
            <ConversationMessageContent
@@ -1142,7 +1157,7 @@ index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89
              initiator="system"
              senderThreadId={null}
              senderThreadTitle={null}
-@@ -858,8 +884,10 @@ export function Overview() {
+@@ -882,8 +908,10 @@ export function Overview() {
        >
          <TimelineStage>
            <ConversationMessageContent
@@ -1153,7 +1168,7 @@ index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89
              initiator="system"
              senderThreadId={null}
              senderThreadTitle={null}
-@@ -880,8 +908,10 @@ export function Overview() {
+@@ -904,8 +932,10 @@ export function Overview() {
        >
          <TimelineStage>
            <ConversationMessageContent
@@ -1164,7 +1179,7 @@ index 669bf0f21553111626bf60b4a628de7941c3e62f..bd096f7ac0dc45bfdcd4cfcfae7e1f89
              initiator="system"
              senderThreadId={null}
              senderThreadTitle={null}
-@@ -907,7 +937,9 @@ export function ParentChildSystemMessages() {
+@@ -931,7 +961,9 @@ export function ParentChildSystemMessages() {
          <StoryRow key={fixture.label} label={fixture.label} hint={fixture.hint}>
            <TimelineStage>
              <ConversationMessageContent
@@ -1224,10 +1239,10 @@ index 0000000000000000000000000000000000000000..4b55821eb9e62a73cc2c4e940fff4c46
 +  });
 +});
 diff --git a/apps/app/src/components/ui/markdown-message-directives.test.tsx b/apps/app/src/components/ui/markdown-message-directives.test.tsx
-index c04891a06a6bc6f918528f4fd6c5c12530e99281..4095c2d070884749782a160058aa1a42ca1b4d83 100644
+index aa3b3445d78774499859eda8995c1b25ac0b6ce7..bbadc23a51c4715fb70465dae432095549781d0f 100644
 --- a/apps/app/src/components/ui/markdown-message-directives.test.tsx
 +++ b/apps/app/src/components/ui/markdown-message-directives.test.tsx
-@@ -589,7 +589,9 @@ describe("ConversationMessageContent assistant directives", () => {
+@@ -577,7 +577,9 @@ describe("ConversationMessageContent assistant directives", () => {
          <RouteNavigationProvider>
            <MessageDirectiveRegistryProvider registry={registry}>
              <ConversationMessageContent
@@ -1238,18 +1253,18 @@ index c04891a06a6bc6f918528f4fd6c5c12530e99281..4095c2d070884749782a160058aa1a42
                originKind={null}
                initiator="user"
 diff --git a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
-index 6f31972449662bdee2c9dba6b0c3f20ad8ccdf2f..ae7196acb0f7c0e81f2e6279b5531dc4bf164245 100644
+index 5e6af943245c7e70c502eb73ef7f84237f6c05af..2049bd32d7c94c9aee2375c7f2cc7f97ee242b4f 100644
 --- a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
 +++ b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
 @@ -21,6 +21,7 @@ import type {
  } from "@bb/server-contract";
- import type { AppCreateThreadRequest } from "@/lib/api-types";
- import { OPTIMISTIC_TIMELINE_ROW_ID_PREFIX } from "@/lib/optimistic-timeline-row";
+ import type { AppCreateThreadRequest } from "@bb/client-core";
+ import { OPTIMISTIC_TIMELINE_ROW_ID_PREFIX } from "@bb/client-core";
 +import { getClaimedIdentity } from "@/lib/claimed-identity-store";
  import { collectPromptAttachments } from "@/lib/prompt-attachments";
  import { prependPromptHistoryEntry } from "@/lib/prompt-history";
  import {
-@@ -601,7 +602,9 @@ function buildOptimisticUserMessageRow({
+@@ -566,7 +567,9 @@ function buildOptimisticUserMessageRow({
          }
        : null;
    return {
@@ -1946,13 +1961,13 @@ index 0000000000000000000000000000000000000000..f38a7cc2b53fd59b3cf1bd715476987f
 +  });
 +});
 diff --git a/apps/app/src/lib/ws.ts b/apps/app/src/lib/ws.ts
-index d996d3f15d9ef4dc710e50ce24648b55562406a5..a2a5504194066fa783125180c8c5224d4f424abc 100644
+index fbb07bbfa44d9ea9517226a9329bb342e554ff20..37993a238f830eeafbbbc2bb47c714c46b2cb78e 100644
 --- a/apps/app/src/lib/ws.ts
 +++ b/apps/app/src/lib/ws.ts
-@@ -2,25 +2,32 @@ import ReconnectingWebSocket from "partysocket/ws";
- import {
+@@ -3,24 +3,29 @@ import {
    changedMessageLenientSchema,
    pluginSignalLenientSchema,
+   pongMessageLenientSchema,
 +  presenceSummaryMessageLenientSchema,
    realtimeSubscriptionTargetKey,
    threadOpenSignalLenientSchema,
@@ -1971,18 +1986,24 @@ index d996d3f15d9ef4dc710e50ce24648b55562406a5..a2a5504194066fa783125180c8c5224d
 +  ThreadPresenceMessage,
  } from "@bb/server-contract";
  import { buildDevWebSocketUrl } from "./dev-websocket-url";
+ import {
+   isDocumentVisible,
+   subscribeToDocumentVisibility,
+ } from "./document-visibility";
 +import { getClaimedIdentityHeaderValue } from "./claimed-identity-store";
  
  type ChangeCallback = (message: ChangedMessage) => void;
  type ThreadOpenCallback = (signal: ThreadOpenSignal) => void;
- type ThreadPaneActionCallback = (signal: ThreadPaneActionSignal) => void;
- type PluginSignalCallback = (signal: PluginSignal) => void;
+@@ -38,6 +43,8 @@ export type WebSocketConnectedEvent =
+       disconnectedAt: number;
+     };
+ type ConnectedCallback = (event: WebSocketConnectedEvent) => void;
 +type ThreadPresenceCallback = (message: ThreadPresenceMessage) => void;
 +type PresenceSummaryCallback = (message: PresenceSummaryMessage) => void;
- type ConnectedCallback = (event: { reconnected: boolean }) => void;
  type ConnectionStateCallback = () => void;
  export type WebSocketConnectionState =
-@@ -40,6 +47,8 @@ export class WebSocketManager {
+   | "connecting"
+@@ -92,6 +99,8 @@ export class WebSocketManager {
    private threadOpenCallbacks = new Set<ThreadOpenCallback>();
    private threadPaneActionCallbacks = new Set<ThreadPaneActionCallback>();
    private pluginSignalCallbacks = new Set<PluginSignalCallback>();
@@ -1991,7 +2012,7 @@ index d996d3f15d9ef4dc710e50ce24648b55562406a5..a2a5504194066fa783125180c8c5224d
    // Ephemeral "open this file in the secondary panel" intents, keyed by thread.
    // Held in memory only (cleared on reload) so a thread that is not currently
    // viewed opens the file when it is next viewed. Last write wins per thread.
-@@ -55,11 +64,19 @@ export class WebSocketManager {
+@@ -119,11 +128,19 @@ export class WebSocketManager {
      // In dev mode, connect directly to the server to bypass Vite's WS proxy
      // which does not handle reconnection after backend restarts.
      // In production, use the same origin (server serves the app).
@@ -2010,12 +2031,12 @@ index d996d3f15d9ef4dc710e50ce24648b55562406a5..a2a5504194066fa783125180c8c5224d
 +        : `${url}?identity=${encodeURIComponent(identity)}`;
 +    };
  
--    this.socket = new ReconnectingWebSocket(url, undefined, {
-+    this.socket = new ReconnectingWebSocket(buildUrl, undefined, {
+-    const socket = new ReconnectingWebSocket(url, undefined, {
++    const socket = new ReconnectingWebSocket(buildUrl, undefined, {
        minReconnectionDelay: 1000,
        maxReconnectionDelay: 30000,
        reconnectionDelayGrowFactor: 1.5,
-@@ -141,6 +158,25 @@ export class WebSocketManager {
+@@ -373,6 +390,25 @@ export class WebSocketManager {
        return;
      }
  
@@ -2041,7 +2062,7 @@ index d996d3f15d9ef4dc710e50ce24648b55562406a5..a2a5504194066fa783125180c8c5224d
      // Lenient parse: tolerate a newer server (unknown fields stripped,
      // unknown change kinds filtered) instead of dropping whole messages
      // on additive contract changes.
-@@ -221,6 +257,29 @@ export class WebSocketManager {
+@@ -461,6 +497,29 @@ export class WebSocketManager {
      };
    }
  
@@ -2072,10 +2093,10 @@ index d996d3f15d9ef4dc710e50ce24648b55562406a5..a2a5504194066fa783125180c8c5224d
     * Return and clear the buffered "open file" intent for a thread, if any. The
     * secondary panel calls this when the thread becomes visible so the file
 diff --git a/apps/app/src/views/SettingsView.tsx b/apps/app/src/views/SettingsView.tsx
-index 36e07f6378a0237767ed313afd1b2695bbbc8677..07a9c0f91406720fdbb280cd2273d6e49ee18f25 100644
+index 044a8e9b18e885f11266a23d2cb98ee322e038d1..d5ef53b5017cf8a7cc0508f7925b73a85caf652b 100644
 --- a/apps/app/src/views/SettingsView.tsx
 +++ b/apps/app/src/views/SettingsView.tsx
-@@ -50,6 +50,7 @@ import { MachinesSettingsSection } from "@/components/settings/MachinesSettingsS
+@@ -55,6 +55,7 @@ import { MachinesSettingsSection } from "@/components/settings/MachinesSettingsS
  import { ArchivedThreadsSettingsSection } from "@/components/settings/ArchivedThreadsSettingsSection";
  import { CliSkillsSettingsSection } from "@/components/settings/CliSkillsSettingsSection";
  import { MarketplacesSettingsSection } from "@/components/settings/MarketplacesSettingsSection";
@@ -2083,7 +2104,7 @@ index 36e07f6378a0237767ed313afd1b2695bbbc8677..07a9c0f91406720fdbb280cd2273d6e4
  import {
    useUpdateGeneralSettings,
    useUpdateAppearance,
-@@ -1148,6 +1149,8 @@ export function SettingsView() {
+@@ -1052,6 +1053,8 @@ export function SettingsView() {
          }
        />
      );
@@ -2093,10 +2114,10 @@ index 36e07f6378a0237767ed313afd1b2695bbbc8677..07a9c0f91406720fdbb280cd2273d6e4
      content = (
        <AppearanceSettingsSection
 diff --git a/apps/app/src/views/thread-detail/ThreadDetailHeader.tsx b/apps/app/src/views/thread-detail/ThreadDetailHeader.tsx
-index dcd05e41f3912507f752f1ad4809a4a275c6ab76..65fae625aa8867c0d5e862d56f5c62cbf77d590b 100644
+index 5937f36c828c90342598d6d773544537d2aefbb8..e852356c2d70b6c72b4533bbed3cc41edf62d981 100644
 --- a/apps/app/src/views/thread-detail/ThreadDetailHeader.tsx
 +++ b/apps/app/src/views/thread-detail/ThreadDetailHeader.tsx
-@@ -67,6 +67,8 @@ interface ThreadDetailHeaderProps {
+@@ -63,6 +63,8 @@ interface ThreadDetailHeaderProps {
    onToggleSecondaryPanel: () => void;
    /** Plugin-contributed thread action buttons (design §4.9); optional. */
    pluginActions?: ReactNode;
@@ -2105,7 +2126,7 @@ index dcd05e41f3912507f752f1ad4809a4a275c6ab76..65fae625aa8867c0d5e862d56f5c62cb
    threadHeaderGitActions: ThreadHeaderGitAction[];
    threadId: string;
    threadTitle: string;
-@@ -81,6 +83,7 @@ export function ThreadDetailHeader({
+@@ -77,6 +79,7 @@ export function ThreadDetailHeader({
    onOpenThreadGitAction,
    onToggleSecondaryPanel,
    pluginActions,
@@ -2113,7 +2134,7 @@ index dcd05e41f3912507f752f1ad4809a4a275c6ab76..65fae625aa8867c0d5e862d56f5c62cb
    threadHeaderGitActions,
    threadId,
    threadTitle,
-@@ -234,6 +237,7 @@ export function ThreadDetailHeader({
+@@ -230,6 +233,7 @@ export function ThreadDetailHeader({
          className="flex items-center gap-1"
          data-thread-header-workflow-actions=""
        >
@@ -2122,10 +2143,10 @@ index dcd05e41f3912507f752f1ad4809a4a275c6ab76..65fae625aa8867c0d5e862d56f5c62cb
          {!usesResponsiveActionOverflow && workspaceOpenButton ? (
            <span className="inline-flex" data-thread-header-responsive-action="">
 diff --git a/apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx b/apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx
-index bc28154139b1e5d7eca5a4d4b8b93474791389b6..ff927ace668fec47061e0f8954c3e73b19b8bfdc 100644
+index 1c145991bcbbf221fa8a452bf5446a0b515e76ce..5fa7d1c51c1e11e4d80fffe8dd0e9e36e1f46b57 100644
 --- a/apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx
 +++ b/apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx
-@@ -102,6 +102,8 @@ import {
+@@ -108,6 +108,8 @@ import {
    type FollowUpPromptBoxProps,
    type FollowUpSubmitMode,
  } from "@/components/promptbox/FollowUpPromptBox";
@@ -2134,7 +2155,7 @@ index bc28154139b1e5d7eca5a4d4b8b93474791389b6..ff927ace668fec47061e0f8954c3e73b
  import type { SendMessageMutationLike } from "./threadDetailMutationTypes";
  import {
    buildAutoFollowUpRequest,
-@@ -714,6 +716,11 @@ export function ThreadDetailPromptArea({
+@@ -813,6 +815,11 @@ export function ThreadDetailPromptArea({
      }),
      [currentPromptDraft, normalPluginComposerHostBinding],
    );
@@ -2144,9 +2165,9 @@ index bc28154139b1e5d7eca5a4d4b8b93474791389b6..ff927ace668fec47061e0f8954c3e73b
 +    enabled: !shouldHideComposer,
 +  });
    const hasPromptDraftInput = currentPromptDraftInput.length > 0;
-   const isPromptEmpty = useCallback(
-     () => !hasPromptDraftInput,
-@@ -1438,6 +1445,7 @@ export function ThreadDetailPromptArea({
+   const canSubmitModifierShortcut = canSubmitFollowUpShortcut({
+     hasPromptDraftInput,
+@@ -1514,6 +1521,7 @@ export function ThreadDetailPromptArea({
      () => (
        <>
          {childPendingInteractionBanners}
@@ -2155,10 +2176,10 @@ index bc28154139b1e5d7eca5a4d4b8b93474791389b6..ff927ace668fec47061e0f8954c3e73b
            <ThreadWorkflowCard
              key={workflow.id}
 diff --git a/apps/app/src/views/thread-detail/ThreadDetailView.tsx b/apps/app/src/views/thread-detail/ThreadDetailView.tsx
-index 9bcf1e247511e201af5d61c62bab1c75d00dfba8..5dbf3fb623f4c8f7898eb453781d2240038d56d8 100644
+index 18bac603d1a03ada7025ebcd8e0bea259d412799..3862dea2f082e881f6c3870072c25234dc1ff625 100644
 --- a/apps/app/src/views/thread-detail/ThreadDetailView.tsx
 +++ b/apps/app/src/views/thread-detail/ThreadDetailView.tsx
-@@ -85,6 +85,7 @@ import {
+@@ -87,6 +87,7 @@ import {
    type ThreadActionsMenuResponsiveAction,
  } from "@/components/thread/ThreadActionsMenu";
  import { PluginThreadHeaderActions } from "@/components/plugin/PluginThreadHeaderActions";
@@ -2166,7 +2187,7 @@ index 9bcf1e247511e201af5d61c62bab1c75d00dfba8..5dbf3fb623f4c8f7898eb453781d2240
  import { ThreadWorkspaceOpenButton } from "@/components/thread/ThreadWorkspaceOpenButton";
  import {
    formatEnvironmentDisplay,
-@@ -2618,6 +2619,7 @@ function ThreadDetailViewInternal(props: ThreadDetailViewInternalProps) {
+@@ -2528,6 +2529,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
            projectId={thread.projectId}
          />
        }
@@ -2277,7 +2298,7 @@ index 0000000000000000000000000000000000000000..da905125a12822009808ccfa981e26d0
 +  });
 +});
 diff --git a/apps/cli/src/__tests__/json-flag-enforcement.test.ts b/apps/cli/src/__tests__/json-flag-enforcement.test.ts
-index 9996250ba23a89c512a8ee35771bdca8994a5442..98aac677ae454de9e4009f57f9386a561eaf334e 100644
+index f4d3efd746b33b9664a084c9002540c1d207c1a3..8cfc834051ce2f1ce1e4f0e6e58d87406c272e43 100644
 --- a/apps/cli/src/__tests__/json-flag-enforcement.test.ts
 +++ b/apps/cli/src/__tests__/json-flag-enforcement.test.ts
 @@ -6,6 +6,7 @@ import { registerProjectCommands } from "../commands/project.js";
@@ -2290,36 +2311,48 @@ index 9996250ba23a89c512a8ee35771bdca8994a5442..98aac677ae454de9e4009f57f9386a56
  const EXCLUDED_COMMANDS = new Set<string>();
 @@ -37,6 +38,7 @@ describe("CLI --json flag enforcement", () => {
      registerProviderCommands(program, getUrl);
-     registerManagerCommands(program, getUrl);
+     registerManagerCommands(program);
      registerMachineCommands(program, getUrl);
 +    registerMembersCommands(program, getUrl);
      registerThreadCommands(program, getUrl);
  
      const commands = collectLeafCommands(program);
 diff --git a/apps/cli/src/client.ts b/apps/cli/src/client.ts
-index af46f61e48db19b5e44434655cd3debd7b2be729..5588bd90a41bb46860eea058412781e2fac8407a 100644
+index a5a851c6a9e2e1f2f7a859a98c729c2cb32f003f..03d14b3a47c4af253e1e5293e4b5337acd7d6418 100644
 --- a/apps/cli/src/client.ts
 +++ b/apps/cli/src/client.ts
-@@ -1,8 +1,10 @@
- import { createNodeBbSdk, type BbSdk, type BbSdkContext } from "@bb/sdk/node";
+@@ -1,6 +1,12 @@
+-import { createNodeBbSdk, type BbSdk } from "@bb/sdk/node";
++import { createNodeBbSdk, type BbSdk, type BbSdkContext } from "@bb/sdk/node";
 +import type { ClaimedIdentity } from "@bb/domain";
  import type { Dispatcher } from "undici";
  
- export interface CreateCliBbSdkOptions {
-   context?: BbSdkContext;
++export interface CreateCliBbSdkOptions {
++  context?: BbSdkContext;
 +  claimedIdentity?: ClaimedIdentity;
++}
++
+ /**
+  * Node's fetch accepts the non-standard undici `dispatcher` option so one call
+  * can use its own connection pool and timeouts (see plugin-cli-proxy.ts).
+@@ -14,6 +20,16 @@ export function cliFetch(
+   return fetch(input, init);
  }
  
- /**
-@@ -25,6 +27,9 @@ export function createCliBbSdk(
-   return createNodeBbSdk({
-     baseUrl,
-     context: options.context,
+-export function createCliBbSdk(baseUrl: string): BbSdk {
+-  return createNodeBbSdk({ baseUrl, fetch: cliFetch });
++export function createCliBbSdk(
++  baseUrl: string,
++  options: CreateCliBbSdkOptions = {},
++): BbSdk {
++  return createNodeBbSdk({
++    baseUrl,
++    context: options.context,
 +    ...(options.claimedIdentity
 +      ? { claimedIdentity: options.claimedIdentity }
 +      : {}),
-     fetch: cliFetch,
-   });
++    fetch: cliFetch,
++  });
  }
 diff --git a/apps/cli/src/commands/members.ts b/apps/cli/src/commands/members.ts
 new file mode 100644
@@ -2410,7 +2443,7 @@ index 0000000000000000000000000000000000000000..7be36f5ea6b8ebdc8df282a79ccc0c83
 +    );
 +}
 diff --git a/apps/cli/src/index.ts b/apps/cli/src/index.ts
-index 42816b0cc7a70f3b14f5793a46acf80f10b5a529..df6f82d8b549c3f5e3a9fec1b3c36d5ab53bebc3 100644
+index 06f8d61edecd6fca0faa3d5f98a8a508fcede2ba..df6f82d8b549c3f5e3a9fec1b3c36d5ab53bebc3 100644
 --- a/apps/cli/src/index.ts
 +++ b/apps/cli/src/index.ts
 @@ -6,6 +6,7 @@ import { registerFileCommands } from "./commands/file.js";
@@ -2421,10 +2454,12 @@ index 42816b0cc7a70f3b14f5793a46acf80f10b5a529..df6f82d8b549c3f5e3a9fec1b3c36d5a
  import { registerMachineCommands } from "./commands/machine.js";
  import { registerProjectCommands } from "./commands/project.js";
  import { registerPluginCommands } from "./commands/plugin.js";
-@@ -89,6 +90,7 @@ registerSettingsCommands(program, getUrl);
+@@ -88,7 +89,8 @@ registerStatusCommand(program, getUrl, getContext);
+ registerSettingsCommands(program, getUrl);
  registerProjectCommands(program, getUrl);
  registerProviderCommands(program, getUrl);
- registerManagerCommands(program, getUrl);
+-registerManagerCommands(program);
++registerManagerCommands(program, getUrl);
 +registerMembersCommands(program, getUrl);
  registerMachineCommands(program, getUrl);
  registerUpdatesCommands(program, getUrl);
@@ -2714,13 +2749,15 @@ index 80e59ff59449ae8bf6aa43750d44a11a22355630..7a4ec6533511e8a962c7412f5687f7c1
      );
    });
 diff --git a/apps/connect/src/servers.ts b/apps/connect/src/servers.ts
-index 0e0b4c3b32a763949fe696abc7ee35dcd0712d00..b29576f0bf49774fd788849744979b0526df84ce 100644
+index 27502c61a7ea21a386c33589dd798e76d7ac167f..8600dd4420ff7e3f64bf48fd661648e67e43f050 100644
 --- a/apps/connect/src/servers.ts
 +++ b/apps/connect/src/servers.ts
-@@ -209,6 +209,8 @@ export async function resolveAccountUserId(
+@@ -208,7 +208,9 @@ export async function resolveAccountUserId(
+   return verifySessionCookie(cookie, secret, db);
  }
  
- export interface AccountServerListing {
+-interface AccountServerListing {
++export interface AccountServerListing {
 +  /** Stable server id used by owner-only server-scoped APIs. */
 +  id: string;
    /** Routing label (`server.subdomain`) — `<handle>.getbb.app`. */
@@ -3061,10 +3098,10 @@ index 0000000000000000000000000000000000000000..9f90384a2917fba8a39365e1b5ccaba9
 +  });
 +}
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
-index 17218d961bddbdccc3353b5c53f92bb8f83f1b3b..ccd8fc1d8dfb204900b86225d9cb1f12529e413e 100644
+index b4868c5fb194009ae8ef5cae17dac8acb79d541f..3051dfc5eb97c6464fedc9bb340a5b3b38d5ec53 100644
 --- a/apps/server/src/server.ts
 +++ b/apps/server/src/server.ts
-@@ -17,6 +17,7 @@ import { registerEnvironmentRoutes } from "./routes/environments.js";
+@@ -13,6 +13,7 @@ import { registerEnvironmentRoutes } from "./routes/environments.js";
  import { registerFileRoutes } from "./routes/files.js";
  import { registerHostRoutes } from "./routes/hosts.js";
  import { registerPresenceRoutes } from "./routes/presence.js";
@@ -3072,7 +3109,7 @@ index 17218d961bddbdccc3353b5c53f92bb8f83f1b3b..ccd8fc1d8dfb204900b86225d9cb1f12
  import { registerProjectRoutes } from "./routes/projects.js";
  import { registerThreadSectionRoutes } from "./routes/thread-sections.js";
  import { registerSystemRoutes } from "./routes/system.js";
-@@ -494,6 +495,7 @@ export function createApp(
+@@ -492,6 +493,7 @@ export function createApp(
    registerEnvironmentRoutes(publicApi, deps);
    registerThreadRoutes(publicApi, deps);
    registerPresenceRoutes(publicApi, deps);
@@ -3081,10 +3118,10 @@ index 17218d961bddbdccc3353b5c53f92bb8f83f1b3b..ccd8fc1d8dfb204900b86225d9cb1f12
    registerPluginCatalogRoutes(publicApi, pluginCatalogService);
    registerPluginRoutes(publicApi, deps, pluginService);
 diff --git a/apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md b/apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md
-index 198d6fe6faecffb784cfcc26250e043c5f704de2..1a0a814172f08d08ef0a66e22f0ed900fdf9cf23 100644
+index df43d717ad83deb3b2ac6e55d929e37082a2f765..745297fa3862ef890e9af5f2160b34779fb0ebd4 100644
 --- a/apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md
 +++ b/apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md
-@@ -50,6 +50,21 @@ message agents, or inspect projects, providers, and environments.
+@@ -54,6 +54,21 @@ message agents, or inspect projects, providers, and environments.
    server does not read the file.
  - Use `bb-app client ssh-target list --json` to inspect mappings.
  
@@ -3231,58 +3268,6 @@ index af054ac3dc78cf7226333c80a6c0ca891d697d31..eaac68120a86555fbf020df88e99607a
      this.projects = sdk.projects;
      this.providers = sdk.providers;
      this.skills = sdk.skills;
-diff --git a/packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts b/packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts
-index 5653a35f07f37d78085e6e077b82d0f55ab946a5..1432a4d9efa01a58376d58c7c926ce424b03afb8 100644
---- a/packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts
-+++ b/packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts
-@@ -2957,8 +2957,8 @@ declare const environmentArchiveThreadsResponseSchema: z$1.ZodObject<{
- type EnvironmentArchiveThreadsResponse = z$1.infer<typeof environmentArchiveThreadsResponseSchema>;
- declare const pullRequestMergeMethodSchema: z$1.ZodEnum<{
-     merge: "merge";
--    squash: "squash";
-     rebase: "rebase";
-+    squash: "squash";
- }>;
- type PullRequestMergeMethod = z$1.infer<typeof pullRequestMergeMethodSchema>;
- declare const commitActionResponseSchema: z$1.ZodObject<{
-@@ -12559,6 +12559,28 @@ interface HostsArea {
-     update(args: HostUpdateArgs): Promise<HostUpdateResult>;
- }
- 
-+interface MemberAddArgs {
-+    handle: string;
-+}
-+interface MemberRemoveArgs {
-+    handle: string;
-+}
-+type MemberListResult = Member[];
-+type MemberAddResult = Member;
-+type MemberRemoveResult = {
-+    ok: true;
-+};
-+interface MembersArea {
-+    add(args: MemberAddArgs): Promise<MemberAddResult>;
-+    list(): Promise<MemberListResult>;
-+    remove(args: MemberRemoveArgs): Promise<MemberRemoveResult>;
-+}
-+
-+type PresenceGetResult = PresenceSnapshotResponse;
-+interface PresenceArea {
-+    get(): Promise<PresenceGetResult>;
-+}
-+
- interface ProjectListArgs {
-     include?: ProjectListQuery["include"];
-     /** Include the singleton personal project. Defaults to false for compatibility. */
-@@ -13620,6 +13642,8 @@ interface BbSdk extends BbRealtime {
-     files: FilesArea;
-     guide: GuideArea;
-     hosts: HostsArea;
-+    members: MembersArea;
-+    presence: PresenceArea;
-     projects: ProjectsArea;
-     plugins: PluginsArea;
-     providers: ProvidersArea;
 diff --git a/packages/sdk/src/areas/members.ts b/packages/sdk/src/areas/members.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..cde41e2e0b457f4bdffe8f80e9fb77c2372937f2
@@ -3354,11 +3339,11 @@ index 0000000000000000000000000000000000000000..4c62afb924c7d9f39a284936f8109750
 +  };
 +}
 diff --git a/packages/sdk/src/browser.ts b/packages/sdk/src/browser.ts
-index 4ac0a8af5f0e7b38d1991c43ef7942f855c57c8c..de8700d4ca296aee7d46361eebe176457671930c 100644
+index 6ade5d79b49849caf1cfc7610164fdc9a66fe2ee..d0d6b4b7318b4e3332903ba9c6b03b696dfe4ac6 100644
 --- a/packages/sdk/src/browser.ts
 +++ b/packages/sdk/src/browser.ts
 @@ -1,4 +1,5 @@
- import { createBbSdk, type BbSdk } from "./core.js";
+ import { createBbSdk, type BbSdk, type BbSdkAreas } from "./core.js";
 +import type { ClaimedIdentity } from "@bb/domain";
  import { createHttpTransport } from "./transport-http.js";
  import type {
@@ -3371,7 +3356,7 @@ index 4ac0a8af5f0e7b38d1991c43ef7942f855c57c8c..de8700d4ca296aee7d46361eebe17645
    fetch?: typeof fetch;
    realtimeUrl?: string;
    websocket?: BbRealtimeSocketFactory;
-@@ -22,6 +24,7 @@ export function createBrowserTransport(
+@@ -29,6 +31,7 @@ export function createBrowserTransport(
  ): BbSdkTransport {
    return createHttpTransport({
      baseUrl: args.baseUrl,
@@ -3380,30 +3365,30 @@ index 4ac0a8af5f0e7b38d1991c43ef7942f855c57c8c..de8700d4ca296aee7d46361eebe17645
      realtimeUrl: args.realtimeUrl,
      runtime: "browser",
 diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
-index 4e544d7bd71950fe4d20ae998d80467fc63798d9..d4d0ddac46cb021329651d7c00532944a18af393 100644
+index b9a7320a01830aa2fa3308b2c9a6c2ed00eed306..f313ce2050ad64e6cbb0c428acb7a3ed09ac905b 100644
 --- a/packages/sdk/src/core.ts
 +++ b/packages/sdk/src/core.ts
 @@ -6,6 +6,8 @@ import {
  import { createFilesArea, type FilesArea } from "./areas/files.js";
- import { createGuideArea, type GuideArea } from "./areas/guide.js";
+ import type { GuideArea } from "./areas/guide.js";
  import { createHostsArea, type HostsArea } from "./areas/hosts.js";
 +import { createMembersArea, type MembersArea } from "./areas/members.js";
 +import { createPresenceArea, type PresenceArea } from "./areas/presence.js";
  import { createProjectsArea, type ProjectsArea } from "./areas/projects.js";
  import { createProvidersArea, type ProvidersArea } from "./areas/providers.js";
  import { createPluginsArea, type PluginsArea } from "./areas/plugins.js";
-@@ -34,6 +36,8 @@ export interface BbSdk extends BbRealtime {
+@@ -42,6 +44,8 @@ export interface BbSdkAreas extends BbRealtime {
+   environments: EnvironmentsArea;
    files: FilesArea;
-   guide: GuideArea;
    hosts: HostsArea;
 +  members: MembersArea;
 +  presence: PresenceArea;
    projects: ProjectsArea;
    plugins: PluginsArea;
    providers: ProvidersArea;
-@@ -57,6 +61,8 @@ export function createBbSdk(args: CreateBbSdkArgs): BbSdk {
+@@ -71,6 +75,8 @@ export function createBbSdk(
+     environments: createEnvironmentsArea(sdkContext),
      files: createFilesArea(sdkContext),
-     guide: createGuideArea(),
      hosts: createHostsArea(sdkContext),
 +    members: createMembersArea(sdkContext),
 +    presence: createPresenceArea(sdkContext),
@@ -3411,7 +3396,7 @@ index 4e544d7bd71950fe4d20ae998d80467fc63798d9..d4d0ddac46cb021329651d7c00532944
        return realtime.subscribe(args);
      },
 diff --git a/packages/sdk/src/node.ts b/packages/sdk/src/node.ts
-index b58b3a271997b659405c93f48859d988c024b334..2479b15c530e84fb416d442286fcc800e48a021b 100644
+index 87b804fffed1c6802978f39456095658ac261270..3ea69ac350267f11356391e860d125adcc86228d 100644
 --- a/packages/sdk/src/node.ts
 +++ b/packages/sdk/src/node.ts
 @@ -1,4 +1,5 @@
@@ -3420,7 +3405,7 @@ index b58b3a271997b659405c93f48859d988c024b334..2479b15c530e84fb416d442286fcc800
  import {
    createHostDaemonLocalClient,
    DEFAULT_HOST_DAEMON_LOCAL_BIND_HOST,
-@@ -19,6 +20,7 @@ import type {
+@@ -20,6 +21,7 @@ import type {
  
  export interface CreateNodeTransportArgs {
    baseUrl?: string;
@@ -3428,7 +3413,7 @@ index b58b3a271997b659405c93f48859d988c024b334..2479b15c530e84fb416d442286fcc800
    cliConfig?: CliConfig;
    fetch?: FetchImplementation;
    realtimeUrl?: string;
-@@ -51,6 +53,7 @@ export function createNodeTransport(
+@@ -52,6 +54,7 @@ export function createNodeTransport(
      // Only fall back to CLI config when no base URL is given, so explicitly
      // configured SDKs work in environments without BB_SERVER_URL.
      baseUrl: args.baseUrl ?? resolveCliConfig(args.cliConfig).BB_SERVER_URL,
@@ -3566,17 +3551,14 @@ index 71dbfd9ee7b07649f1e062205b855fd026354ed2..954aa5904677ee4b7da62596b321108e
      ...(args.realtimeUrl ? { realtimeUrl: args.realtimeUrl } : {}),
      runtime: args.runtime,
 diff --git a/packages/sdk/src/transport.ts b/packages/sdk/src/transport.ts
-index 24df4cc923b7951de80bf9979e297a6ea06b4483..1f02652c7924c94f2d6df54577d75fca41eca8fc 100644
+index a4c780ee5bf3e3b2255d8f52a221a9ff43c4aae8..91edb44b89e50ac687846e48d18ed1d91f819268 100644
 --- a/packages/sdk/src/transport.ts
 +++ b/packages/sdk/src/transport.ts
-@@ -1,14 +1,13 @@
- import type { ApiClient } from "@bb/server-contract";
--import type {
--  FetchImplementation,
--  JsonBodyOf,
--} from "./response.js";
+@@ -4,12 +4,14 @@ import type {
+   JsonBodyOf,
+   SdkResponseLike,
+ } from "./response.js";
 +import type { ClaimedIdentity } from "@bb/domain";
-+import type { FetchImplementation, JsonBodyOf } from "./response.js";
  
  export type BbSdkRuntime = "node" | "browser";
  
@@ -3587,7 +3569,7 @@ index 24df4cc923b7951de80bf9979e297a6ea06b4483..1f02652c7924c94f2d6df54577d75fca
    fetch: FetchImplementation;
    realtimeUrl?: string;
    runtime: BbSdkRuntime;
-@@ -54,6 +53,7 @@ export interface BbSdkContext {}
+@@ -55,6 +57,7 @@ export interface BbSdkContext {}
  
  export interface CreateHttpTransportArgs {
    baseUrl?: string;
@@ -3596,10 +3578,10 @@ index 24df4cc923b7951de80bf9979e297a6ea06b4483..1f02652c7924c94f2d6df54577d75fca
    realtimeUrl?: string;
    runtime: BbSdkRuntime;
 diff --git a/packages/sdk/test/public-types.test.ts b/packages/sdk/test/public-types.test.ts
-index 96234a1beb33955e1f4d66a930203f0b4dc11221..b15b70e8cc98e7cfacb9cc948018acf12b75583a 100644
+index 6389b7638b58d05e91359ca6d03ca9170100101e..1b389b6b17b012bf1d55165466bc96f85fa06924 100644
 --- a/packages/sdk/test/public-types.test.ts
 +++ b/packages/sdk/test/public-types.test.ts
-@@ -223,6 +223,8 @@ type ExpectedBbSdkKey =
+@@ -225,6 +225,8 @@ type ExpectedBbSdkKey =
    | "files"
    | "guide"
    | "hosts"
@@ -3609,7 +3591,7 @@ index 96234a1beb33955e1f4d66a930203f0b4dc11221..b15b70e8cc98e7cfacb9cc948018acf1
    | "projects"
    | "providers"
 diff --git a/packages/sdk/test/sdk.test.ts b/packages/sdk/test/sdk.test.ts
-index ad85ccd291a5a95b89edee0e1abcaec3002a1d4c..68029723ee773de4ad5ee99f9c2fdc73028360bc 100644
+index 60eb70c3aed1f6f5e72d3ca87a6ea268547733e4..8ba3a61f23ee05c94b5f77cef987429cb7cf5a2d 100644
 --- a/packages/sdk/test/sdk.test.ts
 +++ b/packages/sdk/test/sdk.test.ts
 @@ -1,10 +1,16 @@
@@ -3783,10 +3765,10 @@ index 0000000000000000000000000000000000000000..7771cacade8a9b0ab6735bd3c17797a4
 +export const removeMemberRequestSchema = addMemberRequestSchema;
 +export type RemoveMemberRequest = z.infer<typeof removeMemberRequestSchema>;
 diff --git a/packages/server-contract/src/public-api.ts b/packages/server-contract/src/public-api.ts
-index 4417ce8455eeb9640034423546a5016301835313..1a6572ab6192f04369e5a4ac5a87ac1de075db65 100644
+index 93ed28f515f92bfdd4a3feb5e26585f0341bc896..04414dba72145373a7a930fcc52ecfbea53ef0fc 100644
 --- a/packages/server-contract/src/public-api.ts
 +++ b/packages/server-contract/src/public-api.ts
-@@ -109,6 +109,10 @@ import type {
+@@ -106,6 +106,10 @@ import type {
    HostProviderCliInstallRequest,
    HostProviderCliStatusResponse,
    HostRetryUpdateResponse,
@@ -3797,7 +3779,7 @@ index 4417ce8455eeb9640034423546a5016301835313..1a6572ab6192f04369e5a4ac5a87ac1d
    ProjectAttachmentContentQuery,
    ProjectAttachmentUploadForm,
    ProjectBranchesQuery,
-@@ -255,6 +259,8 @@ import {
+@@ -251,6 +255,8 @@ import {
    hostPickFolderRequestSchema,
    hostPathsExistRequestSchema,
    hostProviderCliInstallRequestSchema,
@@ -3866,7 +3848,7 @@ index 3fee7e5c33b46d6a40309a847a286811784ca2c3..1e037dfde1546d73cee9cdc47c1f4580
 +remote visitors for a display name); attribution is honor-system by design
 +because anyone admitted has full access anyway.
 diff --git a/packages/tunnel-client/src/headers.ts b/packages/tunnel-client/src/headers.ts
-index 407a2e235ee61c8e745bcb719a38aef01a91605a..939c1443124427c8c68837e9ce334c6d52f3d43a 100644
+index 9dc0ff30fd441ee9cbc6e365494d9e5420953e81..5173a78fe2aa1520b901a5a5c5dc1174506c6c42 100644
 --- a/packages/tunnel-client/src/headers.ts
 +++ b/packages/tunnel-client/src/headers.ts
 @@ -1,10 +1,20 @@
@@ -3883,7 +3865,7 @@ index 407a2e235ee61c8e745bcb719a38aef01a91605a..939c1443124427c8c68837e9ce334c6d
 +
 +export const TUNNEL_ORIGIN_HEADER = "x-bb-via-tunnel";
  
- export interface LoopbackHeaderRewrite {
+ interface LoopbackHeaderRewrite {
    publicOrigin: string;
    loopbackOrigin: string;
 +  /** Stamp the trusted marker when this header set is re-issued by a tunnel. */
@@ -3901,19 +3883,22 @@ index 407a2e235ee61c8e745bcb719a38aef01a91605a..939c1443124427c8c68837e9ce334c6d
    return forwarded;
  }
 diff --git a/packages/tunnel-client/src/index.ts b/packages/tunnel-client/src/index.ts
-index c73d77cb3be8436bb3816a330229efa18ce81530..56629b0ad85e4c3b6838213e401def8e663a5849 100644
+index 30540d1edbe16626ed3228fad179ccb178f22f74..df2471f75640358b85e64559c9714c6cc0e5fe67 100644
 --- a/packages/tunnel-client/src/index.ts
 +++ b/packages/tunnel-client/src/index.ts
-@@ -1,6 +1,7 @@
- export type { TunnelClientLogger } from "./logger.js";
- export {
-   headersForLoopbackRequest,
+@@ -1,4 +1,9 @@
+-export { headersForLoopbackRequest } from "./headers.js";
++export type { TunnelClientLogger } from "./logger.js";
++export {
++  headersForLoopbackRequest,
 +  TUNNEL_ORIGIN_HEADER,
-   type LoopbackHeaderRewrite,
- } from "./headers.js";
++  type LoopbackHeaderRewrite,
++} from "./headers.js";
  export { humanizeTransportError } from "./humanize.js";
+ export {
+   DEFAULT_MAX_RECONNECT_DELAY_MS,
 diff --git a/packages/tunnel-client/src/session.ts b/packages/tunnel-client/src/session.ts
-index 61417e617d8671a14fd8fc83e9f274b6720e655d..6a03bee0cdb8cc95b65eddfdef424a2deecfd47d 100644
+index 0e1973b6bf514be15ebb7c9824d81dbf3eec6dce..25beb33f166a8a11b0e471a249dd9223822509a4 100644
 --- a/packages/tunnel-client/src/session.ts
 +++ b/packages/tunnel-client/src/session.ts
 @@ -306,6 +306,7 @@ export class TunnelSession {
@@ -3975,6 +3960,3 @@ index 0000000000000000000000000000000000000000..dfd582066ff15e81bf23deeda6f32a0d
 +    ).toEqual({ [TUNNEL_ORIGIN_HEADER]: "1" });
 +  });
 +});
--- 
-2.43.0
-

@@ -13,39 +13,43 @@
 9. **Exact-tag contract and migration receipt** regenerates the overlay contracts and templates, records the current `0101_p6r_identity_authorship` migration, and pins the exact `desktop-v0.39.0` source receipt.
 10. **Exact workspace and provider-input contract receipt** carries the candidate-only fixture and generated declaration updates required by the exact `bb-app@0.39.0` workspace gate environment, plus the ready-turn authorship handoff and its canonical provider-input witnesses.
 11. **Sparse multiplayer migration staging** preserves only explicit legacy attribution values and restores them through indexed event-id lookups, leaving unknown historical authorship null.
-12. **Managed daemon deployment and update guidance** advances the host-daemon protocol to 136 so enrolled auto-update daemons fetch the server's exact distribution and restart, while Settings and `bb updates` direct primary-server replacement through Rosetta machine deployment instead of npm latest.
-13. **Provider-qualified identity foundation extension** carries an additive PrincipalKey value through p6r identity and presence contracts while retaining reader-tolerant legacy records.
-14. **Attributed presence preservation** groups sockets by exact PrincipalKey, keeps same-key coalescing, and applies exact viewer-relative suppression without presentation-field equality.
-15. **Principal-aware typing surface** projects resolved display labels into human typing copy and uses the existing browser-safe client-id constructor.
-16. **Server-authored p6r PrincipalKeys** derives local and provider-qualified keys at the identity boundary and strips client-supplied key claims before presence publication.
-17. **Durable thread participant projection** derives ordered participants from stored authored events without joining on presentation.
-18. **Sidebar plugin participant projection** exposes the same ordered PrincipalKeys through the plugin thread contract.
-19. **Claimed WebSocket presentation** carries the server-issued claimed principal through the shared realtime resolver while rejecting client-authored keys.
-20. **Sidebar presence principal preservation** retains provider-qualified presence identity at the sidebar boundary.
-21. **Plugin request principal context** carries the server-authored PrincipalKey beside the authenticated actor and gives a registered identity provider a provider-scoped subject denotation handle.
-22. **Participant overflow tooltip lint repair** retains the accessible participant names while removing the redundant native tooltip rejected by the application lint boundary.
-23. **Generated plugin SDK template receipt** embeds the PrincipalKey request context and provider-scoped subject denotation handle in the exact bb-app plugin declaration templates.
-24. **Distinct no-provider identity modes** keeps loopback on the local operator while remote no-provider requests and sockets may carry only an explicit claimed presentation with a server-authored claimed PrincipalKey.
-25. **Provider avatar fallback** keeps provider presentation resilient when an avatar source is absent or invalid.
-26. **Bounded participant queries** batches participant event reads within SQLite binding limits.
-27. **Interrupted identity staging recovery** reconciles durable actor and collaborator staging before the provider-qualified migration resumes.
-28. **Unbounded supervised server startup** lets production-sized database migrations reach health without a fixed wall-clock deadline while retaining bounded health requests and immediate child-exit failure.
-29. **Packaged runtime entrypoint identity** names the exact server and host-daemon files executed by the launcher so immutable deployment receipts bind the listener processes rather than unused command wrappers.
+12. **Managed daemon deployment and update guidance** keeps enrolled daemons on the code-owned protocol and directs primary-server replacement through Rosetta machine deployment instead of npm latest.
+13. **Canonical protocol-147 base replay** rebases the reviewed overlay onto upstream's shipped protocol and migration lineage.
+14. **Shipped migration-ledger adoption** records the canonical upstream migration IDs before downstream identity migrations resume.
+15. **Provider-qualified identity extension** carries an additive PrincipalKey through identity and presence contracts while retaining reader-tolerant legacy records.
+16. **Attributed presence preservation** groups sockets by exact PrincipalKey and applies viewer-relative suppression without presentation-field equality.
+17. **Principal-aware typing** projects resolved display labels into typing copy.
+18. **Server-authored PrincipalKeys** derives local and provider-qualified keys at the identity boundary and strips client-supplied key claims.
+19. **Durable thread participants** derives ordered participants from stored authored events.
+20. **Sidebar participant profiles** exposes the same ordered PrincipalKeys through the plugin thread contract.
+21. **Claimed WebSocket presentation** carries only the server-issued claimed principal through realtime resolution.
+22. **Sidebar presence principals** retains provider-qualified presence identity at the sidebar boundary.
+23. **Plugin principal context** carries the server-authored PrincipalKey beside the authenticated actor and supports provider-scoped subject denotation.
+24. **Participant overflow accessibility** retains accessible participant names without a redundant native tooltip.
+25. **Distinct no-provider modes** keeps loopback on the local operator while remote no-provider requests may carry only claimed presentation with a server-authored key.
+26. **Provider avatar fallback** keeps provider presentation resilient when an avatar source is absent or invalid.
+27. **Bounded participant queries** batches participant reads within SQLite binding limits.
+28. **Interrupted identity staging recovery** reconciles durable actor and collaborator staging before the canonical migration resumes.
+29. **Production-shaped startup supervision** permits production-sized migrations to reach health within the bounded deployment window.
+30. **Packaged runtime identity** exposes the exact launcher, server, and daemon paths required by immutable process receipts.
+31. **Protocol-147 batching adaptation** aligns participant fixtures and batched events with the canonical base.
+32. **Canonical identity witnesses** aligns generated, migration-ledger, and protocol witnesses with upstream protocol 147.
+33. **Namespaced participant batching** keeps the new batched query surface inside the p6r downstream namespace boundary.
 
-## Exact 0.39 receipt
+## Exact protocol-147 receipt
 
-- Upstream: `desktop-v0.39.0` at `b33abbff098ac4c857578e7350d492dcaa65d489`.
+- Upstream: `c942421a454ee4157004274053eec5f36c81d7eb`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: twenty-nine patches in `patches/series`.
-- Result tree: `65c56d3f1ecd9c3981afcd7864e44e851b724e4d`.
+- Patch queue: thirty-three patches in `patches/series`.
+- Result tree: `e1f2b8b3298c6a5f46ec4514a2d261943b79a0ea`.
 
 ## Compatibility boundaries
 
 - Existing HTTP and SDK behavior remains available; new request/response fields are additive and nullable or optional where legacy data can lack attribution.
-- SQLite changes are additive: the current downstream identity migration is `0101_p6r_identity_authorship`, adding the provider-qualified actor and collaborator snapshots plus nullable actor facets on events, pending interactions, queued messages, and threads.
+- SQLite changes are additive: the current downstream identity migration is canonical `0105_p6r_identity_authorship`, adding the provider-qualified actor and collaborator snapshots plus nullable actor facets on events, pending interactions, queued messages, and threads.
 - Installs that ran the experimental branch's conflicting `0079_multiplayer-collaborators` migration are staged through canonical upstream migrations and restored without losing collaborator or attribution data.
 - Existing stored events remain readable with `actorHandle: null`.
-- Migration `0101_p6r_identity_authorship` adds the nullable `p6r_actors` and
+- Migration `0105_p6r_identity_authorship` adds the nullable `p6r_actors` and
   `p6r_collaborators` snapshot tables and nullable canonical actor columns to
   events and queued messages. Old rows and no-provider installations remain
   readable with nullable structured actor data; historical actor reads use the
@@ -70,7 +74,7 @@
   timeline user row carries the same nullable structured actor as the queued
   authored unit.
 - New downstream contracts follow [P6R_NAMESPACE.md](P6R_NAMESPACE.md), preventing plugins from silently depending on APIs absent from upstream bb.
-- The server and host daemon deploy together at protocol version 136. Existing auto-update-enabled enrolled daemons on 135 fetch the server's exact `/install/bb-app.tgz` artifact and restart; the updater still refuses insecure non-loopback HTTP and never downgrades a newer daemon. The system-version ViewModel replaces `upgradeCommand` with `upgradeGuidance` alongside every in-tree app, CLI, SDK, fixture, and generated-contract consumer, so this queue intentionally does **not** claim mixed-version client or server/daemon compatibility.
+- The server and every recorded host daemon deploy together at protocol version 147. The updater still refuses insecure non-loopback HTTP and never downgrades a newer daemon. The system-version ViewModel uses Rosetta-owned `upgradeGuidance` across in-tree app, CLI, SDK, fixture, and generated-contract consumers, so this queue intentionally does **not** claim mixed-version client or server/daemon compatibility.
 - Claimed identity is not authentication by itself. The Connect membership gate establishes admission; the claimed identity selects an admitted member for attribution.
 - Upstream's removed native side-chat UI is not restored. Identity rendering is integrated into the current native timeline/header/sidebar components and remains compatible with plugin-owned side chat.
 

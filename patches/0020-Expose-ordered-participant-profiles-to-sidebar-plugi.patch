@@ -1,0 +1,136 @@
+From aa348e0674b07d4486e9945d6809c2707a595d54 Mon Sep 17 00:00:00 2001
+From: Rosetta <cole@phosphor.co>
+Date: Sat, 22 Aug 2026 07:53:19 -0400
+Subject: [PATCH 20/32] Expose ordered participant profiles to sidebar plugins
+
+---
+ .../src/lib/plugin-sidebar-threads.test.ts    | 43 ++++++++++++++++++-
+ apps/app/src/lib/plugin-sidebar-threads.ts    | 14 ++++++
+ packages/plugin-sdk/src/app-contract.ts       | 14 ++++++
+ 3 files changed, 70 insertions(+), 1 deletion(-)
+
+diff --git a/apps/app/src/lib/plugin-sidebar-threads.test.ts b/apps/app/src/lib/plugin-sidebar-threads.test.ts
+index f990941568cf102d6a19a4e442c67cc2ee1885ba..8bb69829a78152d51a8179dddf295b144698376b 100644
+--- a/apps/app/src/lib/plugin-sidebar-threads.test.ts
++++ b/apps/app/src/lib/plugin-sidebar-threads.test.ts
+@@ -1,4 +1,7 @@
+-import type { ThreadListEntry } from "@bb/domain";
++import {
++  p6rCreateProviderPrincipalKey,
++  type ThreadListEntry,
++} from "@bb/domain";
+ import { describe, expect, it } from "vitest";
+ import { toPluginSidebarThread } from "./plugin-sidebar-threads";
+ 
+@@ -172,6 +175,44 @@ describe("toPluginSidebarThread", () => {
+     expect(toPluginSidebarThread(makeThread()).providerId).toBe("codex");
+   });
+ 
++  it("projects ordered participant profiles without collapsing equal presentation", () => {
++    const mapped = toPluginSidebarThread(
++      makeThread({
++        participants: [
++          {
++            p6rPrincipalKey: p6rCreateProviderPrincipalKey("github", "acct-42"),
++            p6rDisplayName: "Sawyer",
++            p6rImageUrl: "https://example.test/github.png",
++          },
++          {
++            p6rPrincipalKey: p6rCreateProviderPrincipalKey("google", "acct-42"),
++            p6rDisplayName: "Sawyer",
++            p6rImageUrl: "https://example.test/google.png",
++          },
++        ],
++      }),
++    );
++
++    expect(mapped.p6rParticipants).toEqual([
++      {
++        p6rPrincipalKey: "github:acct-42",
++        p6rDisplayName: "Sawyer",
++        p6rImageUrl: "https://example.test/github.png",
++      },
++      {
++        p6rPrincipalKey: "google:acct-42",
++        p6rDisplayName: "Sawyer",
++        p6rImageUrl: "https://example.test/google.png",
++      },
++    ]);
++  });
++
++  it("omits the optional contribution when the host has no participant projection", () => {
++    expect(
++      Object.hasOwn(toPluginSidebarThread(makeThread()), "p6rParticipants"),
++    ).toBe(false);
++  });
++
+   // A personal-project thread has a machine but no worktree, so the machine
+   // is the only place-of-work a row can show.
+   it("resolves the machine name for the thread's host", () => {
+diff --git a/apps/app/src/lib/plugin-sidebar-threads.ts b/apps/app/src/lib/plugin-sidebar-threads.ts
+index 7635f5867fc0ca52b668aefa5ceb50b1ac08668a..ef3cb7bea370f4f4f3a5501cd0aa8d9955325f4e 100644
+--- a/apps/app/src/lib/plugin-sidebar-threads.ts
++++ b/apps/app/src/lib/plugin-sidebar-threads.ts
+@@ -54,6 +54,17 @@ export function toPluginSidebarThread(
+     isWorkflowActive: hasActiveWorkflowActivity(entry),
+   });
+ 
++  const participants =
++    entry.participants === undefined
++      ? undefined
++      : entry.participants.map(
++          ({ p6rPrincipalKey, p6rDisplayName, p6rImageUrl }) => ({
++            p6rPrincipalKey,
++            p6rDisplayName,
++            p6rImageUrl,
++          }),
++        );
++
+   return {
+     id: entry.id,
+     projectId: entry.projectId,
+@@ -74,6 +85,9 @@ export function toPluginSidebarThread(
+     },
+     indicator,
+     indicatorLabel: getThreadListIndicatorLabel(indicator),
++    ...(participants === undefined
++      ? {}
++      : { p6rParticipants: participants }),
+     // Plain read state, not `isUnreadDoneThread`: a plugin list may show
+     // child threads and running threads, both of which that helper excludes
+     // by design (it answers "should this row show a done dot").
+diff --git a/packages/plugin-sdk/src/app-contract.ts b/packages/plugin-sdk/src/app-contract.ts
+index 9cd05c866022d33c3b979333a6c459f7556b2255..bb0d7f60810738b69ca09277a593d7ab7186db2b 100644
+--- a/packages/plugin-sdk/src/app-contract.ts
++++ b/packages/plugin-sdk/src/app-contract.ts
+@@ -625,6 +625,13 @@ export interface PluginSidebarThreadActivity {
+   goals: number;
+ }
+ 
++/** The participant presentation facts a host may contribute to a sidebar row. */
++export interface P6rParticipantProfile {
++  p6rPrincipalKey: string;
++  p6rDisplayName: string;
++  p6rImageUrl: string | null;
++}
++
+ /**
+  * One thread in the sidebar's live view.
+  *
+@@ -659,6 +666,13 @@ export interface PluginSidebarThread {
+    */
+   indicatorLabel: string | null;
+ 
++  /**
++   * The host's ordered participant projection. Absent on older hosts or when
++   * the host has no participant projection for this thread; never reconstruct
++   * it from another identity source.
++   */
++  p6rParticipants?: readonly P6rParticipantProfile[];
++
+   isUnread: boolean;
+   isPinned: boolean;
+   isArchived: boolean;
+-- 
+2.43.0
+

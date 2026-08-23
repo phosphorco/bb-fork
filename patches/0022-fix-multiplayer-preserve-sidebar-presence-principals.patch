@@ -1,7 +1,7 @@
-From 8e40a3af1eefc1371e8866dba30b44a7c86ba8d6 Mon Sep 17 00:00:00 2001
+From 8a22420859ea926c86ac76479e942d01f808dff9 Mon Sep 17 00:00:00 2001
 From: Rosetta <cole@phosphor.co>
 Date: Sat, 22 Aug 2026 10:22:50 -0400
-Subject: [PATCH] fix(multiplayer): preserve sidebar presence principals
+Subject: [PATCH 22/32] fix(multiplayer): preserve sidebar presence principals
 
 ---
  apps/app/src/components/sidebar/ThreadRow.tsx | 30 ++++-----
@@ -15,7 +15,7 @@ Subject: [PATCH] fix(multiplayer): preserve sidebar presence principals
  8 files changed, 204 insertions(+), 53 deletions(-)
 
 diff --git a/apps/app/src/components/sidebar/ThreadRow.tsx b/apps/app/src/components/sidebar/ThreadRow.tsx
-index 2379d5cbcf0827678125e1f0f99975572f78e1ed..199d8ddc497ed798fb24bb0d9756e1d241e7d24f 100644
+index 12156aabc7a83f6a15da918fee1db09a3f38d3ad..30ec71b0d1a1f54afe6f2790996e9207e0ff3bd9 100644
 --- a/apps/app/src/components/sidebar/ThreadRow.tsx
 +++ b/apps/app/src/components/sidebar/ThreadRow.tsx
 @@ -10,10 +10,7 @@ import {
@@ -30,7 +30,7 @@ index 2379d5cbcf0827678125e1f0f99975572f78e1ed..199d8ddc497ed798fb24bb0d9756e1d2
  import type { PluginComposerThreadRowStatus } from "@get-bb/plugin-sdk";
  import { getThreadConversationCollapsedAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
  import { Icon } from "@bb/shared-ui/icon";
-@@ -88,7 +85,7 @@ import { usePluginThreadRowStatus } from "@/lib/plugin-thread-row-status";
+@@ -91,7 +88,7 @@ import { usePluginThreadRowStatus } from "@/lib/plugin-thread-row-status";
  import { P6rSidebarPresenceDots } from "@/components/thread/presence/SidebarPresenceDots";
  import { p6rPresenceInitials } from "@/components/thread/presence/PresenceAvatarRow";
  import { useP6rClaimedIdentity } from "@/lib/claimed-identity-store";
@@ -39,7 +39,7 @@ index 2379d5cbcf0827678125e1f0f99975572f78e1ed..199d8ddc497ed798fb24bb0d9756e1d2
  
  const SIDEBAR_TITLE_DOUBLE_CLICK_MS = 400;
  
-@@ -588,16 +585,19 @@ function ThreadRowComponent({
+@@ -585,16 +582,19 @@ function ThreadRowComponent({
    );
    const shortcut = useSidebarThreadShortcut(thread.id);
    const pluginThreadRowStatus = usePluginThreadRowStatus(thread.id);
@@ -68,7 +68,7 @@ index 2379d5cbcf0827678125e1f0f99975572f78e1ed..199d8ddc497ed798fb24bb0d9756e1d2
    );
    const showActive = isActive;
    const hasPendingInteraction = thread.hasPendingInteraction;
-@@ -850,7 +850,7 @@ function ThreadRowComponent({
+@@ -851,7 +851,7 @@ function ThreadRowComponent({
          ) : null}
        </span>
        <span className="flex shrink-0 items-center gap-0.5">
@@ -384,10 +384,10 @@ index 4f95a83278694b7b6fcfdc832a42e8cd6b55266f..ff756cca5ac053f0e757b3c4d7e71d39
      const manager = new WebSocketManager();
      const changed = vi.fn();
 diff --git a/apps/server/src/ws/hub.ts b/apps/server/src/ws/hub.ts
-index 1225c8f31f766e0c2ad1c7f30c4c286fc552d7f9..d8c7458c511efc9d144edcf06485c5eecce40dcd 100644
+index e2eb73bcd5d58ac1f48c16ea4aede49fb92660d2..c54628dbe66fcbe169748ae7064df835ac7d7052 100644
 --- a/apps/server/src/ws/hub.ts
 +++ b/apps/server/src/ws/hub.ts
-@@ -995,7 +995,8 @@ export class NotificationHub implements DbNotifier {
+@@ -1116,7 +1116,8 @@ export class NotificationHub implements DbNotifier {
    /**
     * Presence summaries are partial patches: consumers merge the supplied
     * thread entries into their cache, and an empty handle array removes that
@@ -397,7 +397,7 @@ index 1225c8f31f766e0c2ad1c7f30c4c286fc552d7f9..d8c7458c511efc9d144edcf06485c5ee
     */
    private p6rBroadcastPresence(
      threadId: string,
-@@ -1006,6 +1007,9 @@ export class NotificationHub implements DbNotifier {
+@@ -1127,6 +1128,9 @@ export class NotificationHub implements DbNotifier {
        p6rThreads: {
          [threadId]: viewers.map((viewer) => viewer.p6rHandle),
        },
@@ -407,7 +407,7 @@ index 1225c8f31f766e0c2ad1c7f30c4c286fc552d7f9..d8c7458c511efc9d144edcf06485c5ee
      });
      if (!summaryResult.success) {
        console.error(
-@@ -1060,11 +1064,13 @@ export class NotificationHub implements DbNotifier {
+@@ -1181,11 +1185,13 @@ export class NotificationHub implements DbNotifier {
      socket: HubSocket,
    ): readonly P6rPresenceViewer[] {
      const actor = p6rGetSocketActor(socket);
@@ -467,10 +467,10 @@ index 4f92acd2823d74febad81a01615b766fb357781d..93f7538fae18a02a331f4cfec5449a73
      ]);
      expect(hub.p6rGetPresenceSnapshot()).toEqual({ p6rThreads: {} });
 diff --git a/packages/domain/src/change-kinds.ts b/packages/domain/src/change-kinds.ts
-index 5bdda1c92af2ca5da8edf0eb7ab6f7f4be22a035..779c5bb83893c967de5294b4274ee8e6f00bfb82 100644
+index 40ee8afe939812c956722d6133c824f70541d394..665a54327348f9af09346008ea551294121802cc 100644
 --- a/packages/domain/src/change-kinds.ts
 +++ b/packages/domain/src/change-kinds.ts
-@@ -304,6 +304,11 @@ export const p6rPresenceSummaryMessageSchema = z
+@@ -329,6 +329,11 @@ export const p6rPresenceSummaryMessageSchema = z
      type: z.literal("p6r-presence-summary"),
      // threadId -> handles currently viewing that thread.
      p6rThreads: z.record(z.string(), z.array(z.string()).readonly()),
@@ -482,7 +482,7 @@ index 5bdda1c92af2ca5da8edf0eb7ab6f7f4be22a035..779c5bb83893c967de5294b4274ee8e6
    })
    .strict();
  export type P6rPresenceSummaryMessage = z.infer<
-@@ -420,4 +425,18 @@ export const p6rThreadPresenceMessageLenientSchema = z.object({
+@@ -445,4 +450,18 @@ export const p6rThreadPresenceMessageLenientSchema = z.object({
  export const p6rPresenceSummaryMessageLenientSchema = z.object({
    type: z.literal("p6r-presence-summary"),
    p6rThreads: z.record(z.string(), z.array(z.string())),

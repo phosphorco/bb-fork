@@ -1,7 +1,7 @@
-From cbe6a65ea46a7ce237276608a3d405d5a8bcd4a6 Mon Sep 17 00:00:00 2001
+From 8c84cbf1313e3f5dde70ddcf5666b7f98491142a Mon Sep 17 00:00:00 2001
 From: Rosetta <its-rosetta@users.noreply.github.com>
 Date: Sat, 22 Aug 2026 22:04:20 -0400
-Subject: [PATCH] fix(bb-app): allow migrations to finish during startup
+Subject: [PATCH 29/32] fix(bb-app): allow migrations to finish during startup
 
 Remove the launcher's fixed server health deadline while retaining bounded request attempts and child-exit failure. Cover startup beyond the former 60-second cutoff so production-sized migrations can complete under supervision.
 ---
@@ -10,10 +10,10 @@ Remove the launcher's fixed server health deadline while retaining bounded reque
  2 files changed, 38 insertions(+), 10 deletions(-)
 
 diff --git a/packages/bb-app/src/launcher.ts b/packages/bb-app/src/launcher.ts
-index f4bf5d041..547ce8977 100644
+index 6961fe14ea5d340faeebee9fa4b74cd0235726dd..f4a792ad6b8cf54d07aa166cdc046b6ab5424197 100644
 --- a/packages/bb-app/src/launcher.ts
 +++ b/packages/bb-app/src/launcher.ts
-@@ -70,7 +70,7 @@ import { z } from "zod";
+@@ -74,7 +74,7 @@ import { z } from "zod";
  
  const HOST_AUTH_FILE_NAME = "auth.json";
  const HOST_ID_FILE_NAME = "host-id";
@@ -22,7 +22,7 @@ index f4bf5d041..547ce8977 100644
  const HEALTH_CHECK_INTERVAL_MS = 100;
  const HEALTH_CHECK_REQUEST_TIMEOUT_MS = 1_000;
  const MANAGED_PROCESS_TERMINATION_TIMEOUT_MS = 5_000;
-@@ -434,7 +434,6 @@ export interface DelayMillisecondsArgs {
+@@ -438,7 +438,6 @@ export interface DelayMillisecondsArgs {
  
  interface WaitForHealthArgs {
    childProcess: ChildProcess | null;
@@ -30,7 +30,7 @@ index f4bf5d041..547ce8977 100644
    url: string;
  }
  
-@@ -2165,10 +2164,8 @@ export async function maybeAddAutoJoinEnv(
+@@ -2253,10 +2252,8 @@ async function maybeAddAutoJoinEnv(
    };
  }
  
@@ -43,7 +43,7 @@ index f4bf5d041..547ce8977 100644
      if (
        args.childProcess &&
        (args.childProcess.exitCode !== null ||
-@@ -2177,7 +2174,9 @@ async function waitForHealth(args: WaitForHealthArgs): Promise<void> {
+@@ -2265,7 +2262,9 @@ async function waitForHealth(args: WaitForHealthArgs): Promise<void> {
        throw new Error("Process exited before becoming healthy");
      }
      try {
@@ -54,7 +54,7 @@ index f4bf5d041..547ce8977 100644
        if (response.ok) {
          return;
        }
-@@ -2186,7 +2185,6 @@ async function waitForHealth(args: WaitForHealthArgs): Promise<void> {
+@@ -2274,7 +2273,6 @@ async function waitForHealth(args: WaitForHealthArgs): Promise<void> {
        setTimeout(resolvePromise, HEALTH_CHECK_INTERVAL_MS);
      });
    }
@@ -62,7 +62,7 @@ index f4bf5d041..547ce8977 100644
  }
  
  function normalizeServerUrlForComparison(serverUrl: string): string {
-@@ -2198,7 +2196,7 @@ function normalizeServerUrlForComparison(serverUrl: string): string {
+@@ -2286,7 +2284,7 @@ function normalizeServerUrlForComparison(serverUrl: string): string {
  export async function waitForHostDaemonStatus(
    args: WaitForHostDaemonStatusArgs,
  ): Promise<void> {
@@ -71,7 +71,7 @@ index f4bf5d041..547ce8977 100644
    const deadline = Date.now() + timeoutMs;
    const expectedServerUrl = normalizeServerUrlForComparison(
      args.expectedServerUrl,
-@@ -3339,7 +3337,7 @@ export async function runBbApp(
+@@ -3431,7 +3429,7 @@ export async function runBbApp(
      try {
        await startServer();
      } catch {
@@ -81,10 +81,10 @@ index f4bf5d041..547ce8977 100644
          context,
          processName: "server",
 diff --git a/packages/bb-app/test/index.test.ts b/packages/bb-app/test/index.test.ts
-index 3f3ed29c7..bf42f733a 100644
+index a3ffe16d6eaca1489c4baf9b28a418ec9d585898..33750080fd48234b8242185ca5f829ff5c78c147 100644
 --- a/packages/bb-app/test/index.test.ts
 +++ b/packages/bb-app/test/index.test.ts
-@@ -38,6 +38,7 @@ import {
+@@ -30,6 +30,7 @@ import {
    runBundledCliCommand,
    superviseFullStackProcesses,
    terminateManagedFullStackProcesses,
@@ -92,7 +92,7 @@ index 3f3ed29c7..bf42f733a 100644
    waitForHostDaemonStatus,
    waitForProcessExit,
  } from "../src/launcher.js";
-@@ -489,6 +490,35 @@ async function captureStdout(run: () => Promise<void>): Promise<string> {
+@@ -481,6 +482,35 @@ async function captureStdout(run: () => Promise<void>): Promise<string> {
  }
  
  describe("bb-app launcher", () => {

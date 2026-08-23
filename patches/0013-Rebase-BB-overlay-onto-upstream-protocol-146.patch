@@ -1,0 +1,5350 @@
+From c605cff45fa2a2eaa594fe57ffbb6861096a0aa7 Mon Sep 17 00:00:00 2001
+From: BB Operator <operator@invalid.local>
+Date: Fri, 21 Aug 2026 10:06:53 -0400
+Subject: [PATCH 13/13] Rebase BB overlay onto upstream protocol 146
+
+---
+ apps/app/.ladle/settings-story-fixtures.tsx   |    2 +-
+ apps/app/src/App.tsx                          |    3 -
+ .../settings/UpdatesSettingsSection.tsx       |    5 +-
+ .../thread/timeline/ThreadTimelineRows.tsx    |    2 -
+ .../timeline/rows/UserMessage.stories.tsx     |    2 +
+ apps/app/src/lib/ws.ts                        |    1 -
+ apps/cli/src/client.ts                        |    4 +-
+ apps/cli/src/index.ts                         |    2 +-
+ apps/connect/src/servers.ts                   |    4 +-
+ apps/demo-server/src/fixtures/timelines.ts    |    2 +
+ apps/demo-server/src/fixtures/world.ts        |    3 +-
+ .../test/command/dispatch-helpers.ts          |    3 +
+ apps/mobile/src/data/test/fixtures.ts         |    1 +
+ .../thread-runtime/thread-runtime-cache.ts    |    3 +
+ .../updates/update-inventory-model.test.ts    |    4 +-
+ .../data/updates/update-inventory-model.ts    |    4 +-
+ .../src/screens/dev/interaction-fixtures.ts   |    1 +
+ .../src/screens/dev/work-row-fixtures.ts      |    2 +
+ .../src/screens/settings/UpdatesScreen.tsx    |   19 +-
+ .../screens/thread/timeline/test-fixtures.ts  |    2 +
+ apps/server/src/routes/threads/actions.ts     |   12 +-
+ apps/server/src/services/identity.ts          |   16 +-
+ .../server/src/services/plugins/plugin-api.ts |    7 +-
+ .../src/services/plugins/plugin-service.ts    |    3 +-
+ .../bb-plugin-authoring/SKILL.md              |   30 +-
+ .../src/services/threads/queued-messages.ts   |    6 +-
+ .../src/services/threads/thread-commands.ts   |    3 +-
+ .../src/services/threads/thread-events.ts     |    6 +-
+ .../src/services/threads/thread-lifecycle.ts  |    2 +-
+ .../threads/thread-provisioning-context.ts    |    6 +-
+ .../threads/thread-runtime-display.ts         |   16 -
+ .../src/services/threads/thread-send.ts       |    2 +-
+ .../services/threads/thread-turn-dispatch.ts  |    2 +-
+ apps/server/src/ws/hub.ts                     |    2 +-
+ .../test/public/public-thread-data.test.ts    |  159 +-
+ .../plugins/plugin-agent-tools.test.ts        |    2 +
+ .../services/plugins/plugin-service.test.ts   |    4 +-
+ .../services/threads/thread-speaker.test.ts   |   23 +-
+ docs/api_to_audit.md                          |    1 +
+ ...p.sql => 0105_p6r_identity_authorship.sql} |    0
+ packages/db/drizzle/meta/0105_snapshot.json   | 3929 +++++++++++++++++
+ packages/db/drizzle/meta/_journal.json        |    7 +
+ packages/db/src/data/index.ts                 |    1 -
+ packages/db/src/migrate.ts                    |   14 +-
+ packages/db/test/data/actors.test.ts          |    2 +
+ packages/db/test/migrate.test.ts              |   45 +-
+ packages/domain/src/change-kinds.ts           |    2 +-
+ packages/plugin-sdk/src/backend-contract.ts   |    4 +-
+ .../src/testing/fake-plugin-host.ts           |    4 +-
+ .../thread-view/src/parse-error-message.ts    |   65 -
+ packages/tunnel-client/src/index.ts           |    1 -
+ plugins/provider-retry/server.test.ts         |    5 +-
+ 52 files changed, 4120 insertions(+), 330 deletions(-)
+ rename packages/db/drizzle/{0101_p6r_identity_authorship.sql => 0105_p6r_identity_authorship.sql} (100%)
+ create mode 100644 packages/db/drizzle/meta/0105_snapshot.json
+
+diff --git a/apps/app/.ladle/settings-story-fixtures.tsx b/apps/app/.ladle/settings-story-fixtures.tsx
+index 22d2fa366c041219be0d1475947cf57609fa4db9..cda0c4c94a0c02044a3e48fd929907c60c7c4742 100644
+--- a/apps/app/.ladle/settings-story-fixtures.tsx
++++ b/apps/app/.ladle/settings-story-fixtures.tsx
+@@ -154,7 +154,7 @@ const systemVersion = {
+   source: "npm",
+   updateAvailable: false,
+   isDevelopment: false,
+-  upgradeCommand: "npx bb-app@latest",
++  upgradeGuidance: "Update this managed BB deployment through its operator.",
+ } satisfies SystemVersionResponse;
+ 
+ const settingsUpdateMachine = {
+diff --git a/apps/app/src/App.tsx b/apps/app/src/App.tsx
+index df078f16a3f94d62bc467fbf95b38b63b8d06aa0..a4e0d37c6a877450b4893547ea866e8eed44cdb0 100644
+--- a/apps/app/src/App.tsx
++++ b/apps/app/src/App.tsx
+@@ -398,9 +398,6 @@ export function App() {
+                 started it, so its failure toast can be clicked from any route —
+                 including auth callback, which renders no app shell. */}
+               <ProviderCliInstallLogDialogHost />
+-              {/* First-run onboarding. Outside <Routes> so it is not tied to a
+-                  page. It self-gates on the experiment and completion timestamp. */}
+-              <OnboardingHost />
+             </AppFileExternalNavigationHost>
+           </AppNavigationUrlHost>
+         </RouteNavigationProvider>
+diff --git a/apps/app/src/components/settings/UpdatesSettingsSection.tsx b/apps/app/src/components/settings/UpdatesSettingsSection.tsx
+index 758c213ecf284531935b65feab1055fcf0dd297f..8769224f86d191c99b6dd461312273b49a1f98f4 100644
+--- a/apps/app/src/components/settings/UpdatesSettingsSection.tsx
++++ b/apps/app/src/components/settings/UpdatesSettingsSection.tsx
+@@ -973,10 +973,7 @@ export function BbAppUpdateRows({
+   );
+ 
+   if (systemVersion.updateAvailable) {
+-    return row(
+-      name,
+-      <RowStateControl state="update-available" />,
+-    );
++    return row(name, <RowStateControl state="update-available" />);
+   }
+ 
+   return row(name, settledStatus);
+diff --git a/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx b/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
+index 6abd650c4eb462c3dfb9c911aec28fa107d7525f..8f1b04f9ffdac6fde6fecb16b6697139a4301be3 100644
+--- a/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
++++ b/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
+@@ -263,7 +263,6 @@ interface TimelineRendererStaticContextValue {
+   resolveUserAttachmentImageSrc: UserAttachmentImageSrcResolver | undefined;
+   /** True when 2+ distinct authors are loaded; user rows then show author chips. */
+   p6rShowMessageAuthors: boolean;
+-  themeType: ThreadTimelineTheme;
+   threadId: string | undefined;
+   workspaceRootPath: string | undefined;
+ }
+@@ -2461,7 +2460,6 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
+       resolveSegmentLinkHref,
+       resolveUserAttachmentImageSrc: props.resolveUserAttachmentImageSrc,
+       p6rShowMessageAuthors,
+-      themeType,
+       threadId: props.threadId,
+       workspaceRootPath: props.workspaceRootPath,
+     }),
+diff --git a/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx b/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx
+index fc7c8ccb4e6b92319bb8062fb586965a9812cf3b..28ed641fb7eb5cfa7588fb038d6ccc0da546749b 100644
+--- a/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx
++++ b/apps/app/src/components/thread/timeline/rows/UserMessage.stories.tsx
+@@ -548,6 +548,8 @@ export function Overview() {
+             role="user"
+             originKind={null}
+             initiator="user"
++            p6rActorHandle={null}
++            p6rShowAuthor={false}
+             senderThreadId={null}
+             senderThreadTitle={null}
+             senderIsPluginSideChat={false}
+diff --git a/apps/app/src/lib/ws.ts b/apps/app/src/lib/ws.ts
+index 5030a05582e58618b27443f80e34f91ba3fd6935..d320c8db38bbf951e703145a8d4381ed1b378b7e 100644
+--- a/apps/app/src/lib/ws.ts
++++ b/apps/app/src/lib/ws.ts
+@@ -239,7 +239,6 @@ export class WebSocketManager {
+       unsubscribeVisibility();
+       unsubscribeOnline();
+     };
+-
+   }
+ 
+   private handleVisibilityChange(): void {
+diff --git a/apps/cli/src/client.ts b/apps/cli/src/client.ts
+index 121948f1175e69f33e11245daca6c455aed13d6d..66454b2d2e4a2badd8d0a6aa723ad12dc98c1618 100644
+--- a/apps/cli/src/client.ts
++++ b/apps/cli/src/client.ts
+@@ -2,7 +2,7 @@ import { createNodeBbSdk, type BbSdk, type BbSdkContext } from "@bb/sdk/node";
+ import type { P6rClaimedIdentity } from "@bb/domain";
+ import type { Dispatcher } from "undici";
+ 
+-export interface CreateCliBbSdkOptions {
++export interface P6rCreateCliBbSdkOptions {
+   context?: BbSdkContext;
+   p6rClaimedIdentity?: P6rClaimedIdentity;
+ }
+@@ -22,7 +22,7 @@ export function cliFetch(
+ 
+ export function createCliBbSdk(
+   baseUrl: string,
+-  options: CreateCliBbSdkOptions = {},
++  options: P6rCreateCliBbSdkOptions = {},
+ ): BbSdk {
+   return createNodeBbSdk({
+     baseUrl,
+diff --git a/apps/cli/src/index.ts b/apps/cli/src/index.ts
+index f47bfcaa08b34138bd26f5133287cd5ccd7f624a..5fff73862e346ef5689d01888279a3816424acff 100644
+--- a/apps/cli/src/index.ts
++++ b/apps/cli/src/index.ts
+@@ -89,7 +89,7 @@ registerStatusCommand(program, getUrl, getContext);
+ registerSettingsCommands(program, getUrl);
+ registerProjectCommands(program, getUrl);
+ registerProviderCommands(program, getUrl);
+-registerManagerCommands(program, getUrl);
++registerManagerCommands(program);
+ p6rRegisterMembersCommands(program, getUrl);
+ registerMachineCommands(program, getUrl);
+ registerUpdatesCommands(program, getUrl);
+diff --git a/apps/connect/src/servers.ts b/apps/connect/src/servers.ts
+index 8600dd4420ff7e3f64bf48fd661648e67e43f050..ef8423829980a2fff6e987d31959e729669f41a2 100644
+--- a/apps/connect/src/servers.ts
++++ b/apps/connect/src/servers.ts
+@@ -208,7 +208,7 @@ export async function resolveAccountUserId(
+   return verifySessionCookie(cookie, secret, db);
+ }
+ 
+-export interface AccountServerListing {
++export interface P6rAccountServerListing {
+   /** Stable server id used by owner-only server-scoped APIs. */
+   id: string;
+   /** Routing label (`server.subdomain`) — `<handle>.getbb.app`. */
+@@ -232,7 +232,7 @@ export async function listAccountServers(
+   db: ConnectDb,
+   userId: string,
+   now: number = Date.now(),
+-): Promise<AccountServerListing[]> {
++): Promise<P6rAccountServerListing[]> {
+   const rows = await db
+     .select({
+       id: server.id,
+diff --git a/apps/demo-server/src/fixtures/timelines.ts b/apps/demo-server/src/fixtures/timelines.ts
+index 8ed02fca6a5395fc295a92b18dc02904e5b97c7a..508395cdd627d9a8afebb0c9c05cbe8b631d38b9 100644
+--- a/apps/demo-server/src/fixtures/timelines.ts
++++ b/apps/demo-server/src/fixtures/timelines.ts
+@@ -74,6 +74,8 @@ export function conversationRow(args: {
+       localFilePaths: [],
+     },
+     initiator: "user",
++    p6rActor: null,
++    p6rActorHandle: null,
+     senderThreadId: null,
+     systemMessageKind: "unlabeled",
+     systemMessageSubject: null,
+diff --git a/apps/demo-server/src/fixtures/world.ts b/apps/demo-server/src/fixtures/world.ts
+index 7942b0b3d37fd2e9c3f1376af79d2012938224cd..b9a0b1a98f38083a8e5c488a84a25bb1da3ac66c 100644
+--- a/apps/demo-server/src/fixtures/world.ts
++++ b/apps/demo-server/src/fixtures/world.ts
+@@ -183,7 +183,7 @@ export const SYSTEM_VERSION: SystemVersionResponse = {
+   source: "npm",
+   updateAvailable: false,
+   isDevelopment: false,
+-  upgradeCommand: "npx bb-app@latest",
++  upgradeGuidance: "Update this managed BB deployment through its operator.",
+ };
+ 
+ /** `GET /plugins/contributions` has no contract type; this mirrors the server route. */
+@@ -197,6 +197,7 @@ export function queuedMessage(args: {
+   return {
+     id: args.id,
+     content: args.content,
++    p6rActor: null,
+     model: THREAD_DEFAULT_EXECUTION_OPTIONS.model,
+     reasoningLevel: THREAD_DEFAULT_EXECUTION_OPTIONS.reasoningLevel,
+     permissionMode: THREAD_DEFAULT_EXECUTION_OPTIONS.permissionMode,
+diff --git a/apps/host-daemon/test/command/dispatch-helpers.ts b/apps/host-daemon/test/command/dispatch-helpers.ts
+index b1366441fcee7030be78d4ab812e5e26867f36cb..0467cfedb10959a5af956124a35dc841fc983b80 100644
+--- a/apps/host-daemon/test/command/dispatch-helpers.ts
++++ b/apps/host-daemon/test/command/dispatch-helpers.ts
+@@ -105,6 +105,7 @@ interface FakeRuntimeState {
+   startedInstructions: string | undefined;
+   startedThreadId: string | undefined;
+   steeredClientRequestId: ClientTurnRequestId | undefined;
++  steeredInput: PromptInput[] | undefined;
+   steeredTurnId: string | undefined;
+   steeredTurnInstructions: string | undefined;
+   stoppedThreadId: string | undefined;
+@@ -275,6 +276,7 @@ export function createFakeRuntime() {
+     startedInstructions: undefined,
+     startedThreadId: undefined,
+     steeredClientRequestId: undefined,
++    steeredInput: undefined,
+     steeredTurnId: undefined,
+     steeredTurnInstructions: undefined,
+     stoppedThreadId: undefined,
+@@ -362,6 +364,7 @@ export function createFakeRuntime() {
+     async steerTurn(args) {
+       state.steeredTurnId = args.expectedTurnId;
+       state.steeredClientRequestId = args.clientRequestId;
++      state.steeredInput = args.input;
+       state.steeredTurnInstructions = args.instructions;
+       return { status: "steered" };
+     },
+diff --git a/apps/mobile/src/data/test/fixtures.ts b/apps/mobile/src/data/test/fixtures.ts
+index 62a1d55c501dd09352cfb486d85b87318c6bef5b..8e1a41f66e540eb241200bc4a95e2ff4a233c861 100644
+--- a/apps/mobile/src/data/test/fixtures.ts
++++ b/apps/mobile/src/data/test/fixtures.ts
+@@ -140,6 +140,7 @@ export function queuedMessage(
+     createdAt: 1,
+     updatedAt: 1,
+     ...overrides,
++    p6rActor: overrides.p6rActor ?? null,
+   };
+ }
+ 
+diff --git a/apps/mobile/src/data/thread-runtime/thread-runtime-cache.ts b/apps/mobile/src/data/thread-runtime/thread-runtime-cache.ts
+index 8f63917f4b2724e7de32a27ed56124e1f16faeac..588c5cf05a988bdfc2af508e533762f70420fbbe 100644
+--- a/apps/mobile/src/data/thread-runtime/thread-runtime-cache.ts
++++ b/apps/mobile/src/data/thread-runtime/thread-runtime-cache.ts
+@@ -314,6 +314,8 @@ export function buildOptimisticUserMessageRow({
+     mentions,
+     attachments: collectTimelineAttachments(input),
+     initiator: "user",
++    p6rActor: null,
++    p6rActorHandle: null,
+     senderThreadId: null,
+     systemMessageKind: "unlabeled",
+     systemMessageSubject: null,
+@@ -577,6 +579,7 @@ function buildOptimisticQueuedMessage({
+   return {
+     id: `${OPTIMISTIC_QUEUED_MESSAGE_ID_PREFIX}${randomSuffix()}`,
+     content: request.input,
++    p6rActor: null,
+     model: request.model ?? "pending",
+     reasoningLevel: request.reasoningLevel ?? "medium",
+     permissionMode: request.permissionMode ?? "auto",
+diff --git a/apps/mobile/src/data/updates/update-inventory-model.test.ts b/apps/mobile/src/data/updates/update-inventory-model.test.ts
+index 877e4f4b14cd49bdb51f972ba27e5d26fd7a3dae..f78ee373b611338fa1af7ea197b5ed321a2d4906 100644
+--- a/apps/mobile/src/data/updates/update-inventory-model.test.ts
++++ b/apps/mobile/src/data/updates/update-inventory-model.test.ts
+@@ -49,7 +49,7 @@ const VERSION: SystemVersionResponse = {
+   source: "npm",
+   updateAvailable: true,
+   isDevelopment: false,
+-  upgradeCommand: "npm i -g bb-app@latest",
++  upgradeGuidance: "Update through the managed deployment.",
+ };
+ 
+ const UPDATE_ACTION = {
+@@ -237,7 +237,7 @@ describe("bbAppRowState", () => {
+       kind: "available",
+       current: "1.0.0",
+       latest: "1.1.0",
+-      upgradeCommand: "npm i -g bb-app@latest",
++      upgradeGuidance: "Update through the managed deployment.",
+     });
+     expect(bbAppRowState({ ...VERSION, updateAvailable: false })).toEqual({
+       kind: "current",
+diff --git a/apps/mobile/src/data/updates/update-inventory-model.ts b/apps/mobile/src/data/updates/update-inventory-model.ts
+index 3b921a5a2eb3023c7b1e188268ce40f0efcdbaa9..0ad2f1fe40fd71759291be5d624c53c198cd2ba1 100644
+--- a/apps/mobile/src/data/updates/update-inventory-model.ts
++++ b/apps/mobile/src/data/updates/update-inventory-model.ts
+@@ -191,7 +191,7 @@ export type BbAppRowState =
+       kind: "available";
+       current: string;
+       latest: string | null;
+-      upgradeCommand: string;
++      upgradeGuidance: string;
+     }
+   | { kind: "current"; current: string };
+ 
+@@ -208,7 +208,7 @@ export function bbAppRowState(
+       kind: "available",
+       current: version.currentVersion,
+       latest: version.latestVersion,
+-      upgradeCommand: version.upgradeCommand,
++      upgradeGuidance: version.upgradeGuidance,
+     };
+   }
+   return { kind: "current", current: version.currentVersion };
+diff --git a/apps/mobile/src/screens/dev/interaction-fixtures.ts b/apps/mobile/src/screens/dev/interaction-fixtures.ts
+index 6ab6d3bde18db16e67f47bc9a39257c42f538b6a..c3fc1609c249e4abf810801b2406271798e02f02 100644
+--- a/apps/mobile/src/screens/dev/interaction-fixtures.ts
++++ b/apps/mobile/src/screens/dev/interaction-fixtures.ts
+@@ -307,6 +307,7 @@ export function buildInteractionFixtures(): InteractionFixture[] {
+ 
+ export function buildQueuedMessageFixtures(): ThreadQueuedMessage[] {
+   const base = {
++    p6rActor: null,
+     model: "fake-model",
+     reasoningLevel: "medium" as const,
+     permissionMode: "auto" as const,
+diff --git a/apps/mobile/src/screens/dev/work-row-fixtures.ts b/apps/mobile/src/screens/dev/work-row-fixtures.ts
+index 58481f90c52e7f36a5305121c3f1a667939f3c85..9ec12e6532b26215a563ce3ce283b1b15cfe2ac1 100644
+--- a/apps/mobile/src/screens/dev/work-row-fixtures.ts
++++ b/apps/mobile/src/screens/dev/work-row-fixtures.ts
+@@ -45,6 +45,8 @@ function user(id: string, text: string): TimelineConversationRow {
+     text,
+     attachments: null,
+     initiator: "user",
++    p6rActor: null,
++    p6rActorHandle: null,
+     senderThreadId: null,
+     systemMessageKind: "unlabeled",
+     systemMessageSubject: null,
+diff --git a/apps/mobile/src/screens/settings/UpdatesScreen.tsx b/apps/mobile/src/screens/settings/UpdatesScreen.tsx
+index 1f34f9cef32509ab039edce783c57e4d6219ccc8..6af1f97e4135a62dbbdcb84ee755e5be42475f7f 100644
+--- a/apps/mobile/src/screens/settings/UpdatesScreen.tsx
++++ b/apps/mobile/src/screens/settings/UpdatesScreen.tsx
+@@ -1,6 +1,5 @@
+ import type { Host } from "@bb/domain";
+ import type { SystemVersionResponse } from "@bb/server-contract";
+-import * as Clipboard from "expo-clipboard";
+ import { useMemo, useState } from "react";
+ import { Linking, Pressable, View } from "react-native";
+ import { useProfiles } from "@/app-shell";
+@@ -78,11 +77,6 @@ function BbAppRow({
+   systemVersion: SystemVersionResponse | undefined;
+ }) {
+   const state = bbAppRowState(systemVersion);
+-  const copyUpgradeCommand = (command: string) => {
+-    void Clipboard.setStringAsync(command)
+-      .then(() => toast.success("Upgrade command copied"))
+-      .catch(() => toast.error("Couldn't copy upgrade command"));
+-  };
+   return (
+     <View className="gap-2 px-4 py-3" testID="updates-bb-row">
+       <View className="flex-row flex-wrap items-center gap-x-3 gap-y-1">
+@@ -111,18 +105,9 @@ function BbAppRow({
+       </View>
+       {state.kind === "available" ? (
+         <View className="flex-row flex-wrap items-center gap-2">
+-          <Text variant="mono" className="shrink text-xs" numberOfLines={1}>
+-            {state.upgradeCommand}
++          <Text variant="caption" className="shrink" numberOfLines={2}>
++            {state.upgradeGuidance}
+           </Text>
+-          <Button
+-            size="sm"
+-            variant="outline"
+-            icon="Copy"
+-            onPress={() => copyUpgradeCommand(state.upgradeCommand)}
+-            testID="updates-copy-upgrade"
+-          >
+-            Copy
+-          </Button>
+         </View>
+       ) : null}
+     </View>
+diff --git a/apps/mobile/src/screens/thread/timeline/test-fixtures.ts b/apps/mobile/src/screens/thread/timeline/test-fixtures.ts
+index 9792862a754896cad2103f6f6aeb08ee2f201f98..7240aed0d8f74a08f4482aeac54aba05e351aa10 100644
+--- a/apps/mobile/src/screens/thread/timeline/test-fixtures.ts
++++ b/apps/mobile/src/screens/thread/timeline/test-fixtures.ts
+@@ -45,6 +45,8 @@ export function userRow(
+     turnRequest: { isGrouped: false, kind: "message", status: "accepted" },
+     mentions: [],
+     ...overrides,
++    p6rActor: overrides.p6rActor ?? null,
++    p6rActorHandle: overrides.p6rActorHandle ?? null,
+   };
+ }
+ 
+diff --git a/apps/server/src/routes/threads/actions.ts b/apps/server/src/routes/threads/actions.ts
+index 71fa82cade82106978a259da1f07c521317a0578..e68b909e97f7bcbaea424197f7b6c3b07a769a3e 100644
+--- a/apps/server/src/routes/threads/actions.ts
++++ b/apps/server/src/routes/threads/actions.ts
+@@ -492,10 +492,16 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
+     const thread = requirePublicThread(deps.db, context.req.param("id"));
+     ensureThreadIsWritable(thread);
+     const p6rActor =
+-      (context.get("p6rRequestPrincipal") as P6rActorSnapshot | null | undefined) ??
+-      null;
++      (context.get("p6rRequestPrincipal") as
++        | P6rActorSnapshot
++        | null
++        | undefined) ?? null;
+     if (!p6rActor) {
+-      throw new ApiError(401, "unauthorized", "Authenticated actor is required");
++      throw new ApiError(
++        401,
++        "unauthorized",
++        "Authenticated actor is required",
++      );
+     }
+     await validatePromptAttachmentReferences({
+       dataDir: deps.config.dataDir,
+diff --git a/apps/server/src/services/identity.ts b/apps/server/src/services/identity.ts
+index 37338c8f0af9ddac0b5a4315f409fe2e24894af4..c3cc8e6c78f0ae35a28124d5d36b1b275666ff78 100644
+--- a/apps/server/src/services/identity.ts
++++ b/apps/server/src/services/identity.ts
+@@ -16,10 +16,7 @@ import type {
+   P6rIdentityProviderRequest,
+ } from "@get-bb/plugin-sdk";
+ import { isLoopbackAddress, isLoopbackHostname } from "@bb/config/loopback";
+-import {
+-  getTrustedRemoteAddress,
+-  type TrustedRemoteAddressReader,
+-} from "../request-context.js";
++import { getTrustedRemoteAddress } from "../request-context.js";
+ 
+ export const P6R_REQUEST_PRINCIPAL_CONTEXT_KEY = "p6rRequestPrincipal";
+ export const P6R_IDENTITY_PROVIDER_TIMEOUT_MS = 50;
+@@ -143,7 +140,9 @@ function p6rIsLoopbackRequest(request: P6rIdentityRequestInput): boolean {
+   }
+ }
+ 
+-function p6rLocalOperatorActor(defaultActor: P6rClaimedIdentity): P6rActorSnapshot {
++function p6rLocalOperatorActor(
++  defaultActor: P6rClaimedIdentity,
++): P6rActorSnapshot {
+   return {
+     p6rProviderId: P6R_LOCAL_OPERATOR_PROVIDER_ID,
+     p6rSubject: defaultActor.p6rHandle,
+@@ -325,7 +324,9 @@ export function p6rSetRequestPrincipal(
+   context.set(P6R_REQUEST_PRINCIPAL_CONTEXT_KEY, actor);
+ }
+ 
+-export function p6rGetRequestPrincipal(context: Context): P6rActorSnapshot | null {
++export function p6rGetRequestPrincipal(
++  context: Context,
++): P6rActorSnapshot | null {
+   return context.get(P6R_REQUEST_PRINCIPAL_CONTEXT_KEY) ?? null;
+ }
+ 
+@@ -343,7 +344,6 @@ export function p6rRequestInputFromContext(
+     host: url.host,
+     origin: url.origin,
+     headers: Object.fromEntries(context.req.raw.headers.entries()),
+-    remoteAddress:
+-      trustedRemoteAddress ?? getTrustedRemoteAddress(context as TrustedRemoteAddressReader),
++    remoteAddress: trustedRemoteAddress ?? getTrustedRemoteAddress(context),
+   };
+ }
+diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
+index 203ff27e6f33895792e8224e843f2929e23da4ea..4676086341f29546e8f9fc31dd41c041fa0281bb 100644
+--- a/apps/server/src/services/plugins/plugin-api.ts
++++ b/apps/server/src/services/plugins/plugin-api.ts
+@@ -163,7 +163,10 @@ export interface PluginHttpRouteRecord {
+ export interface PluginRpcHandler {
+   inputSchema: StandardSchemaV1;
+   outputSchema: StandardSchemaV1;
+-  handler: (input: never, p6rRequestContext: P6rPluginRequestContext) => unknown;
++  handler: (
++    input: never,
++    p6rRequestContext: P6rPluginRequestContext,
++  ) => unknown;
+ }
+ 
+ /** Runtime record of a registered native tool. */
+@@ -753,7 +756,7 @@ export function createPluginApi(options: {
+           {
+             inputSchema: methodContract.input,
+             outputSchema: methodContract.output,
+-          handler: handler as unknown as PluginRpcHandler["handler"],
++            handler: handler as unknown as PluginRpcHandler["handler"],
+           },
+         ]);
+       }
+diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
+index 8995b0b87468f084c33c9dc25cf48f59515900f1..3699f132f1d89edcc714a5860345cfb858167f08 100644
+--- a/apps/server/src/services/plugins/plugin-service.ts
++++ b/apps/server/src/services/plugins/plugin-service.ts
+@@ -1965,8 +1965,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+         `http ${route.method} ${route.path}`,
+         async () => {
+           const response = await route.handler(context, {
+-            p6rRequestPrincipal:
+-              context.get("p6rRequestPrincipal") ?? null,
++            p6rRequestPrincipal: context.get("p6rRequestPrincipal") ?? null,
+           });
+           return adoptHttpRouteResponse(response);
+         },
+diff --git a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
+index ec2308a8449b695a7140091c84b02aa68d5c714d..a1584fe03fb2c0897f1d534b043b5c20de7fe6a7 100644
+--- a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
++++ b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
+@@ -606,22 +606,22 @@ that need the singleton personal project use
+ methods, not their arguments — read the bundled `bb-plugin-sdk.d.ts` for exact
+ signatures (see "Looking up the exact API").
+ 
+-| Area             | Methods                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
++| Area             | Methods                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
++| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+ | `threads`        | `list` `get` `search` `spawn` `fork` `send` `update` `delete` `stop` `compact` `wait` `open` `output` `timeline` `conversationOutline` `promptHistory` `archive` `archiveAll` `unarchive` `pin` `unpin` `reorderPinned` `markRead` `markUnread` `childSummary` `paneAction` `timelineTurnSummaryDetails` `storageFiles` `storageLocation` `storagePaths` `cancelPlan` `clearGoal` `defaultExecutionOptions`; sub-areas `events` (`list` `wait`), `interactions` (`get` `list` `cancel` `resolve` `respond`), `queuedMessages` (`create` `list` `update` `delete` `send` `reorder` `setGroupBoundary`), `tabs` (`get` `update`) |
+-| `threadSections` | `list` `create` `update` `delete`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+-| `projects`       | `list` `get` `create` `update` `delete` `reorder` `paths` `files` `fileContent` `branches` `commands` `defaultExecutionOptions` `promptHistory`; sub-areas `attachments` (`upload` `read` `copy`), `sources` (`add` `update` `delete`)                                                                                                                                                                                                                                                                                                                                                                       |
+-| `environments`   | `get` `update` `status` `paths` `commit` `archiveThreads` `diff` `diffFile` `diffFiles` `diffBranches` `diffPatch` `pullRequest` `markPullRequestDraft` `markPullRequestReady` `mergePullRequest` `squashMerge`                                                                                                                                                                                                                                                                                                                                                                                              |
+-| `hosts`          | `list` `get` `update` `delete` `directory` `pathsExist` `pickFolder` `cloneDefaultPath` `createJoinCode` `retryUpdate` `providerCliStatus` `installProviderCli`                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+-| `files`          | `read` `write` `list` `listPaths` `mkdir` `move` `remove` `createPreview`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+-| `terminals`      | `list` `create` `get` `input` `output` `resize` `rename` `restart` `close`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+-| `providers`      | `list` `models`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+-| `skills`         | `list` `listFiles` `getContent` `update` `remove`; sub-area `registry` (`search` `get` `detail` `install` `repositoryStars`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+-| `plugins`        | `list` `install` `remove` `enable` `disable` `reload` `token` `callRpc` `getSource` `getSettings` `updateSettings` `checkUpdates` `listUpdateResults` `applyUpdate`; sub-area `catalog` (`search` `status` `install`)                                                                                                                                                                                                                                                                                                                                                                                        |
+-| `theme`          | `get` `catalog` `set`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+-| `status`         | `get`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+-| `system`         | `version` `config` `reloadConfig` `attention` `usageLimits` `executionOptions` `providerStates` `transcribeVoice` `updateGeneralSettings` `updateKeyboardSettings` `updateExperiments` `cliSkillsStatus` `installCliSkills`                                                                                                                                                                                                                                                                                                                                                                                  |
+-| `guide`          | `render` (the `bb guide` text; local, no request)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
++| `threadSections` | `list` `create` `update` `delete`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
++| `projects`       | `list` `get` `create` `update` `delete` `reorder` `paths` `files` `fileContent` `branches` `commands` `defaultExecutionOptions` `promptHistory`; sub-areas `attachments` (`upload` `read` `copy`), `sources` (`add` `update` `delete`)                                                                                                                                                                                                                                                                                                                                                                                         |
++| `environments`   | `get` `update` `status` `paths` `commit` `archiveThreads` `diff` `diffFile` `diffFiles` `diffBranches` `diffPatch` `pullRequest` `markPullRequestDraft` `markPullRequestReady` `mergePullRequest` `squashMerge`                                                                                                                                                                                                                                                                                                                                                                                                                |
++| `hosts`          | `list` `get` `update` `delete` `directory` `pathsExist` `pickFolder` `cloneDefaultPath` `createJoinCode` `retryUpdate` `providerCliStatus` `installProviderCli`                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
++| `files`          | `read` `write` `list` `listPaths` `mkdir` `move` `remove` `createPreview`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
++| `terminals`      | `list` `create` `get` `input` `output` `resize` `rename` `restart` `close`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
++| `providers`      | `list` `models`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
++| `skills`         | `list` `listFiles` `getContent` `update` `remove`; sub-area `registry` (`search` `get` `detail` `install` `repositoryStars`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
++| `plugins`        | `list` `install` `remove` `enable` `disable` `reload` `token` `callRpc` `getSource` `getSettings` `updateSettings` `checkUpdates` `listUpdateResults` `applyUpdate`; sub-area `catalog` (`search` `status` `install`)                                                                                                                                                                                                                                                                                                                                                                                                          |
++| `theme`          | `get` `catalog` `set`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
++| `status`         | `get`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
++| `system`         | `version` `config` `reloadConfig` `attention` `usageLimits` `executionOptions` `providerStates` `transcribeVoice` `updateGeneralSettings` `updateKeyboardSettings` `updateExperiments` `cliSkillsStatus` `installCliSkills`                                                                                                                                                                                                                                                                                                                                                                                                    |
++| `guide`          | `render` (the `bb guide` text; local, no request)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+ 
+ Prefer your own `bb.settings` and `bb.storage` over `sdk.system` and
+ `sdk.plugins` for your plugin's own configuration. The `system` and `plugins`
+diff --git a/apps/server/src/services/threads/queued-messages.ts b/apps/server/src/services/threads/queued-messages.ts
+index a150e6418444d93497c8d1f543ca61b7a00ccbcd..300767cc757ceaff3b0121be241c7d235f823c65 100644
+--- a/apps/server/src/services/threads/queued-messages.ts
++++ b/apps/server/src/services/threads/queued-messages.ts
+@@ -277,7 +277,7 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
+     senderThreadId === null ? args.queuedMessages[0]!.p6rActorHandle : null;
+   const p6rActor =
+     senderThreadId === null
+-      ? toThreadQueuedMessage(args.queuedMessages[0]!).p6rActor ?? null
++      ? (toThreadQueuedMessage(args.queuedMessages[0]!).p6rActor ?? null)
+       : null;
+   let inputGroups = args.queuedMessages.map((claimedQueuedMessage) =>
+     formatQueuedMessageInputForSender({
+@@ -345,7 +345,7 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
+       if (!consumed) {
+         throw createQueuedMessageClaimLostError();
+       }
+-  const request = appendClientTurnEventInTransaction(tx, {
++      const request = appendClientTurnEventInTransaction(tx, {
+         p6rActor,
+         p6rActorHandle,
+         environmentId: thread.environmentId,
+@@ -436,7 +436,7 @@ async function sendClaimedQueuedMessageForThread(
+   await sendThreadMessage(deps, {
+     p6rActor:
+       args.queuedMessages[0]!.senderThreadId === null
+-        ? toThreadQueuedMessage(args.queuedMessages[0]!).p6rActor ?? null
++        ? (toThreadQueuedMessage(args.queuedMessages[0]!).p6rActor ?? null)
+         : null,
+     p6rActorHandle:
+       args.queuedMessages[0]!.senderThreadId === null
+diff --git a/apps/server/src/services/threads/thread-commands.ts b/apps/server/src/services/threads/thread-commands.ts
+index ab9afe2f82adb17bd550eb0afbcb00ad02981462..5e7ea8153a1678ff7b4fcb74312880ef8ce7e828 100644
+--- a/apps/server/src/services/threads/thread-commands.ts
++++ b/apps/server/src/services/threads/thread-commands.ts
+@@ -191,8 +191,7 @@ function p6rResolveTurnSpeaker(
+   const collaborator = p6rGetCollaborator(deps.db, args.p6rActorHandle);
+   return {
+     p6rHandle: args.p6rActorHandle,
+-    p6rDisplayName:
+-      collaborator?.p6rDisplayName ?? args.p6rActorHandle,
++    p6rDisplayName: collaborator?.p6rDisplayName ?? args.p6rActorHandle,
+   };
+ }
+ 
+diff --git a/apps/server/src/services/threads/thread-events.ts b/apps/server/src/services/threads/thread-events.ts
+index ac447039ab1a38c86e606bcc6162fa7aa615b437..9fea31da26794b20e78578630d89b334f99a8206 100644
+--- a/apps/server/src/services/threads/thread-events.ts
++++ b/apps/server/src/services/threads/thread-events.ts
+@@ -61,7 +61,7 @@ interface ThreadEventTransactionDeps {
+   hub: DbNotifier;
+ }
+ 
+-export interface ClientTurnRequestedEventArgs {
++interface ClientTurnRequestedEventArgs {
+   continuationOfRequestId?: ClientTurnRequestId;
+   p6rActor?: P6rActorSnapshot | null;
+   p6rActorHandle?: string | null;
+@@ -88,7 +88,7 @@ interface PreparedClientTurnRequestedEventArgs extends ClientTurnRequestedEventA
+   requestId: ClientTurnRequestId;
+ }
+ 
+-export interface ClientTurnLifecycleEventArgs {
++interface ClientTurnLifecycleEventArgs {
+   p6rActor?: P6rActorSnapshot | null;
+   p6rActorHandle?: string | null;
+   environmentId: string | null;
+@@ -146,7 +146,7 @@ interface BuildCwdBranchEntriesArgs {
+   path: string;
+ }
+ 
+-export interface AppendThreadInterruptedEventArgs {
++interface AppendThreadInterruptedEventArgs {
+   p6rActorHandle?: string | null;
+   reason: SystemThreadInterruptedReason;
+   threadId: string;
+diff --git a/apps/server/src/services/threads/thread-lifecycle.ts b/apps/server/src/services/threads/thread-lifecycle.ts
+index 83fc1e688f5b8be8ac702eee1feffad4800cc8cc..3a313de1f3fe24b2a8c28ac9e059d6d6d11792f0 100644
+--- a/apps/server/src/services/threads/thread-lifecycle.ts
++++ b/apps/server/src/services/threads/thread-lifecycle.ts
+@@ -210,7 +210,7 @@ interface HasProviderTurnCompletedEventAtOrAfterArgs {
+  * interruption reason on the thread. The release intent has no caller here, so
+  * it is not part of these args.
+  */
+-export interface RequestThreadStopArgs extends Omit<
++interface RequestThreadStopArgs extends Omit<
+   ThreadStopCommandArgs,
+   "intent"
+ > {
+diff --git a/apps/server/src/services/threads/thread-provisioning-context.ts b/apps/server/src/services/threads/thread-provisioning-context.ts
+index c7a860c6b59e8e4a33cbca247df64acd7479e34e..8dbcd1e11eea2f169bdd7436cd50aa3ba707b1e2 100644
+--- a/apps/server/src/services/threads/thread-provisioning-context.ts
++++ b/apps/server/src/services/threads/thread-provisioning-context.ts
+@@ -61,7 +61,7 @@ const threadForkDescriptorSchema = z.object({
+   sourceProviderThreadId: z.string().min(1),
+ });
+ 
+-export const threadProvisionCommonPayloadSchema = z.object({
++const threadProvisionCommonPayloadSchema = z.object({
+   p6rActor: p6rActorSnapshotSchema.nullable().default(null),
+   p6rActorHandle: z.string().nullable().default(null),
+   branchSlug: z.string().nullable().default(null),
+@@ -191,7 +191,7 @@ export type ThreadProvisionProvisionableContext =
+   | ThreadProvisionEnvironmentProvisioningContext
+   | ThreadProvisionWorkspaceReadyContext;
+ 
+-export interface CreateMetadataPendingContextArgs {
++interface CreateMetadataPendingContextArgs {
+   p6rActor?: z.infer<typeof p6rActorSnapshotSchema> | null;
+   p6rActorHandle?: string | null;
+   clientRequestId: ClientTurnRequestId;
+@@ -220,7 +220,7 @@ interface CreateEnvironmentProvisioningContextArgs {
+   provisionEventSequence: number;
+ }
+ 
+-export interface CreateReprovisioningContextArgs {
++interface CreateReprovisioningContextArgs {
+   p6rActor?: z.infer<typeof p6rActorSnapshotSchema> | null;
+   p6rActorHandle?: string | null;
+   clientRequestId: ClientTurnRequestId;
+diff --git a/apps/server/src/services/threads/thread-runtime-display.ts b/apps/server/src/services/threads/thread-runtime-display.ts
+index be0a484f0a5e9c222b6f7fc04db9570e5556d002..4514ee79e486be515752e7724fe462f262b4ac90 100644
+--- a/apps/server/src/services/threads/thread-runtime-display.ts
++++ b/apps/server/src/services/threads/thread-runtime-display.ts
+@@ -275,22 +275,6 @@ export function toThreadResponseFromThread(
+   };
+ }
+ 
+-function toThreadEventWithMeta(row: StoredEventRow): ThreadEventWithMeta {
+-  return {
+-    event: parseStoredEvent(row),
+-    meta: {
+-      id: row.id,
+-      seq: row.sequence,
+-      createdAt: row.createdAt,
+-      p6rActorHandle: row.p6rActorHandle,
+-      p6rActorProviderId: row.p6rActorProviderId,
+-      p6rActorSubject: row.p6rActorSubject,
+-      p6rActorDisplayName: row.p6rActorDisplayName,
+-      p6rActorImageUrl: row.p6rActorImageUrl,
+-    },
+-  };
+-}
+-
+ function getThreadPromptBannerActivityState(
+   deps: ThreadPromptBannerDeps,
+   thread: Thread,
+diff --git a/apps/server/src/services/threads/thread-send.ts b/apps/server/src/services/threads/thread-send.ts
+index 0820a43a87d441b47f98f881d3de96a7303e49b5..f6d524c409cc039b632b0a878246f722336a4577 100644
+--- a/apps/server/src/services/threads/thread-send.ts
++++ b/apps/server/src/services/threads/thread-send.ts
+@@ -69,7 +69,7 @@ type SendThreadMessagePayload = SendMessageRequest & {
+   inputGroups?: PromptInput[][];
+ };
+ 
+-export interface SendThreadMessageArgs {
++interface SendThreadMessageArgs {
+   p6rActor?: P6rActorSnapshot | null;
+   p6rActorHandle?: string | null;
+   beforeAppendInTransaction?: SendThreadMessageTransactionPreflight;
+diff --git a/apps/server/src/services/threads/thread-turn-dispatch.ts b/apps/server/src/services/threads/thread-turn-dispatch.ts
+index 03f45374be9d600cfe39bdb4acd88a0cb1ab4341..71895d611102129301827b465874bbea77c24816 100644
+--- a/apps/server/src/services/threads/thread-turn-dispatch.ts
++++ b/apps/server/src/services/threads/thread-turn-dispatch.ts
+@@ -36,7 +36,7 @@ export interface ReadyThreadEnvironment extends Environment {
+   status: "ready";
+ }
+ 
+-export interface DispatchTurnDuringReprovisionArgs {
++interface DispatchTurnDuringReprovisionArgs {
+   p6rActor?: P6rActorSnapshot | null;
+   p6rActorHandle?: string | null;
+   beforeRequestAppendInTransaction?: (args: { tx: DbTransaction }) => void;
+diff --git a/apps/server/src/ws/hub.ts b/apps/server/src/ws/hub.ts
+index 1f42e9359936f5b7bcf56fb5c41aa1fe1def80d7..1d49032cffb12d023dbd25e0ec43f3b52fdbd6a0 100644
+--- a/apps/server/src/ws/hub.ts
++++ b/apps/server/src/ws/hub.ts
+@@ -170,7 +170,7 @@ export interface P6rNotificationHubOptions {
+   p6rPresenceTypingTtlMs?: number;
+ }
+ 
+-export type HostOnlineRpcResponseDisposition =
++type HostOnlineRpcResponseDisposition =
+   | { handled: true }
+   | { handled: false; reason: "stale" }
+   | {
+diff --git a/apps/server/test/public/public-thread-data.test.ts b/apps/server/test/public/public-thread-data.test.ts
+index 3dfa2f82dbe377cd96baa01258485c24f81fad2b..4a782a203bfa29179cc08b38ac4d5e5d3f3ff361 100644
+--- a/apps/server/test/public/public-thread-data.test.ts
++++ b/apps/server/test/public/public-thread-data.test.ts
+@@ -137,7 +137,7 @@ describe("public thread data routes", () => {
+             ),
+           )
+           .get(),
+-      // A client claim is ignored by the no-provider loopback fallback.
++        // A client claim is ignored by the no-provider loopback fallback.
+       ).toEqual({
+         p6rActorHandle: p6rCreateLocalOperatorIdentity().p6rHandle,
+       });
+@@ -1760,37 +1760,24 @@ describe("public thread data routes", () => {
+     });
+   });
+ 
+-  it(
+-    "expands the newest slice when a large delegation parent completes last",
+-    async () => {
+-      await withTestHarness(async (harness) => {
+-        const { environment, thread } = seedThreadFixture(harness);
+-        const providerThreadId = "provider-thread-1";
+-        const turnId = "parent-turn";
+-        const parentToolCallId = "agent-call";
+-        type EventInput = Parameters<typeof insertEvents>[2][number];
+-        const eventInputs: EventInput[] = [];
+-        let sequence = 0;
+-        const push = (
+-          event: Omit<EventInput, "environmentId" | "sequence" | "threadId">,
+-        ): void => {
+-          sequence += 1;
+-          eventInputs.push({
+-            ...event,
+-            environmentId: environment.id,
+-            sequence,
+-            threadId: thread.id,
+-          });
+-        };
+-
+-        push({
+-          providerThreadId,
+-          scope: turnScope(turnId),
+-          type: "turn/started",
+-          itemId: null,
+-          itemKind: null,
+-          parentToolCallId: null,
+-          data: JSON.stringify({}),
++  it("expands the newest slice when a large delegation parent completes last", async () => {
++    await withTestHarness(async (harness) => {
++      const { environment, thread } = seedThreadFixture(harness);
++      const providerThreadId = "provider-thread-1";
++      const turnId = "parent-turn";
++      const parentToolCallId = "agent-call";
++      type EventInput = Parameters<typeof insertEvents>[2][number];
++      const eventInputs: EventInput[] = [];
++      let sequence = 0;
++      const push = (
++        event: Omit<EventInput, "environmentId" | "sequence" | "threadId">,
++      ): void => {
++        sequence += 1;
++        eventInputs.push({
++          ...event,
++          environmentId: environment.id,
++          sequence,
++          threadId: thread.id,
+         });
+       };
+ 
+@@ -1800,6 +1787,7 @@ describe("public thread data routes", () => {
+         type: "turn/started",
+         itemId: null,
+         itemKind: null,
++        parentToolCallId: null,
+         data: JSON.stringify({}),
+       });
+       push({
+@@ -1808,6 +1796,7 @@ describe("public thread data routes", () => {
+         type: "item/started",
+         itemId: parentToolCallId,
+         itemKind: "toolCall",
++        parentToolCallId: null,
+         data: JSON.stringify({
+           item: {
+             type: "toolCall",
+@@ -1825,9 +1814,9 @@ describe("public thread data routes", () => {
+           providerThreadId,
+           scope: turnScope(turnId),
+           type: "item/started",
+-          itemId: parentToolCallId,
+-          itemKind: "toolCall",
+-          parentToolCallId: null,
++          itemId,
++          itemKind: "commandExecution",
++          parentToolCallId,
+           data: JSON.stringify({
+             item: {
+               type: "commandExecution",
+@@ -1840,57 +1829,13 @@ describe("public thread data routes", () => {
+             },
+           }),
+         });
+-        for (let item = 0; item < 650; item += 1) {
+-          const itemId = `command-${item}`;
+-          const command = "x".repeat(25_000);
+-          push({
+-            providerThreadId,
+-            scope: turnScope(turnId),
+-            type: "item/started",
+-            itemId,
+-            itemKind: "commandExecution",
+-            parentToolCallId,
+-            data: JSON.stringify({
+-              item: {
+-                type: "commandExecution",
+-                id: itemId,
+-                command,
+-                cwd: "/tmp/test",
+-                parentToolCallId,
+-                status: "pending",
+-                approvalStatus: null,
+-              },
+-            }),
+-          });
+-          push({
+-            providerThreadId,
+-            scope: turnScope(turnId),
+-            type: "item/completed",
+-            itemId,
+-            itemKind: "commandExecution",
+-            parentToolCallId,
+-            data: JSON.stringify({
+-              item: {
+-                type: "commandExecution",
+-                id: itemId,
+-                command,
+-                cwd: "/tmp/test",
+-                parentToolCallId,
+-                status: "completed",
+-                approvalStatus: null,
+-                exitCode: 0,
+-                aggregatedOutput: `output ${item}`,
+-              },
+-            }),
+-          });
+-        }
+         push({
+           providerThreadId,
+           scope: turnScope(turnId),
+           type: "item/completed",
+-          itemId: parentToolCallId,
+-          itemKind: "toolCall",
+-          parentToolCallId: null,
++          itemId,
++          itemKind: "commandExecution",
++          parentToolCallId,
+           data: JSON.stringify({
+             item: {
+               type: "commandExecution",
+@@ -1905,37 +1850,24 @@ describe("public thread data routes", () => {
+             },
+           }),
+         });
+-        push({
+-          providerThreadId,
+-          scope: turnScope(turnId),
+-          type: "turn/completed",
+-          itemId: null,
+-          itemKind: null,
+-          parentToolCallId: null,
+-          data: JSON.stringify({ status: "completed", providerThreadId }),
+-        });
+-        insertEvents(harness.deps.db, harness.deps.hub, eventInputs);
+-
+-        const timelineResponse = await harness.app.request(
+-          `/api/v1/threads/${thread.id}/timeline`,
+-        );
+-        expect(timelineResponse.status).toBe(200);
+-        const timeline = threadTimelineResponseSchema.parse(
+-          await readJson(timelineResponse),
+-        );
+-        const turnRow = timeline.rows.find(
+-          (row): row is TimelineTurnRow => row.kind === "turn",
+-        );
+-        expect(turnRow).toBeDefined();
+-        if (!turnRow) {
+-          throw new Error("Expected a turn row");
+-        }
+-        expect(turnRow.sourceSeqStart).toBeGreaterThan(2);
+-
+-        const detailsResponse = await harness.app.request(
+-          `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=${turnRow.turnId}&sourceSeqStart=${turnRow.sourceSeqStart}&sourceSeqEnd=${turnRow.sourceSeqEnd}`,
+-        );
+-        expect(detailsResponse.status).toBe(200);
++      }
++      push({
++        providerThreadId,
++        scope: turnScope(turnId),
++        type: "item/completed",
++        itemId: parentToolCallId,
++        itemKind: "toolCall",
++        parentToolCallId: null,
++        data: JSON.stringify({
++          item: {
++            type: "toolCall",
++            id: parentToolCallId,
++            tool: "Agent",
++            arguments: { prompt: "Do the long task." },
++            result: "",
++            status: "completed",
++          },
++        }),
+       });
+       push({
+         providerThreadId,
+@@ -1943,6 +1875,7 @@ describe("public thread data routes", () => {
+         type: "turn/completed",
+         itemId: null,
+         itemKind: null,
++        parentToolCallId: null,
+         data: JSON.stringify({ status: "completed", providerThreadId }),
+       });
+       insertEvents(harness.deps.db, harness.deps.hub, eventInputs);
+diff --git a/apps/server/test/services/plugins/plugin-agent-tools.test.ts b/apps/server/test/services/plugins/plugin-agent-tools.test.ts
+index f9ff72473f293f4ed25cee9cf97014f7d0e14b80..35ab98d983d387d01e3384a65c9fe32ac37d22bc 100644
+--- a/apps/server/test/services/plugins/plugin-agent-tools.test.ts
++++ b/apps/server/test/services/plugins/plugin-agent-tools.test.ts
+@@ -1143,6 +1143,7 @@ describe("internal tool-call dispatch to plugin tools", () => {
+             type: "client/turn/requested",
+             itemId: null,
+             itemKind: null,
++            parentToolCallId: null,
+             p6rActorHandle: actor.p6rHandle,
+             p6rActorProviderId: actor.p6rProviderId,
+             p6rActorSubject: actor.p6rSubject,
+@@ -1162,6 +1163,7 @@ describe("internal tool-call dispatch to plugin tools", () => {
+             type: "turn/input/accepted",
+             itemId: null,
+             itemKind: null,
++            parentToolCallId: null,
+             data: JSON.stringify({
+               clientRequestId: requestId,
+               transcript: "[from=transcript-spoof]",
+diff --git a/apps/server/test/services/plugins/plugin-service.test.ts b/apps/server/test/services/plugins/plugin-service.test.ts
+index b7a88d10d9d62a01bf5ad3e9f2e80d50bcab8232..30f12a49a939c12b12436d1cf3b65cab2d5a9c2e 100644
+--- a/apps/server/test/services/plugins/plugin-service.test.ts
++++ b/apps/server/test/services/plugins/plugin-service.test.ts
+@@ -1154,9 +1154,7 @@ describe("plugin service", () => {
+       version: "0.2.0",
+       status: "running",
+     });
+-    expect((globalThis as Record<string, unknown>).__brittleCheckout).toBe(
+-      "a",
+-    );
++    expect((globalThis as Record<string, unknown>).__brittleCheckout).toBe("a");
+     expect(service.getApi("brittle")).toBeDefined();
+     expect((await service.getSettings("brittle"))?.values).toEqual({
+       token: { set: true },
+diff --git a/apps/server/test/services/threads/thread-speaker.test.ts b/apps/server/test/services/threads/thread-speaker.test.ts
+index caa3823c4353e30d7d64b40f9777f6f340bc0bbf..35966c8bb18fe62f4547338a83f47cf45de20114 100644
+--- a/apps/server/test/services/threads/thread-speaker.test.ts
++++ b/apps/server/test/services/threads/thread-speaker.test.ts
+@@ -238,19 +238,16 @@ describe("thread turn speakers", () => {
+         p6rHandle: "bob",
+       });
+ 
+-      const handoffBack = await prepareTurnSubmitCommandPayload(
+-        harness.deps,
+-        {
+-          p6rActorHandle: "alice",
+-          environment,
+-          execution,
+-          input: textInput("alice returns"),
+-          permissionEscalation: "deny",
+-          providerThreadId: "provider-thread-p6rSpeaker",
+-          target: { mode: "start" },
+-          thread,
+-        },
+-      );
++      const handoffBack = await prepareTurnSubmitCommandPayload(harness.deps, {
++        p6rActorHandle: "alice",
++        environment,
++        execution,
++        input: textInput("alice returns"),
++        permissionEscalation: "deny",
++        providerThreadId: "provider-thread-p6rSpeaker",
++        target: { mode: "start" },
++        thread,
++      });
+       expect(handoffBack.p6rSpeaker).toEqual({
+         p6rDisplayName: "Alice",
+         p6rHandle: "alice",
+diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
+index e42e834f7d60ed03098932daddd5ada27f07856b..0680e206a347a306fa2179c863471a6a9be95dab 100644
+--- a/docs/api_to_audit.md
++++ b/docs/api_to_audit.md
+@@ -108,6 +108,7 @@ malformed runtime targets remain inert in both the app and SDK test runtime.
+    target variants; do not weaken live-file guarantees to accommodate them.
+ 7. Confirm `PluginFileOpenerSource.experimental_hostId` can become a stable
+    required `hostId` field without breaking older opener implementations.
++
+ ## `BbPluginApi.p6rIdentity`
+ 
+ **What it does.** Lets one installed plugin register the provider-qualified
+diff --git a/packages/db/drizzle/0101_p6r_identity_authorship.sql b/packages/db/drizzle/0105_p6r_identity_authorship.sql
+similarity index 100%
+rename from packages/db/drizzle/0101_p6r_identity_authorship.sql
+rename to packages/db/drizzle/0105_p6r_identity_authorship.sql
+diff --git a/packages/db/drizzle/meta/0105_snapshot.json b/packages/db/drizzle/meta/0105_snapshot.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..ebca5d78558d091c5e055ec3f9a8154dc30b8cb5
+--- /dev/null
++++ b/packages/db/drizzle/meta/0105_snapshot.json
+@@ -0,0 +1,3929 @@
++{
++  "version": "6",
++  "dialect": "sqlite",
++  "id": "4e2239d0-6a99-41a3-b517-0659640e4f52",
++  "prevId": "4b28b004-f79b-40fd-8d7d-60fd4543c92e",
++  "tables": {
++    "app_settings": {
++      "name": "app_settings",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "caffeinate": {
++          "name": "caffeinate",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": false
++        },
++        "show_keyboard_hints": {
++          "name": "show_keyboard_hints",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": true
++        },
++        "steer_active_thread_on_enter": {
++          "name": "steer_active_thread_on_enter",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": false
++        },
++        "show_unhandled_provider_events": {
++          "name": "show_unhandled_provider_events",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": false
++        },
++        "codex_memory_enabled": {
++          "name": "codex_memory_enabled",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": true
++        },
++        "claude_code_memory_enabled": {
++          "name": "claude_code_memory_enabled",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": true
++        },
++        "codex_subagents_disabled": {
++          "name": "codex_subagents_disabled",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": false
++        },
++        "claude_code_subagents_disabled": {
++          "name": "claude_code_subagents_disabled",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": false
++        },
++        "claude_code_workflows_disabled": {
++          "name": "claude_code_workflows_disabled",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": false
++        },
++        "keybinding_overrides": {
++          "name": "keybinding_overrides",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'[]'"
++        },
++        "onboarding_completed_at": {
++          "name": "onboarding_completed_at",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "app_settings_values": {
++      "name": "app_settings_values",
++      "columns": {
++        "key": {
++          "name": "key",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "value": {
++          "name": "value",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "app_theme": {
++      "name": "app_theme",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "theme_id": {
++          "name": "theme_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "favicon_color": {
++          "name": "favicon_color",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'default'"
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "apikey": {
++      "name": "apikey",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "start": {
++          "name": "start",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "prefix": {
++          "name": "prefix",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "key": {
++          "name": "key",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "referenceId": {
++          "name": "referenceId",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "refillInterval": {
++          "name": "refillInterval",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "refillAmount": {
++          "name": "refillAmount",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "lastRefillAt": {
++          "name": "lastRefillAt",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "enabled": {
++          "name": "enabled",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "rateLimitEnabled": {
++          "name": "rateLimitEnabled",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "rateLimitTimeWindow": {
++          "name": "rateLimitTimeWindow",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "rateLimitMax": {
++          "name": "rateLimitMax",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "requestCount": {
++          "name": "requestCount",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "remaining": {
++          "name": "remaining",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "lastRequest": {
++          "name": "lastRequest",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "expiresAt": {
++          "name": "expiresAt",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "createdAt": {
++          "name": "createdAt",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updatedAt": {
++          "name": "updatedAt",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "permissions": {
++          "name": "permissions",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "metadata": {
++          "name": "metadata",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "configId": {
++          "name": "configId",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "apikey_key_unique": {
++          "name": "apikey_key_unique",
++          "columns": [
++            "key"
++          ],
++          "isUnique": true
++        },
++        "apikey_reference_id_idx": {
++          "name": "apikey_reference_id_idx",
++          "columns": [
++            "referenceId"
++          ],
++          "isUnique": false
++        },
++        "apikey_config_id_idx": {
++          "name": "apikey_config_id_idx",
++          "columns": [
++            "configId"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {
++        "apikey_referenceId_user_id_fk": {
++          "name": "apikey_referenceId_user_id_fk",
++          "tableFrom": "apikey",
++          "tableTo": "user",
++          "columnsFrom": [
++            "referenceId"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "user": {
++      "name": "user",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "email": {
++          "name": "email",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "emailVerified": {
++          "name": "emailVerified",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "image": {
++          "name": "image",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "createdAt": {
++          "name": "createdAt",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updatedAt": {
++          "name": "updatedAt",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "user_email_unique": {
++          "name": "user_email_unique",
++          "columns": [
++            "email"
++          ],
++          "isUnique": true
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "environments": {
++      "name": "environments",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "project_id": {
++          "name": "project_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "host_id": {
++          "name": "host_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "path": {
++          "name": "path",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "managed": {
++          "name": "managed",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": false
++        },
++        "is_git_repo": {
++          "name": "is_git_repo",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": false
++        },
++        "is_worktree": {
++          "name": "is_worktree",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": false
++        },
++        "branch_name": {
++          "name": "branch_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "base_branch": {
++          "name": "base_branch",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "default_branch": {
++          "name": "default_branch",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "merge_base_branch": {
++          "name": "merge_base_branch",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "destroy_attempt_id": {
++          "name": "destroy_attempt_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "retire_requested_at": {
++          "name": "retire_requested_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "workspace_provision_type": {
++          "name": "workspace_provision_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'provisioning'"
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "environments_project_host_path_idx": {
++          "name": "environments_project_host_path_idx",
++          "columns": [
++            "project_id",
++            "host_id",
++            "path"
++          ],
++          "isUnique": true
++        },
++        "environments_host_path_lookup_idx": {
++          "name": "environments_host_path_lookup_idx",
++          "columns": [
++            "host_id",
++            "path"
++          ],
++          "isUnique": false
++        },
++        "environments_project_idx": {
++          "name": "environments_project_idx",
++          "columns": [
++            "project_id"
++          ],
++          "isUnique": false
++        },
++        "environments_status_idx": {
++          "name": "environments_status_idx",
++          "columns": [
++            "status"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {
++        "environments_project_id_projects_id_fk": {
++          "name": "environments_project_id_projects_id_fk",
++          "tableFrom": "environments",
++          "tableTo": "projects",
++          "columnsFrom": [
++            "project_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        },
++        "environments_host_id_hosts_id_fk": {
++          "name": "environments_host_id_hosts_id_fk",
++          "tableFrom": "environments",
++          "tableTo": "hosts",
++          "columnsFrom": [
++            "host_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "events": {
++      "name": "events",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "environment_id": {
++          "name": "environment_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "scope_kind": {
++          "name": "scope_kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "turn_id": {
++          "name": "turn_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "provider_thread_id": {
++          "name": "provider_thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "sequence": {
++          "name": "sequence",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "type": {
++          "name": "type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "item_id": {
++          "name": "item_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "item_kind": {
++          "name": "item_kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "parent_tool_call_id": {
++          "name": "parent_tool_call_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "p6r_actor_handle": {
++          "name": "p6r_actor_handle",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "p6r_actor_provider_id": {
++          "name": "p6r_actor_provider_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "p6r_actor_subject": {
++          "name": "p6r_actor_subject",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "p6r_actor_display_name": {
++          "name": "p6r_actor_display_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "p6r_actor_image_url": {
++          "name": "p6r_actor_image_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "data": {
++          "name": "data",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'{}'"
++        },
++        "tool_name": {
++          "name": "tool_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false,
++          "generated": {
++            "as": "(CASE WHEN json_valid(data) THEN json_extract(data, '$.item.tool') END)",
++            "type": "virtual"
++          }
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "events_thread_sequence_idx": {
++          "name": "events_thread_sequence_idx",
++          "columns": [
++            "thread_id",
++            "sequence"
++          ],
++          "isUnique": true
++        },
++        "events_tool_call_parent_lookup_idx": {
++          "name": "events_tool_call_parent_lookup_idx",
++          "columns": [
++            "thread_id",
++            "item_id",
++            "sequence"
++          ],
++          "isUnique": false,
++          "where": "\"events\".\"item_kind\" = 'toolCall'"
++        },
++        "events_todo_tool_call_thread_tool_sequence_idx": {
++          "name": "events_todo_tool_call_thread_tool_sequence_idx",
++          "columns": [
++            "thread_id",
++            "tool_name",
++            "sequence"
++          ],
++          "isUnique": false,
++          "where": "\"events\".\"item_kind\" = 'toolCall' AND \"events\".\"type\" IN ('item/started', 'item/completed')"
++        },
++        "events_parent_tool_call_thread_parent_sequence_idx": {
++          "name": "events_parent_tool_call_thread_parent_sequence_idx",
++          "columns": [
++            "thread_id",
++            "parent_tool_call_id",
++            "sequence"
++          ],
++          "isUnique": false,
++          "where": "\"events\".\"parent_tool_call_id\" IS NOT NULL"
++        },
++        "events_thread_type_item_kind_sequence_idx": {
++          "name": "events_thread_type_item_kind_sequence_idx",
++          "columns": [
++            "thread_id",
++            "type",
++            "item_kind",
++            "sequence"
++          ],
++          "isUnique": false
++        },
++        "events_background_task_thread_type_item_sequence_idx": {
++          "name": "events_background_task_thread_type_item_sequence_idx",
++          "columns": [
++            "thread_id",
++            "type",
++            "item_id",
++            "sequence"
++          ],
++          "isUnique": false,
++          "where": "\"events\".\"item_kind\" = 'backgroundTask'"
++        },
++        "events_thread_type_sequence_idx": {
++          "name": "events_thread_type_sequence_idx",
++          "columns": [
++            "thread_id",
++            "type",
++            "sequence"
++          ],
++          "isUnique": false
++        },
++        "events_thread_turn_type_item_sequence_idx": {
++          "name": "events_thread_turn_type_item_sequence_idx",
++          "columns": [
++            "thread_id",
++            "turn_id",
++            "type",
++            "item_id",
++            "sequence"
++          ],
++          "isUnique": false
++        },
++        "events_item_lifecycle_thread_item_sequence_idx": {
++          "name": "events_item_lifecycle_thread_item_sequence_idx",
++          "columns": [
++            "thread_id",
++            "item_id",
++            "sequence"
++          ],
++          "isUnique": false,
++          "where": "\"events\".\"type\" IN ('item/started', 'item/completed', 'item/backgroundTask/completed')"
++        },
++        "events_environment_idx": {
++          "name": "events_environment_idx",
++          "columns": [
++            "environment_id"
++          ],
++          "isUnique": false
++        },
++        "events_completed_item_truncation_idx": {
++          "name": "events_completed_item_truncation_idx",
++          "columns": [
++            "item_kind",
++            "created_at",
++            "id"
++          ],
++          "isUnique": false,
++          "where": "\"events\".\"type\" = 'item/completed'"
++        },
++        "events_goal_thread_sequence_idx": {
++          "name": "events_goal_thread_sequence_idx",
++          "columns": [
++            "thread_id",
++            "sequence"
++          ],
++          "isUnique": false,
++          "where": "\"events\".\"type\" IN ('thread/goal/updated', 'thread/goal/cleared')"
++        }
++      },
++      "foreignKeys": {
++        "events_thread_id_threads_id_fk": {
++          "name": "events_thread_id_threads_id_fk",
++          "tableFrom": "events",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        },
++        "events_environment_id_environments_id_fk": {
++          "name": "events_environment_id_environments_id_fk",
++          "tableFrom": "events",
++          "tableTo": "environments",
++          "columnsFrom": [
++            "environment_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "set null",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {
++        "events_scope_shape_check": {
++          "name": "events_scope_shape_check",
++          "value": "(\n        (\"events\".\"scope_kind\" = 'turn' AND \"events\".\"turn_id\" IS NOT NULL)\n        OR\n        (\"events\".\"scope_kind\" = 'thread' AND \"events\".\"turn_id\" IS NULL)\n      )"
++        }
++      }
++    },
++    "host_daemon_sessions": {
++      "name": "host_daemon_sessions",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "host_id": {
++          "name": "host_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "instance_id": {
++          "name": "instance_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "host_name": {
++          "name": "host_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "host_type": {
++          "name": "host_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "data_dir": {
++          "name": "data_dir",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "protocol_version": {
++          "name": "protocol_version",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "heartbeat_interval_ms": {
++          "name": "heartbeat_interval_ms",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "lease_timeout_ms": {
++          "name": "lease_timeout_ms",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "lease_expires_at": {
++          "name": "lease_expires_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "closed_at": {
++          "name": "closed_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "close_reason": {
++          "name": "close_reason",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "host_daemon_sessions_host_status_idx": {
++          "name": "host_daemon_sessions_host_status_idx",
++          "columns": [
++            "host_id",
++            "status"
++          ],
++          "isUnique": false
++        },
++        "host_daemon_sessions_host_latest_idx": {
++          "name": "host_daemon_sessions_host_latest_idx",
++          "columns": [
++            "host_id",
++            "updated_at",
++            "created_at",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "host_daemon_sessions_closed_prune_idx": {
++          "name": "host_daemon_sessions_closed_prune_idx",
++          "columns": [
++            "status",
++            "closed_at",
++            "id"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {
++        "host_daemon_sessions_host_id_hosts_id_fk": {
++          "name": "host_daemon_sessions_host_id_hosts_id_fk",
++          "tableFrom": "host_daemon_sessions",
++          "tableTo": "hosts",
++          "columnsFrom": [
++            "host_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "hosts": {
++      "name": "hosts",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "type": {
++          "name": "type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "connect_machine_id": {
++          "name": "connect_machine_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "max_permission_mode": {
++          "name": "max_permission_mode",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'full'"
++        },
++        "destroyed_at": {
++          "name": "destroyed_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "last_seen_at": {
++          "name": "last_seen_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "last_rejected_protocol_version": {
++          "name": "last_rejected_protocol_version",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "hosts_last_seen_idx": {
++          "name": "hosts_last_seen_idx",
++          "columns": [
++            "last_seen_at"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "plugins": {
++      "name": "plugins",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "source": {
++          "name": "source",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "provenance": {
++          "name": "provenance",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'direct'"
++        },
++        "catalog_entry_id": {
++          "name": "catalog_entry_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "catalog_marketplace_name": {
++          "name": "catalog_marketplace_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_kind": {
++          "name": "source_kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'path'"
++        },
++        "source_path": {
++          "name": "source_path",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_builtin_name": {
++          "name": "source_builtin_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_npm_package": {
++          "name": "source_npm_package",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_npm_registry": {
++          "name": "source_npm_registry",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_npm_requested_spec": {
++          "name": "source_npm_requested_spec",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_npm_spec_kind": {
++          "name": "source_npm_spec_kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_git_url": {
++          "name": "source_git_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_git_subdirectory": {
++          "name": "source_git_subdirectory",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_git_requested_ref": {
++          "name": "source_git_requested_ref",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_git_ref_kind": {
++          "name": "source_git_ref_kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_git_range": {
++          "name": "source_git_range",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_git_tag_prefix": {
++          "name": "source_git_tag_prefix",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_git_resolved_tag": {
++          "name": "source_git_resolved_tag",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "npm_resolved_version": {
++          "name": "npm_resolved_version",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "npm_integrity": {
++          "name": "npm_integrity",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "git_resolved_commit": {
++          "name": "git_resolved_commit",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "last_update_check_at": {
++          "name": "last_update_check_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "available_compatible_version": {
++          "name": "available_compatible_version",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "newest_incompatible_version": {
++          "name": "newest_incompatible_version",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "update_status_detail": {
++          "name": "update_status_detail",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "last_failure_version": {
++          "name": "last_failure_version",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "last_failure_at": {
++          "name": "last_failure_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "last_failure_detail": {
++          "name": "last_failure_detail",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "active_artifact_id": {
++          "name": "active_artifact_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "normalization_version": {
++          "name": "normalization_version",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 0
++        },
++        "root_dir": {
++          "name": "root_dir",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "version": {
++          "name": "version",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "enabled": {
++          "name": "enabled",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": true
++        },
++        "removed_at": {
++          "name": "removed_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "installed_at": {
++          "name": "installed_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "plugins_active_artifact_id_plugin_artifacts_id_fk": {
++          "name": "plugins_active_artifact_id_plugin_artifacts_id_fk",
++          "tableFrom": "plugins",
++          "tableTo": "plugin_artifacts",
++          "columnsFrom": [
++            "active_artifact_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "maintenance_scan_cursors": {
++      "name": "maintenance_scan_cursors",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "policy": {
++          "name": "policy",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "version": {
++          "name": "version",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "item_kind": {
++          "name": "item_kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "output_path": {
++          "name": "output_path",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "last_created_at": {
++          "name": "last_created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 0
++        },
++        "last_event_id": {
++          "name": "last_event_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "''"
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "maintenance_scan_cursors_path_idx": {
++          "name": "maintenance_scan_cursors_path_idx",
++          "columns": [
++            "policy",
++            "version",
++            "item_kind",
++            "output_path"
++          ],
++          "isUnique": true
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "p6r_actors": {
++      "name": "p6r_actors",
++      "columns": {
++        "p6r_provider_id": {
++          "name": "p6r_provider_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "p6r_subject": {
++          "name": "p6r_subject",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "p6r_handle": {
++          "name": "p6r_handle",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "p6r_display_name": {
++          "name": "p6r_display_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "p6r_image_url": {
++          "name": "p6r_image_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "p6r_first_seen_at": {
++          "name": "p6r_first_seen_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "p6r_last_seen_at": {
++          "name": "p6r_last_seen_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {
++        "p6r_actors_p6r_provider_id_p6r_subject_pk": {
++          "columns": [
++            "p6r_provider_id",
++            "p6r_subject"
++          ],
++          "name": "p6r_actors_p6r_provider_id_p6r_subject_pk"
++        }
++      },
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "p6r_collaborators": {
++      "name": "p6r_collaborators",
++      "columns": {
++        "p6r_handle": {
++          "name": "p6r_handle",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "p6r_display_name": {
++          "name": "p6r_display_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "p6r_image_url": {
++          "name": "p6r_image_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "p6r_first_seen_at": {
++          "name": "p6r_first_seen_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "p6r_last_seen_at": {
++          "name": "p6r_last_seen_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "pending_interactions": {
++      "name": "pending_interactions",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "origin_kind": {
++          "name": "origin_kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'provider'"
++        },
++        "turn_id": {
++          "name": "turn_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "provider_id": {
++          "name": "provider_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "provider_thread_id": {
++          "name": "provider_thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "provider_request_id": {
++          "name": "provider_request_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "plugin_id": {
++          "name": "plugin_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "renderer_id": {
++          "name": "renderer_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "payload": {
++          "name": "payload",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "resolution": {
++          "name": "resolution",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "p6r_resolved_by_handle": {
++          "name": "p6r_resolved_by_handle",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "status_reason": {
++          "name": "status_reason",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "expires_at": {
++          "name": "expires_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "resolved_at": {
++          "name": "resolved_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "pending_interactions_provider_request_idx": {
++          "name": "pending_interactions_provider_request_idx",
++          "columns": [
++            "provider_id",
++            "provider_thread_id",
++            "provider_request_id"
++          ],
++          "isUnique": true
++        },
++        "pending_interactions_thread_created_idx": {
++          "name": "pending_interactions_thread_created_idx",
++          "columns": [
++            "thread_id",
++            "created_at"
++          ],
++          "isUnique": false
++        },
++        "pending_interactions_thread_status_created_idx": {
++          "name": "pending_interactions_thread_status_created_idx",
++          "columns": [
++            "thread_id",
++            "status",
++            "created_at"
++          ],
++          "isUnique": false
++        },
++        "pending_interactions_status_created_idx": {
++          "name": "pending_interactions_status_created_idx",
++          "columns": [
++            "status",
++            "created_at"
++          ],
++          "isUnique": false
++        },
++        "pending_interactions_plugin_status_created_idx": {
++          "name": "pending_interactions_plugin_status_created_idx",
++          "columns": [
++            "plugin_id",
++            "status",
++            "created_at"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {
++        "pending_interactions_thread_id_threads_id_fk": {
++          "name": "pending_interactions_thread_id_threads_id_fk",
++          "tableFrom": "pending_interactions",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "plugin_artifacts": {
++      "name": "plugin_artifacts",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "plugin_id": {
++          "name": "plugin_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "source_kind": {
++          "name": "source_kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "npm_resolved_version": {
++          "name": "npm_resolved_version",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "git_resolved_commit": {
++          "name": "git_resolved_commit",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "git_checkout_root": {
++          "name": "git_checkout_root",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "path": {
++          "name": "path",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "integrity": {
++          "name": "integrity",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "content_hash": {
++          "name": "content_hash",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "validation_result": {
++          "name": "validation_result",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "validated_at": {
++          "name": "validated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "plugin_artifacts_plugin_idx": {
++          "name": "plugin_artifacts_plugin_idx",
++          "columns": [
++            "plugin_id"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "plugin_kv": {
++      "name": "plugin_kv",
++      "columns": {
++        "plugin_id": {
++          "name": "plugin_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "key": {
++          "name": "key",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "value": {
++          "name": "value",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {
++        "plugin_kv_plugin_id_key_pk": {
++          "columns": [
++            "plugin_id",
++            "key"
++          ],
++          "name": "plugin_kv_plugin_id_key_pk"
++        }
++      },
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "plugin_marketplace_icons": {
++      "name": "plugin_marketplace_icons",
++      "columns": {
++        "marketplace_name": {
++          "name": "marketplace_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "entry_id": {
++          "name": "entry_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "source_url": {
++          "name": "source_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "content_type": {
++          "name": "content_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "etag": {
++          "name": "etag",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "content_hash": {
++          "name": "content_hash",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "bytes": {
++          "name": "bytes",
++          "type": "blob",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {
++        "plugin_marketplace_icons_marketplace_name_entry_id_pk": {
++          "columns": [
++            "marketplace_name",
++            "entry_id"
++          ],
++          "name": "plugin_marketplace_icons_marketplace_name_entry_id_pk"
++        }
++      },
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "plugin_marketplaces": {
++      "name": "plugin_marketplaces",
++      "columns": {
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "source_kind": {
++          "name": "source_kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'https'"
++        },
++        "manifest_url": {
++          "name": "manifest_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "source_git_ref": {
++          "name": "source_git_ref",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_git_commit": {
++          "name": "source_git_commit",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "manifest_json": {
++          "name": "manifest_json",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "etag": {
++          "name": "etag",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "last_modified": {
++          "name": "last_modified",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "last_successful_refresh_at": {
++          "name": "last_successful_refresh_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "last_attempted_refresh_at": {
++          "name": "last_attempted_refresh_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "last_error": {
++          "name": "last_error",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "plugin_schedules": {
++      "name": "plugin_schedules",
++      "columns": {
++        "plugin_id": {
++          "name": "plugin_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "cron": {
++          "name": "cron",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "next_run_at": {
++          "name": "next_run_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "last_run_at": {
++          "name": "last_run_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "last_status": {
++          "name": "last_status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "last_error": {
++          "name": "last_error",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {
++        "plugin_schedules_plugin_id_name_pk": {
++          "columns": [
++            "plugin_id",
++            "name"
++          ],
++          "name": "plugin_schedules_plugin_id_name_pk"
++        }
++      },
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "plugin_settings": {
++      "name": "plugin_settings",
++      "columns": {
++        "plugin_id": {
++          "name": "plugin_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "key": {
++          "name": "key",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "value": {
++          "name": "value",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {
++        "plugin_settings_plugin_id_key_pk": {
++          "columns": [
++            "plugin_id",
++            "key"
++          ],
++          "name": "plugin_settings_plugin_id_key_pk"
++        }
++      },
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "plugin_state_snapshots": {
++      "name": "plugin_state_snapshots",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "plugin_id": {
++          "name": "plugin_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "from_artifact_id": {
++          "name": "from_artifact_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "to_artifact_id": {
++          "name": "to_artifact_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "snapshot_path": {
++          "name": "snapshot_path",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "database_path": {
++          "name": "database_path",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "state_path": {
++          "name": "state_path",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "secrets_path": {
++          "name": "secrets_path",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "registration_path": {
++          "name": "registration_path",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "rollback_candidate_version": {
++          "name": "rollback_candidate_version",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "rollback_source_fingerprint": {
++          "name": "rollback_source_fingerprint",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "rollback_bb_version": {
++          "name": "rollback_bb_version",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "rollback_sdk_version": {
++          "name": "rollback_sdk_version",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "rollback_detail": {
++          "name": "rollback_detail",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "retained_until": {
++          "name": "retained_until",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "plugin_state_snapshots_plugin_idx": {
++          "name": "plugin_state_snapshots_plugin_idx",
++          "columns": [
++            "plugin_id"
++          ],
++          "isUnique": false
++        },
++        "plugin_state_snapshots_retention_idx": {
++          "name": "plugin_state_snapshots_retention_idx",
++          "columns": [
++            "retained_until"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "project_execution_defaults": {
++      "name": "project_execution_defaults",
++      "columns": {
++        "project_id": {
++          "name": "project_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "provider_id": {
++          "name": "provider_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "model": {
++          "name": "model",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "service_tier": {
++          "name": "service_tier",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "reasoning_level": {
++          "name": "reasoning_level",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "permission_mode": {
++          "name": "permission_mode",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "project_execution_defaults_project_idx": {
++          "name": "project_execution_defaults_project_idx",
++          "columns": [
++            "project_id"
++          ],
++          "isUnique": true
++        }
++      },
++      "foreignKeys": {
++        "project_execution_defaults_project_id_projects_id_fk": {
++          "name": "project_execution_defaults_project_id_projects_id_fk",
++          "tableFrom": "project_execution_defaults",
++          "tableTo": "projects",
++          "columnsFrom": [
++            "project_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "project_sources": {
++      "name": "project_sources",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "project_id": {
++          "name": "project_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "type": {
++          "name": "type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "host_id": {
++          "name": "host_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "path": {
++          "name": "path",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "is_default": {
++          "name": "is_default",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "project_sources_project_idx": {
++          "name": "project_sources_project_idx",
++          "columns": [
++            "project_id"
++          ],
++          "isUnique": false
++        },
++        "project_sources_host_idx": {
++          "name": "project_sources_host_idx",
++          "columns": [
++            "host_id"
++          ],
++          "isUnique": false
++        },
++        "project_sources_project_host_idx": {
++          "name": "project_sources_project_host_idx",
++          "columns": [
++            "project_id",
++            "host_id"
++          ],
++          "isUnique": true
++        }
++      },
++      "foreignKeys": {
++        "project_sources_project_id_projects_id_fk": {
++          "name": "project_sources_project_id_projects_id_fk",
++          "tableFrom": "project_sources",
++          "tableTo": "projects",
++          "columnsFrom": [
++            "project_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        },
++        "project_sources_host_id_hosts_id_fk": {
++          "name": "project_sources_host_id_hosts_id_fk",
++          "tableFrom": "project_sources",
++          "tableTo": "hosts",
++          "columnsFrom": [
++            "host_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {
++        "project_sources_shape_check": {
++          "name": "project_sources_shape_check",
++          "value": "(\n        \"project_sources\".\"type\" = 'local_path' AND \"project_sources\".\"host_id\" IS NOT NULL AND \"project_sources\".\"path\" IS NOT NULL\n      )"
++        }
++      }
++    },
++    "projects": {
++      "name": "projects",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "kind": {
++          "name": "kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'standard'"
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "git_remote_url": {
++          "name": "git_remote_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "sort_key": {
++          "name": "sort_key",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'V'"
++        },
++        "deleted_at": {
++          "name": "deleted_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "projects_updated_idx": {
++          "name": "projects_updated_idx",
++          "columns": [
++            "updated_at"
++          ],
++          "isUnique": false
++        },
++        "projects_deleted_idx": {
++          "name": "projects_deleted_idx",
++          "columns": [
++            "deleted_at"
++          ],
++          "isUnique": false
++        },
++        "projects_sort_idx": {
++          "name": "projects_sort_idx",
++          "columns": [
++            "sort_key",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "projects_personal_singleton_idx": {
++          "name": "projects_personal_singleton_idx",
++          "columns": [
++            "kind"
++          ],
++          "isUnique": true,
++          "where": "\"projects\".\"kind\" = 'personal'"
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "prompt_history_entries": {
++      "name": "prompt_history_entries",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "project_id": {
++          "name": "project_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "scope": {
++          "name": "scope",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "request_sequence": {
++          "name": "request_sequence",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "input": {
++          "name": "input",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "prompt_history_entries_thread_request_idx": {
++          "name": "prompt_history_entries_thread_request_idx",
++          "columns": [
++            "thread_id",
++            "request_sequence"
++          ],
++          "isUnique": true
++        },
++        "prompt_history_entries_project_scope_created_idx": {
++          "name": "prompt_history_entries_project_scope_created_idx",
++          "columns": [
++            "project_id",
++            "scope",
++            "created_at",
++            "request_sequence",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "prompt_history_entries_thread_scope_created_idx": {
++          "name": "prompt_history_entries_thread_scope_created_idx",
++          "columns": [
++            "thread_id",
++            "scope",
++            "created_at",
++            "request_sequence",
++            "id"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {
++        "prompt_history_entries_project_id_projects_id_fk": {
++          "name": "prompt_history_entries_project_id_projects_id_fk",
++          "tableFrom": "prompt_history_entries",
++          "tableTo": "projects",
++          "columnsFrom": [
++            "project_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        },
++        "prompt_history_entries_thread_id_threads_id_fk": {
++          "name": "prompt_history_entries_thread_id_threads_id_fk",
++          "tableFrom": "prompt_history_entries",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "queued_thread_messages": {
++      "name": "queued_thread_messages",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "content": {
++          "name": "content",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "sender_thread_id": {
++          "name": "sender_thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "p6r_actor_handle": {
++          "name": "p6r_actor_handle",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "p6r_actor_provider_id": {
++          "name": "p6r_actor_provider_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "p6r_actor_subject": {
++          "name": "p6r_actor_subject",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "p6r_actor_display_name": {
++          "name": "p6r_actor_display_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "p6r_actor_image_url": {
++          "name": "p6r_actor_image_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "model": {
++          "name": "model",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "reasoning_level": {
++          "name": "reasoning_level",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "permission_mode": {
++          "name": "permission_mode",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "service_tier": {
++          "name": "service_tier",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "group_with_next": {
++          "name": "group_with_next",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": false
++        },
++        "claimed_at": {
++          "name": "claimed_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "claim_token": {
++          "name": "claim_token",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "sort_key": {
++          "name": "sort_key",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "queued_thread_messages_thread_created_idx": {
++          "name": "queued_thread_messages_thread_created_idx",
++          "columns": [
++            "thread_id",
++            "created_at",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "queued_thread_messages_thread_sort_idx": {
++          "name": "queued_thread_messages_thread_sort_idx",
++          "columns": [
++            "thread_id",
++            "sort_key",
++            "id"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {
++        "queued_thread_messages_thread_id_threads_id_fk": {
++          "name": "queued_thread_messages_thread_id_threads_id_fk",
++          "tableFrom": "queued_thread_messages",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "system_experiments": {
++      "name": "system_experiments",
++      "columns": {
++        "key": {
++          "name": "key",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "value": {
++          "name": "value",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "terminal_sessions": {
++      "name": "terminal_sessions",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "environment_id": {
++          "name": "environment_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "host_id": {
++          "name": "host_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "daemon_session_id": {
++          "name": "daemon_session_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "initial_cwd": {
++          "name": "initial_cwd",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "cols": {
++          "name": "cols",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "rows": {
++          "name": "rows",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "exit_code": {
++          "name": "exit_code",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "close_reason": {
++          "name": "close_reason",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "last_user_input_at": {
++          "name": "last_user_input_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "terminal_sessions_thread_status_updated_idx": {
++          "name": "terminal_sessions_thread_status_updated_idx",
++          "columns": [
++            "thread_id",
++            "status",
++            "updated_at"
++          ],
++          "isUnique": false
++        },
++        "terminal_sessions_environment_status_idx": {
++          "name": "terminal_sessions_environment_status_idx",
++          "columns": [
++            "environment_id",
++            "status"
++          ],
++          "isUnique": false
++        },
++        "terminal_sessions_host_status_idx": {
++          "name": "terminal_sessions_host_status_idx",
++          "columns": [
++            "host_id",
++            "status"
++          ],
++          "isUnique": false
++        },
++        "terminal_sessions_daemon_session_idx": {
++          "name": "terminal_sessions_daemon_session_idx",
++          "columns": [
++            "daemon_session_id"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {
++        "terminal_sessions_thread_id_threads_id_fk": {
++          "name": "terminal_sessions_thread_id_threads_id_fk",
++          "tableFrom": "terminal_sessions",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        },
++        "terminal_sessions_environment_id_environments_id_fk": {
++          "name": "terminal_sessions_environment_id_environments_id_fk",
++          "tableFrom": "terminal_sessions",
++          "tableTo": "environments",
++          "columnsFrom": [
++            "environment_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        },
++        "terminal_sessions_host_id_hosts_id_fk": {
++          "name": "terminal_sessions_host_id_hosts_id_fk",
++          "tableFrom": "terminal_sessions",
++          "tableTo": "hosts",
++          "columnsFrom": [
++            "host_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        },
++        "terminal_sessions_daemon_session_id_host_daemon_sessions_id_fk": {
++          "name": "terminal_sessions_daemon_session_id_host_daemon_sessions_id_fk",
++          "tableFrom": "terminal_sessions",
++          "tableTo": "host_daemon_sessions",
++          "columnsFrom": [
++            "daemon_session_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "set null",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "thread_dynamic_context_file_states": {
++      "name": "thread_dynamic_context_file_states",
++      "columns": {
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "file_key": {
++          "name": "file_key",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "content_status": {
++          "name": "content_status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "content_hash": {
++          "name": "content_hash",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "shown_at": {
++          "name": "shown_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "thread_dynamic_context_file_states_thread_file_idx": {
++          "name": "thread_dynamic_context_file_states_thread_file_idx",
++          "columns": [
++            "thread_id",
++            "file_key"
++          ],
++          "isUnique": true
++        }
++      },
++      "foreignKeys": {
++        "thread_dynamic_context_file_states_thread_id_threads_id_fk": {
++          "name": "thread_dynamic_context_file_states_thread_id_threads_id_fk",
++          "tableFrom": "thread_dynamic_context_file_states",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "thread_search_segments": {
++      "name": "thread_search_segments",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "source_kind": {
++          "name": "source_kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "source_key": {
++          "name": "source_key",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "source_seq": {
++          "name": "source_seq",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "text": {
++          "name": "text",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "thread_search_segments_source_idx": {
++          "name": "thread_search_segments_source_idx",
++          "columns": [
++            "thread_id",
++            "source_kind",
++            "source_key"
++          ],
++          "isUnique": true
++        },
++        "thread_search_segments_thread_source_seq_idx": {
++          "name": "thread_search_segments_thread_source_seq_idx",
++          "columns": [
++            "thread_id",
++            "source_seq"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {
++        "thread_search_segments_thread_id_threads_id_fk": {
++          "name": "thread_search_segments_thread_id_threads_id_fk",
++          "tableFrom": "thread_search_segments",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "thread_sections": {
++      "name": "thread_sections",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "thread_sections_name_idx": {
++          "name": "thread_sections_name_idx",
++          "columns": [
++            "name"
++          ],
++          "isUnique": true
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "thread_tabs": {
++      "name": "thread_tabs",
++      "columns": {
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "tabs_json": {
++          "name": "tabs_json",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "revision": {
++          "name": "revision",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "thread_tabs_thread_id_threads_id_fk": {
++          "name": "thread_tabs_thread_id_threads_id_fk",
++          "tableFrom": "thread_tabs",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "threads": {
++      "name": "threads",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "project_id": {
++          "name": "project_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "environment_id": {
++          "name": "environment_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "provider_id": {
++          "name": "provider_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "model_override": {
++          "name": "model_override",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "reasoning_level_override": {
++          "name": "reasoning_level_override",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "title_fallback": {
++          "name": "title_fallback",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "section_id": {
++          "name": "section_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'starting'"
++        },
++        "parent_thread_id": {
++          "name": "parent_thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_thread_id": {
++          "name": "source_thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "origin_kind": {
++          "name": "origin_kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "origin_plugin_id": {
++          "name": "origin_plugin_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "p6r_created_by_handle": {
++          "name": "p6r_created_by_handle",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "visibility": {
++          "name": "visibility",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'visible'"
++        },
++        "archived_at": {
++          "name": "archived_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "pinned_at": {
++          "name": "pinned_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "pin_sort_key": {
++          "name": "pin_sort_key",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "deleted_at": {
++          "name": "deleted_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "last_read_at": {
++          "name": "last_read_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "latest_attention_at": {
++          "name": "latest_attention_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "threads_project_updated_idx": {
++          "name": "threads_project_updated_idx",
++          "columns": [
++            "project_id",
++            "updated_at"
++          ],
++          "isUnique": false
++        },
++        "threads_project_archived_deleted_idx": {
++          "name": "threads_project_archived_deleted_idx",
++          "columns": [
++            "project_id",
++            "archived_at",
++            "deleted_at",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "threads_pin_sort_idx": {
++          "name": "threads_pin_sort_idx",
++          "columns": [
++            "archived_at",
++            "deleted_at",
++            "pin_sort_key",
++            "id"
++          ],
++          "isUnique": false,
++          "where": "\"threads\".\"pinned_at\" IS NOT NULL"
++        },
++        "threads_environment_idx": {
++          "name": "threads_environment_idx",
++          "columns": [
++            "environment_id"
++          ],
++          "isUnique": false
++        },
++        "threads_parent_idx": {
++          "name": "threads_parent_idx",
++          "columns": [
++            "parent_thread_id"
++          ],
++          "isUnique": false
++        },
++        "threads_source_origin_idx": {
++          "name": "threads_source_origin_idx",
++          "columns": [
++            "source_thread_id",
++            "origin_kind"
++          ],
++          "isUnique": false
++        },
++        "threads_origin_plugin_archived_idx": {
++          "name": "threads_origin_plugin_archived_idx",
++          "columns": [
++            "origin_plugin_id",
++            "archived_at"
++          ],
++          "isUnique": false
++        },
++        "threads_section_archived_deleted_idx": {
++          "name": "threads_section_archived_deleted_idx",
++          "columns": [
++            "section_id",
++            "archived_at",
++            "deleted_at",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "threads_archived_status_idx": {
++          "name": "threads_archived_status_idx",
++          "columns": [
++            "archived_at",
++            "status"
++          ],
++          "isUnique": false
++        },
++        "threads_environment_archived_deleted_idx": {
++          "name": "threads_environment_archived_deleted_idx",
++          "columns": [
++            "environment_id",
++            "archived_at",
++            "deleted_at"
++          ],
++          "isUnique": false
++        },
++        "threads_active_maintenance_idx": {
++          "name": "threads_active_maintenance_idx",
++          "columns": [
++            "status"
++          ],
++          "isUnique": false,
++          "where": "\"threads\".\"deleted_at\" IS NULL"
++        }
++      },
++      "foreignKeys": {
++        "threads_project_id_projects_id_fk": {
++          "name": "threads_project_id_projects_id_fk",
++          "tableFrom": "threads",
++          "tableTo": "projects",
++          "columnsFrom": [
++            "project_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        },
++        "threads_environment_id_environments_id_fk": {
++          "name": "threads_environment_id_environments_id_fk",
++          "tableFrom": "threads",
++          "tableTo": "environments",
++          "columnsFrom": [
++            "environment_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "set null",
++          "onUpdate": "no action"
++        },
++        "threads_section_id_thread_sections_id_fk": {
++          "name": "threads_section_id_thread_sections_id_fk",
++          "tableFrom": "threads",
++          "tableTo": "thread_sections",
++          "columnsFrom": [
++            "section_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "set null",
++          "onUpdate": "no action"
++        },
++        "threads_parent_thread_id_threads_id_fk": {
++          "name": "threads_parent_thread_id_threads_id_fk",
++          "tableFrom": "threads",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "parent_thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "set null",
++          "onUpdate": "no action"
++        },
++        "threads_source_thread_id_threads_id_fk": {
++          "name": "threads_source_thread_id_threads_id_fk",
++          "tableFrom": "threads",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "source_thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "set null",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    }
++  },
++  "views": {},
++  "enums": {},
++  "_meta": {
++    "schemas": {},
++    "tables": {},
++    "columns": {}
++  },
++  "internal": {
++    "indexes": {}
++  }
++}
+\ No newline at end of file
+diff --git a/packages/db/drizzle/meta/_journal.json b/packages/db/drizzle/meta/_journal.json
+index dd70b64157806bbb290f550176213896bf6ffd86..e7a855fe23a7ab7606a59d120936376d3a014769 100644
+--- a/packages/db/drizzle/meta/_journal.json
++++ b/packages/db/drizzle/meta/_journal.json
+@@ -736,6 +736,13 @@
+       "when": 1787212680694,
+       "tag": "0104_chunky_redwing",
+       "breakpoints": true
++    },
++    {
++      "idx": 105,
++      "version": "6",
++      "when": 1787321061533,
++      "tag": "0105_p6r_identity_authorship",
++      "breakpoints": true
+     }
+   ]
+ }
+\ No newline at end of file
+diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
+index 5149ae920605396dbd51a7e7befe2a9771a9240e..67c92ee43b6567e70e9146a77cf19f559fba31c4 100644
+--- a/packages/db/src/data/index.ts
++++ b/packages/db/src/data/index.ts
+@@ -244,7 +244,6 @@ export {
+   getLatestStoredConversationOutlineSequence,
+   getLatestThreadSystemErrorEventRow,
+   getLatestThreadSequence,
+-  getLatestStoredEventRowByType,
+   p6rCountDistinctThreadEventActors,
+   insertEvents,
+   listActiveBackgroundTaskCountsByThreadIds,
+diff --git a/packages/db/src/migrate.ts b/packages/db/src/migrate.ts
+index f2c4e191ae032983f5eacc4efee8a40fd6493ad0..9148b917ed3205c2e77dba5f79b142e8eb65cd9f 100644
+--- a/packages/db/src/migrate.ts
++++ b/packages/db/src/migrate.ts
+@@ -1332,7 +1332,11 @@ const P6R_STAGED_MULTIPLAYER_COLLABORATORS =
+ const p6rLegacyMigrationWhens = [1786998114856, 1787090005295] as const;
+ 
+ const p6rMultiplayerAttributionColumns = [
+-  { table: "events", legacyColumn: "actor_handle", p6rColumn: "p6r_actor_handle" },
++  {
++    table: "events",
++    legacyColumn: "actor_handle",
++    p6rColumn: "p6r_actor_handle",
++  },
+   {
+     table: "pending_interactions",
+     legacyColumn: "resolved_by_handle",
+@@ -1439,7 +1443,7 @@ function p6rStageExistingMultiplayerSchema(
+   const migrations = readExpectedAppliedMigrations(migrationsFolder);
+   const identityMigration = requireExpectedAppliedMigration(
+     migrations,
+-    "0101_p6r_identity_authorship",
++    "0105_p6r_identity_authorship",
+   );
+   const appliedCreatedAts = readAppliedMigrationCreatedAts(db);
+   if (appliedCreatedAts.has(identityMigration.createdAt)) {
+@@ -1466,9 +1470,9 @@ function p6rStageExistingMultiplayerSchema(
+ 
+   for (const createdAt of p6rLegacyMigrationWhens) {
+     db.$client
+-      .prepare<[number]>(
+-        "DELETE FROM __drizzle_migrations WHERE created_at = ?",
+-      )
++      .prepare<
++        [number]
++      >("DELETE FROM __drizzle_migrations WHERE created_at = ?")
+       .run(createdAt);
+   }
+ 
+diff --git a/packages/db/test/data/actors.test.ts b/packages/db/test/data/actors.test.ts
+index bf50a2acda68f8550881eb400192c24e9d1af1bf..8bfe1bfc6e83b9c6daeac59f73733a46f367f953 100644
+--- a/packages/db/test/data/actors.test.ts
++++ b/packages/db/test/data/actors.test.ts
+@@ -54,6 +54,7 @@ describe("p6r durable actor snapshots", () => {
+           type: "client/turn/requested",
+           itemId: null,
+           itemKind: null,
++          parentToolCallId: null,
+           p6rActorHandle: actor.p6rHandle,
+           p6rActorProviderId: actor.p6rProviderId,
+           p6rActorSubject: actor.p6rSubject,
+@@ -71,6 +72,7 @@ describe("p6r durable actor snapshots", () => {
+           type: "turn/input/accepted",
+           itemId: null,
+           itemKind: null,
++          parentToolCallId: null,
+           data: JSON.stringify({
+             clientRequestId: requestId,
+             transcript: "[from=transcript-spoof]",
+diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
+index 1201dd4ff8547fbeb2f782caaff5ecaed616542a..cd364c8d277ea8513985130b871a10676d670f8a 100644
+--- a/packages/db/test/migrate.test.ts
++++ b/packages/db/test/migrate.test.ts
+@@ -323,9 +323,7 @@ function dropIdentityMigrationState(db: DbConnection): void {
+       "p6r_created_by_handle",
+     ]) {
+       if (columns.has(column)) {
+-        db.$client
+-          .prepare(`ALTER TABLE ${table} DROP COLUMN ${column}`)
+-          .run();
++        db.$client.prepare(`ALTER TABLE ${table} DROP COLUMN ${column}`).run();
+       }
+     }
+   }
+@@ -460,7 +458,7 @@ const eventParentToolCallPreJsonValidMigrationHash =
+   "79d39e7b68d1db8ba02614fe4cc227cc0c154d77c7183f2e37ed2d8475412993";
+ const branchLocalMultiplayerMigrationWhen = 1784389648607;
+ const multiplayerMigrationWhen = 1786998114856;
+-const identityMigrationWhen = 1787148230236;
++const identityMigrationWhen = 1787321061533;
+ const eventLargeValuesPreOptimizationHash =
+   "bc111f5134183c37cf135af70231ec5a79823f9868818fdd8377e1ab3c05a23f";
+ const queuedMessageSortKeyMigrationPath = resolve(
+@@ -1822,7 +1820,7 @@ describe("migrate", () => {
+         providerId: "codex",
+       });
+ 
+-      // Rollback boundary: this witness rewinds only the generated 0101
++      // Rollback boundary: this witness rewinds only the generated 0105
+       // schema in an in-memory snapshot. It never rolls back a live database.
+       dropIdentityMigrationState(db);
+       db.$client.exec(
+@@ -1849,7 +1847,7 @@ describe("migrate", () => {
+         );
+       }
+ 
+-      // This unrelated row is deliberately below the generated 0101 timestamp
++      // This unrelated row is deliberately below the generated 0105 timestamp
+       // so Drizzle must tolerate it while still applying the next migration.
+       db.$client
+         .prepare<InsertMigrationParameters>(
+@@ -1859,16 +1857,18 @@ describe("migrate", () => {
+ 
+       expect(
+         db.$client
+-          .prepare<[], MigrationCountRow>(
+-            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'p6r_actors'",
+-          )
++          .prepare<
++            [],
++            MigrationCountRow
++          >("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'p6r_actors'")
+           .get()?.count,
+       ).toBe(0);
+       expect(
+         db.$client
+-          .prepare<[], MigrationCountRow>(
+-            "SELECT COUNT(*) AS count FROM pending_interactions WHERE p6r_resolved_by_handle IS NOT NULL",
+-          )
++          .prepare<
++            [],
++            MigrationCountRow
++          >("SELECT COUNT(*) AS count FROM pending_interactions WHERE p6r_resolved_by_handle IS NOT NULL")
+           .get()?.count,
+       ).toBe(12);
+       expect(readAppliedMigrationCreatedAts(db)).toEqual(
+@@ -1889,16 +1889,18 @@ describe("migrate", () => {
+       expect(readAppliedMigrationCreatedAts(db)).not.toContain(1787090005295);
+       expect(
+         db.$client
+-          .prepare<[], MigrationCountRow>(
+-            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'p6r_actors'",
+-          )
++          .prepare<
++            [],
++            MigrationCountRow
++          >("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'p6r_actors'")
+           .get()?.count,
+       ).toBe(1);
+       expect(
+         db.$client
+-          .prepare<[], MigrationCountRow>(
+-            "SELECT COUNT(*) AS count FROM pending_interactions WHERE p6r_resolved_by_handle IS NOT NULL",
+-          )
++          .prepare<
++            [],
++            MigrationCountRow
++          >("SELECT COUNT(*) AS count FROM pending_interactions WHERE p6r_resolved_by_handle IS NOT NULL")
+           .get()?.count,
+       ).toBe(12);
+       expect(
+@@ -1923,9 +1925,10 @@ describe("migrate", () => {
+ 
+       expect(
+         db.$client
+-          .prepare<[], MigrationCountRow>(
+-            "SELECT COUNT(*) AS count FROM pending_interactions WHERE p6r_resolved_by_handle IS NOT NULL",
+-          )
++          .prepare<
++            [],
++            MigrationCountRow
++          >("SELECT COUNT(*) AS count FROM pending_interactions WHERE p6r_resolved_by_handle IS NOT NULL")
+           .get()?.count,
+       ).toBe(12);
+       expect(readAppliedMigrationCreatedAts(db)).toContain(
+diff --git a/packages/domain/src/change-kinds.ts b/packages/domain/src/change-kinds.ts
+index d6c67decb68948549d9fc7c000d12a70a6fbce97..0953208600dcff983b6497d405a5a2ed4f343d21 100644
+--- a/packages/domain/src/change-kinds.ts
++++ b/packages/domain/src/change-kinds.ts
+@@ -144,7 +144,7 @@ export const pingMessageSchema = z.object({
+ export type PingMessage = z.infer<typeof pingMessageSchema>;
+ 
+ /**
+-  * Ephemeral composer-typing signal. The server folds it into presence state
++ * Ephemeral composer-typing signal. The server folds it into presence state
+  * with a short TTL; it is never persisted. Older servers drop the message on
+  * parse, which is an acceptable degradation for a purely cosmetic signal.
+  */
+diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
+index 5c1b6ec00642fc3a59eac7a5f0b75e38a22277fa..3e7d1d3af151308f6381df9074d440170d1f07eb 100644
+--- a/packages/plugin-sdk/src/backend-contract.ts
++++ b/packages/plugin-sdk/src/backend-contract.ts
+@@ -940,9 +940,7 @@ export type P6rIdentityProviderResolution =
+ 
+ export interface P6rIdentityProviderRegistration {
+   id: string;
+-  resolve(
+-    request: P6rIdentityProviderRequest,
+-  ): P6rIdentityProviderResolution;
++  resolve(request: P6rIdentityProviderRequest): P6rIdentityProviderResolution;
+ }
+ 
+ export interface P6rIdentityApi {
+diff --git a/packages/plugin-sdk/src/testing/fake-plugin-host.ts b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+index 98e3e367d767f7dcd96e3cae7771df6ea231a7ab..00a14de416ee94ac0fdb5e16e8c8ca0198d46e91 100644
+--- a/packages/plugin-sdk/src/testing/fake-plugin-host.ts
++++ b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+@@ -972,7 +972,9 @@ function createFakePluginHostInternal(
+     registerProvider(registration: P6rIdentityProviderRegistration): void {
+       assertLive();
+       if (p6rIdentityProvider !== null) {
+-        throw new Error("this plugin already registered a p6r identity provider");
++        throw new Error(
++          "this plugin already registered a p6r identity provider",
++        );
+       }
+       p6rIdentityProvider = registration;
+     },
+diff --git a/packages/thread-view/src/parse-error-message.ts b/packages/thread-view/src/parse-error-message.ts
+index a7a228eb594588176201d772e326b89e704a2a9a..9725e34d9703a03996b0f1c47bcf6ef204c6af78 100644
+--- a/packages/thread-view/src/parse-error-message.ts
++++ b/packages/thread-view/src/parse-error-message.ts
+@@ -86,68 +86,3 @@ export function parseErrorMessage(
+       : {}),
+   };
+ }
+-
+-export function isDuplicateEventType(eventType: ThreadEventType): boolean {
+-  return (
+-    eventType === "turn/started" ||
+-    eventType === "turn/completed" ||
+-    eventType === "item/commandExecution/outputDelta" ||
+-    eventType === "item/fileChange/outputDelta" ||
+-    eventType === "turn/diff/updated"
+-  );
+-}
+-
+-export function isIgnoredItemStartEvent(decoded: ThreadEvent): boolean {
+-  if (decoded.type !== "item/started") return false;
+-  return (
+-    decoded.item.type === "reasoning" || decoded.item.type === "agentMessage"
+-  );
+-}
+-
+-export function isIgnoredItemCompletedEvent(decoded: ThreadEvent): boolean {
+-  if (decoded.type !== "item/completed") return false;
+-
+-  if (decoded.item.type === "reasoning") {
+-    return (
+-      decoded.item.summary.length === 0 && decoded.item.content.length === 0
+-    );
+-  }
+-
+-  if (decoded.item.type === "agentMessage") {
+-    return decoded.item.text.length === 0;
+-  }
+-
+-  return false;
+-}
+-
+-export function appendDebugEvent(
+-  out: EventProjectionMessage[],
+-  decoded: ThreadEvent,
+-  meta: EventMeta,
+-  reason: EventProjectionDebugRawEventMessage["reason"],
+-): void {
+-  out.push({
+-    kind: "debug/raw-event",
+-    id: messageId(decoded.threadId, "debug", `${meta.seq}:${decoded.type}`),
+-    threadId: decoded.threadId,
+-    sourceSeqStart: meta.seq,
+-    sourceSeqEnd: meta.seq,
+-    createdAt: meta.createdAt,
+-    scope: decoded.scope,
+-    rawType: decoded.type,
+-    rawEvent: buildThreadEventRow({
+-      id: meta.id,
+-      scope: decoded.scope,
+-      threadId: decoded.threadId,
+-      seq: meta.seq,
+-      createdAt: meta.createdAt,
+-      p6rActorHandle: meta.p6rActorHandle,
+-      p6rActorProviderId: meta.p6rActorProviderId,
+-      p6rActorSubject: meta.p6rActorSubject,
+-      p6rActorDisplayName: meta.p6rActorDisplayName,
+-      p6rActorImageUrl: meta.p6rActorImageUrl,
+-      event: decoded,
+-    }),
+-    reason,
+-  });
+-}
+diff --git a/packages/tunnel-client/src/index.ts b/packages/tunnel-client/src/index.ts
+index 4a2e0be7e21fe41793c72e083ddef3c4451dc094..df47fc04c36bd266bc63a58c80989eba5a379a65 100644
+--- a/packages/tunnel-client/src/index.ts
++++ b/packages/tunnel-client/src/index.ts
+@@ -2,7 +2,6 @@ export type { TunnelClientLogger } from "./logger.js";
+ export {
+   headersForLoopbackRequest,
+   P6R_TUNNEL_ORIGIN_HEADER,
+-  type LoopbackHeaderRewrite,
+ } from "./headers.js";
+ export { humanizeTransportError } from "./humanize.js";
+ export {
+diff --git a/plugins/provider-retry/server.test.ts b/plugins/provider-retry/server.test.ts
+index 9d18d2f0b8400385be3f5b46823879fde33a1749..fc95593d714c6dbcfc2f2cf1579938ff08362e7a 100644
+--- a/plugins/provider-retry/server.test.ts
++++ b/plugins/provider-retry/server.test.ts
+@@ -314,10 +314,7 @@ function createRetryHost(args: {
+       },
+       threads: {
+         get: async ({ threadId }) => {
+-          inspectionByThreadId.set(
+-            threadId,
+-            await args.inspect({ threadId }),
+-          );
++          inspectionByThreadId.set(threadId, await args.inspect({ threadId }));
+           return makeThreadResponse({
+             id: threadId,
+             environmentId: "environment-one",

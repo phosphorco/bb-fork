@@ -2,7 +2,7 @@
 
 This is a thin, auditable deployment overlay for [get-bb/bb](https://github.com/get-bb/bb). It does not carry a second copy of upstream source and it does not treat a long-lived Git branch as the release definition.
 
-The current base is the exact source commit tagged `desktop-v0.39.0` at `b33abbff098ac4c857578e7350d492dcaa65d489`, matching the deployed `bb-app@0.39.0` npm release. Release tags are preferred over a moving or lagging default branch.
+The current base is exact upstream commit `c942421a454ee4157004274053eec5f36c81d7eb`, the canonical protocol-147 deployment base. The overlay retains the `bb-app@0.39.0` package contract while replaying the reviewed identity work against that shipped protocol and migration lineage.
 
 The deployable source is exactly:
 
@@ -37,4 +37,4 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The patches are deliberately organized by product capability and receipt boundary, not by the chronology of the original experimental branch. Implementation-only workflow files are excluded.
+The thirty-three patches are organized by product capability and receipt boundary. Patches one through fourteen establish the reviewed protocol-147 deployment base; patches fifteen through thirty carry the provider-qualified identity, participant, migration-recovery, and packaged-runtime work; and the final three patches adapt its generated, migration, and namespace witnesses to the canonical upstream layout. Implementation-only workflow files are excluded.

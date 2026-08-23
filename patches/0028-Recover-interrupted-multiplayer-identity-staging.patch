@@ -1,30 +1,29 @@
-From 6c16ff79f4951f744a38d8869357c1c56cc14b59 Mon Sep 17 00:00:00 2001
+From d296f9b461b7da7e2d4f588f7154e67557c63f57 Mon Sep 17 00:00:00 2001
 From: Rosetta <its-rosetta@users.noreply.github.com>
 Date: Sat, 22 Aug 2026 20:03:25 -0400
-Subject: [PATCH] Recover interrupted multiplayer identity staging
+Subject: [PATCH 28/32] Recover interrupted multiplayer identity staging
 
 - Reconcile persistent actor and collaborator staging with current canonical profile tables before replaying the identity migration.\n- Persist sparse attribution staging so a killed process can resume without losing durable authorship snapshots.\n- Apply the frozen identity migration explicitly when later ledger rows would make Drizzle skip its timestamp.\n- Prove the production-shaped interrupted state fails before this change and preserves both profile sets after recovery.
 ---
- packages/db/src/migrate.ts       | 118 ++++++++++++++++++++++++++++++-
+ packages/db/src/migrate.ts       | 117 ++++++++++++++++++++++++++++++-
  packages/db/test/migrate.test.ts |  89 +++++++++++++++++++++++
- 2 files changed, 205 insertions(+), 2 deletions(-)
+ 2 files changed, 205 insertions(+), 1 deletion(-)
 
 diff --git a/packages/db/src/migrate.ts b/packages/db/src/migrate.ts
-index f2c4e191a..4f4006ef0 100644
+index 6ef289ff3bdf5263d435a2667f4d1d1999361405..6abc091652c89ac235af7c426fd6bc05db39dafb 100644
 --- a/packages/db/src/migrate.ts
 +++ b/packages/db/src/migrate.ts
-@@ -1329,7 +1329,9 @@ function seedKeepAwakePluginConfiguration(db: DbConnection): void {
- const P6R_STAGED_MULTIPLAYER_ACTORS = "_bb_p6r_multiplayer_actors_pending";
- const P6R_STAGED_MULTIPLAYER_COLLABORATORS =
-   "_bb_p6r_multiplayer_collaborators_pending";
--const p6rLegacyMigrationWhens = [1786998114856, 1787090005295] as const;
-+const p6rLegacyMigrationWhens = [
-+  1786998114856, 1787090005295, 1787321061533,
-+] as const;
+@@ -1336,6 +1336,9 @@ const p6rLegacyMigrationWhens = [
+   // This timestamp sorts after upstream's new 0101, so it must be removed
+   // before Drizzle chooses the first unapplied canonical migration.
+   1787148230236,
++  // Used by the interrupted protocol-136 recovery candidate before the
++  // protocol-147 canonical 0105 migration could finish.
++  1787321061533,
+ ] as const;
  
  const p6rMultiplayerAttributionColumns = [
-   { table: "events", legacyColumn: "actor_handle", p6rColumn: "p6r_actor_handle" },
-@@ -1380,6 +1382,89 @@ interface P6rStagedMultiplayerSchema {
+@@ -1391,6 +1394,89 @@ interface P6rStagedMultiplayerSchema {
    columns: Array<(typeof p6rMultiplayerAttributionColumns)[number]>;
  }
  
@@ -114,7 +113,7 @@ index f2c4e191a..4f4006ef0 100644
  function p6rAttributionStagingTable(table: string, p6rColumn: string): string {
    return `_bb_p6r_multiplayer_${table}_${p6rColumn}`;
  }
-@@ -1392,7 +1477,7 @@ export function p6rStageAttributionColumn(
+@@ -1403,7 +1489,7 @@ export function p6rStageAttributionColumn(
  ): string {
    const stagingTable = p6rAttributionStagingTable(table, p6rColumn);
    db.$client.exec(`
@@ -123,7 +122,7 @@ index f2c4e191a..4f4006ef0 100644
        id TEXT PRIMARY KEY,
        value TEXT NOT NULL
      ) WITHOUT ROWID;
-@@ -1453,6 +1538,8 @@ function p6rStageExistingMultiplayerSchema(
+@@ -1464,6 +1550,8 @@ function p6rStageExistingMultiplayerSchema(
      tableExists(db, "p6r_actors") ||
      tableExists(db, "p6r_collaborators") ||
      tableExists(db, "collaborators") ||
@@ -132,7 +131,7 @@ index f2c4e191a..4f4006ef0 100644
      p6rMultiplayerAttributionColumns.some(
        (spec) =>
          tableExists(db, spec.table) &&
-@@ -1464,6 +1551,8 @@ function p6rStageExistingMultiplayerSchema(
+@@ -1475,6 +1563,8 @@ function p6rStageExistingMultiplayerSchema(
      return null;
    }
  
@@ -140,8 +139,8 @@ index f2c4e191a..4f4006ef0 100644
 +
    for (const createdAt of p6rLegacyMigrationWhens) {
      db.$client
-       .prepare<[number]>(
-@@ -1499,6 +1588,11 @@ function p6rStageExistingMultiplayerSchema(
+       .prepare<
+@@ -1510,6 +1600,11 @@ function p6rStageExistingMultiplayerSchema(
      if (!tableExists(db, spec.table)) {
        continue;
      }
@@ -153,7 +152,7 @@ index f2c4e191a..4f4006ef0 100644
      const sourceColumn = columnExists(db, spec.table, spec.p6rColumn)
        ? spec.p6rColumn
        : spec.legacyColumn !== null &&
-@@ -1578,6 +1672,23 @@ function p6rRestoreStagedMultiplayerSchema(
+@@ -1589,6 +1684,23 @@ function p6rRestoreStagedMultiplayerSchema(
    }
  }
  
@@ -163,7 +162,7 @@ index f2c4e191a..4f4006ef0 100644
 +): void {
 +  const identityMigration = requireExpectedAppliedMigration(
 +    readExpectedAppliedMigrations(migrationsFolder),
-+    "0101_p6r_identity_authorship",
++    "0105_p6r_identity_authorship",
 +  );
 +  const appliedCreatedAts = readAppliedMigrationCreatedAts(db);
 +  if (appliedCreatedAts.has(identityMigration.createdAt)) return;
@@ -177,7 +176,7 @@ index f2c4e191a..4f4006ef0 100644
  function repairBranchLocalThreadSearchMigrations(db: DbConnection): void {
    if (!tableExists(db, "__drizzle_migrations")) {
      return;
-@@ -1786,6 +1897,9 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
+@@ -1797,6 +1909,9 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
        migrationsFolder,
      );
      try {
@@ -188,10 +187,10 @@ index f2c4e191a..4f4006ef0 100644
      } finally {
        if (stagedConnectMachineId) restoreStagedConnectMachineIdColumn(db);
 diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
-index 4ba464f52..b857376ae 100644
+index 3195500a1d8a6409d51d9032ec65962df1ebfb04..acad5bdf1d026653e2d52e591f1b01bbf8003882 100644
 --- a/packages/db/test/migrate.test.ts
 +++ b/packages/db/test/migrate.test.ts
-@@ -1679,6 +1679,95 @@ describe("migrate", () => {
+@@ -1799,6 +1799,95 @@ describe("migrate", () => {
      }
    });
  
