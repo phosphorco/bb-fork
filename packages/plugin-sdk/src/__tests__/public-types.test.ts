@@ -12,6 +12,7 @@ type ExpectedBbPluginApiKey =
   | "http"
   | "log"
   | "onDispose"
+  | "p6rIdentity"
   | "pluginId"
   | "providers"
   | "realtime"
@@ -51,6 +52,11 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
   "PluginHttp",
   "PluginHttpAuthMode",
   "PluginHttpHandler",
+  "P6rIdentityApi",
+  "P6rIdentityProviderRegistration",
+  "P6rIdentityProviderRequest",
+  "P6rIdentityProviderResolution",
+  "P6rPluginRequestContext",
   "PluginInteractionCancelReason",
   "PluginInteractionRequest",
   "PluginInteractionResult",

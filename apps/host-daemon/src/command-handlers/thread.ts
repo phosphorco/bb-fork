@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import type { PromptInput } from "@bb/domain";
 import type { HostDaemonCommandResult } from "@bb/host-daemon-contract";
+import type { P6rTurnSpeaker } from "@bb/host-daemon-contract";
 import { resolveContainedPath } from "@bb/process-utils";
 import type { RuntimeEntry } from "../runtime-manager.js";
 import {
@@ -18,6 +19,7 @@ import { providerInstallationGateKey } from "../provider-installation-gate.js";
 import { requireResolvedWorkspaceForCommand } from "../workspace-resolution.js";
 
 type TurnSubmitCommand = CommandOf<"turn.submit">;
+
 type ExistingThreadRuntimeCommand =
   | TurnSubmitCommand
   | CommandOf<"thread.goal.clear">;
@@ -40,7 +42,7 @@ interface ResumeThreadRuntimeIfMissingArgs {
 interface StageThreadCommandInputArgs {
   command: Pick<
     TurnSubmitCommand,
-    "input" | "inputGroups" | "requestId" | "threadId"
+    "input" | "inputGroups" | "requestId" | "p6rSpeaker" | "threadId"
   >;
   fetchProjectAttachment: CommandDispatchOptions["fetchProjectAttachment"];
   projectId: string;
@@ -96,6 +98,53 @@ function groupedInputForRuntime(
       ? input
       : [{ type: "text" as const, text: "\n\n", mentions: [] }, ...input],
   );
+}
+
+export function p6rAnnotateSpeakerInput(
+  input: readonly PromptInput[],
+  p6rSpeaker: P6rTurnSpeaker,
+): PromptInput[] {
+  // This is write-only legacy presentation for providers that render prompt
+  // text. The structured p6rSpeaker command field remains authoritative; no
+  // later stage may reconstruct identity from this text.
+  const annotation = `[from @${p6rSpeaker.p6rHandle}] `;
+  const firstTextIndex = input.findIndex((item) => item.type === "text");
+  if (firstTextIndex === -1) {
+    return [{ type: "text", text: annotation, mentions: [] }, ...input];
+  }
+  return input.map((item, index) =>
+    index === firstTextIndex && item.type === "text"
+      ? { ...item, text: `${annotation}${item.text}` }
+      : item,
+  );
+}
+
+function p6rAnnotateStagedSpeaker(
+  staged: StagedThreadCommandInput,
+  p6rSpeaker: P6rTurnSpeaker | undefined,
+): StagedThreadCommandInput {
+  if (p6rSpeaker === undefined) {
+    return staged;
+  }
+  if (staged.inputGroups !== undefined) {
+    const [firstGroup, ...remainingGroups] = staged.inputGroups;
+    if (firstGroup === undefined) {
+      return staged;
+    }
+    const inputGroups = [
+      p6rAnnotateSpeakerInput(firstGroup, p6rSpeaker),
+      ...remainingGroups,
+    ];
+    return {
+      ...staged,
+      input: groupedInputForRuntime(inputGroups),
+      inputGroups,
+    };
+  }
+  return {
+    ...staged,
+    input: p6rAnnotateSpeakerInput(staged.input, p6rSpeaker),
+  };
 }
 
 async function requireSupportedProviderCliForThreadStart({
@@ -234,12 +283,15 @@ export async function startThread(
     );
     await fs.mkdir(confined, { recursive: true });
   }
-  const staged = await stageThreadCommandInput({
-    command,
-    fetchProjectAttachment: options.fetchProjectAttachment,
-    projectId: command.projectId,
-    threadStorageRootPath: options.threadStorageRootPath,
-  });
+  const staged = p6rAnnotateStagedSpeaker(
+    await stageThreadCommandInput({
+      command,
+      fetchProjectAttachment: options.fetchProjectAttachment,
+      projectId: command.projectId,
+      threadStorageRootPath: options.threadStorageRootPath,
+    }),
+    command.p6rSpeaker,
+  );
   try {
     const bridgeLaunch = await resolveRuntimeBridgeLaunch(
       command.bridgeLaunch,
@@ -481,12 +533,15 @@ export async function submitTurn(
   entry: RuntimeEntry,
   options: CommandDispatchOptions,
 ): Promise<HostDaemonCommandResult<"turn.submit">> {
-  const staged = await stageThreadCommandInput({
-    command,
-    fetchProjectAttachment: options.fetchProjectAttachment,
-    projectId: command.resumeContext.projectId,
-    threadStorageRootPath: options.threadStorageRootPath,
-  });
+  const staged = p6rAnnotateStagedSpeaker(
+    await stageThreadCommandInput({
+      command,
+      fetchProjectAttachment: options.fetchProjectAttachment,
+      projectId: command.resumeContext.projectId,
+      threadStorageRootPath: options.threadStorageRootPath,
+    }),
+    command.p6rSpeaker,
+  );
   const stagedCommand = {
     ...command,
     input: staged.input,

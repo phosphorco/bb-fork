@@ -317,6 +317,8 @@ export function buildOptimisticUserMessageRow({
     senderThreadId: null,
     systemMessageKind: "unlabeled",
     systemMessageSubject: null,
+    p6rActorHandle: null,
+    p6rActor: null,
     turnRequest: {
       isGrouped: false,
       kind: optimisticTurnRequestKind({ mode, threadStatus }),
@@ -582,6 +584,7 @@ function buildOptimisticQueuedMessage({
     permissionMode: request.permissionMode ?? "auto",
     serviceTier: request.serviceTier ?? "default",
     groupWithNext: false,
+    p6rActor: null,
     createdAt,
     updatedAt: createdAt,
   };

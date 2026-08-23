@@ -55,6 +55,7 @@ function createProjectionState(): ToolActivityProjectionState {
 
 function eventMeta(seq: number): EventMeta {
   return {
+    p6rActorHandle: null,
     id: `event-${seq}`,
     seq,
     createdAt: seq,
@@ -207,13 +208,7 @@ function outputBeforeCommandBegin(
   state: ToolActivityProjectionState,
   output: string,
 ): void {
-  onExecOutput(
-    state,
-    eventMeta(1),
-    commandOutput({ output }),
-    true,
-    false,
-  );
+  onExecOutput(state, eventMeta(1), commandOutput({ output }), true, false);
 }
 
 function applyCommandOutput(

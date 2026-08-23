@@ -54,6 +54,21 @@ message agents, or inspect projects, providers, and environments.
   server does not read the file.
 - Use `bb-app client ssh-target list --json` to inspect mappings.
 
+## Multiplayer Members
+
+- `bb p6r-members list|add <handle>|remove <handle>` manages which Connect
+  accounts may access this bb through the gate (all subcommands take
+  `--json`). Members get full app access; their messages and actions are
+  attributed to their claimed identity, and presence shows who is viewing or
+  typing in each thread.
+- Member management is owner-console-only: it is rejected for sessions
+  arriving through the Connect tunnel, and requires the server to be enrolled
+  in Connect.
+- Identity is claimed, not verified: clients self-assert a handle via the
+  `x-p6r-claimed-identity` header (SDK clients can set it via the
+  `p6rClaimedIdentity` option). Requests without one attribute to the machine's
+  local operator.
+
 ## App Settings
 
 - `BB_INFERENCE` selects the shared model for server-side helper completions,
@@ -277,8 +292,12 @@ status|install` to inspect or install provider CLIs on a selected machine.
 - `bb updates` (alias for `bb updates status`) aggregates bb-app and provider
   CLI update state across every machine — the CLI counterpart of Settings →
   Updates. `bb updates apply [--machine <id-or-name>]` runs every available
-  provider CLI install/update sequentially; update bb-app itself with the
-  printed upgrade command or the desktop relaunch.
+  provider CLI install/update sequentially. In Rosetta-managed installations,
+  update the primary server through machine deployment and managed `bb-app`
+  artifact replacement; enrolled execution machines then receive that server's
+  exact `/install/bb-app.tgz` distribution through daemon auto-update. Use
+  Settings → Machines or `bb machine retry-update` when one needs
+  intervention. Desktop installations use the desktop relaunch flow.
 - Use `bb project create --name <name> --root <path> --machine <id-or-name>`
   to bind a new project's local path to a connected enrolled machine. Use
   `--host` as an alias. Omitting both selectors preserves the existing local

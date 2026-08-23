@@ -40,6 +40,12 @@ import {
 
 export { TunnelDO };
 
+import {
+  p6rAdmitServerMember,
+  p6rHandleServerMembers,
+  p6rMatchServerMembersRoute,
+} from "./members.js";
+
 async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -279,6 +285,13 @@ function isHostManagementMutation(request: Request, pathname: string): boolean {
   );
 }
 
+function p6rIsLocalMemberManagementPath(pathname: string): boolean {
+  return (
+    pathname === "/api/v1/p6r-members" ||
+    pathname.startsWith("/api/v1/p6r-members/")
+  );
+}
+
 /** Cache namespace for a resolved routing key plus optional share target. */
 export function cacheNamespace(
   routingKey: string,
@@ -310,6 +323,11 @@ export default {
     if (url.pathname === "/api/connect/machine-label") {
       return handleAssignMachineLabel(request, env);
     }
+    const serverMembersRoute = p6rMatchServerMembersRoute(url.pathname);
+    if (serverMembersRoute) {
+      return p6rHandleServerMembers(request, env, serverMembersRoute);
+    }
+
     const host = resolveConnectRequestHost(request.headers, runtime);
     const parsed = parseVisitorHost(host, env.BASE_DOMAIN);
     if (!parsed) return text("bb connect: unknown host\n", 404);
@@ -483,11 +501,30 @@ export default {
     if (!sessionUserId && !desktopUserId) {
       return signInPage(label, appUrl, url.toString());
     }
-    if (
-      sessionUserId !== resolved.userId &&
-      desktopUserId !== resolved.userId
-    ) {
-      return text("bb connect: not your server\n", 403);
+    const isOwner =
+      sessionUserId === resolved.userId || desktopUserId === resolved.userId;
+
+    // Member management is deliberately local owner-console functionality.
+    // Enforce that at the gate so even tunnels opened by pre-marker clients
+    // cannot forward this surface to the local server. This also precedes the
+    // WebSocket branch below, so an upgrade cannot bypass the same boundary.
+    if (p6rIsLocalMemberManagementPath(url.pathname)) {
+      return Response.json(
+        { error: "member management is only available from the owner console" },
+        { status: 403 },
+      );
+    }
+    if (!isOwner) {
+      const isMember =
+        resolved.kind === "server" &&
+        sessionUserId !== null &&
+        (await p6rAdmitServerMember(
+          db,
+          resolved.server.id,
+          sessionUserId,
+          label,
+        ));
+      if (!isMember) return text("bb connect: not your server\n", 403);
     }
 
     const doRequest = requestForTunnelDo(request, target, "session");

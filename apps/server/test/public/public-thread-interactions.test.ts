@@ -1,9 +1,11 @@
 import {
   createQueuedThreadMessage,
-  listDeferredThreadMessages,
+  getPendingInteraction,
   listQueuedThreadMessages,
 } from "@bb/db";
 import {
+  P6R_CLAIMED_IDENTITY_HEADER,
+  p6rEncodeClaimedIdentityHeader,
   turnScope,
   USER_QUESTION_MAX_FREE_TEXT_LENGTH,
   USER_QUESTION_MAX_SELECTED,
@@ -42,6 +44,7 @@ import {
 } from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
 import { appendThreadEvent } from "../../src/services/threads/thread-events.js";
+import { p6rCreateLocalOperatorIdentity } from "../../src/services/actors.js";
 
 function registerPendingInteraction(
   deps: Pick<AppDeps, "db" | "hub">,
@@ -342,6 +345,12 @@ describe("public thread interaction routes", () => {
           method: "POST",
           headers: {
             "content-type": "application/json",
+            [P6R_CLAIMED_IDENTITY_HEADER]: p6rEncodeClaimedIdentityHeader({
+              p6rClientId: "browser-alice",
+              p6rDisplayName: "Alice",
+              p6rHandle: "alice",
+              p6rImageUrl: null,
+            }),
           },
           body: JSON.stringify(createAllowOnceResolution()),
         },
@@ -352,6 +361,10 @@ describe("public thread interaction routes", () => {
         status: "resolving",
         resolution: createAllowOnceResolution(),
       });
+      expect(
+        getPendingInteraction(harness.db, registered.interaction.id)
+          ?.p6rResolvedByHandle,
+      ).toBe(p6rCreateLocalOperatorIdentity().p6rHandle);
 
       const duplicateResolveResponse = await harness.app.request(
         `/api/v1/threads/${thread.id}/interactions/${registered.interaction.id}/resolve`,
@@ -359,6 +372,12 @@ describe("public thread interaction routes", () => {
           method: "POST",
           headers: {
             "content-type": "application/json",
+            [P6R_CLAIMED_IDENTITY_HEADER]: p6rEncodeClaimedIdentityHeader({
+              p6rClientId: "browser-bob",
+              p6rDisplayName: "Bob",
+              p6rHandle: "bob",
+              p6rImageUrl: null,
+            }),
           },
           body: JSON.stringify(createAllowOnceResolution()),
         },
@@ -369,6 +388,10 @@ describe("public thread interaction routes", () => {
         status: "resolving",
         resolution: createAllowOnceResolution(),
       });
+      expect(
+        getPendingInteraction(harness.db, registered.interaction.id)
+          ?.p6rResolvedByHandle,
+      ).toBe(p6rCreateLocalOperatorIdentity().p6rHandle);
 
       const conflictingResolveResponse = await harness.app.request(
         `/api/v1/threads/${thread.id}/interactions/${registered.interaction.id}/resolve`,
@@ -405,6 +428,118 @@ describe("public thread interaction routes", () => {
       );
       expect(postResolveListResponse.status).toBe(200);
       await expect(readJson(postResolveListResponse)).resolves.toEqual([]);
+    });
+  });
+
+  it("attributes plugin responses and cancellations to the first responder", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedThreadFixture(harness, {
+        session: { id: "host-public-plugin-interaction-attribution" },
+      });
+      const firstResult =
+        harness.deps.pendingInteractions.requestPluginInteraction({
+          pluginId: "secrets",
+          threadId: thread.id,
+          rendererId: "secret-request",
+          title: "Add secrets",
+          payload: { fields: [{ name: "API_KEY" }] },
+          timeoutMs: 10_000,
+        });
+      const [firstInteraction] =
+        harness.deps.pendingInteractions.listPendingThreadInteractions(
+          thread.id,
+        );
+      if (!firstInteraction) {
+        throw new Error("Expected a pending plugin interaction");
+      }
+
+      const respondResponse = await harness.app.request(
+        `/api/v1/threads/${thread.id}/interactions/${firstInteraction.id}/respond`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [P6R_CLAIMED_IDENTITY_HEADER]: p6rEncodeClaimedIdentityHeader({
+              p6rClientId: "browser-alice",
+              p6rDisplayName: "Alice",
+              p6rHandle: "alice",
+              p6rImageUrl: null,
+            }),
+          },
+          body: JSON.stringify({ value: { accepted: true } }),
+        },
+      );
+      expect(respondResponse.status).toBe(200);
+      await expect(firstResult).resolves.toEqual({
+        outcome: "submitted",
+        value: { accepted: true },
+      });
+      expect(
+        getPendingInteraction(harness.db, firstInteraction.id)
+          ?.p6rResolvedByHandle,
+      ).toBe(p6rCreateLocalOperatorIdentity().p6rHandle);
+
+      const duplicateResponse = await harness.app.request(
+        `/api/v1/threads/${thread.id}/interactions/${firstInteraction.id}/respond`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [P6R_CLAIMED_IDENTITY_HEADER]: p6rEncodeClaimedIdentityHeader({
+              p6rClientId: "browser-bob",
+              p6rDisplayName: "Bob",
+              p6rHandle: "bob",
+              p6rImageUrl: null,
+            }),
+          },
+          body: JSON.stringify({ value: { accepted: false } }),
+        },
+      );
+      expect(duplicateResponse.status).toBe(409);
+      expect(
+        getPendingInteraction(harness.db, firstInteraction.id)
+          ?.p6rResolvedByHandle,
+      ).toBe(p6rCreateLocalOperatorIdentity().p6rHandle);
+
+      const cancelledResult =
+        harness.deps.pendingInteractions.requestPluginInteraction({
+          pluginId: "secrets",
+          threadId: thread.id,
+          rendererId: "secret-request",
+          title: "Add another secret",
+          payload: { fields: [{ name: "SECOND_KEY" }] },
+          timeoutMs: 10_000,
+        });
+      const [cancelledInteraction] =
+        harness.deps.pendingInteractions.listPendingThreadInteractions(
+          thread.id,
+        );
+      if (!cancelledInteraction) {
+        throw new Error("Expected a pending plugin interaction to cancel");
+      }
+      const cancelResponse = await harness.app.request(
+        `/api/v1/threads/${thread.id}/interactions/${cancelledInteraction.id}/cancel`,
+        {
+          method: "POST",
+          headers: {
+            [P6R_CLAIMED_IDENTITY_HEADER]: p6rEncodeClaimedIdentityHeader({
+              p6rClientId: "browser-bob",
+              p6rDisplayName: "Bob",
+              p6rHandle: "bob",
+              p6rImageUrl: null,
+            }),
+          },
+        },
+      );
+      expect(cancelResponse.status).toBe(200);
+      await expect(cancelledResult).resolves.toEqual({
+        outcome: "cancelled",
+        reason: "user",
+      });
+      expect(
+        getPendingInteraction(harness.db, cancelledInteraction.id)
+          ?.p6rResolvedByHandle,
+      ).toBe(p6rCreateLocalOperatorIdentity().p6rHandle);
     });
   });
 
@@ -818,7 +953,7 @@ describe("public thread interaction routes", () => {
     },
   );
 
-  it("holds sends and rejects queued-message send while a thread awaits user interaction", async () => {
+  it("rejects send and queued-message send while a thread awaits user interaction", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps, {
         id: "host-public-thread-blocked-send",
@@ -880,30 +1015,8 @@ describe("public thread interaction routes", () => {
           }),
         },
       );
-      // A prompt cannot interrupt the interaction, but the message is not lost:
-      // it waits and delivers once the interaction settles (#1650).
-      expect(sendResponse.status).toBe(200);
+      expect(sendResponse.status).toBe(409);
       await expect(readJson(sendResponse)).resolves.toEqual({
-        ok: true,
-        delivery: "deferred",
-      });
-      expect(listDeferredThreadMessages(harness.db, thread.id)).toHaveLength(1);
-
-      const startResponse = await harness.app.request(
-        `/api/v1/threads/${thread.id}/send`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            mode: "start",
-            input: [{ type: "text", text: "Try to start" }],
-          }),
-        },
-      );
-      expect(startResponse.status).toBe(409);
-      await expect(readJson(startResponse)).resolves.toEqual({
         code: "awaiting_user_interaction",
         message:
           "Thread is awaiting user interaction. Resolve the pending interaction before sending another prompt.",
@@ -930,11 +1043,6 @@ describe("public thread interaction routes", () => {
         projectId: project.id,
         environmentId: environment.id,
         status: "active",
-      });
-      seedThreadRuntimeState(harness.deps, {
-        threadId: activeThread.id,
-        environmentId: environment.id,
-        providerThreadId: "provider-thread-active-blocked",
       });
       const activeThreadPending = registerPendingInteraction(
         harness.deps,
@@ -972,16 +1080,15 @@ describe("public thread interaction routes", () => {
           }),
         },
       );
-      // The queue drains when the thread is next idle, which an open
-      // interaction does not change, so an explicit queue request queues.
-      expect(activeSendResponse.status).toBe(200);
+      expect(activeSendResponse.status).toBe(409);
       await expect(readJson(activeSendResponse)).resolves.toEqual({
-        ok: true,
-        delivery: "queued",
+        code: "awaiting_user_interaction",
+        message:
+          "Thread is awaiting user interaction. Resolve the pending interaction before sending another prompt.",
       });
-      expect(listQueuedThreadMessages(harness.db, activeThread.id)).toHaveLength(
-        1,
-      );
+      expect(
+        listQueuedThreadMessages(harness.db, activeThread.id),
+      ).toHaveLength(0);
     });
   });
 

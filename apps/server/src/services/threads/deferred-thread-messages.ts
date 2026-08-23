@@ -4,6 +4,7 @@ import {
 } from "@bb/db";
 import {
   promptInputSchema,
+  p6rActorSnapshotSchema,
   systemMessageKindSchema,
   systemMessageSubjectSchema,
 } from "@bb/domain";
@@ -23,6 +24,8 @@ export const deferredThreadMessagePayloadSchema = z.discriminatedUnion("kind", [
     kind: z.literal("send"),
     /** The public `send` request exactly as the sender posted it. */
     request: sendMessageRequestSchema,
+    /** Server-resolved actor frozen when the deferred unit is accepted. */
+    p6rActor: p6rActorSnapshotSchema.nullable().default(null),
   }),
   z.object({
     kind: z.literal("parent-system"),

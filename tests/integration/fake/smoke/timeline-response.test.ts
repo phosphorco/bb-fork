@@ -35,6 +35,8 @@ const USER_ROW = {
   attachments: null,
   initiator: "user",
   senderThreadId: null,
+  p6rActorHandle: null,
+  p6rActor: null,
   systemMessageKind: "unlabeled",
   systemMessageSubject: null,
   turnRequest: { isGrouped: false, kind: "message", status: "accepted" },

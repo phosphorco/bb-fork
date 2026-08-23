@@ -18,6 +18,7 @@ describe("thread queued message schema", () => {
     ).toMatchObject({
       id: "qmsg_123",
       groupWithNext: false,
+      p6rActor: null,
     });
 
     expect(() =>

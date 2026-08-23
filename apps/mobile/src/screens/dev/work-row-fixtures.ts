@@ -52,6 +52,8 @@ function user(id: string, text: string): TimelineConversationRow {
     senderThreadId: null,
     systemMessageKind: "unlabeled",
     systemMessageSubject: null,
+    p6rActorHandle: null,
+    p6rActor: null,
     turnRequest: { isGrouped: false, kind: "message", status: "accepted" },
     mentions: [],
   };

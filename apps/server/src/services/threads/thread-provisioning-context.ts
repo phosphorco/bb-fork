@@ -4,6 +4,7 @@ import {
   promptInputSchema,
   resolvedThreadExecutionOptionsSchema,
   clientTurnRequestIdSchema,
+  p6rActorSnapshotSchema,
   type ClientTurnRequestId,
   type PromptInput,
   type ResolvedThreadExecutionOptions,
@@ -63,6 +64,8 @@ const threadForkDescriptorSchema = z.object({
 });
 
 const threadProvisionCommonPayloadSchema = z.object({
+  p6rActor: p6rActorSnapshotSchema.nullable().default(null),
+  p6rActorHandle: z.string().nullable().default(null),
   branchSlug: z.string().nullable().default(null),
   clientRequestId: clientTurnRequestIdSchema,
   environmentIntent: threadProvisionEnvironmentIntentSchema,
@@ -83,9 +86,11 @@ const threadProvisionCommonPayloadSchema = z.object({
 });
 
 export type ThreadForkDescriptor = z.infer<typeof threadForkDescriptorSchema>;
+
 export type ThreadProvisionEnvironmentIntent = z.infer<
   typeof threadProvisionEnvironmentIntentSchema
 >;
+
 type ThreadProvisionOperationPayload = z.infer<
   typeof threadProvisionCommonPayloadSchema
 >;
@@ -191,6 +196,8 @@ export type ThreadProvisionProvisionableContext =
   | ThreadProvisionWorkspaceReadyContext;
 
 interface CreateMetadataPendingContextArgs {
+  p6rActor?: z.infer<typeof p6rActorSnapshotSchema> | null;
+  p6rActorHandle?: string | null;
   clientRequestId: ClientTurnRequestId;
   environmentIntent: ThreadProvisionEnvironmentIntent;
   execution: ResolvedThreadExecutionOptions;
@@ -218,6 +225,8 @@ interface CreateEnvironmentProvisioningContextArgs {
 }
 
 interface CreateReprovisioningContextArgs {
+  p6rActor?: z.infer<typeof p6rActorSnapshotSchema> | null;
+  p6rActorHandle?: string | null;
   clientRequestId: ClientTurnRequestId;
   environmentId: string;
   provisionEventSequence: number;
@@ -344,6 +353,8 @@ export function createMetadataPendingContext(
 ): ThreadProvisionMetadataPendingContext {
   return {
     request: {
+      p6rActor: args.p6rActor ?? null,
+      p6rActorHandle: args.p6rActor?.p6rHandle ?? args.p6rActorHandle ?? null,
       branchSlug: null,
       clientRequestId: args.clientRequestId,
       environmentIntent: args.environmentIntent,
@@ -448,6 +459,8 @@ export function createReprovisioningContext(
 ): ThreadProvisionEnvironmentProvisioningContext {
   return {
     request: {
+      p6rActor: args.p6rActor ?? null,
+      p6rActorHandle: args.p6rActor?.p6rHandle ?? args.p6rActorHandle ?? null,
       branchSlug: null,
       environmentIntent: {
         type: "reuse",

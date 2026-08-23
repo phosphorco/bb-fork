@@ -163,7 +163,9 @@ export function Overview() {
         <StoryRow key={row.systemMessageKind} label={row.label} hint={row.hint}>
           <TimelineStage>
             <ConversationMessageContent
+              p6rActorHandle={null}
               role="user"
+              p6rShowAuthor={false}
               initiator="system"
               originKind={null}
               senderThreadId={null}
@@ -187,7 +189,9 @@ export function Overview() {
       >
         <TimelineStage>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
+            p6rShowAuthor={false}
             initiator="agent"
             originKind={null}
             senderThreadId="thr_worker2"
@@ -210,7 +214,9 @@ export function Overview() {
       >
         <TimelineStage>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
+            p6rShowAuthor={false}
             initiator="system"
             originKind={null}
             senderThreadId={null}
@@ -240,7 +246,9 @@ export function ClippedAgentMessage() {
       >
         <div className="w-full max-w-[560px]">
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
+            p6rShowAuthor={false}
             initiator="agent"
             originKind={null}
             senderThreadId="thr_host_hermes"

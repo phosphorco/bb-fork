@@ -138,6 +138,7 @@ export function queuedMessage(
     permissionMode: "auto",
     serviceTier: "default",
     groupWithNext: false,
+    p6rActor: null,
     createdAt: 1,
     updatedAt: 1,
     ...overrides,

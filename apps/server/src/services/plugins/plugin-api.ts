@@ -56,6 +56,9 @@ import type {
   PluginUi,
   StandardSchemaV1,
   PluginRpcContract,
+  P6rIdentityApi,
+  P6rIdentityProviderRegistration,
+  P6rPluginRequestContext,
 } from "@get-bb/plugin-sdk";
 import {
   AGENT_TOOL_NAME_PATTERN,
@@ -105,6 +108,9 @@ export type {
   PluginAgentToolContext,
   PluginCliCommandInfo,
   PluginCliContext,
+  P6rIdentityApi,
+  P6rIdentityProviderRegistration,
+  P6rPluginRequestContext,
   PluginMentionTrigger,
   PluginThreadEventName,
   PluginThreadEventPayloads,
@@ -161,7 +167,7 @@ export interface PluginHttpRouteRecord {
 export interface PluginRpcHandler {
   inputSchema: StandardSchemaV1;
   outputSchema: StandardSchemaV1;
-  handler: (input: never) => unknown;
+  handler: (input: never, p6rRequestContext: P6rPluginRequestContext) => unknown;
 }
 
 /** Runtime record of a registered native tool. */
@@ -271,6 +277,8 @@ export interface PluginApiHandle {
   instructionProvider: PluginInstructionProvider | null;
   /** Mention providers recorded by `bb.ui.registerMentionProvider`. */
   mentionProviders: PluginMentionProviderRecord[];
+  /** Activate the candidate's staged identity provider at reload commit. */
+  activateP6rIdentityProvider(): void;
   /** Publish factory-time host declarations and status only after commit. */
   activate(): void;
   /** Poison every method on the handle. */
@@ -432,6 +440,10 @@ function createStagedRegistrations<
 
 export function createPluginApi(options: {
   pluginId: string;
+  p6rStageProvider: (
+    pluginId: string,
+    registration: P6rIdentityProviderRegistration,
+  ) => { p6rActivate(): void; p6rRelease(): void };
   logger: ServerLogger;
   db: DbConnection;
   dataDir: string;
@@ -524,6 +536,7 @@ export function createPluginApi(options: {
 }): PluginApiHandle {
   const {
     pluginId,
+    p6rStageProvider,
     logger,
     db,
     dataDir,
@@ -550,6 +563,9 @@ export function createPluginApi(options: {
   let invalidated = false;
   let activated = false;
   let wrappedSdk: BbSdk | undefined;
+  let p6rIdentityProviderLease:
+    | { p6rActivate(): void; p6rRelease(): void }
+    | undefined;
   let pendingNeedsConfiguration: string | null = null;
   const pendingAgentToolProblems: string[] = [];
   const pendingSharedPorts = new Map<string, readonly number[]>();
@@ -807,6 +823,22 @@ export function createPluginApi(options: {
     },
   };
 
+  const p6rIdentity: P6rIdentityApi = {
+    registerProvider(registration) {
+      assertLive();
+      if (p6rIdentityProviderLease !== undefined) {
+        throw new Error(
+          "this plugin already registered a p6r identity provider",
+        );
+      }
+      p6rIdentityProviderLease = p6rStageProvider(pluginId, registration);
+      // Registrations made on an already-live handle are not candidate
+      // factory work; preserve the existing direct SDK behavior. Candidate
+      // handles remain staged until plugin-runtime reaches commit.
+      if (activated) p6rIdentityProviderLease.p6rActivate();
+    },
+  };
+
   const rpc: PluginRpc = {
     register(contract, handlers) {
       assertLive();
@@ -856,7 +888,7 @@ export function createPluginApi(options: {
           {
             inputSchema: methodContract.input,
             outputSchema: methodContract.output,
-            handler: handler as (input: never) => unknown,
+          handler: handler as unknown as PluginRpcHandler["handler"],
           },
         ]);
       }
@@ -1411,6 +1443,7 @@ export function createPluginApi(options: {
     settings,
     storage,
     http,
+    p6rIdentity,
     rpc,
     realtime,
     background,
@@ -1463,6 +1496,9 @@ export function createPluginApi(options: {
       return instructionProvider;
     },
     mentionProviders,
+    activateP6rIdentityProvider() {
+      p6rIdentityProviderLease?.p6rActivate();
+    },
     activate() {
       if (activated) return;
       assertLive();
@@ -1487,6 +1523,8 @@ export function createPluginApi(options: {
       }
     },
     invalidate() {
+      p6rIdentityProviderLease?.p6rRelease();
+      p6rIdentityProviderLease = undefined;
       invalidated = true;
     },
   };

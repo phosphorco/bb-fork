@@ -25,9 +25,10 @@ import {
   type PublicApiSchema,
   type ResolveThreadMentionsResponse,
 } from "@bb/server-contract";
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import type { AppDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
+import { p6rGetRequestPrincipal } from "../../services/identity.js";
 import { parseOptionalInteger } from "../../services/lib/validation.js";
 import {
   requestEnvironmentCleanup,
@@ -302,8 +303,19 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     if (payload.sectionId) {
       requireThreadSection(deps, payload.sectionId);
     }
+    const p6rActor = p6rGetRequestPrincipal(context as unknown as Context);
+    if (payload.origin !== "plugin" && p6rActor === null) {
+      throw new ApiError(
+        401,
+        "unauthorized",
+        "Human-authored thread creation requires an authenticated actor",
+      );
+    }
     const thread = await createThreadFromRequest(deps, {
       ...payload,
+      p6rCreatedByHandle:
+        payload.origin === "plugin" ? null : (p6rActor?.p6rHandle ?? null),
+      p6rCreatedByActor: payload.origin === "plugin" ? null : p6rActor,
       origin: payload.origin,
     });
     return context.json(toThreadResponseFromThread(deps, { thread }), 201);

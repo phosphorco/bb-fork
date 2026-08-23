@@ -487,6 +487,8 @@ export function conversationRow({
   if (role === "user") {
     const resolvedInitiator: ThreadTurnInitiator = initiator ?? "user";
     return {
+      p6rActorHandle: null,
+      p6rActor: null,
       ...rowBase,
       kind: "conversation",
       role,

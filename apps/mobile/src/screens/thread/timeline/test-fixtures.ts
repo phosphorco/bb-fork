@@ -42,6 +42,8 @@ export function userRow(
     senderThreadId: null,
     systemMessageKind: "unlabeled",
     systemMessageSubject: null,
+    p6rActorHandle: null,
+    p6rActor: null,
     turnRequest: { isGrouped: false, kind: "message", status: "accepted" },
     mentions: [],
     ...overrides,

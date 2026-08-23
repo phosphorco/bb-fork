@@ -33,6 +33,13 @@ interface ThreadEventRowBase {
   threadId: string;
   seq: number;
   createdAt: number;
+  // Claimed handle of the human who initiated the event; null = not
+  // human-initiated or pre-multiplayer history.
+  p6rActorHandle: string | null;
+  p6rActorProviderId?: string | null;
+  p6rActorSubject?: string | null;
+  p6rActorDisplayName?: string | null;
+  p6rActorImageUrl?: string | null;
 }
 
 interface ThreadEventRowInput extends ThreadEventRowBase {
@@ -78,6 +85,12 @@ const threadEventRowInputSchema = z.object({
   type: threadEventTypeSchema,
   data: z.record(z.string(), z.unknown()),
   createdAt: z.number(),
+  // Defaulted for rows serialized by pre-multiplayer servers.
+  p6rActorHandle: z.string().nullable().default(null),
+  p6rActorProviderId: z.string().nullable().default(null),
+  p6rActorSubject: z.string().nullable().default(null),
+  p6rActorDisplayName: z.string().nullable().default(null),
+  p6rActorImageUrl: z.string().nullable().default(null),
 });
 
 const storedTurnRequestTypeSet = new Set<ThreadEventType>([
@@ -188,6 +201,11 @@ function parseThreadEventRowInput(row: ThreadEventRowInput): ThreadEventRow {
     threadId: row.threadId,
     seq: row.seq,
     createdAt: row.createdAt,
+    p6rActorHandle: row.p6rActorHandle,
+    p6rActorProviderId: row.p6rActorProviderId,
+    p6rActorSubject: row.p6rActorSubject,
+    p6rActorDisplayName: row.p6rActorDisplayName,
+    p6rActorImageUrl: row.p6rActorImageUrl,
     event: parseStoredThreadEvent({
       type: row.type,
       data: row.data,

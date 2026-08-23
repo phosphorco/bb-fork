@@ -6,6 +6,7 @@ import {
   type TestAppHarness,
 } from "../../helpers/test-app.js";
 import { createMockHubSocket } from "../../helpers/mock-hub-socket.js";
+import { P6R_CLAIMED_IDENTITY_HEADER } from "@bb/domain";
 
 // The harness config uses serverPort 3334, so this host is on the local-app
 // origin allowlist the "local" auth mode enforces.
@@ -31,9 +32,12 @@ const WIRE_SOURCE = `
     cyclicResult: { input: z.null(), output: z.any() },
     nonFiniteResult: { input: z.null(), output: z.any() },
     validated: { input: z.object({ value: z.string().min(1) }), output: z.string() },
+    identity: { input: z.null(), output: z.object({ principal: z.unknown() }) },
   });
   export default function plugin(bb: any) {
     bb.http.route("GET", "/hello", (c: any) => c.json({ message: "hello v1" }));
+    bb.http.route("GET", "/identity", (c: any, ctx: any) =>
+      c.json({ principal: ctx.p6rRequestPrincipal }));
     bb.http.route("POST", "/echo", async (c: any) =>
       c.json({ echoed: await c.req.json() }));
     bb.http.route("GET", "/guarded", (c: any) => c.json({ guarded: true }), {
@@ -109,6 +113,9 @@ const WIRE_SOURCE = `
         globalThis.__validatedRpcCalls = (globalThis.__validatedRpcCalls ?? 0) + 1;
         return input.value;
       },
+      identity: (_input: null, ctx: any) => ({
+        principal: ctx.p6rRequestPrincipal,
+      }),
     });
   }
 `;
@@ -183,6 +190,21 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
     expect(bare.status).toBe(200);
     expect(await bare.json()).toEqual({ message: "hello v1" });
 
+    const noProviderIdentity = await harness.app.request(
+      `${BASE}/api/v1/plugins/wire/http/identity`,
+    );
+    expect(noProviderIdentity.status).toBe(200);
+    const noProviderBody = (await noProviderIdentity.json()) as {
+      principal: Record<string, unknown>;
+    };
+    expect(noProviderBody.principal).toMatchObject({
+      p6rProviderId: "p6r-local-operator",
+      p6rImageUrl: null,
+    });
+    expect(noProviderBody.principal.p6rHandle).toEqual(
+      noProviderBody.principal.p6rSubject,
+    );
+
     const sameOrigin = await harness.app.request(
       `${BASE}/api/v1/plugins/wire/http/hello`,
       { headers: { origin: BASE } },
@@ -197,7 +219,72 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
     expect(appOrigin.status).toBe(200);
   });
 
-  it("local auth rejects foreign origins but tolerates host-bound LAN/Tailscale serving", async () => {
+  it("passes only the shared resolver principal to HTTP and RPC plugin edges", async () => {
+    const api = harness.pluginService.getApi("wire");
+    if (!api) throw new Error("wire plugin API was not loaded");
+    api.p6rIdentity.registerProvider({
+      id: "fixture",
+      resolve: () => ({
+        kind: "authenticated",
+        p6rSubject: "verified-subject",
+        p6rHandle: "verified-handle",
+        p6rDisplayName: "Verified Actor",
+        p6rImageUrl: null,
+      }),
+    });
+    expect(() =>
+      api.p6rIdentity.registerProvider({
+        id: "second",
+        resolve: () => ({ kind: "not-applicable" }),
+      }),
+    ).toThrow(/already registered/iu);
+
+    const spoofHeaders = {
+      [P6R_CLAIMED_IDENTITY_HEADER]: "client-spoof",
+      origin: BASE,
+    };
+    const http = await harness.app.request(
+      `${BASE}/api/v1/plugins/wire/http/identity?p6rIdentity=client-spoof`,
+      { headers: spoofHeaders },
+    );
+    expect(http.status).toBe(200);
+    await expect(http.json()).resolves.toEqual({
+      principal: {
+        p6rProviderId: "wire/fixture",
+        p6rSubject: "verified-subject",
+        p6rHandle: "verified-handle",
+        p6rDisplayName: "Verified Actor",
+        p6rImageUrl: null,
+      },
+    });
+
+    const rpcResponse = await harness.app.request(
+      `${BASE}/api/v1/plugins/wire/rpc/identity?principal=client-spoof`,
+      {
+        method: "POST",
+        headers: {
+          ...spoofHeaders,
+          "content-type": "application/json",
+        },
+        body: "null",
+      },
+    );
+    expect(rpcResponse.status).toBe(200);
+    await expect(rpcResponse.json()).resolves.toEqual({
+      ok: true,
+      result: {
+        principal: {
+          p6rProviderId: "wire/fixture",
+          p6rSubject: "verified-subject",
+          p6rHandle: "verified-handle",
+          p6rDisplayName: "Verified Actor",
+          p6rImageUrl: null,
+        },
+      },
+    });
+  });
+
+  it("local auth still rejects foreign origins while anonymous identity reaches route auth", async () => {
     const foreignOrigin = await harness.app.request(
       `${BASE}/api/v1/plugins/wire/http/hello`,
       { headers: { origin: EVIL_ORIGIN } },
@@ -216,7 +303,8 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
     );
     expect(copiedPort.status).toBe(403);
 
-    // Direct LAN/Tailscale serving binds the app origin to the request host.
+    // No-provider remote requests are anonymous at the shared boundary; the
+    // route's own local-origin policy remains the authority.
     const sameOriginLan = await harness.app.request(
       "http://100.64.158.8:3334/api/v1/plugins/wire/http/hello",
       { headers: { origin: "http://100.64.158.8:3334" } },
@@ -248,6 +336,43 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
       },
     );
     expect(proxiedDev.status).toBe(200);
+  });
+
+  it("lets remote no-provider and provider-not-applicable none/token routes reach their own auth", async () => {
+    const remoteOpen = await harness.app.request(
+      "http://100.64.158.8:3334/api/v1/plugins/wire/http/open",
+      { headers: { origin: EVIL_ORIGIN } },
+    );
+    expect(remoteOpen.status).toBe(200);
+    expect(await remoteOpen.json()).toEqual({ open: true });
+
+    const issued = await harness.app.request(
+      `${BASE}/api/v1/plugins/wire/token`,
+      { method: "POST" },
+    );
+    const { token } = (await issued.json()) as { token: string };
+    const remoteToken = await harness.app.request(
+      `http://100.64.158.8:3334/api/v1/plugins/wire/http/guarded`,
+      { headers: { origin: EVIL_ORIGIN, "x-bb-plugin-token": token } },
+    );
+    expect(remoteToken.status).toBe(200);
+
+    const api = harness.pluginService.getApi("wire");
+    if (!api) throw new Error("wire plugin API was not loaded");
+    api.p6rIdentity.registerProvider({
+      id: "optional",
+      resolve: () => ({ kind: "not-applicable" }),
+    });
+    const providerNotApplicableOpen = await harness.app.request(
+      "http://100.64.158.8:3334/api/v1/plugins/wire/http/open",
+      { headers: { origin: EVIL_ORIGIN } },
+    );
+    expect(providerNotApplicableOpen.status).toBe(200);
+    const providerNotApplicableToken = await harness.app.request(
+      "http://100.64.158.8:3334/api/v1/plugins/wire/http/guarded",
+      { headers: { origin: EVIL_ORIGIN, "x-bb-plugin-token": token } },
+    );
+    expect(providerNotApplicableToken.status).toBe(200);
   });
 
   it("local auth requires application/json on non-GET requests", async () => {

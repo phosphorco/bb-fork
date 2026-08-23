@@ -62,6 +62,7 @@ const BB_PLUGIN_API_KEYS = [
   "settings",
   "storage",
   "http",
+  "p6rIdentity",
   "rpc",
   "realtime",
   "background",
@@ -82,6 +83,7 @@ type MissingApiKey = Exclude<
   keyof BbPluginApi,
   (typeof BB_PLUGIN_API_KEYS)[number]
 >;
+
 const _assertAllApiKeysListed: MissingApiKey extends never ? true : never =
   true;
 void _assertAllApiKeysListed;
@@ -103,6 +105,7 @@ type MissingSettingType = Exclude<
   PluginSettingDescriptor["type"],
   (typeof SETTING_DESCRIPTOR_TYPES)[number]
 >;
+
 const _assertAllSettingTypesListed: MissingSettingType extends never
   ? true
   : never = true;
@@ -119,6 +122,7 @@ type MissingAuthMode = Exclude<
   PluginHttpAuthMode,
   (typeof HTTP_AUTH_MODES)[number]
 >;
+
 const _assertAllAuthModesListed: MissingAuthMode extends never ? true : never =
   true;
 void _assertAllAuthModesListed;
@@ -146,6 +150,7 @@ type MissingThreadEventField = {
     (typeof THREAD_EVENT_PAYLOAD_FIELDS)[E][number]
   >;
 }[keyof PluginThreadEventPayloads];
+
 const _assertAllThreadEventFieldsListed: MissingThreadEventField extends never
   ? true
   : never = true;
@@ -181,6 +186,7 @@ type SlotPropsByName = {
 };
 
 type MissingSlot = Exclude<keyof PluginAppSlots, keyof SlotPropsByName>;
+
 const _assertAllSlotsListed: MissingSlot extends never ? true : never = true;
 void _assertAllSlotsListed;
 
@@ -194,6 +200,7 @@ type MissingAppBuilderField = Exclude<
   keyof PluginAppBuilder,
   (typeof APP_BUILDER_FIELDS)[number]
 >;
+
 const _assertAllAppBuilderFieldsListed: MissingAppBuilderField extends never
   ? true
   : never = true;
@@ -210,6 +217,7 @@ type MissingContentScriptContextField = Exclude<
   keyof PluginContentScriptContext,
   (typeof CONTENT_SCRIPT_CONTEXT_FIELDS)[number]
 >;
+
 const _assertAllContentScriptContextFieldsListed: MissingContentScriptContextField extends never
   ? true
   : never = true;
@@ -224,6 +232,7 @@ type MissingContentScriptRegistrationField = Exclude<
   keyof PluginContentScriptRegistration,
   (typeof CONTENT_SCRIPT_REGISTRATION_FIELDS)[number]
 >;
+
 const _assertAllContentScriptRegistrationFieldsListed: MissingContentScriptRegistrationField extends never
   ? true
   : never = true;
@@ -291,6 +300,7 @@ type MissingSlotPropField = {
     (typeof FRONTEND_SLOT_PROP_FIELDS)[S][number]
   >;
 }[keyof SlotPropsByName];
+
 const _assertAllSlotPropFieldsListed: MissingSlotPropField extends never
   ? true
   : never = true;
@@ -316,6 +326,7 @@ type MissingNavPanelRegistrationField = Exclude<
   keyof PluginNavPanelRegistration,
   (typeof NAV_PANEL_REGISTRATION_FIELDS)[number]
 >;
+
 const _assertAllNavPanelRegistrationFieldsListed: MissingNavPanelRegistrationField extends never
   ? true
   : never = true;
@@ -332,6 +343,7 @@ type MissingSidebarFooterActionRegistrationField = Exclude<
   keyof PluginSidebarFooterActionRegistration,
   (typeof SIDEBAR_FOOTER_ACTION_REGISTRATION_FIELDS)[number]
 >;
+
 const _assertAllSidebarFooterActionRegistrationFieldsListed: MissingSidebarFooterActionRegistrationField extends never
   ? true
   : never = true;
@@ -348,6 +360,7 @@ type MissingMessageActionRegistrationField = Exclude<
   keyof PluginMessageActionRegistration,
   (typeof MESSAGE_ACTION_REGISTRATION_FIELDS)[number]
 >;
+
 const _assertAllMessageActionRegistrationFieldsListed: MissingMessageActionRegistrationField extends never
   ? true
   : never = true;
@@ -364,6 +377,7 @@ type MissingCommandPaletteActionRegistrationField = Exclude<
   keyof PluginCommandPaletteActionRegistration,
   (typeof COMMAND_PALETTE_ACTION_REGISTRATION_FIELDS)[number]
 >;
+
 const _assertAllCommandPaletteActionRegistrationFieldsListed: MissingCommandPaletteActionRegistrationField extends never
   ? true
   : never = true;
@@ -388,6 +402,7 @@ type MissingThreadChatPropField = Exclude<
   keyof ThreadChatProps,
   (typeof THREAD_CHAT_PROP_FIELDS)[number]
 >;
+
 const _assertAllThreadChatPropFieldsListed: MissingThreadChatPropField extends never
   ? true
   : never = true;
@@ -406,6 +421,7 @@ type MissingThreadChatMessageActionField = Exclude<
   keyof ThreadChatMessageAction,
   (typeof THREAD_CHAT_MESSAGE_ACTION_FIELDS)[number]
 >;
+
 const _assertAllThreadChatMessageActionFieldsListed: MissingThreadChatMessageActionField extends never
   ? true
   : never = true;

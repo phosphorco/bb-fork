@@ -218,6 +218,28 @@ clients fall back). Settle whether a row persisted with a namespaced glyph
 should ever be rewritten when the plugin renames or removes the icon; today
 rows are never rewritten and simply fall back.
 
+## `BbPluginApi.p6rIdentity`
+
+**What it does.** Lets one installed plugin register the provider-qualified
+resolver used at inbound HTTP and WebSocket boundaries. Core owns the
+provider id (`pluginId/registrationId`), bounds the resolver, rejects malformed
+or failed results, and supplies the resulting nullable `p6rRequestPrincipal`
+only to plugin request handlers. A provider cannot accept client-claimed
+identity from URLs, bodies, or headers, and a second registration is rejected.
+
+**Audit before stabilizing.**
+
+1. Confirm the synchronous bounded resolver contract is sufficient for every
+   provider integration, or replace it with a cancellable host-owned boundary
+   without allowing provider failures to fall through to client claims.
+2. Revisit whether one provider for the whole server remains the right
+   exclusivity policy once multiple identity integrations are available.
+3. Verify provider ids remain stable across plugin reloads and registration
+   renames, and document migration behavior before changing either component.
+4. Keep `p6rRequestPrincipal` separate from the durable `p6rTurnAuthor`
+   supplied to agent tools; do not widen either context by parsing transcript
+   `[from=...]` presentation.
+
 ## `experimental_buildBridgeToolCallContent`
 
 **Kept experimental (2026-08-22).** it still accepts two input shapes (ordered `contentBlocks` and the legacy aggregate `{ content, images }`) though every first-party caller now passes the ordered form, and no image MIME/size policy exists at the server boundary; drop the legacy input and settle the policy, then stabilize.

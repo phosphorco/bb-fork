@@ -30,6 +30,7 @@ function inputAcceptedEvent({
       clientRequestId,
     },
     meta: {
+      p6rActorHandle: null,
       createdAt,
       id: eventId,
       seq: sequence,

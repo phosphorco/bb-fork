@@ -1,4 +1,7 @@
-export { headersForLoopbackRequest } from "./headers.js";
+export {
+  headersForLoopbackRequest,
+  P6R_TUNNEL_ORIGIN_HEADER,
+} from "./headers.js";
 export { humanizeTransportError } from "./humanize.js";
 export {
   DEFAULT_MAX_RECONNECT_DELAY_MS,

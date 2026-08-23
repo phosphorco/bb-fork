@@ -6,6 +6,7 @@ import {
   jsonValueSchema,
   pendingInteractionUserAnswerSchema,
   pendingInteractionUserQuestionQuestionSchema,
+  p6rActorSnapshotSchema,
   promptTextMentionSchema,
   systemMessageKindSchema,
   systemMessageSubjectSchema,
@@ -117,6 +118,8 @@ export const timelineUserConversationRowSchema =
     role: z.literal("user"),
     initiator: threadTurnInitiatorSchema,
     senderThreadId: z.string().nullable(),
+    p6rActorHandle: z.string().nullable().default(null),
+    p6rActor: p6rActorSnapshotSchema.nullable().default(null),
     // Family-B taxonomy fields, required on the read model. `systemMessageKind`
     // is non-nullable (legacy rows project to `unlabeled`); `systemMessageSubject`
     // is nullable (null = no thread subject, e.g. an `unlabeled` legacy row).

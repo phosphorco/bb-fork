@@ -225,6 +225,8 @@ type ExpectedBbSdkKey =
   | "files"
   | "guide"
   | "hosts"
+  | "p6rMembers"
+  | "p6rPresence"
   | "plugins"
   | "projects"
   | "providers"
@@ -324,6 +326,7 @@ type ExpectedProjectsKey =
   | "update";
 
 type ExpectedProjectSourcesKey = "add" | "delete" | "update";
+
 type ExpectedProjectAttachmentsKey = "copy" | "read" | "upload";
 
 type ExpectedProvidersKey = "list" | "models";
@@ -391,12 +394,14 @@ type ExpectedThreadsKey =
   | "wait";
 
 type ExpectedThreadEventsKey = "list" | "wait";
+
 type ExpectedThreadInteractionsKey =
   | "cancel"
   | "get"
   | "list"
   | "resolve"
   | "respond";
+
 type ExpectedThreadQueuedMessagesKey =
   | "create"
   | "delete"
@@ -405,7 +410,9 @@ type ExpectedThreadQueuedMessagesKey =
   | "send"
   | "setGroupBoundary"
   | "update";
+
 type ExpectedThreadTabsKey = "get" | "update";
+
 type ExpectedTerminalsKey =
   | "close"
   | "create"

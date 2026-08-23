@@ -8,7 +8,7 @@ import {
   listThreadIdsWithUndeliverableDeferredThreadMessages,
   type DeferredThreadMessageRow,
 } from "@bb/db";
-import type { Thread } from "@bb/domain";
+import type { P6rActorSnapshot, Thread } from "@bb/domain";
 import type {
   SendMessageRequest,
   SendMessageResponse,
@@ -44,6 +44,7 @@ import {
 } from "./thread-send.js";
 
 interface AcceptThreadSendRequestArgs {
+  p6rActor: P6rActorSnapshot | null;
   payload: SendMessageRequest;
   thread: Thread;
 }
@@ -66,12 +67,23 @@ export async function acceptThreadSendRequest(
   args: AcceptThreadSendRequestArgs,
 ): Promise<SendMessageResponse> {
   const { payload, thread } = args;
+  const p6rActor: P6rActorSnapshot | null =
+    args.p6rActor === null
+      ? null
+      : {
+          p6rProviderId: args.p6rActor.p6rProviderId,
+          p6rSubject: args.p6rActor.p6rSubject,
+          p6rHandle: args.p6rActor.p6rHandle,
+          p6rDisplayName: args.p6rActor.p6rDisplayName,
+          p6rImageUrl: args.p6rActor.p6rImageUrl,
+        };
   const shouldQueue =
     thread.status === "active" &&
     (payload.mode === "queue-if-active" ||
       (payload.mode !== "start" && isManualCompactionActive(deps, thread)));
   if (shouldQueue) {
     await createQueuedMessageForThread(deps, {
+      p6rActor,
       payload: queuedMessagePayloadFromSendRequest(payload),
       thread,
     });
@@ -96,12 +108,14 @@ export async function acceptThreadSendRequest(
     });
     deferThreadMessage(deps, {
       threadId: thread.id,
-      payload: { kind: "send", request: payload },
+      payload: { kind: "send", request: payload, p6rActor },
     });
     return { ok: true, delivery: "deferred" };
   }
   const environment = await requireThreadCommandEnvironment(deps, { thread });
   await sendThreadMessage(deps, {
+    p6rActor,
+    p6rActorHandle: p6rActor?.p6rHandle ?? null,
     environment,
     payload,
     thread,
@@ -127,6 +141,7 @@ async function deliverDeferredThreadMessage(
       // Re-enters the normal send policy: a thread that blocked again between
       // the settle and this flush re-defers the message as a new row.
       const result = await acceptThreadSendRequest(deps, {
+        p6rActor: payload.p6rActor,
         payload: payload.request,
         thread,
       });

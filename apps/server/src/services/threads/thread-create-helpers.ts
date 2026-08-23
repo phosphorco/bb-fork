@@ -37,6 +37,7 @@ type EnvironmentProvisionCommand = Extract<
   HostDaemonCommand,
   { type: "environment.provision" }
 >;
+
 type EnvironmentProvisionCommandInitiator =
   EnvironmentProvisionCommand["initiator"];
 
@@ -169,6 +170,7 @@ export function createThreadRecord(
 
   try {
     const thread = createThread(deps.db, deps.hub, {
+      p6rCreatedByHandle: args.request.p6rCreatedByHandle ?? null,
       projectId: args.request.projectId,
       environmentId: args.environmentId,
       providerId: args.request.providerId,

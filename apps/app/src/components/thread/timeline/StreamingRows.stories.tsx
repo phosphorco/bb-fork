@@ -174,6 +174,8 @@ const OPTIMISTIC_USER_PROMPT_TEXT =
 
 function buildOptimisticUserRow(id: string): TimelineRow {
   return {
+    p6rActorHandle: null,
+    p6rActor: null,
     id,
     threadId: THREAD_ID,
     turnId: `${id}-turn`,
@@ -303,6 +305,8 @@ function conversationRowFromStep(
   };
   if (step.role === "user") {
     return {
+      p6rActorHandle: null,
+      p6rActor: null,
       ...base,
       role: "user",
       initiator: "user",
@@ -439,6 +443,8 @@ function AssistantContentStreaming({
   // invalidate the memo on in-place mutations.
   const turnId = "streaming-rows-content-turn";
   const userRow: TimelineRow = {
+    p6rActorHandle: null,
+    p6rActor: null,
     id: "streaming-rows-content-user",
     threadId: THREAD_ID,
     turnId,

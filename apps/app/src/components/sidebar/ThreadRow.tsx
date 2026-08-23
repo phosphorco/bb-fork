@@ -1,6 +1,7 @@
 import {
   memo,
   useCallback,
+  useMemo,
   useState,
   type CSSProperties,
   type MouseEventHandler,
@@ -9,7 +10,7 @@ import {
   useRef,
 } from "react";
 import { useSetAtom } from "jotai";
-import type { ThreadListEntry } from "@bb/domain";
+import type { P6rThreadParticipantProfile, ThreadListEntry } from "@bb/domain";
 import type { PluginComposerThreadRowStatus } from "@get-bb/plugin-sdk";
 import { getThreadConversationCollapsedAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
 import { Icon } from "@bb/shared-ui/icon";
@@ -84,6 +85,10 @@ import {
 } from "@/components/thread/ThreadTitleMentions";
 import { pluginIconName } from "@/components/plugin/PluginIcon";
 import { usePluginThreadRowStatus } from "@/lib/plugin-thread-row-status";
+import { P6rSidebarPresenceDots } from "@/components/thread/presence/SidebarPresenceDots";
+import { p6rPresenceInitials } from "@/components/thread/presence/PresenceAvatarRow";
+import { useP6rClaimedIdentity } from "@/lib/claimed-identity-store";
+import { useP6rThreadPresenceSummaryViewers } from "@/lib/presence-store";
 
 const SIDEBAR_TITLE_DOUBLE_CLICK_MS = 400;
 
@@ -176,6 +181,70 @@ function ThreadDraftIndicator({
         ? { "aria-hidden": true }
         : { "aria-label": label ?? undefined })}
     />
+  );
+}
+
+const MAX_VISIBLE_THREAD_PARTICIPANTS = 3;
+
+function ThreadRowParticipants({
+  participants,
+}: {
+  participants: readonly P6rThreadParticipantProfile[];
+}) {
+  if (participants.length === 0) {
+    return null;
+  }
+  const visible = participants.slice(0, MAX_VISIBLE_THREAD_PARTICIPANTS);
+  const overflow = participants.length - visible.length;
+  const orderedNames = participants
+    .map((participant) => participant.p6rDisplayName)
+    .join(", ");
+
+  return (
+    <span
+      role="group"
+      aria-label={`Thread participants: ${orderedNames}`}
+      data-testid="sidebar-thread-participants"
+      className="relative z-10 inline-flex min-w-0 shrink items-center gap-1 text-xs text-muted-foreground"
+    >
+      {visible.map((participant) => (
+        <span
+          key={participant.p6rPrincipalKey}
+          title={participant.p6rDisplayName}
+          className="inline-flex min-w-0 shrink items-center gap-1"
+        >
+          {participant.p6rImageUrl === null ? (
+            <span
+              role="img"
+              aria-label={participant.p6rDisplayName}
+              className="inline-flex size-4 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-surface-recessed text-[8px] font-medium leading-none"
+            >
+              {p6rPresenceInitials(participant.p6rDisplayName)}
+            </span>
+          ) : (
+            <img
+              src={participant.p6rImageUrl}
+              alt={participant.p6rDisplayName}
+              className="size-4 shrink-0 rounded-full object-cover"
+            />
+          )}
+          <span className="truncate">{participant.p6rDisplayName}</span>
+        </span>
+      ))}
+      {overflow > 0 ? (
+        <span
+          role="img"
+          aria-label={`${overflow} more participants: ${participants
+            .slice(MAX_VISIBLE_THREAD_PARTICIPANTS)
+            .map((participant) => participant.p6rDisplayName)
+            .join(", ")}`}
+          title={orderedNames}
+          className="shrink-0"
+        >
+          +{overflow}
+        </span>
+      ) : null}
+    </span>
   );
 }
 
@@ -448,6 +517,7 @@ export function CollapsedThreadStatusGlyph({
 
   return <ThreadStatusGlyph {...statusProps} />;
 }
+
 type ThreadTrailingIndicatorProps = ThreadStatusGlyphProps & {
   pluginStatus: PluginComposerThreadRowStatus | null;
 };
@@ -523,6 +593,20 @@ function ThreadRowComponent({
   );
   const shortcut = useSidebarThreadShortcut(thread.id);
   const pluginThreadRowStatus = usePluginThreadRowStatus(thread.id);
+  // Other viewers currently viewing this thread. New summaries suppress only
+  // the exact server-authored PrincipalKey; legacy viewers without a key remain
+  // visible instead of being guessed equal by handle.
+  const presenceViewers = useP6rThreadPresenceSummaryViewers(thread.id);
+  const ownPrincipalKey = useP6rClaimedIdentity()?.p6rPrincipalKey;
+  const otherPresenceViewers = useMemo(
+    () =>
+      ownPrincipalKey === undefined
+        ? presenceViewers
+        : presenceViewers.filter(
+            (viewer) => viewer.p6rPrincipalKey !== ownPrincipalKey,
+          ),
+    [presenceViewers, ownPrincipalKey],
+  );
   const showActive = isActive;
   const hasPendingInteraction = thread.hasPendingInteraction;
   const threadRuntimeBusy = isRuntimeBusyThread(thread);
@@ -733,12 +817,15 @@ function ThreadRowComponent({
             {editor}
           </span>
         ) : (
-          <span
-            className="min-w-0 truncate"
-            title={labelTitle}
-            onDoubleClick={startTitleEditing}
-          >
-            <ThreadTitleMentions title={threadTitle} />
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span
+              className="min-w-0 truncate"
+              title={labelTitle}
+              onDoubleClick={startTitleEditing}
+            >
+              <ThreadTitleMentions title={threadTitle} />
+            </span>
+            <ThreadRowParticipants participants={thread.participants ?? []} />
           </span>
         )}
         {crossProjectLabel !== null ? (
@@ -775,6 +862,7 @@ function ThreadRowComponent({
         ) : null}
       </span>
       <span className="flex shrink-0 items-center gap-0.5">
+        <P6rSidebarPresenceDots viewers={otherPresenceViewers} />
         {shortcut ? (
           <AppCommandShortcutPill shortcut={shortcut} />
         ) : (

@@ -54,6 +54,17 @@ export function toPluginSidebarThread(
     isWorkflowActive: hasActiveWorkflowActivity(entry),
   });
 
+  const participants =
+    entry.participants === undefined
+      ? undefined
+      : entry.participants.map(
+          ({ p6rPrincipalKey, p6rDisplayName, p6rImageUrl }) => ({
+            p6rPrincipalKey,
+            p6rDisplayName,
+            p6rImageUrl,
+          }),
+        );
+
   return {
     id: entry.id,
     projectId: entry.projectId,
@@ -74,6 +85,9 @@ export function toPluginSidebarThread(
     },
     indicator,
     indicatorLabel: getThreadListIndicatorLabel(indicator),
+    ...(participants === undefined
+      ? {}
+      : { p6rParticipants: participants }),
     // Plain read state, not `isUnreadDoneThread`: a plugin list may show
     // child threads and running threads, both of which that helper excludes
     // by design (it answers "should this row show a done dot").

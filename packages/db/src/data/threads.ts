@@ -49,15 +49,21 @@ import {
 type ThreadWriteConnection = DbConnection | DbTransaction;
 
 export const THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT = 20;
+
 export const THREAD_SEARCH_LIMIT_PER_GROUP_MAX = 50;
 
 // The sidebar shows one message line per result, so each thread carries its
 // matching title segments plus a single best-ranked message match.
 const THREAD_SEARCH_MESSAGE_MATCHES_PER_THREAD = 1;
+
 const THREAD_SEARCH_QUERY_TOKEN_PATTERN = /[\p{L}\p{N}_]+/gu;
+
 const THREAD_SEARCH_HIGHLIGHT_RANGE_LIMIT = 8;
+
 const THREAD_SEARCH_SNIPPET_MAX_CHARS = 160;
+
 const THREAD_SEARCH_SNIPPET_LEAD_CHARS = 40;
+
 const THREAD_SEARCH_SNIPPET_ELLIPSIS = "…";
 
 type ThreadWhere = SQL | undefined;
@@ -263,6 +269,7 @@ function upsertThreadTitleSearchSegments(
 }
 
 export interface CreateThreadInput {
+  p6rCreatedByHandle?: string | null;
   projectId: string;
   environmentId?: string | null;
   providerId: string;
@@ -307,6 +314,7 @@ export function createThread(
             (originKind === null ? null : input.parentThreadId ?? null),
           originKind,
           originPluginId: input.originPluginId ?? null,
+          p6rCreatedByHandle: input.p6rCreatedByHandle ?? null,
           visibility,
           lastReadAt: now,
           latestAttentionAt: now,

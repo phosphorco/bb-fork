@@ -245,8 +245,28 @@ export {
   getStoredTurnRequestEventForTurn,
   getLatestThreadOutputEventRow,
   getLatestStoredConversationOutlineSequence,
+} from "./events.js";
+
+export {
+  p6rGetActorSnapshot,
+  p6rUpsertActorSnapshot,
+} from "./actors.js";
+export type { P6rActorRow } from "./actors.js";
+
+export {
+  p6rGetCollaborator,
+  p6rListCollaborators,
+  p6rUpsertCollaborator,
+} from "./collaborators.js";
+export type {
+  P6rCollaboratorRow,
+  P6rUpsertCollaboratorInput,
+} from "./collaborators.js";
+
+export {
   getLatestThreadSystemErrorEventRow,
   getLatestThreadSequence,
+  p6rCountDistinctThreadEventActors,
   insertEvents,
   listActiveBackgroundTaskCountsByThreadIds,
   listContextWindowUsageRows,
@@ -254,6 +274,7 @@ export {
   listEvents,
   listRecentStoredEventRows,
   listStoredConversationOutlineEventRows,
+  listStoredEventRowsByThreadIdsAndTypes,
   listTimelineSegmentAnchorsDescending,
   findTimelineWindowBudgetFloorSequence,
   findStoredTimelineWindowByteBudgetFloor,
@@ -278,6 +299,7 @@ export {
   listStoredTurnCompletedRowsByTurnIds,
   listStoredTurnStartedKeys,
   listStoredTurnStartedRowsByTurnIdsUpToSequence,
+  p6rGetTurnAuthorActor,
   getLatestThreadInterruptedReason,
   listLatestThreadStateEventRowsByThreadIds,
   listLatestBackgroundTaskStateRowsByItemIds,
@@ -307,6 +329,7 @@ export type {
   StandardTimelineSegmentAnchorRow,
   ThreadClientTurnRequestKey,
   StoredTurnRequestEventRow,
+  P6rGetTurnAuthorActorArgs,
 } from "./events.js";
 
 export {

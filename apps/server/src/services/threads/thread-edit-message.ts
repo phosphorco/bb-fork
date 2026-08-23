@@ -14,6 +14,7 @@ import {
 } from "@bb/db";
 import {
   threadScope,
+  type P6rActorSnapshot,
   type PromptInput,
   type Thread,
   type ThreadEvent,
@@ -421,6 +422,7 @@ export async function editThreadMessage(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: {
     environment: Parameters<typeof requireReadyThreadEnvironment>[0];
+    p6rActor?: P6rActorSnapshot;
     payload: EditMessageRequest;
     thread: Thread;
   },
@@ -549,6 +551,9 @@ export async function editThreadMessage(
   } = args.payload;
   try {
     await sendThreadMessage(deps, {
+      p6rActor: initiator === "user" ? (args.p6rActor ?? null) : null,
+      p6rActorHandle:
+        initiator === "user" ? (args.p6rActor?.p6rHandle ?? null) : null,
       beforeAppendInTransaction: ({ tx }) => {
         if (getActivePendingInteractionForThread(tx, editableThread.id)) {
           conflict(
@@ -575,6 +580,20 @@ export async function editThreadMessage(
           conflict("The thread changed while the edit was being prepared");
         }
         appendThreadEventInTransaction(tx, {
+          p6rActorProviderId:
+            initiator === "user"
+              ? (args.p6rActor?.p6rProviderId ?? null)
+              : null,
+          p6rActorSubject:
+            initiator === "user" ? (args.p6rActor?.p6rSubject ?? null) : null,
+          p6rActorHandle:
+            initiator === "user" ? (args.p6rActor?.p6rHandle ?? null) : null,
+          p6rActorDisplayName:
+            initiator === "user"
+              ? (args.p6rActor?.p6rDisplayName ?? null)
+              : null,
+          p6rActorImageUrl:
+            initiator === "user" ? (args.p6rActor?.p6rImageUrl ?? null) : null,
           threadId: editableThread.id,
           environmentId: editableThread.environmentId,
           type: "system/operation",

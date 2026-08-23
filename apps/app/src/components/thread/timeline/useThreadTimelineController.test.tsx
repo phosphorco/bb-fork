@@ -69,6 +69,8 @@ function makeUserRow(
     sourceSeqEnd: sourceSeq,
     startedAt: 1,
     createdAt: 1,
+    p6rActorHandle: null,
+    p6rActor: null,
     text: "hello",
     mentions: [],
     attachments: null,

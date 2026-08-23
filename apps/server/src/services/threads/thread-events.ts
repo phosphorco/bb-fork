@@ -44,6 +44,7 @@ import type {
   ThreadChangeKind,
   ThreadChangeMetadata,
   Thread,
+  P6rActorSnapshot,
 } from "@bb/domain";
 import { ApiError, TurnStartGuardError } from "../../errors.js";
 import type { AppDeps } from "../../types.js";
@@ -61,6 +62,8 @@ interface ThreadEventTransactionDeps {
 
 interface ClientTurnRequestedEventArgs {
   continuationOfRequestId?: ClientTurnRequestId;
+  p6rActor?: P6rActorSnapshot | null;
+  p6rActorHandle?: string | null;
   environmentId: string | null;
   execution: ResolvedThreadExecutionOptions;
   initiator: ThreadTurnInitiator;
@@ -85,6 +88,8 @@ interface PreparedClientTurnRequestedEventArgs extends ClientTurnRequestedEventA
 }
 
 interface ClientTurnLifecycleEventArgs {
+  p6rActor?: P6rActorSnapshot | null;
+  p6rActorHandle?: string | null;
   environmentId: string | null;
   initiator: ThreadTurnInitiator;
   requestMethod: "thread/start" | "turn/start";
@@ -141,6 +146,7 @@ interface BuildCwdBranchEntriesArgs {
 }
 
 interface AppendThreadInterruptedEventArgs {
+  p6rActorHandle?: string | null;
   reason: SystemThreadInterruptedReason;
   threadId: string;
 }
@@ -150,8 +156,11 @@ const storedEventPayloadSchema = z.record(z.string(), z.unknown());
 const LEGACY_THREAD_START_TARGET = {
   kind: "thread-start",
 } satisfies TurnRequestTarget;
+
 const LEGACY_NEW_TURN_TARGET = { kind: "new-turn" } satisfies TurnRequestTarget;
+
 type LegacyTurnRequestEventType = "client/thread/start" | "client/turn/start";
+
 const LEGACY_TURN_REQUEST_TARGET_BY_TYPE = {
   "client/thread/start": LEGACY_THREAD_START_TARGET,
   "client/turn/start": LEGACY_NEW_TURN_TARGET,
@@ -297,6 +306,11 @@ function appendBuiltClientTurnRequestedEvent(
   args: PreparedClientTurnRequestedEventArgs,
 ): AppendedClientTurnRequest {
   const sequence = append({
+    p6rActorProviderId: args.p6rActor?.p6rProviderId ?? null,
+    p6rActorSubject: args.p6rActor?.p6rSubject ?? null,
+    p6rActorDisplayName: args.p6rActor?.p6rDisplayName ?? null,
+    p6rActorImageUrl: args.p6rActor?.p6rImageUrl ?? null,
+    p6rActorHandle: args.p6rActor?.p6rHandle ?? args.p6rActorHandle ?? null,
     threadId: args.threadId,
     environmentId: args.environmentId,
     type: args.type,
@@ -314,6 +328,11 @@ function appendBuiltClientTurnEvent(
     case "client/thread/start":
     case "client/turn/start":
       return append({
+        p6rActorProviderId: args.p6rActor?.p6rProviderId ?? null,
+        p6rActorSubject: args.p6rActor?.p6rSubject ?? null,
+        p6rActorDisplayName: args.p6rActor?.p6rDisplayName ?? null,
+        p6rActorImageUrl: args.p6rActor?.p6rImageUrl ?? null,
+        p6rActorHandle: args.p6rActor?.p6rHandle ?? args.p6rActorHandle ?? null,
         threadId: args.threadId,
         environmentId: args.environmentId,
         type: args.type,
@@ -579,6 +598,11 @@ export function appendPreparedClientTurnRequestedEventWithNotificationInTransact
   args: PreparedClientTurnRequestedEventArgs,
 ): AppendedClientTurnRequestWithNotification {
   const eventArgs: AppendThreadEventArgs = {
+    p6rActorProviderId: args.p6rActor?.p6rProviderId ?? null,
+    p6rActorSubject: args.p6rActor?.p6rSubject ?? null,
+    p6rActorDisplayName: args.p6rActor?.p6rDisplayName ?? null,
+    p6rActorImageUrl: args.p6rActor?.p6rImageUrl ?? null,
+    p6rActorHandle: args.p6rActor?.p6rHandle ?? args.p6rActorHandle ?? null,
     threadId: args.threadId,
     environmentId: args.environmentId,
     type: args.type,
@@ -791,6 +815,7 @@ export function appendThreadInterruptedEventInTransaction(
   args: AppendThreadInterruptedEventArgs,
 ): number {
   return appendThreadEventInTransaction(db, {
+    p6rActorHandle: args.p6rActorHandle ?? null,
     threadId: args.threadId,
     type: "system/thread/interrupted",
     scope: threadScope(),

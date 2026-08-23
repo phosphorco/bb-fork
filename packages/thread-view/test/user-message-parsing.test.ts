@@ -23,6 +23,7 @@ interface AcceptedClientRequestFixtureArgs {
 }
 
 const AGENT_STEER_TEXT = "Please account for the restart";
+
 const SENDER_THREAD_ID = "thr_sender";
 
 const standardProjectionOptions: BuildEventProjectionMessagesOptions = {
@@ -92,6 +93,7 @@ function acceptedClientRequest(
 ): AcceptedClientRequest {
   return {
     meta: {
+      p6rActorHandle: null,
       id: "event-accepted",
       seq: 2,
       createdAt: 2,

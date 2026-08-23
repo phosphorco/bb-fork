@@ -178,11 +178,14 @@ interface BackgroundTaskStartedEventArgs {
 }
 
 type BuildTimelineRowsThreadStatus = "active" | "idle";
+
 type TimelineConversationRow = Extract<TimelineRow, { kind: "conversation" }>;
+
 type TimelineDelegationWorkRow = Extract<
   TimelineRow,
   { kind: "work"; workKind: "delegation" }
 >;
+
 type TimelineWorkflowRow = Extract<
   TimelineRow,
   { kind: "work"; workKind: "workflow" }
@@ -248,6 +251,7 @@ function contextWindowUsageEvent({
       },
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq,
@@ -277,6 +281,7 @@ function fileChangeItemEvent({
       },
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq,
@@ -313,6 +318,7 @@ function toolCallItemEvent({
       },
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq,
@@ -339,6 +345,7 @@ function imageViewItemEvent({
       },
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq,
@@ -361,6 +368,7 @@ function planDeltaEvent({
       delta: text,
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq,
@@ -386,6 +394,7 @@ function planItemCompletedEvent({
       },
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq,
@@ -402,6 +411,7 @@ function turnStartedEvent({ seq }: TurnStartedEventArgs): ThreadEventWithMeta {
       scope: turnScope("turn-1"),
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq,
@@ -424,6 +434,7 @@ function turnCompletedEvent({
       ...(errorMessage ? { error: { message: errorMessage } } : {}),
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq,
@@ -457,6 +468,7 @@ function backgroundTaskStartedEvent({
       item,
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq,
@@ -484,6 +496,7 @@ function systemOperationEvent({
       ...(metadata ? { metadata } : {}),
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq,
@@ -507,6 +520,7 @@ function systemErrorEvent({
       ...(detail !== undefined ? { detail } : {}),
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq,
@@ -545,6 +559,7 @@ function systemProviderTurnWatchdogEvent({
       firedAt: firedAt ?? seq,
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq,
@@ -571,6 +586,7 @@ function providerErrorEvent({
       ...(willRetry !== undefined ? { willRetry } : {}),
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq,
@@ -617,6 +633,7 @@ function permissionGrantLifecycleEvent({
       },
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq,
@@ -666,6 +683,7 @@ function userQuestionLifecycleEvent({
       },
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq,
@@ -2786,7 +2804,7 @@ describe("buildThreadTimelineFromEvents", () => {
         providerThreadId: "provider-thread-1",
         scope: turnScope("turn-2"),
       },
-      meta: { id: "event-2", seq: 2, createdAt: 2 },
+      meta: { id: "event-2", seq: 2, createdAt: 2, p6rActorHandle: null },
     };
     const turn2FileChange: ThreadEventWithMeta = {
       event: {
@@ -2808,7 +2826,7 @@ describe("buildThreadTimelineFromEvents", () => {
           approvalStatus: null,
         },
       },
-      meta: { id: "event-3", seq: 3, createdAt: 3 },
+      meta: { id: "event-3", seq: 3, createdAt: 3, p6rActorHandle: null },
     };
 
     const rows = collectFileChangeRows(
@@ -2859,7 +2877,12 @@ describe("buildThreadTimelineFromEvents", () => {
             providerThreadId: "provider-thread-1",
             scope,
           },
-          meta: { id: `event-${startSeq}`, seq: startSeq, createdAt: startSeq },
+          meta: {
+            id: `event-${startSeq}`,
+            seq: startSeq,
+            createdAt: startSeq,
+            p6rActorHandle: null,
+          },
         },
         {
           event: {
@@ -2879,6 +2902,7 @@ describe("buildThreadTimelineFromEvents", () => {
             id: `event-${startSeq + 1}`,
             seq: startSeq + 1,
             createdAt: startSeq + 1,
+            p6rActorHandle: null,
           },
         },
         {
@@ -2894,6 +2918,7 @@ describe("buildThreadTimelineFromEvents", () => {
             id: `event-${startSeq + 2}`,
             seq: startSeq + 2,
             createdAt: startSeq + 2,
+            p6rActorHandle: null,
           },
         },
         {
@@ -2914,6 +2939,7 @@ describe("buildThreadTimelineFromEvents", () => {
             id: `event-${startSeq + 3}`,
             seq: startSeq + 3,
             createdAt: startSeq + 3,
+            p6rActorHandle: null,
           },
         },
       ];

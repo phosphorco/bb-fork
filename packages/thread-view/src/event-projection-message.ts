@@ -28,6 +28,7 @@ const eventProjectionMessageStatusValues = [
   "error",
   "interrupted",
 ] as const;
+
 type EventProjectionMessageStatus =
   (typeof eventProjectionMessageStatusValues)[number];
 
@@ -35,6 +36,7 @@ const eventProjectionApprovalLifecycleStatusValues = [
   "waiting_for_approval",
   "denied",
 ] as const;
+
 export type EventProjectionApprovalLifecycleStatus =
   (typeof eventProjectionApprovalLifecycleStatusValues)[number];
 
@@ -45,14 +47,17 @@ const eventProjectionPermissionGrantLifecycleValues = [
   "denied",
   "interrupted",
 ] as const;
+
 export type EventProjectionPermissionGrantLifecycle =
   (typeof eventProjectionPermissionGrantLifecycleValues)[number];
+
 const eventProjectionUserQuestionLifecycleValues = [
   "pending",
   "resolving",
   "answered",
   "interrupted",
 ] as const;
+
 export type EventProjectionUserQuestionLifecycle =
   (typeof eventProjectionUserQuestionLifecycleValues)[number];
 
@@ -78,6 +83,7 @@ interface EventProjectionPresentedMessage {
 }
 
 const eventProjectionTurnRequestKindValues = ["message", "steer"] as const;
+
 export type EventProjectionTurnRequestKind =
   (typeof eventProjectionTurnRequestKindValues)[number];
 
@@ -86,6 +92,7 @@ const eventProjectionTurnRequestStatusValues = [
   "accepted",
   "rejected",
 ] as const;
+
 type EventProjectionTurnRequestStatus =
   (typeof eventProjectionTurnRequestStatusValues)[number];
 
@@ -99,6 +106,13 @@ export interface EventProjectionUserMessage extends EventProjectionMessageBase {
   kind: "user";
   initiator: ThreadTurnInitiator;
   senderThreadId: string | null;
+  // Claimed handle of the human author; null = not human-initiated or
+  // pre-multiplayer history.
+  p6rActorHandle: string | null;
+  p6rActorProviderId?: string | null;
+  p6rActorSubject?: string | null;
+  p6rActorDisplayName?: string | null;
+  p6rActorImageUrl?: string | null;
   // Family-B taxonomy fields carried from the decoded `client/turn/requested`
   // event. Legacy events lacking them project as `unlabeled` / `null`.
   systemMessageKind: SystemMessageKind;
@@ -306,6 +320,7 @@ const eventProjectionOperationTypeValues = [
   "compaction",
   "context-clear",
 ] as const;
+
 type EventProjectionOperationType =
   (typeof eventProjectionOperationTypeValues)[number];
 
@@ -313,6 +328,7 @@ const eventProjectionThreadOperationKindValues = [
   "ownership_change",
   "other",
 ] as const;
+
 export type EventProjectionThreadOperationKind =
   (typeof eventProjectionThreadOperationKindValues)[number];
 
@@ -326,6 +342,7 @@ const eventProjectionThreadOperationStatusValues = [
   "noop",
   "other",
 ] as const;
+
 export type EventProjectionThreadOperationStatus =
   (typeof eventProjectionThreadOperationStatusValues)[number];
 

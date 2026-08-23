@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { PromptInput } from "@bb/domain";
+import type { P6rActorSnapshot, PromptInput } from "@bb/domain";
 import { noopNotifier } from "../../src/notifier.js";
 import {
   claimNextQueuedThreadMessageGroup,
@@ -27,6 +27,19 @@ function textInput(text: string): PromptInput[] {
 
 const defaultInput = textInput("hello");
 const altInput = textInput("world");
+const actorAlice: P6rActorSnapshot = {
+  p6rProviderId: "p6r-fixture/provider",
+  p6rSubject: "alice-subject",
+  p6rHandle: "alice",
+  p6rDisplayName: "Alice",
+  p6rImageUrl: null,
+};
+const actorBob: P6rActorSnapshot = {
+  ...actorAlice,
+  p6rSubject: "bob-subject",
+  p6rHandle: "bob",
+  p6rDisplayName: "Bob",
+};
 
 function setup() {
   const db = createMigratedConnection();
@@ -49,6 +62,7 @@ describe("queued thread messages", () => {
   it("creates a queued message", () => {
     const { db, thread } = setup();
     const queuedMessage = createQueuedThreadMessage(db, noopNotifier, {
+      p6rActorHandle: "alice",
       threadId: thread.id,
       content: defaultInput,
       model: "gpt-5",
@@ -60,6 +74,7 @@ describe("queued thread messages", () => {
     expect(queuedMessage.id).toMatch(/^qmsg_/);
     expect(queuedMessage.threadId).toBe(thread.id);
     expect(queuedMessage.content).toBe(JSON.stringify(defaultInput));
+    expect(queuedMessage.p6rActorHandle).toBe("alice");
     expect(queuedMessage.model).toBe("gpt-5");
     expect(queuedMessage.serviceTier).toBe("default");
     expect(queuedMessage.groupWithNext).toBe(false);
@@ -79,6 +94,78 @@ describe("queued thread messages", () => {
     const fetched = getQueuedThreadMessage(db, queuedMessage.id);
     expect(fetched?.id).toBe(queuedMessage.id);
     expect(getQueuedThreadMessage(db, "qmsg_nonexistent")).toBeNull();
+  });
+
+  it("persists structured authorship and re-stamps on authenticated edit", () => {
+    const { db, thread } = setup();
+    const queuedMessage = createQueuedThreadMessage(db, noopNotifier, {
+      p6rActor: actorAlice,
+      threadId: thread.id,
+      content: defaultInput,
+      model: "gpt-5",
+      reasoningLevel: "medium",
+      permissionMode: "full",
+      serviceTier: "default",
+    });
+
+    expect(getQueuedThreadMessage(db, queuedMessage.id)).toMatchObject({
+      p6rActorProviderId: actorAlice.p6rProviderId,
+      p6rActorSubject: actorAlice.p6rSubject,
+      p6rActorHandle: actorAlice.p6rHandle,
+      p6rActorDisplayName: actorAlice.p6rDisplayName,
+    });
+
+    const result = updateQueuedThreadMessage(db, noopNotifier, {
+      content: altInput,
+      expectedUpdatedAt: queuedMessage.updatedAt,
+      id: queuedMessage.id,
+      threadId: thread.id,
+      p6rActor: actorBob,
+    });
+    expect(result.kind).toBe("updated");
+    expect(getQueuedThreadMessage(db, queuedMessage.id)).toMatchObject({
+      p6rActorProviderId: actorBob.p6rProviderId,
+      p6rActorSubject: actorBob.p6rSubject,
+      p6rActorHandle: actorBob.p6rHandle,
+      p6rActorDisplayName: actorBob.p6rDisplayName,
+    });
+  });
+
+  it("never groups queued messages across canonical actors", () => {
+    const { db, thread } = setup();
+    const first = createQueuedThreadMessage(db, noopNotifier, {
+      p6rActor: actorAlice,
+      threadId: thread.id,
+      content: defaultInput,
+      model: "gpt-5",
+      reasoningLevel: "medium",
+      permissionMode: "full",
+      serviceTier: "default",
+    });
+    const second = createQueuedThreadMessage(db, noopNotifier, {
+      p6rActor: actorBob,
+      threadId: thread.id,
+      content: altInput,
+      model: "gpt-5",
+      reasoningLevel: "medium",
+      permissionMode: "full",
+      serviceTier: "default",
+    });
+
+    expect(
+      setQueuedThreadMessageGroupBoundary({
+        db,
+        notifier: noopNotifier,
+        threadId: thread.id,
+        expectedGroupedPrefixQueuedMessageIds: [first.id, second.id],
+        groupBoundaryQueuedMessageId: second.id,
+      }),
+    ).toMatchObject({ kind: "invalid_execution_options" });
+    expect(
+      claimNextQueuedThreadMessageGroup(db, noopNotifier, thread.id)?.map(
+        (row) => row.id,
+      ),
+    ).toEqual([first.id]);
   });
 
   it("lists queued messages by thread", () => {

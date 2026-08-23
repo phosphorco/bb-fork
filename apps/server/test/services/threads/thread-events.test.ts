@@ -45,6 +45,61 @@ afterEach(() => {
 });
 
 describe("thread event appends", () => {
+  it("takes every snapshot field from p6rActor when legacy handle disagrees", async () => {
+    const { environment, harness, thread } =
+      await createThreadEventTestContext();
+    try {
+      const actor = {
+        p6rProviderId: "p6r-fixture/provider",
+        p6rSubject: "subject-canonical",
+        p6rHandle: "canonical-handle",
+        p6rDisplayName: "Canonical Actor",
+        p6rImageUrl: null,
+      } as const;
+      appendClientTurnEvent(harness.deps, {
+        p6rActor: actor,
+        p6rActorHandle: "legacy-foreign-handle",
+        threadId: thread.id,
+        environmentId: environment.id,
+        type: "client/turn/requested",
+        input: textInput("canonical snapshot"),
+        target: { kind: "new-turn" },
+        execution: {
+          model: "gpt-5",
+          reasoningLevel: "medium",
+          permissionMode: "full",
+          serviceTier: "default",
+          source: "client/turn/requested",
+        },
+        initiator: "user",
+        senderThreadId: null,
+        requestMethod: "turn/start",
+        source: "tell",
+      });
+      expect(
+        harness.db
+          .select({
+            p6rActorProviderId: events.p6rActorProviderId,
+            p6rActorSubject: events.p6rActorSubject,
+            p6rActorHandle: events.p6rActorHandle,
+            p6rActorDisplayName: events.p6rActorDisplayName,
+            p6rActorImageUrl: events.p6rActorImageUrl,
+          })
+          .from(events)
+          .where(eq(events.type, "client/turn/requested"))
+          .get(),
+      ).toEqual({
+        p6rActorProviderId: actor.p6rProviderId,
+        p6rActorSubject: actor.p6rSubject,
+        p6rActorHandle: actor.p6rHandle,
+        p6rActorDisplayName: actor.p6rDisplayName,
+        p6rActorImageUrl: actor.p6rImageUrl,
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("does not classify an accepted compact steer as manual compaction", async () => {
     const { environment, harness, thread } =
       await createThreadEventTestContext();
@@ -439,5 +494,4 @@ describe("thread event appends", () => {
       await harness.cleanup();
     }
   });
-
 });

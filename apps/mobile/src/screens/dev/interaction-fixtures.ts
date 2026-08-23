@@ -323,6 +323,7 @@ export function buildQueuedMessageFixtures(): ThreadQueuedMessage[] {
     reasoningLevel: "medium" as const,
     permissionMode: "auto" as const,
     serviceTier: "default" as const,
+    p6rActor: null,
     createdAt: 1,
     updatedAt: 1,
   };

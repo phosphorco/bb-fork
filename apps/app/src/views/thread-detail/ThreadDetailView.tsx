@@ -293,13 +293,20 @@ import { DefaultPaneContextProvider, usePaneContext } from "./PaneContext";
 import { ThreadArchiveCommandHandler } from "./ThreadArchiveCommandHandler";
 import { ThreadRenameCommandHandler } from "./ThreadRenameCommandHandler";
 
+import { P6rThreadPresenceHeaderAvatars } from "@/components/thread/presence/ThreadPresenceIndicators";
+
 const EMPTY_PARENT_THREADS: readonly ThreadListEntry[] = [];
+
 const EMPTY_CHILD_THREAD_ITEMS: readonly ChildThreadPendingAttentionSource[] =
   [];
+
 const EMPTY_PROJECT_THREAD_SUBSET_FILTERS =
   {} satisfies ProjectThreadSubsetFilters;
+
 const EMPTY_TERMINAL_SESSIONS: readonly TerminalSession[] = [];
+
 const DEFAULT_PULL_REQUEST_MERGE_METHOD: PullRequestMergeMethod = "merge";
+
 const PULL_REQUEST_MERGE_METHOD_STORAGE_KEY = "bb.pullRequest.mergeMethod";
 
 function isPullRequestMergeMethod(
@@ -320,10 +327,13 @@ const pullRequestMergeMethodAtom = atomWithStorage<PullRequestMergeMethod>(
 type MergeBasePickerOpenChangeHandler = NonNullable<
   ContextBannerMergeBaseConfig["onPickerOpenChange"]
 >;
+
 type SecondaryPanelChangeHandler = (panel: ThreadSecondaryPanelTab) => void;
+
 type OpenInEditorHandler = NonNullable<
   ReturnType<typeof buildOpenInEditorHandler>
 >;
+
 type OpenFilePreviewHandler = (relativePath: string) => void;
 
 interface SentMessageEditSession {
@@ -2544,6 +2554,9 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
           threadId={thread.id}
           projectId={thread.projectId}
         />
+      }
+      p6rPresenceIndicator={
+        <P6rThreadPresenceHeaderAvatars threadId={thread.id} />
       }
       threadHeaderGitActions={gitActions.threadHeaderGitActions}
       threadId={thread.id}

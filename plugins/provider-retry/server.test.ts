@@ -99,6 +99,7 @@ function failedTurnInspection(
       seq: 1,
       createdAt: NOW_MS,
       scope: { kind: "thread" },
+      p6rActorHandle: null,
       type: "client/turn/requested",
       data: {
         direction: "outbound",
@@ -126,6 +127,7 @@ function failedTurnInspection(
       seq: 2,
       createdAt: NOW_MS,
       scope: { kind: "turn", turnId },
+      p6rActorHandle: null,
       type: "turn/input/accepted",
       data: { providerThreadId, clientRequestId: requestId },
     },
@@ -135,6 +137,7 @@ function failedTurnInspection(
       seq: 3,
       createdAt: NOW_MS,
       scope: { kind: "turn", turnId },
+      p6rActorHandle: null,
       type: "provider/rateLimits/updated",
       data: { providerThreadId, rateLimits: limits },
     },
@@ -146,6 +149,7 @@ function failedTurnInspection(
       seq: 4,
       createdAt: NOW_MS,
       scope: { kind: "turn", turnId },
+      p6rActorHandle: null,
       type: "provider/error",
       data: {
         providerThreadId,
@@ -166,6 +170,7 @@ function failedTurnInspection(
       seq: 6,
       createdAt: NOW_MS + 1,
       scope: { kind: "thread" },
+      p6rActorHandle: null,
       type: "provider/rateLimits/updated",
       data: { providerThreadId, rateLimits: options.observedLimits },
     });
@@ -176,6 +181,7 @@ function failedTurnInspection(
     seq: 5,
     createdAt: NOW_MS,
     scope: { kind: "turn", turnId },
+    p6rActorHandle: null,
     type: "turn/completed",
     data: { providerThreadId, status: "failed" },
   });
@@ -188,6 +194,7 @@ function failedTurnInspection(
         seq: 7,
         createdAt: NOW_MS + 2,
         scope: { kind: "turn", turnId: drainTurnId },
+        p6rActorHandle: null,
         type: "turn/started",
         data: { providerThreadId },
       },
@@ -197,6 +204,7 @@ function failedTurnInspection(
         seq: 8,
         createdAt: NOW_MS + 3,
         scope: { kind: "turn", turnId: drainTurnId },
+        p6rActorHandle: null,
         type: "turn/completed",
         data: { providerThreadId, status: "failed" },
       },
@@ -245,6 +253,7 @@ function unavailableInspection(
       seq: 7,
       createdAt: NOW_MS + 2,
       scope: { kind: "thread" },
+      p6rActorHandle: null,
       type: "client/turn/requested",
       data: {
         direction: "outbound",
@@ -533,6 +542,7 @@ describe("provider retry scheduler", () => {
         seq: 6 + index,
         createdAt: NOW_MS + index,
         scope: { kind: "turn", turnId: `turn-${threadId}` },
+        p6rActorHandle: null,
         type: "provider/error",
         data: {
           providerThreadId: `provider-thread-${threadId}`,
@@ -946,6 +956,7 @@ describe("provider retry scheduler", () => {
       seq: 7,
       createdAt: NOW_MS + 2,
       scope: { kind: "thread" },
+      p6rActorHandle: null,
       type: "system/thread/interrupted",
       data: { reason: "manual-stop" },
     });

@@ -202,6 +202,7 @@ export function queuedMessage(args: {
     permissionMode: THREAD_DEFAULT_EXECUTION_OPTIONS.permissionMode,
     serviceTier: THREAD_DEFAULT_EXECUTION_OPTIONS.serviceTier,
     groupWithNext: false,
+    p6rActor: null,
     createdAt: args.now,
     updatedAt: args.now,
   };

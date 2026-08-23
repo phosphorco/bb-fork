@@ -25,6 +25,12 @@ import {
 export type * from "./public-types.js";
 // Structured prompt input for the provider's plan action; pass it as
 // `input` to `threads.spawn` / `threads.send` (the CLI's `--plan`).
+import { p6rCreateMembersArea, type P6rMembersArea } from "./areas/members.js";
+import {
+  p6rCreatePresenceArea,
+  type P6rPresenceArea,
+} from "./areas/presence.js";
+
 export { createBuiltinPlanCommandTextInput } from "@bb/domain";
 
 export interface CreateBbSdkArgs {
@@ -45,6 +51,8 @@ export interface BbSdkAreas extends BbRealtime {
   environments: EnvironmentsArea;
   files: FilesArea;
   hosts: HostsArea;
+  p6rMembers: P6rMembersArea;
+  p6rPresence: P6rPresenceArea;
   projects: ProjectsArea;
   plugins: PluginsArea;
   providers: ProvidersArea;
@@ -74,6 +82,8 @@ export function createBbSdk(
     environments: createEnvironmentsArea(sdkContext),
     files: createFilesArea(sdkContext),
     hosts: createHostsArea(sdkContext),
+    p6rMembers: p6rCreateMembersArea(sdkContext),
+    p6rPresence: p6rCreatePresenceArea(sdkContext),
     subscribe(args) {
       return realtime.subscribe(args);
     },

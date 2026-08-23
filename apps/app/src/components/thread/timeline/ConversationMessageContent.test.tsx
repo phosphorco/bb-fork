@@ -160,7 +160,9 @@ describe("ConversationMessageContent long user messages", () => {
             threadById={new Map([[mentionedThread.id, mentionedThread]])}
           >
             <ConversationMessageContent
+              p6rActorHandle={null}
               role="user"
+              p6rShowAuthor={false}
               attachments={null}
               originKind={null}
               initiator="user"
@@ -193,6 +195,7 @@ describe("ConversationMessageContent long user messages", () => {
         <RouteNavigationProvider>
           <ConversationMessageContent
             role="user"
+            p6rActorHandle={null}
             attachments={null}
             originKind={null}
             initiator="user"
@@ -202,6 +205,7 @@ describe("ConversationMessageContent long user messages", () => {
             senderIsPluginSideChat={false}
             systemMessageKind="unlabeled"
             systemMessageSubject={null}
+            p6rShowAuthor={false}
             text={text}
             turnRequest={{
               isGrouped: false,
@@ -304,7 +308,9 @@ describe("ConversationMessageContent user thread mentions", () => {
             threadById={new Map([[mentionedThread.id, mentionedThread]])}
           >
             <ConversationMessageContent
+              p6rActorHandle={null}
               role="user"
+              p6rShowAuthor={false}
               attachments={null}
               originKind={null}
               initiator="user"
@@ -349,7 +355,9 @@ describe("ConversationMessageContent user thread mentions", () => {
             threadById={new Map([[mentionedThread.id, mentionedThread]])}
           >
             <ConversationMessageContent
+              p6rActorHandle={null}
               role="user"
+              p6rShowAuthor={false}
               attachments={null}
               originKind={null}
               initiator="user"
@@ -396,6 +404,7 @@ describe("ConversationMessageContent user thread mentions", () => {
           >
             <ConversationMessageContent
               role="user"
+              p6rActorHandle={null}
               attachments={null}
               originKind={null}
               initiator="user"
@@ -405,6 +414,7 @@ describe("ConversationMessageContent user thread mentions", () => {
               senderIsPluginSideChat={false}
               systemMessageKind="unlabeled"
               systemMessageSubject={null}
+              p6rShowAuthor={false}
               text="Why was @thread:thr_ti4st72wgs not a pill?"
               turnRequest={{
                 isGrouped: false,
@@ -441,6 +451,7 @@ describe("ConversationMessageContent user thread mentions", () => {
           >
             <ConversationMessageContent
               role="user"
+              p6rActorHandle={null}
               attachments={null}
               originKind={null}
               initiator="user"
@@ -455,6 +466,7 @@ describe("ConversationMessageContent user thread mentions", () => {
               senderIsPluginSideChat={false}
               systemMessageKind="unlabeled"
               systemMessageSubject={null}
+              p6rShowAuthor={false}
               text="See @thread:thr_cross_project for the result."
               turnRequest={{
                 isGrouped: false,

@@ -1,5 +1,6 @@
 import {
   and,
+  countDistinct,
   desc,
   eq,
   gt,
@@ -12,6 +13,7 @@ import {
   max,
   notExists,
   notInArray,
+  ne,
   or,
   sql,
 } from "drizzle-orm";
@@ -27,6 +29,7 @@ import type {
   ThreadEventScopeKind,
   ThreadEventType,
 } from "@bb/domain";
+import type { P6rActorSnapshot } from "@bb/domain";
 import {
   LOCAL_AGENT_TASK_TYPE,
   LOCAL_BASH_TASK_TYPE,
@@ -52,6 +55,7 @@ import {
   threadSearchSegments,
   threads,
 } from "../schema.js";
+import { p6rGetActorSnapshot } from "./actors.js";
 import { createEventId } from "../ids.js";
 import { truncatedEventDataColumn } from "./event-output-truncation.js";
 import { deriveStoredEventItemFieldsFromSource } from "../stored-event-item-fields.js";
@@ -61,12 +65,14 @@ import {
 } from "./threads.js";
 
 const STORED_EVENT_SEQUENCE_LOOKUP_CHUNK_SIZE = 250;
+
 /**
  * Keep the scalar byte-total fast path above the default timeline event
  * window without letting a client-selected details range aggregate an entire
  * thread before the byte-limited iterator gets a chance to stop early.
  */
 export const STORED_TIMELINE_BYTE_PREFLIGHT_EVENT_LIMIT = 2_000;
+
 const SQLITE_MAX_VARIABLE_NUMBER = 32_766;
 // This OR query prepares with 995 keys. A 996th key reaches the configured
 // SQLite expression-depth limit of 1,000.
@@ -89,7 +95,9 @@ function queryInSqliteVariableBatches<TValue, TRow>(
   args: QueryInSqliteVariableBatchesArgs<TValue, TRow>,
 ): TRow[] {
   const values = [
-    ...new Map(args.values.map((value) => [args.dedupeKey(value), value])).values(),
+    ...new Map(
+      args.values.map((value) => [args.dedupeKey(value), value]),
+    ).values(),
   ];
   if (values.length === 0) {
     return [];
@@ -114,6 +122,7 @@ function queryInSqliteVariableBatches<TValue, TRow>(
 }
 
 const isRootTurnStartedEventData = isNull(events.parentToolCallId);
+
 const isNotNestedTurnUsageEvent = sql`NOT EXISTS (
   SELECT 1
   FROM events AS nested_turn_started
@@ -146,6 +155,11 @@ const isNotSupersededBackgroundTaskProgress = sql`NOT (
 )`;
 
 export interface InsertEventInput {
+  p6rActorHandle?: string | null;
+  p6rActorProviderId?: string | null;
+  p6rActorSubject?: string | null;
+  p6rActorDisplayName?: string | null;
+  p6rActorImageUrl?: string | null;
   threadId: string;
   environmentId?: string | null;
   scope: ThreadEventScope;
@@ -198,10 +212,7 @@ interface ItemLifecycleLookupKey {
 }
 
 interface LatestItemLifecycleRow extends ItemLifecycleLookupKey {
-  type:
-    | "item/started"
-    | "item/completed"
-    | "item/backgroundTask/completed";
+  type: "item/started" | "item/completed" | "item/backgroundTask/completed";
 }
 
 const TERMINAL_ITEM_EVENT_TYPES = [
@@ -301,6 +312,11 @@ export type AppendStoredThreadEventArgs<
   TType extends ThreadEventType = ThreadEventType,
 > = {
   [TEventType in TType]: {
+    p6rActorHandle?: string | null;
+    p6rActorProviderId?: string | null;
+    p6rActorSubject?: string | null;
+    p6rActorDisplayName?: string | null;
+    p6rActorImageUrl?: string | null;
     data: StoredThreadEventDataForType<TEventType>;
     environmentId?: string | null;
     providerThreadId?: string | null;
@@ -419,8 +435,8 @@ export function insertEvents(
     const createdAt = input.createdAt ?? Date.now();
     const turnId = getThreadEventScopeTurnId(input.scope) ?? null;
     const result = db.run(
-      sql`INSERT OR IGNORE INTO events (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, parent_tool_call_id, data, created_at)
-          VALUES (${id}, ${input.threadId}, ${input.environmentId ?? null}, ${input.scope.kind}, ${turnId}, ${input.providerThreadId ?? null}, ${input.sequence}, ${input.type}, ${input.itemId}, ${input.itemKind}, ${input.parentToolCallId}, ${input.data}, ${createdAt})`,
+      sql`INSERT OR IGNORE INTO events (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, parent_tool_call_id, p6r_actor_handle, p6r_actor_provider_id, p6r_actor_subject, p6r_actor_display_name, p6r_actor_image_url, data, created_at)
+          VALUES (${id}, ${input.threadId}, ${input.environmentId ?? null}, ${input.scope.kind}, ${turnId}, ${input.providerThreadId ?? null}, ${input.sequence}, ${input.type}, ${input.itemId}, ${input.itemKind}, ${input.parentToolCallId}, ${input.p6rActorHandle ?? null}, ${input.p6rActorProviderId ?? null}, ${input.p6rActorSubject ?? null}, ${input.p6rActorDisplayName ?? null}, ${input.p6rActorImageUrl ?? null}, ${input.data}, ${createdAt})`,
     );
     if (result.changes > 0) {
       insertedCount++;
@@ -510,11 +526,13 @@ function listStoredTurnStartedKeySet(
 //
 // Turn-content events still require a stored turn/started, so genuine ordering
 // bugs are still caught.
-const ORPHAN_DROPPABLE_TURN_EVENT_TYPES: ReadonlySet<ThreadEventType> = new Set([
-  "thread/tokenUsage/updated",
-  "thread/contextWindowUsage/updated",
-  "provider/unhandled",
-]);
+const ORPHAN_DROPPABLE_TURN_EVENT_TYPES: ReadonlySet<ThreadEventType> = new Set(
+  [
+    "thread/tokenUsage/updated",
+    "thread/contextWindowUsage/updated",
+    "provider/unhandled",
+  ],
+);
 
 type DaemonTurnStartDisposition =
   | "append"
@@ -556,7 +574,9 @@ function resolveDaemonTurnStartDisposition(
   });
 }
 
-function isStoredEventPayload(value: unknown): value is Record<string, unknown> {
+function isStoredEventPayload(
+  value: unknown,
+): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -657,7 +677,9 @@ function listThreadSearchSegmentsForThreadEvent(args: {
   }
 }
 
-function parseDaemonThreadEvent(input: AppendDaemonEventInput): ThreadEvent | null {
+function parseDaemonThreadEvent(
+  input: AppendDaemonEventInput,
+): ThreadEvent | null {
   let data: unknown;
   try {
     data = JSON.parse(input.data);
@@ -709,10 +731,7 @@ export function appendDaemonEventsInTransaction(
     collectDaemonTurnStartLookupKeys(eventInputs),
   );
   const settledItemKeys = new Set(
-    listLatestItemLifecycleRows(
-      db,
-      collectTerminalItemLookupKeys(eventInputs),
-    )
+    listLatestItemLifecycleRows(db, collectTerminalItemLookupKeys(eventInputs))
       .filter((row) => isTerminalItemEventType(row.type))
       .map(buildItemLifecycleKey),
   );
@@ -756,7 +775,7 @@ export function appendDaemonEventsInTransaction(
     }
     db.run(
       sql`INSERT INTO events
-        (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, parent_tool_call_id, data, created_at)
+        (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, parent_tool_call_id, p6r_actor_handle, p6r_actor_provider_id, p6r_actor_subject, p6r_actor_display_name, p6r_actor_image_url, data, created_at)
         VALUES (
           ${createEventId()},
           ${input.threadId},
@@ -769,6 +788,11 @@ export function appendDaemonEventsInTransaction(
           ${input.itemId},
           ${input.itemKind},
           ${input.parentToolCallId},
+          ${null},
+          ${null},
+          ${null},
+          ${null},
+          ${null},
           ${input.data},
           ${now}
         )`,
@@ -933,7 +957,7 @@ export function appendStoredThreadEventsInTransaction(
 
     db.run(
       sql`INSERT INTO events
-        (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, parent_tool_call_id, data, created_at)
+        (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, parent_tool_call_id, p6r_actor_handle, p6r_actor_provider_id, p6r_actor_subject, p6r_actor_display_name, p6r_actor_image_url, data, created_at)
         VALUES (
           ${createEventId()},
           ${args.threadId},
@@ -946,6 +970,11 @@ export function appendStoredThreadEventsInTransaction(
           ${itemFields.itemId},
           ${itemFields.itemKind},
           ${itemFields.parentToolCallId},
+          ${args.p6rActorHandle ?? null},
+          ${args.p6rActorProviderId ?? null},
+          ${args.p6rActorSubject ?? null},
+          ${args.p6rActorDisplayName ?? null},
+          ${args.p6rActorImageUrl ?? null},
           ${JSON.stringify(args.data)},
           ${now}
         )`,
@@ -963,6 +992,30 @@ export function appendStoredThreadEventsInTransaction(
   }
 
   return sequences;
+}
+
+export function p6rCountDistinctThreadEventActors(
+  db: DbQueryConnection,
+  args: {
+    p6rExcludedHandle?: string;
+    threadId: string;
+  },
+): number {
+  const row = db
+    .select({ actorCount: countDistinct(events.p6rActorHandle) })
+    .from(events)
+    .where(
+      and(
+        eq(events.threadId, args.threadId),
+        eq(events.type, "client/turn/requested"),
+        isNotNull(events.p6rActorHandle),
+        args.p6rExcludedHandle === undefined
+          ? undefined
+          : ne(events.p6rActorHandle, args.p6rExcludedHandle),
+      ),
+    )
+    .get();
+  return row?.actorCount ?? 0;
 }
 
 export function appendStoredThreadEvent<TType extends ThreadEventType>(
@@ -1036,6 +1089,11 @@ export interface ListEventsOptions {
 }
 
 const storedEventRowFields = {
+  p6rActorHandle: events.p6rActorHandle,
+  p6rActorProviderId: events.p6rActorProviderId,
+  p6rActorSubject: events.p6rActorSubject,
+  p6rActorDisplayName: events.p6rActorDisplayName,
+  p6rActorImageUrl: events.p6rActorImageUrl,
   createdAt: events.createdAt,
   data: events.data,
   id: events.id,
@@ -1054,6 +1112,70 @@ export type StoredEventRow = Pick<
   typeof events.$inferSelect,
   keyof typeof storedEventRowFields
 >;
+
+export interface P6rGetTurnAuthorActorArgs {
+  threadId: string;
+  turnId: string;
+}
+
+/**
+ * Resolve the actor of an accepted authored unit from durable event linkage.
+ * This deliberately does not inspect rendered transcript text or [from=...]
+ * projections. Missing canonical columns preserve old/no-provider nullability.
+ */
+export function p6rGetTurnAuthorActor(
+  db: DbQueryConnection,
+  args: P6rGetTurnAuthorActorArgs,
+): P6rActorSnapshot | null {
+  const accepted = db
+    .select({ data: events.data })
+    .from(events)
+    .where(
+      and(
+        eq(events.threadId, args.threadId),
+        eq(events.turnId, args.turnId),
+        eq(events.type, "turn/input/accepted"),
+      ),
+    )
+    .orderBy(desc(events.sequence))
+    .limit(1)
+    .get();
+  if (!accepted) return null;
+
+  let acceptedData: unknown;
+  try {
+    acceptedData = JSON.parse(accepted.data);
+  } catch {
+    return null;
+  }
+  if (!isStoredEventPayload(acceptedData)) return null;
+  const clientRequestId = acceptedData.clientRequestId;
+  if (typeof clientRequestId !== "string") return null;
+
+  const requested = db
+    .select({
+      p6rActorProviderId: events.p6rActorProviderId,
+      p6rActorSubject: events.p6rActorSubject,
+    })
+    .from(events)
+    .where(
+      and(
+        eq(events.threadId, args.threadId),
+        eq(events.type, "client/turn/requested"),
+        sql`json_extract(${events.data}, '$.requestId') = ${clientRequestId}`,
+      ),
+    )
+    .orderBy(desc(events.sequence))
+    .limit(1)
+    .get();
+  if (!requested?.p6rActorProviderId || !requested.p6rActorSubject) {
+    return null;
+  }
+  return p6rGetActorSnapshot(db, {
+    p6rProviderId: requested.p6rActorProviderId,
+    p6rSubject: requested.p6rActorSubject,
+  });
+}
 
 /**
  * Character cap for the inline outputs a timeline read may return, or `null` to
@@ -1102,6 +1224,11 @@ export interface ListStoredEventRowsByParentToolCallIdsArgs {
 
 export type GetStoredEventRowsByParentToolCallIdsDataBytesArgs =
   ListStoredEventRowsByParentToolCallIdsArgs;
+
+export interface ListStoredEventRowsByThreadIdsAndTypesArgs {
+  threadIds: readonly string[];
+  types: readonly ThreadEventType[];
+}
 
 export interface ListLatestThreadStateEventRowsByThreadIdsArgs {
   threadIds: readonly string[];
@@ -1229,8 +1356,7 @@ export interface ListStoredTimelineWindowEventRowsArgs {
 export type GetStoredTimelineWindowEventDataBytesArgs =
   ListStoredTimelineWindowEventRowsArgs;
 
-export interface FindStoredTimelineWindowByteBudgetFloorArgs
-  extends ListStoredTimelineWindowEventRowsArgs {
+export interface FindStoredTimelineWindowByteBudgetFloorArgs extends ListStoredTimelineWindowEventRowsArgs {
   maxDataBytes: number;
 }
 
@@ -1394,6 +1520,41 @@ export function listStoredEventRows(
   return merged;
 }
 
+export function listStoredEventRowsByThreadIdsAndTypes(
+  db: DbQueryConnection,
+  args: ListStoredEventRowsByThreadIdsAndTypesArgs,
+): StoredEventRow[] {
+  if (args.threadIds.length === 0 || args.types.length === 0) {
+    return [];
+  }
+
+  const rows = queryInSqliteVariableBatches({
+    dedupeKey: (threadId) => threadId,
+    fixedVariableCount: args.types.length,
+    queryBatch: (threadIds) =>
+      db
+        .select(storedEventRowFields)
+        .from(events)
+        .where(
+          and(
+            inArray(events.threadId, [...threadIds]),
+            inArray(events.type, [...args.types]),
+          ),
+        )
+        .orderBy(events.threadId, events.sequence, events.id)
+        .all(),
+    values: args.threadIds,
+    variableCountPerValue: 1,
+  });
+
+  return rows.sort(
+    (left, right) =>
+      left.threadId.localeCompare(right.threadId) ||
+      left.sequence - right.sequence ||
+      left.id.localeCompare(right.id),
+  );
+}
+
 export function listLatestThreadStateEventRowsByThreadIds(
   db: DbQueryConnection,
   args: ListLatestThreadStateEventRowsByThreadIdsArgs,
@@ -1429,7 +1590,8 @@ export function listLatestThreadStateEventRowsByThreadIds(
       return db
         .select(storedEventRowFields)
         .from(events)
-        .where(sql`${events}.rowid IN (
+        .where(
+          sql`${events}.rowid IN (
         SELECT latest_state.rowid
         FROM ${events} AS latest_state INDEXED BY events_thread_state_thread_sequence_idx
         WHERE latest_state.thread_id IN (${threadIdList})
@@ -1441,7 +1603,8 @@ export function listLatestThreadStateEventRowsByThreadIds(
               AND candidate.type ${stateTypesPredicate}
               AND ${kindPredicate}
           )
-      )`)
+      )`,
+        )
         .all();
     },
 
@@ -1570,7 +1733,9 @@ export function listStoredEventRowsByParentToolCallIds(
   }
 
   return db
-    .select(storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars))
+    .select(
+      storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars),
+    )
     .from(events)
     .where(and(...conditions))
     .orderBy(events.sequence)
@@ -1642,7 +1807,9 @@ export function listStoredDelegatingItemRowsByItemIds(
   }
 
   return db
-    .select(storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars))
+    .select(
+      storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars),
+    )
     .from(events)
     .where(
       and(
@@ -1797,7 +1964,9 @@ export function listItemEventSpansByItems(
       turnId: events.turnId,
     })
     .from(events)
-    .where(and(eq(events.threadId, args.threadId), scopedItemRefsPredicate(items)))
+    .where(
+      and(eq(events.threadId, args.threadId), scopedItemRefsPredicate(items)),
+    )
     .groupBy(events.scopeKind, events.turnId, events.itemId)
     .all();
 }
@@ -1829,7 +1998,9 @@ export function listStoredItemLifecycleRowsByItems(
   }
 
   return db
-    .select(storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars))
+    .select(
+      storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars),
+    )
     .from(events)
     .where(
       and(
@@ -1891,7 +2062,9 @@ export function listStoredClientTurnRequestIdsInRange(
 ): ClientTurnRequestId[] {
   const rows = db
     .select({
-      requestId: sql<string | null>`json_extract(${events.data}, '$.requestId')`,
+      requestId: sql<
+        string | null
+      >`json_extract(${events.data}, '$.requestId')`,
     })
     .from(events)
     .where(
@@ -1915,7 +2088,9 @@ export function getStoredTurnRequestEventForTurn(
   const acceptedInput =
     db
       .select({
-        clientRequestId: sql<string | null>`json_extract(${events.data}, '$.clientRequestId')`,
+        clientRequestId: sql<
+          string | null
+        >`json_extract(${events.data}, '$.clientRequestId')`,
       })
       .from(events)
       .where(
@@ -2216,8 +2391,7 @@ export function listLatestOpenBackgroundTaskStateRowsForThread(
   args: ListLatestOpenBackgroundTaskStateRowsForThreadArgs,
 ): StoredEventRow[] {
   const startedType = "item/started" satisfies ThreadEventType;
-  const progressType =
-    "item/backgroundTask/progress" satisfies ThreadEventType;
+  const progressType = "item/backgroundTask/progress" satisfies ThreadEventType;
   const completedType =
     "item/backgroundTask/completed" satisfies ThreadEventType;
   const completed = alias(events, "completed_background_task_state");
@@ -2409,9 +2583,7 @@ function listStoredTurnStartedKeysChunk(
     .all();
 
   return rows.flatMap((row) =>
-    row.turnId === null
-      ? []
-      : [{ threadId: row.threadId, turnId: row.turnId }],
+    row.turnId === null ? [] : [{ threadId: row.threadId, turnId: row.turnId }],
   );
 }
 
@@ -2573,7 +2745,9 @@ export function listRecentStoredEventRows(
   }
 
   return db
-    .select(storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars))
+    .select(
+      storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars),
+    )
     .from(events)
     .where(and(...conditions))
     .orderBy(events.sequence)
@@ -2598,14 +2772,17 @@ const conversationOutlineLifecycleTypes = [
   "item/agentMessage/delta",
   "item/plan/delta",
 ] satisfies ThreadEventType[];
+
 const conversationOutlineItemKinds = [
   "agentMessage",
   "plan",
 ] satisfies ThreadEventItemType[];
+
 const conversationOutlineStructuralItemKinds = [
   "backgroundTask",
   "toolCall",
 ] satisfies ThreadEventItemType[];
+
 const conversationOutlineStructuralLifecycleTypes = [
   "item/started",
   "item/completed",
@@ -3040,8 +3217,7 @@ export function findStoredTimelineWindowByteBudgetFloor(
   const query = db
     .select({
       createdAt: events.createdAt,
-      dataBytes:
-        sql<number>`length(CAST(${data} AS BLOB))`.as("data_bytes"),
+      dataBytes: sql<number>`length(CAST(${data} AS BLOB))`.as("data_bytes"),
       sequence: events.sequence,
       turnId: events.turnId,
     })
@@ -3109,7 +3285,9 @@ export function listStoredTimelineWindowEventRows(
   args: ListStoredTimelineWindowEventRowsArgs,
 ): StoredEventRow[] {
   return db
-    .select(storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars))
+    .select(
+      storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars),
+    )
     .from(events)
     .where(and(...storedTimelineWindowConditions(args)))
     .orderBy(events.sequence)
@@ -3213,7 +3391,10 @@ export function getLatestThreadSystemErrorEventRow(
       .select(storedEventRowFields)
       .from(events)
       .where(
-        and(eq(events.threadId, args.threadId), eq(events.type, "system/error")),
+        and(
+          eq(events.threadId, args.threadId),
+          eq(events.type, "system/error"),
+        ),
       )
       .orderBy(desc(events.sequence))
       .limit(1)
@@ -3682,8 +3863,7 @@ export function listOpenBackgroundTaskItemRowsForHost(
   args: ListOpenBackgroundTaskItemRowsForHostArgs,
 ): OpenBackgroundTaskItemRow[] {
   const startedType = "item/started" satisfies ThreadEventType;
-  const progressType =
-    "item/backgroundTask/progress" satisfies ThreadEventType;
+  const progressType = "item/backgroundTask/progress" satisfies ThreadEventType;
   const completedType =
     "item/backgroundTask/completed" satisfies ThreadEventType;
   const settled = alias(events, "settled_background_task");
@@ -3747,8 +3927,7 @@ export function listOpenBackgroundTaskItemRowsForThread(
   args: ListOpenBackgroundTaskItemRowsForThreadArgs,
 ): OpenBackgroundTaskItemRow[] {
   const startedType = "item/started" satisfies ThreadEventType;
-  const progressType =
-    "item/backgroundTask/progress" satisfies ThreadEventType;
+  const progressType = "item/backgroundTask/progress" satisfies ThreadEventType;
   const completedType =
     "item/backgroundTask/completed" satisfies ThreadEventType;
   const settled = alias(events, "settled_thread_background_task");
@@ -3810,8 +3989,7 @@ export function pruneBackgroundTaskProgressEvents(
   db: DbConnection,
   args: PruneBackgroundTaskProgressEventsArgs,
 ): number {
-  const progressType =
-    "item/backgroundTask/progress" satisfies ThreadEventType;
+  const progressType = "item/backgroundTask/progress" satisfies ThreadEventType;
   const completedType =
     "item/backgroundTask/completed" satisfies ThreadEventType;
 

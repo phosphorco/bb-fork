@@ -58,21 +58,26 @@ import { ProviderCliInstallLogDialogHost } from "./components/provider-cli/provi
 import { PluginSettingsCompatibilityRoute } from "./components/settings/PluginSettingsCompatibilityRoute";
 import { RouteLoadingSkeleton } from "./components/ui/route-loading-skeleton";
 
+import { P6rClaimIdentityDialog } from "./components/dialogs/ClaimIdentityDialog";
+
 const SettingsView = lazy(() =>
   import("./views/SettingsView").then((m) => ({
     default: m.SettingsView,
   })),
 );
+
 const ToolsView = lazy(() =>
   import("./views/ToolsView").then((m) => ({
     default: m.ToolsView,
   })),
 );
+
 const MachineSettingsView = lazy(() =>
   import("./views/MachineSettingsView").then((m) => ({
     default: m.MachineSettingsView,
   })),
 );
+
 const ProjectSettingsView = lazy(() =>
   import("./views/ProjectSettingsView").then((m) => ({
     default: m.ProjectSettingsView,
@@ -380,6 +385,7 @@ export function App() {
           <AppNavigationUrlHost>
             <AppFileExternalNavigationHost>
               <HashNavigationScroll />
+              <P6rClaimIdentityDialog />
               <Routes>
                 <Route
                   path={AUTH_CALLBACK_ROUTE_PATH}
@@ -390,8 +396,8 @@ export function App() {
               {/* Outside <Routes>: a provider CLI install outlives the page that
                 started it, so its failure toast can be clicked from any route —
                 including auth callback, which renders no app shell. */}
-               <ProviderCliInstallLogDialogHost />
-             </AppFileExternalNavigationHost>
+              <ProviderCliInstallLogDialogHost />
+            </AppFileExternalNavigationHost>
           </AppNavigationUrlHost>
         </RouteNavigationProvider>
       </AppCommandProvider>

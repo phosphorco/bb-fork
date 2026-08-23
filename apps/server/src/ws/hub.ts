@@ -10,6 +10,7 @@ import {
   type ThreadChangeKind,
   type ThreadChangeMetadata,
   type ThreadEventType,
+  type P6rPresenceViewer,
 } from "@bb/domain";
 import type { DbNotifier } from "@bb/db";
 import type {
@@ -29,13 +30,24 @@ import {
   type ThreadOpenFile,
   type ThreadOpenSplit,
   type TerminalServerMessage,
+  p6rPresenceSummaryMessageSchema,
+  p6rThreadPresenceMessageSchema,
 } from "@bb/server-contract";
+
+import {
+  P6rPresenceService,
+  type P6rPresenceSnapshot,
+  type P6rPresenceSnapshotOptions,
+} from "../services/presence.js";
+import { p6rGetSocketActor } from "./socket-actors.js";
 
 const TERMINAL_SOCKET_HIGH_WATER_BYTES = 1024 * 1024;
 // A 16 MiB raw burst expands to about 21.4 MiB as base64 + JSON. Keep
 // enough bounded headroom for that workload while preventing unbounded growth.
 const TERMINAL_SOCKET_MAX_QUEUE_BYTES = 32 * 1024 * 1024;
+
 const TERMINAL_SOCKET_DRAIN_POLL_MS = 10;
+
 /**
  * A streaming turn appends events ~10 times a second. A client that only
  * subscribes to the thread list (every open app window, for every thread it
@@ -45,6 +57,7 @@ const TERMINAL_SOCKET_DRAIN_POLL_MS = 10;
  * Detail subscribers keep receiving every notification.
  */
 const THREAD_LIST_EVENTS_APPENDED_COALESCE_MS = 1_000;
+
 /**
  * Event types the thread-list client path reacts to individually (prompt
  * history recall, pull-request refresh), so they bypass coalescing.
@@ -159,6 +172,10 @@ interface RecordHostOnlineRpcResponseArgs {
   sessionId: string;
 }
 
+export interface P6rNotificationHubOptions {
+  p6rPresenceTypingTtlMs?: number;
+}
+
 type HostOnlineRpcResponseDisposition =
   | { handled: true }
   | { handled: false; reason: "stale" }
@@ -238,6 +255,18 @@ export class NotificationHub implements DbNotifier {
     string,
     Set<ThreadEventWaiter>
   >();
+  private readonly p6rPresence: P6rPresenceService;
+
+  constructor(options: P6rNotificationHubOptions = {}) {
+    this.p6rPresence = new P6rPresenceService({
+      p6rOnThreadChanged: (threadId, viewers) => {
+        this.p6rBroadcastPresence(threadId, viewers);
+      },
+      ...(options.p6rPresenceTypingTtlMs === undefined
+        ? {}
+        : { p6rTypingTtlMs: options.p6rPresenceTypingTtlMs }),
+    });
+  }
   private readonly pendingThreadListEventsAppendedByThread = new Map<
     string,
     PendingThreadListEventsAppended
@@ -264,6 +293,10 @@ export class NotificationHub implements DbNotifier {
       sockets.delete(socket);
       if (sockets.size === 0) {
         this.clientSocketsByKey.delete(key);
+      }
+      const threadId = this.p6rThreadIdFromDetailKey(key);
+      if (threadId !== null) {
+        this.p6rPresence.p6rUnsubscribe(threadId, socket);
       }
     }
 
@@ -482,16 +515,24 @@ export class NotificationHub implements DbNotifier {
   subscribe(socket: HubSocket, target: RealtimeSubscriptionTarget): void {
     this.registerClient(socket);
     const key = subscriptionKey(target);
-    this.clientKeysBySocket.get(socket)?.add(key);
+    const keys = this.clientKeysBySocket.get(socket);
+    const alreadySubscribed = keys?.has(key) ?? false;
+    keys?.add(key);
 
     const sockets = this.clientSocketsByKey.get(key) ?? new Set<HubSocket>();
     sockets.add(socket);
     this.clientSocketsByKey.set(key, sockets);
+    if (target.kind === "thread-detail" && !alreadySubscribed) {
+      const result = this.p6rPresence.p6rSubscribe(target.threadId, socket);
+      if (result === "unchanged") {
+        this.p6rSendThreadPresenceToSocket(socket, target.threadId);
+      }
+    }
   }
 
   unsubscribe(socket: HubSocket, target: RealtimeSubscriptionTarget): void {
     const key = subscriptionKey(target);
-    this.clientKeysBySocket.get(socket)?.delete(key);
+    const wasSubscribed = this.clientKeysBySocket.get(socket)?.delete(key);
 
     const sockets = this.clientSocketsByKey.get(key);
     if (!sockets) {
@@ -501,6 +542,19 @@ export class NotificationHub implements DbNotifier {
     if (sockets.size === 0) {
       this.clientSocketsByKey.delete(key);
     }
+    if (target.kind === "thread-detail" && wasSubscribed) {
+      this.p6rPresence.p6rUnsubscribe(target.threadId, socket);
+    }
+  }
+
+  p6rSetTyping(socket: HubSocket, threadId: string, typing: boolean): void {
+    this.p6rPresence.p6rSetTyping(socket, threadId, typing);
+  }
+
+  p6rGetPresenceSnapshot(
+    options?: P6rPresenceSnapshotOptions,
+  ): P6rPresenceSnapshot {
+    return this.p6rPresence.p6rSnapshot(options);
   }
 
   recordDaemonSessionPlatform(sessionId: string, platform: HostPlatform): void {
@@ -1061,6 +1115,92 @@ export class NotificationHub implements DbNotifier {
       }
       socket.send(payload);
     }
+  }
+
+  /**
+   * Presence summaries are partial patches: consumers merge the supplied
+   * thread entries into their cache, and an empty handle array removes that
+   * thread's entry. p6rThreadViewers is the additive identity-preserving
+   * projection; p6rThreads remains for legacy clients.
+   */
+  private p6rBroadcastPresence(
+    threadId: string,
+    viewers: readonly P6rPresenceViewer[],
+  ): void {
+    const summaryResult = p6rPresenceSummaryMessageSchema.safeParse({
+      type: "p6r-presence-summary",
+      p6rThreads: {
+        [threadId]: viewers.map((viewer) => viewer.p6rHandle),
+      },
+      p6rThreadViewers: {
+        [threadId]: viewers,
+      },
+    });
+    if (!summaryResult.success) {
+      console.error(
+        "Skipping invalid realtime presence broadcast",
+        summaryResult.error,
+      );
+      return;
+    }
+
+    for (const socket of this.clientSocketsByKey.get(
+      subscriptionKey({ kind: "thread-detail", threadId }),
+    ) ?? []) {
+      const detailResult = p6rThreadPresenceMessageSchema.safeParse({
+        type: "p6r-thread-presence",
+        p6rThreadId: threadId,
+        p6rViewers: this.p6rViewersForSocket(threadId, socket),
+      });
+      if (!detailResult.success) {
+        console.error(
+          "Skipping invalid realtime presence broadcast",
+          detailResult.error,
+        );
+        return;
+      }
+      socket.send(JSON.stringify(detailResult.data));
+    }
+    this.notifyClientsByKeySet(
+      this.clientSocketsByKey.get(subscriptionKey({ kind: "thread-list" })) ??
+        [],
+      JSON.stringify(summaryResult.data),
+    );
+  }
+
+  private p6rSendThreadPresenceToSocket(
+    socket: HubSocket,
+    threadId: string,
+  ): void {
+    const result = p6rThreadPresenceMessageSchema.safeParse({
+      type: "p6r-thread-presence",
+      p6rThreadId: threadId,
+      p6rViewers: this.p6rViewersForSocket(threadId, socket),
+    });
+    if (!result.success) {
+      console.error("Skipping invalid realtime presence sync", result.error);
+      return;
+    }
+    socket.send(JSON.stringify(result.data));
+  }
+
+  private p6rViewersForSocket(
+    threadId: string,
+    socket: HubSocket,
+  ): readonly P6rPresenceViewer[] {
+    const actor = p6rGetSocketActor(socket);
+    return (
+      this.p6rPresence.p6rSnapshot(
+        actor?.p6rPrincipalKey === undefined
+          ? undefined
+          : { suppressPrincipalKey: actor.p6rPrincipalKey },
+      ).p6rThreads[threadId] ?? []
+    );
+  }
+
+  private p6rThreadIdFromDetailKey(key: string): string | null {
+    const prefix = "thread-detail:";
+    return key.startsWith(prefix) ? key.slice(prefix.length) : null;
   }
 
   private notifyClients(message: ChangedMessage): void {

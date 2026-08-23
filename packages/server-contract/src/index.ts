@@ -27,6 +27,11 @@ export {
   HOST_CHANGE_KINDS,
   hostChangedMessageSchema,
   hostChangeKindSchema,
+  p6rPresenceSummaryMessageLenientSchema,
+  p6rPresenceSummaryMessageSchema,
+  p6rPresenceViewerSchema,
+  p6rClaimedIdentityClaimSchema,
+  p6rClaimedIdentityMessageSchema,
   pingMessageSchema,
   pongMessageLenientSchema,
   pongMessageSchema,
@@ -42,6 +47,8 @@ export {
   threadChangeKindSchema,
   threadChangeMetadataSchema,
   THREAD_CHANGE_KINDS,
+  p6rThreadPresenceMessageLenientSchema,
+  p6rThreadPresenceMessageSchema,
 } from "@bb/domain";
 
 export type {
@@ -51,6 +58,11 @@ export type {
   EnvironmentChangedMessage,
   HostChangeKind,
   HostChangedMessage,
+  P6rPresenceSummaryMessage,
+  P6rPresenceViewer,
+  P6rClaimedIdentity,
+  P6rClaimedIdentityClaim,
+  P6rClaimedIdentityMessage,
   PingMessage,
   PongMessage,
   ProjectChangeKind,
@@ -62,6 +74,7 @@ export type {
   ThreadChangeMetadata,
   ThreadChangeKind,
   ThreadChangedMessage,
+  P6rThreadPresenceMessage,
   UnsubscribeMessage,
   JsonValue,
 } from "@bb/domain";

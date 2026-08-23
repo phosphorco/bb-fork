@@ -130,6 +130,13 @@ export interface EventMeta {
   id: string;
   seq: number;
   createdAt: number;
+  // Claimed handle of the human who initiated the event; null = not
+  // human-initiated or pre-multiplayer history.
+  p6rActorHandle?: string | null;
+  p6rActorProviderId?: string | null;
+  p6rActorSubject?: string | null;
+  p6rActorDisplayName?: string | null;
+  p6rActorImageUrl?: string | null;
 }
 
 function buildEventMeta(row: ThreadEventRow): EventMeta {
@@ -137,6 +144,11 @@ function buildEventMeta(row: ThreadEventRow): EventMeta {
     id: row.id,
     seq: row.seq,
     createdAt: row.createdAt,
+    p6rActorHandle: row.p6rActorHandle,
+    p6rActorProviderId: row.p6rActorProviderId ?? null,
+    p6rActorSubject: row.p6rActorSubject ?? null,
+    p6rActorDisplayName: row.p6rActorDisplayName ?? null,
+    p6rActorImageUrl: row.p6rActorImageUrl ?? null,
   };
 }
 

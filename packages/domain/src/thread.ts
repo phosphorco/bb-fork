@@ -10,6 +10,8 @@ import {
 import { threadStatusSchema, threadStatusValues } from "./thread-status.js";
 import { threadOriginKindSchema } from "./thread-origin-kind.js";
 import { threadVisibilitySchema } from "./thread-visibility.js";
+import { p6rPrincipalKeySchema } from "./claimed-identity.js";
+import { p6rActorSnapshotSchema } from "./p6r-identity.js";
 export { threadStatusSchema, threadStatusValues } from "./thread-status.js";
 export type { ThreadStatus } from "./thread-status.js";
 export {
@@ -359,6 +361,7 @@ export const threadQueuedMessageSchema = z.object({
   groupWithNext: z.boolean(),
   createdAt: z.number(),
   updatedAt: z.number(),
+  p6rActor: p6rActorSnapshotSchema.nullable().default(null),
 });
 export type ThreadQueuedMessage = z.infer<typeof threadQueuedMessageSchema>;
 
@@ -392,6 +395,17 @@ export const threadWithRuntimeSchema = threadSchema.extend({
 });
 export type ThreadWithRuntime = z.infer<typeof threadWithRuntimeSchema>;
 
+export const p6rThreadParticipantProfileSchema = z
+  .object({
+    p6rPrincipalKey: p6rPrincipalKeySchema,
+    p6rDisplayName: z.string().min(1).max(256),
+    p6rImageUrl: z.string().max(2048).nullable(),
+  })
+  .strict();
+export type P6rThreadParticipantProfile = z.infer<
+  typeof p6rThreadParticipantProfileSchema
+>;
+
 export const threadListEntrySchema = threadWithRuntimeSchema.extend({
   activity: threadActivityStateSchema,
   pinSortKey: z.string().nullable(),
@@ -400,5 +414,6 @@ export const threadListEntrySchema = threadWithRuntimeSchema.extend({
   environmentName: z.string().nullable(),
   environmentBranchName: z.string().nullable(),
   environmentWorkspaceDisplayKind: environmentWorkspaceDisplayKindSchema,
+  participants: z.array(p6rThreadParticipantProfileSchema).optional(),
 });
 export type ThreadListEntry = z.infer<typeof threadListEntrySchema>;

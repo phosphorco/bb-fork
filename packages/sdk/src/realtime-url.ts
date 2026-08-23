@@ -57,28 +57,35 @@ function browserSameOriginRealtimeUrl(): string | null {
 
 export function resolveRealtimeUrl(args: ResolveRealtimeUrlArgs): string {
   const { transport } = args;
+  let resolved: string;
   if (transport.realtimeUrl) {
-    return transport.realtimeUrl;
-  }
-
-  // Mirror the HTTP transport's derivation (`${baseUrl}/api/v1${path}`): a
-  // path-prefixed baseUrl keeps its prefix for the websocket endpoint too.
-  const absoluteBaseUrl = absoluteHttpBaseUrl(transport.baseUrl);
-  if (absoluteBaseUrl) {
-    return websocketUrlFromHttpUrl({
-      preservePathPrefix: true,
-      url: absoluteBaseUrl,
-    });
-  }
-
-  if (transport.runtime === "browser") {
-    const sameOriginUrl = browserSameOriginRealtimeUrl();
-    if (sameOriginUrl) {
-      return sameOriginUrl;
+    resolved = transport.realtimeUrl;
+  } else {
+    // Mirror the HTTP transport's derivation (`${baseUrl}/api/v1${path}`): a
+    // path-prefixed baseUrl keeps its prefix for the websocket endpoint too.
+    const absoluteBaseUrl = absoluteHttpBaseUrl(transport.baseUrl);
+    if (absoluteBaseUrl) {
+      resolved = websocketUrlFromHttpUrl({
+        preservePathPrefix: true,
+        url: absoluteBaseUrl,
+      });
+    } else if (transport.runtime === "browser") {
+      const sameOriginUrl = browserSameOriginRealtimeUrl();
+      if (!sameOriginUrl) {
+        throw new Error(
+          "BB SDK realtime requires an absolute baseUrl or realtimeUrl in this runtime.",
+        );
+      }
+      resolved = sameOriginUrl;
+    } else {
+      throw new Error(
+        "BB SDK realtime requires an absolute baseUrl or realtimeUrl in this runtime.",
+      );
     }
   }
 
-  throw new Error(
-    "BB SDK realtime requires an absolute baseUrl or realtimeUrl in this runtime.",
-  );
+  // Identity is resolved by the server at the websocket boundary. Never put
+  // a client claim in the upgrade URL; the legacy HTTP header, when present,
+  // is not an authority source and cannot override a verified provider.
+  return resolved;
 }

@@ -674,6 +674,13 @@ export interface PluginSidebarThreadActivity {
   goals: number;
 }
 
+/** The participant presentation facts a host may contribute to a sidebar row. */
+export interface P6rParticipantProfile {
+  p6rPrincipalKey: string;
+  p6rDisplayName: string;
+  p6rImageUrl: string | null;
+}
+
 /**
  * One thread in the sidebar's live view.
  *
@@ -708,6 +715,13 @@ export interface PluginSidebarThread {
    * screen-reader text stays consistent across sidebars.
    */
   indicatorLabel: string | null;
+
+  /**
+   * The host's ordered participant projection. Absent on older hosts or when
+   * the host has no participant projection for this thread; never reconstruct
+   * it from another identity source.
+   */
+  p6rParticipants?: readonly P6rParticipantProfile[];
 
   isUnread: boolean;
   isPinned: boolean;

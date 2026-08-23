@@ -83,6 +83,13 @@ interface ConversationMessageContentBaseProps {
 
 interface ConversationMessageContentUserProps extends ConversationMessageContentBaseProps {
   role: "user";
+  /** Claimed handle of the human who sent this row; null = unattributed. */
+  p6rActorHandle: string | null;
+  /**
+   * True when the loaded timeline has 2+ distinct authors. Gates the author
+   * chip so single-author threads render exactly as before multiplayer.
+   */
+  p6rShowAuthor: boolean;
   /** Mobile presentation for the regular user message's action footer. */
   mobileActionDisplay?: "inline" | "overflow";
   /**
@@ -144,6 +151,7 @@ const ASSISTANT_THREAD_MENTIONS: MarkdownThreadMentions = {
 // otherwise remove the gap at the seam and shift the layout when the finished
 // message re-renders as one document. Restore those margins at the seam only.
 const STREAMING_SETTLED_MARKDOWN_CLASS_NAME = "[&>p:last-child]:mb-2";
+
 const STREAMING_TAIL_MARKDOWN_CLASS_NAME =
   "[&>h1:first-child]:mt-4 [&>h2:first-child]:mt-4 [&>h3:first-child]:mt-3 [&>h4:first-child]:mt-3 [&>h5:first-child]:mt-2 [&>h6:first-child]:mt-2";
 
@@ -205,10 +213,12 @@ type ConversationMessageContentProps =
   | ConversationMessageContentAssistantProps;
 
 interface UserConversationMessageProps {
+  p6rActorHandle: string | null;
   addToChatAttachments: readonly PromptDraftAttachment[];
   attachmentItems: ConversationAttachmentItems;
   originKind: ThreadOriginKind | null;
   pluginActions?: readonly ThreadTimelinePluginMessageAction[];
+  p6rShowAuthor: boolean;
   initiator: TimelineUserConversationRow["initiator"];
   mentions: readonly PromptTextMention[];
   mobileActionDisplay: "inline" | "overflow";
@@ -405,10 +415,12 @@ function buildAddToChatAttachments(
 }
 
 function UserConversationMessage({
+  p6rActorHandle,
   addToChatAttachments,
   attachmentItems,
   originKind,
   initiator,
+  p6rShowAuthor,
   mentions,
   mobileActionDisplay,
   onAddToChat,
@@ -496,12 +508,29 @@ function UserConversationMessage({
   const mutePrefixLength = computeMutedPrefixLength(initiator, text);
   const messageText = text.trim();
   const requestLabel = turnRequestLabel(turnRequest);
+  // Author chip only in genuinely multi-author threads (2+ distinct handles
+  // loaded) and only for attributed rows — legacy rows carry a null handle.
+  const authorChipHandle =
+    p6rShowAuthor && p6rActorHandle !== null ? p6rActorHandle : null;
 
   return (
     // `data-message-column` marks the full timeline width for the action row,
     // which expands into this column's empty gutter on touch.
     <div className="w-full" data-message-column="">
       <div className="group/message ml-auto flex w-fit max-w-[70%] flex-col items-end">
+        {authorChipHandle !== null ? (
+          <div className="mb-1 flex items-center justify-end gap-1">
+            <span className="inline-flex size-4 select-none items-center justify-center rounded-full border border-border bg-surface-recessed text-[9px] font-medium uppercase leading-none text-muted-foreground">
+              {authorChipHandle[0] ?? "?"}
+            </span>
+            <span
+              data-testid="user-message-author"
+              className="text-xs text-muted-foreground"
+            >
+              @{authorChipHandle}
+            </span>
+          </div>
+        ) : null}
         {requestLabel ? (
           <div className="mb-1 flex justify-end">
             <TurnRequestLabel
@@ -772,11 +801,13 @@ export function ConversationMessageContent(
   if (props.role === "user") {
     return (
       <UserConversationMessage
+        p6rActorHandle={props.p6rActorHandle}
         addToChatAttachments={addToChatAttachments}
         attachmentItems={attachmentItems}
         originKind={props.originKind}
         pluginActions={props.pluginActions}
         initiator={props.initiator}
+        p6rShowAuthor={props.p6rShowAuthor}
         mentions={props.mentions}
         mobileActionDisplay={props.mobileActionDisplay ?? "overflow"}
         onAddToChat={props.onAddToChat}

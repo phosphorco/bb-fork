@@ -94,6 +94,7 @@ const pluginSdkRuntimePath = join(
   dirname(fileURLToPath(import.meta.url)),
   "plugin-sdk-runtime.js",
 );
+
 const PLUGIN_SDK_SPECIFIER = "@get-bb/plugin-sdk";
 
 /**
@@ -147,10 +148,14 @@ interface MutableRoot {
 }
 
 const mutableRoots = new Map<string, MutableRoot>();
+
 /** Marker shape: `<root id>.<epoch>`. */
 const MUTABLE_ROOT_MARKER = /[?&]bbPluginLoad=(\d+)\.(\d+)/;
+
 let nextMutableRootId = 1;
+
 let nextMutableRootEpoch = 1;
+
 let mutableRootHooks: { deregister: () => void } | null = null;
 
 function registerMutableRootHooks(): void {
@@ -335,9 +340,13 @@ const DEV_BUILD_PROBLEM_LABELS: Record<PluginDevBuildKind, string> = {
 const PREVIOUS_INSTANCE_KEPT = "the previous instance is still running";
 
 const DEFAULT_LOAD_TIMEOUT_MS = 30_000;
+
 const DEFAULT_SERVICE_STOP_TIMEOUT_MS = 5_000;
+
 const DEFAULT_SERVICE_RESTART_BASE_MS = 1_000;
+
 const SERVICE_RESTART_MAX_MS = 60_000;
+
 /** A crash after this much healthy runtime resets the backoff sequence. */
 const SERVICE_HEALTHY_RESET_MS = 5 * 60_000;
 
@@ -1495,6 +1504,11 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     };
     const handle = createPluginApi({
       pluginId: row.id,
+      p6rStageProvider:
+        deps.p6rIdentity?.p6rStageProvider ??
+        (() => {
+          throw new Error("p6r identity provider boundary is unavailable");
+        }),
       logger: deps.logger,
       db: deps.db,
       dataDir: deps.dataDir,
@@ -1791,6 +1805,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
         return hungServicesDetail(hungAfterDispose);
       }
     }
+    handle.activateP6rIdentityProvider();
     // One map replacement is the registration commit point. Until this line,
     // every dispatcher continues to resolve the complete previous handle.
     disposeUnavailableProviderRegistrations(row.id);

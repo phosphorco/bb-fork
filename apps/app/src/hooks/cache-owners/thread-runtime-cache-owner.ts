@@ -66,6 +66,8 @@ import {
   refetchThreadListsAfterComposerThreadCreate,
 } from "./mutation-cache-effects";
 
+import { p6rGetClaimedIdentity } from "@/lib/claimed-identity-store";
+
 interface ThreadIdCacheArgs {
   queryClient: QueryClient;
   threadId: string;
@@ -413,6 +415,7 @@ function buildOptimisticQueuedMessage({
     groupWithNext: false,
     createdAt,
     updatedAt: createdAt,
+    p6rActor: null,
   };
 }
 
@@ -573,6 +576,10 @@ function buildOptimisticUserMessageRow({
         }
       : null;
   return {
+    // Mirror the attribution the server will record for this send: our own
+    // claimed handle, or null in the local-operator (no identity) case.
+    p6rActorHandle: p6rGetClaimedIdentity()?.p6rHandle ?? null,
+    p6rActor: null,
     id,
     kind: "conversation",
     role: "user",

@@ -602,6 +602,7 @@ export const threads = sqliteTable(
     // Id of the plugin that spawned this thread (create origin "plugin").
     // NULL for every other origin.
     originPluginId: text("origin_plugin_id"),
+    p6rCreatedByHandle: text("p6r_created_by_handle"),
     visibility: text("visibility", { enum: threadVisibilityValues })
       .notNull()
       .default("visible"),
@@ -727,6 +728,28 @@ export const threadDynamicContextFileStates = sqliteTable(
   ],
 );
 
+export const p6rActors = sqliteTable(
+  "p6r_actors",
+  {
+    p6rProviderId: text("p6r_provider_id").notNull(),
+    p6rSubject: text("p6r_subject").notNull(),
+    p6rHandle: text("p6r_handle").notNull(),
+    p6rDisplayName: text("p6r_display_name").notNull(),
+    p6rImageUrl: text("p6r_image_url"),
+    p6rFirstSeenAt: integer("p6r_first_seen_at").notNull(),
+    p6rLastSeenAt: integer("p6r_last_seen_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.p6rProviderId, table.p6rSubject] })],
+);
+
+export const p6rCollaborators = sqliteTable("p6r_collaborators", {
+  p6rHandle: text("p6r_handle").primaryKey(),
+  p6rDisplayName: text("p6r_display_name").notNull(),
+  p6rImageUrl: text("p6r_image_url"),
+  p6rFirstSeenAt: integer("p6r_first_seen_at").notNull(),
+  p6rLastSeenAt: integer("p6r_last_seen_at").notNull(),
+});
+
 export const events = sqliteTable(
   "events",
   {
@@ -745,6 +768,11 @@ export const events = sqliteTable(
     itemId: text("item_id"),
     itemKind: text("item_kind").$type<ThreadEventItemType>(),
     parentToolCallId: text("parent_tool_call_id"),
+    p6rActorHandle: text("p6r_actor_handle"),
+    p6rActorProviderId: text("p6r_actor_provider_id"),
+    p6rActorSubject: text("p6r_actor_subject"),
+    p6rActorDisplayName: text("p6r_actor_display_name"),
+    p6rActorImageUrl: text("p6r_actor_image_url"),
     data: text("data").notNull().default("{}"),
     createdAt: integer("created_at").notNull(),
   },
@@ -924,6 +952,11 @@ export const queuedThreadMessages = sqliteTable(
       .references(() => threads.id, { onDelete: "cascade" }),
     content: text("content").notNull(),
     senderThreadId: text("sender_thread_id"),
+    p6rActorHandle: text("p6r_actor_handle"),
+    p6rActorProviderId: text("p6r_actor_provider_id"),
+    p6rActorSubject: text("p6r_actor_subject"),
+    p6rActorDisplayName: text("p6r_actor_display_name"),
+    p6rActorImageUrl: text("p6r_actor_image_url"),
     model: text("model").notNull(),
     reasoningLevel: text("reasoning_level").notNull(),
     permissionMode: text("permission_mode").$type<PermissionMode>().notNull(),
@@ -1054,6 +1087,7 @@ export const pendingInteractions = sqliteTable(
     status: text("status").$type<PendingInteractionStatus>().notNull(),
     payload: text("payload").notNull(),
     resolution: text("resolution"),
+    p6rResolvedByHandle: text("p6r_resolved_by_handle"),
     statusReason: text("status_reason"),
     createdAt: integer("created_at").notNull(),
     expiresAt: integer("expires_at"),

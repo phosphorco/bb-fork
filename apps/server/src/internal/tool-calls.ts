@@ -3,6 +3,7 @@ import {
   typedRoutes,
   type HostDaemonInternalSchema,
 } from "@bb/host-daemon-contract";
+import { p6rGetTurnAuthorActor } from "@bb/db";
 import type { ToolCallResponse } from "@bb/domain";
 import type { Hono } from "hono";
 import type { AppDeps } from "../types.js";
@@ -95,6 +96,10 @@ export function registerInternalToolCallRoutes(app: Hono, deps: AppDeps): void {
             ctx: {
               threadId: thread.id,
               projectId: thread.projectId,
+              p6rTurnAuthor: p6rGetTurnAuthorActor(deps.db, {
+                threadId: thread.id,
+                turnId: payload.turnId,
+              }),
               // The request's own abort signal: it fires if the daemon
               // round-trip is torn down while the tool runs.
               signal: context.req.raw.signal,

@@ -62,6 +62,8 @@ describe("bb thread log command output", () => {
     const getTimeline = vi.fn(async () =>
       fixtures.makeTimelineResponse([
         {
+          p6rActorHandle: null,
+          p6rActor: null,
           ...fixtures.makeTimelineBase({
             id: "user-1",
             sourceSeqStart: 1,

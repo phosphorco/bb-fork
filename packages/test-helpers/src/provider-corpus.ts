@@ -291,6 +291,7 @@ export function decodeCorpusStoredEventRow(
     threadId: row.threadId,
     seq: row.sequence,
     createdAt: row.createdAt,
+    p6rActorHandle: null,
     event,
   });
 }

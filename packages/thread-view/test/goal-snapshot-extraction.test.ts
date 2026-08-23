@@ -31,6 +31,7 @@ function goalUpdatedEvent({
       },
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq * 100,
@@ -49,6 +50,7 @@ function goalClearedEvent(seq: number): ThreadEventWithMeta {
       payload: null,
     },
     meta: {
+      p6rActorHandle: null,
       id: `event-${seq}`,
       seq,
       createdAt: seq * 100,
@@ -79,7 +81,12 @@ function legacyGoalRow(
       scope: threadScope(),
       threadId: "thread-1",
     }),
-    meta: { id: `event-${seq}`, seq, createdAt: seq * 100 },
+    meta: {
+      id: `event-${seq}`,
+      seq,
+      createdAt: seq * 100,
+      p6rActorHandle: null,
+    },
   };
 }
 
@@ -147,7 +154,12 @@ describe("extractThreadTimelineGoal", () => {
             kind: "other-plugin/widget",
             payload: null,
           },
-          meta: { id: "event-2", seq: 2, createdAt: 200 },
+          meta: {
+            id: "event-2",
+            seq: 2,
+            createdAt: 200,
+            p6rActorHandle: null,
+          },
         },
       ])?.objective,
     ).toBe("Goal");

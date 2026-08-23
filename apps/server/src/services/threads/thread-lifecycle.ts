@@ -102,9 +102,13 @@ import { isPreStartThreadStatus } from "./thread-status.js";
 import { settleDanglingBackgroundTasksForStoppedThreadInTransaction } from "./background-task-reconciliation.js";
 
 type ThreadStartCommand = Awaited<ReturnType<typeof buildThreadStartCommand>>;
+
 type ThreadStopCommand = ReturnType<typeof buildThreadStopCommand>;
+
 type ThreadPlanCancelCommand = HostDaemonCommandForType<"thread.plan.cancel">;
+
 type TurnSubmitCommand = HostDaemonCommandForType<"turn.submit">;
+
 type ThreadEventAppendArgs = Parameters<
   typeof appendThreadEventsInTransaction
 >[1][number];
@@ -114,10 +118,14 @@ type ThreadFailureCommand = ThreadStartCommand | TurnSubmitCommand;
 type ThreadFailureResultReport = CommandResultFailureReportForType<
   ThreadFailureCommand["type"]
 >;
+
 type ThreadStartCommandResultReport =
   CommandResultReportForType<"thread.start">;
+
 type TurnSubmitCommandResultReport = CommandResultReportForType<"turn.submit">;
+
 type ThreadStopCommandResultReport = CommandResultReportForType<"thread.stop">;
+
 type ThreadPlanCancelCommandResultReport =
   CommandResultReportForType<"thread.plan.cancel">;
 
@@ -212,6 +220,7 @@ interface HasProviderTurnCompletedEventAtOrAfterArgs {
  * it is not part of these args.
  */
 interface RequestThreadStopArgs extends Omit<ThreadStopCommandArgs, "intent"> {
+  p6rActorHandle?: string | null;
   interruptionReason: SystemThreadInterruptedReason;
 }
 
@@ -435,6 +444,7 @@ interface ApplyActiveTurnInterruptionArgs {
 }
 
 interface MarkThreadStopRequestedWithEventArgs {
+  p6rActorHandle?: string | null;
   reason: SystemThreadInterruptedReason;
   threadId: string;
 }
@@ -510,6 +520,7 @@ function appendThreadInterruptedEventIfMissingInTransaction(
     return false;
   }
   appendThreadInterruptedEventInTransaction(deps.db, {
+    p6rActorHandle: args.p6rActorHandle ?? null,
     threadId: args.threadId,
     reason: args.reason,
   });
@@ -541,6 +552,7 @@ function markThreadStoppingWithEventInTransaction(
   // clients fall back to the throttled thread-list refetch.
   deps.hub.notifyThread(args.threadId, ["status-changed"]);
   appendThreadInterruptedEventInTransaction(deps.db, {
+    p6rActorHandle: args.p6rActorHandle ?? null,
     threadId: args.threadId,
     reason: args.reason,
   });
@@ -950,6 +962,7 @@ export async function prepareReadyThreadTurnCommand(
   const providerThreadId = getLastProviderThreadId(deps, args.thread.id);
   if (providerThreadId) {
     const preparedCommand = await prepareTurnSubmitCommandPayload(deps, {
+      p6rActorHandle: args.p6rActorHandle,
       environment: args.environment,
       execution: args.execution,
       input: args.input,
@@ -1208,6 +1221,7 @@ function markThreadStopRequested(
           hub: notificationBuffer,
         },
         {
+          p6rActorHandle: args.p6rActorHandle ?? null,
           reason: args.interruptionReason,
           threadId: args.threadId,
         },
@@ -1256,6 +1270,7 @@ function dispatchThreadStopCommand(
 function requestPreStartThreadStop(
   deps: RequestThreadStopForCurrentStateDeps,
   thread: RequestThreadStopForCurrentStateThread,
+  p6rActorHandle?: string | null,
 ): void {
   const notificationBuffer = new NotificationBuffer();
   const result: RequestPreStartThreadStopResult = deps.db.transaction(
@@ -1290,6 +1305,7 @@ function requestPreStartThreadStop(
 
       if (currentThread.status !== "stopping") {
         markThreadStoppingWithEventInTransaction(txDeps, {
+          p6rActorHandle: p6rActorHandle ?? null,
           reason: "manual-stop",
           threadId: currentThread.id,
         });
@@ -1361,6 +1377,7 @@ export function requestThreadStopForCurrentState(
   deps: RequestThreadStopForCurrentStateDeps,
   thread: RequestThreadStopForCurrentStateThread,
   environment: RequestThreadStopForCurrentStateEnvironment | null,
+  p6rActorHandle?: string | null,
 ): void {
   // An active thread (or one with a live start RPC in flight) stops via the
   // runtime stop RPC; a stopping thread with a live turn re-dispatches that
@@ -1375,6 +1392,7 @@ export function requestThreadStopForCurrentState(
       return;
     }
     requestThreadStop(deps, {
+      p6rActorHandle: p6rActorHandle ?? null,
       environmentId: environment.id,
       hostId: environment.hostId,
       interruptionReason: "manual-stop",
@@ -1388,7 +1406,7 @@ export function requestThreadStopForCurrentState(
     thread.status === "stopping" ||
     hasActiveThreadProvisioningContext(thread.id)
   ) {
-    requestPreStartThreadStop(deps, thread);
+    requestPreStartThreadStop(deps, thread, p6rActorHandle);
   }
 }
 
@@ -1402,6 +1420,7 @@ export async function stopThreadForCurrentState(
   deps: RequestThreadStopForCurrentStateDeps,
   thread: RequestThreadStopForCurrentStateThread,
   environment: RequestThreadStopForCurrentStateEnvironment | null,
+  p6rActorHandle?: string | null,
 ): Promise<void> {
   const hasLiveRuntime =
     thread.status === "active" ||
@@ -1412,6 +1431,7 @@ export async function stopThreadForCurrentState(
       return;
     }
     const args: RequestThreadStopArgs = {
+      p6rActorHandle: p6rActorHandle ?? null,
       environmentId: environment.id,
       hostId: environment.hostId,
       interruptionReason: "manual-stop",
@@ -1445,7 +1465,7 @@ export async function stopThreadForCurrentState(
     thread.status === "stopping" ||
     hasActiveThreadProvisioningContext(thread.id)
   ) {
-    requestPreStartThreadStop(deps, thread);
+    requestPreStartThreadStop(deps, thread, p6rActorHandle);
     return;
   }
 

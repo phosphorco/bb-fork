@@ -273,6 +273,7 @@ interface TimelineRendererStaticContextValue {
   resolveMentionLink: PromptMentionLinkResolver | undefined;
   resolveSegmentLinkHref: TimelineTitleLinkResolver | undefined;
   resolveUserAttachmentImageSrc: UserAttachmentImageSrcResolver | undefined;
+  p6rShowMessageAuthors: boolean;
   threadId: string | undefined;
   workspaceRootPath: string | undefined;
 }
@@ -822,6 +823,26 @@ function isForkSeedAnchorRow(row: TimelineConversationViewRow): boolean {
   );
 }
 
+export function p6rTimelineHasMultipleMessageAuthors(
+  rows: readonly ThreadTimelineViewRow[],
+): boolean {
+  const handles = new Set<string>();
+  const visitRows = (candidateRows: readonly ThreadTimelineViewRow[]): boolean => {
+    for (const row of candidateRows) {
+      if (row.kind === "conversation") {
+        if (row.role === "user" && row.p6rActorHandle !== null) {
+          handles.add(row.p6rActorHandle);
+          if (handles.size >= 2) return true;
+        }
+      } else if (row.kind === "turn" && row.children !== null) {
+        if (visitRows(row.children)) return true;
+      }
+    }
+    return false;
+  };
+  return visitRows(rows);
+}
+
 /**
  * Finds the final assistant row whose action bar is available in the rendered
  * timeline. Completed turn details and delegated-agent output intentionally do
@@ -1090,6 +1111,7 @@ const ConversationRowContent = memo(function ConversationRowContent({
     resolveMentionLink,
     resolveSegmentLinkHref,
     resolveUserAttachmentImageSrc,
+    p6rShowMessageAuthors,
     threadId,
     workspaceRootPath,
   } = useTimelineRendererStaticContext();
@@ -1168,9 +1190,11 @@ const ConversationRowContent = memo(function ConversationRowContent({
       : undefined;
     return (
       <ConversationMessageContent
+        p6rActorHandle={row.p6rActorHandle}
         attachments={row.attachments}
         originKind={originKind}
         initiator={row.initiator}
+        p6rShowAuthor={p6rShowMessageAuthors}
         mentions={row.mentions}
         mobileActionDisplay={mobileActionDisplay}
         onAddToChat={onSelectionAddToChat}
@@ -2315,6 +2339,10 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
   );
   const projectId = props.projectId;
   const senderThreadMetadataById = useSenderThreadMetadataById();
+  const p6rShowMessageAuthors = useMemo(
+    () => p6rTimelineHasMultipleMessageAuthors(rows),
+    [rows],
+  );
   // Single plugin-slot subscription for the whole timeline; messages read the
   // stable registry from context instead of each opening a store subscription.
   // Provide getServerSnapshot so renderToStaticMarkup / SSR tests work.
@@ -2460,6 +2488,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
       resolveMentionLink: props.resolveMentionLink,
       resolveSegmentLinkHref,
       resolveUserAttachmentImageSrc: props.resolveUserAttachmentImageSrc,
+      p6rShowMessageAuthors,
       threadId: props.threadId,
       workspaceRootPath: props.workspaceRootPath,
     }),
@@ -2487,6 +2516,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
       props.resolveMentionLink,
       resolveSegmentLinkHref,
       props.resolveUserAttachmentImageSrc,
+      p6rShowMessageAuthors,
       props.threadId,
       props.workspaceRootPath,
     ],

@@ -3,10 +3,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  BB_CLI_REEXEC_ENV,
-  maybeReexecViaBbCli,
-} from "../bb-cli-reexec.js";
+import { BB_CLI_REEXEC_ENV, maybeReexecViaBbCli } from "../bb-cli-reexec.js";
 
 describe("maybeReexecViaBbCli", () => {
   let tempRoot: string;
@@ -59,12 +56,16 @@ describe("maybeReexecViaBbCli", () => {
     expect(reexec).not.toHaveBeenCalled();
   });
 
-  it("re-execs to BB_CLI when it differs from the current entry", async () => {
+  it("re-execs to absolute BB_CLI even when PATH can resolve a stale launcher", async () => {
     const current = await writeExecutable("current");
     const target = await writeExecutable("target");
     const reexec = vi.fn();
     maybeReexecViaBbCli({
-      env: { BB_CLI: target, BB_SERVER_URL: "http://127.0.0.1:1" },
+      env: {
+        BB_CLI: target,
+        BB_SERVER_URL: "http://127.0.0.1:1",
+        PATH: "/stale/npx-and-bb:/usr/bin",
+      },
       currentExecutablePath: current,
       argv: ["status", "--json"],
       reexec,
@@ -76,6 +77,7 @@ describe("maybeReexecViaBbCli", () => {
       env: expect.objectContaining({
         BB_CLI: target,
         BB_SERVER_URL: "http://127.0.0.1:1",
+        PATH: "/stale/npx-and-bb:/usr/bin",
         [BB_CLI_REEXEC_ENV]: "1",
       }),
     });

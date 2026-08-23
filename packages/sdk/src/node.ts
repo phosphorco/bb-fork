@@ -18,8 +18,11 @@ import type {
   BbSdkTransport,
 } from "./transport.js";
 
+import type { P6rClaimedIdentity } from "@bb/domain";
+
 export interface CreateNodeTransportArgs {
   baseUrl?: string;
+  p6rClaimedIdentity?: P6rClaimedIdentity;
   cliConfig?: CliConfig;
   fetch?: FetchImplementation;
   realtimeUrl?: string;
@@ -52,6 +55,9 @@ export function createNodeTransport(
     // Only fall back to CLI config when no base URL is given, so explicitly
     // configured SDKs work in environments without BB_SERVER_URL.
     baseUrl: args.baseUrl ?? resolveCliConfig(args.cliConfig).BB_SERVER_URL,
+    ...(args.p6rClaimedIdentity
+      ? { p6rClaimedIdentity: args.p6rClaimedIdentity }
+      : {}),
     fetch:
       args.fetch ??
       createRequestTimeoutFetch({

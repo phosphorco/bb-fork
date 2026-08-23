@@ -1,6 +1,8 @@
 import ReconnectingWebSocket from "partysocket/ws";
 import {
   changedMessageLenientSchema,
+  p6rPresenceSummaryMessageLenientSchema,
+  p6rThreadPresenceMessageLenientSchema,
   pluginSignalLenientSchema,
   pongMessageLenientSchema,
   realtimeSubscriptionTargetKey,
@@ -15,6 +17,8 @@ import type {
   ThreadOpenFile,
   ThreadOpenSignal,
   ThreadPaneActionSignal,
+  P6rPresenceSummaryMessage,
+  P6rThreadPresenceMessage,
 } from "@bb/server-contract";
 import { buildDevWebSocketUrl } from "./dev-websocket-url";
 import {
@@ -22,10 +26,17 @@ import {
   subscribeToDocumentVisibility,
 } from "./document-visibility";
 
+import {
+  p6rGetClaimedIdentity,
+  p6rSubscribeClaimedIdentity,
+} from "./claimed-identity-store";
+
 type ChangeCallback = (message: ChangedMessage) => void;
 type ThreadOpenCallback = (signal: ThreadOpenSignal) => void;
 type ThreadPaneActionCallback = (signal: ThreadPaneActionSignal) => void;
 type PluginSignalCallback = (signal: PluginSignal) => void;
+type P6rThreadPresenceCallback = (message: P6rThreadPresenceMessage) => void;
+type P6rPresenceSummaryCallback = (message: P6rPresenceSummaryMessage) => void;
 export type WebSocketConnectedEvent =
   | { reconnected: false }
   | {
@@ -92,6 +103,8 @@ export class WebSocketManager {
   private threadOpenCallbacks = new Set<ThreadOpenCallback>();
   private threadPaneActionCallbacks = new Set<ThreadPaneActionCallback>();
   private pluginSignalCallbacks = new Set<PluginSignalCallback>();
+  private p6rThreadPresenceCallbacks = new Set<P6rThreadPresenceCallback>();
+  private p6rPresenceSummaryCallbacks = new Set<P6rPresenceSummaryCallback>();
   // Ephemeral "open this file in the secondary panel" intents, keyed by thread.
   // Held in memory only (cleared on reload) so a thread that is not currently
   // viewed opens the file when it is next viewed. Last write wins per thread.
@@ -101,6 +114,8 @@ export class WebSocketManager {
   private hasConnected = false;
   private connectionState: WebSocketConnectionState = "connecting";
   private readonly browserEvents: WebSocketManagerBrowserEvents;
+  private lastClaimedIdentityPayload: string | undefined;
+  private hasSentClaimedIdentity = false;
   private unsubscribeBrowserEvents: (() => void) | null = null;
   /** Last moment the current socket proved it was alive (open or any frame). */
   private lastServerActivityAt = 0;
@@ -111,6 +126,11 @@ export class WebSocketManager {
 
   constructor(browserEvents?: WebSocketManagerBrowserEvents) {
     this.browserEvents = browserEvents ?? createDefaultBrowserEvents();
+    p6rSubscribeClaimedIdentity(() => {
+      if (this.socket?.readyState === WebSocket.OPEN) {
+        this.sendClaimedIdentity();
+      }
+    });
   }
 
   connect(): void {
@@ -140,6 +160,7 @@ export class WebSocketManager {
       this.hasConnected = true;
       this.setConnectionState("connected");
       this.startPingLoop();
+      this.sendClaimedIdentity(true);
       // Re-subscribe to all active subscriptions
       for (const subscription of this.subscriptions.values()) {
         this.sendMessage({ type: "subscribe", target: subscription.target });
@@ -373,6 +394,27 @@ export class WebSocketManager {
       return;
     }
 
+    // Ephemeral presence broadcasts: per-thread viewer rosters and the compact
+    // sidebar summary. Lenient parse — additive per-viewer fields from a newer
+    // server degrade to defaults instead of dropping the roster.
+    const threadPresence =
+      p6rThreadPresenceMessageLenientSchema.safeParse(parsed);
+    if (threadPresence.success) {
+      for (const cb of this.p6rThreadPresenceCallbacks) {
+        cb(threadPresence.data);
+      }
+      return;
+    }
+
+    const presenceSummary =
+      p6rPresenceSummaryMessageLenientSchema.safeParse(parsed);
+    if (presenceSummary.success) {
+      for (const cb of this.p6rPresenceSummaryCallbacks) {
+        cb(presenceSummary.data);
+      }
+      return;
+    }
+
     // Lenient parse: tolerate a newer server (unknown fields stripped,
     // unknown change kinds filtered) instead of dropping whole messages
     // on additive contract changes.
@@ -461,6 +503,33 @@ export class WebSocketManager {
     };
   }
 
+  p6rOnThreadPresence(callback: P6rThreadPresenceCallback): () => void {
+    this.p6rThreadPresenceCallbacks.add(callback);
+    return () => {
+      this.p6rThreadPresenceCallbacks.delete(callback);
+    };
+  }
+
+  p6rOnPresenceSummary(callback: P6rPresenceSummaryCallback): () => void {
+    this.p6rPresenceSummaryCallbacks.add(callback);
+    return () => {
+      this.p6rPresenceSummaryCallbacks.delete(callback);
+    };
+  }
+
+  /**
+   * Ephemeral composer-typing signal; the server holds it under a short TTL,
+   * so callers re-send `typing: true` while typing continues. Dropped silently
+   * when the socket is down — presence is cosmetic.
+   */
+  p6rSendTyping(threadId: string, typing: boolean): void {
+    this.sendMessage({
+      type: "p6r-typing",
+      p6rThreadId: threadId,
+      p6rTyping: typing,
+    });
+  }
+
   /**
    * Return and clear the buffered "open file" intent for a thread, if any. The
    * secondary panel calls this when the thread becomes visible so the file
@@ -497,6 +566,32 @@ export class WebSocketManager {
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify(msg));
     }
+  }
+
+  private sendClaimedIdentity(force = false): void {
+    const identity = p6rGetClaimedIdentity();
+    const p6rClaimedIdentity =
+      identity === null
+        ? null
+        : {
+            p6rHandle: identity.p6rHandle,
+            p6rDisplayName: identity.p6rDisplayName,
+            p6rImageUrl: identity.p6rImageUrl,
+            p6rClientId: identity.p6rClientId,
+          };
+    if (p6rClaimedIdentity === null && !this.hasSentClaimedIdentity) {
+      return;
+    }
+    const payload = JSON.stringify(p6rClaimedIdentity);
+    if (!force && payload === this.lastClaimedIdentityPayload) {
+      return;
+    }
+    this.lastClaimedIdentityPayload = payload;
+    this.hasSentClaimedIdentity = true;
+    this.sendMessage({
+      type: "p6r-claimed-identity",
+      p6rClaimedIdentity,
+    });
   }
 
   private setConnectionState(nextState: WebSocketConnectionState): void {

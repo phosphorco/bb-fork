@@ -71,12 +71,14 @@ interface RegisterPendingInteractionArgs {
 }
 
 interface ResolvePendingInteractionArgs {
+  p6rActorHandle?: string;
   interactionId: string;
   resolution: PendingInteractionResolution;
   threadId: string;
 }
 
 interface QueueInteractionResolutionCommandArgs {
+  p6rActorHandle?: string;
   interaction: PendingInteraction;
   resolution: PendingInteractionResolution;
 }
@@ -596,6 +598,7 @@ export class PendingInteractionLifecycle {
   }
 
   respondToPluginInteraction(args: {
+    p6rActorHandle?: string;
     interactionId: string;
     threadId: string;
     value: JsonValue;
@@ -608,6 +611,9 @@ export class PendingInteractionLifecycle {
     const updated = setPendingInteractionResolved(this.deps.db, {
       id: current.id,
       resolution: JSON.stringify({ kind: "plugin_submitted" }),
+      ...(args.p6rActorHandle === undefined
+        ? {}
+        : { p6rResolvedByHandle: args.p6rActorHandle }),
     });
     if (!updated)
       throw buildResolveConflictError(this.requireInteraction(current.id));
@@ -621,6 +627,7 @@ export class PendingInteractionLifecycle {
   }
 
   cancelPluginInteraction(args: {
+    p6rActorHandle?: string;
     interactionId: string;
     threadId: string;
     reason: PluginInteractionCancelReason;
@@ -641,6 +648,9 @@ export class PendingInteractionLifecycle {
     }
     const updated = setPendingInteractionInterrupted(this.deps.db, {
       id: current.id,
+      ...(args.p6rActorHandle === undefined
+        ? {}
+        : { p6rResolvedByHandle: args.p6rActorHandle }),
       statusReason: args.reason,
     });
     if (!updated)
@@ -688,6 +698,9 @@ export class PendingInteractionLifecycle {
     validatePendingInteractionResolution(current, args.resolution);
 
     const updated = this.queueInteractionResolutionCommand({
+      ...(args.p6rActorHandle === undefined
+        ? {}
+        : { p6rActorHandle: args.p6rActorHandle }),
       interaction: current,
       resolution: args.resolution,
     });
@@ -896,6 +909,9 @@ export class PendingInteractionLifecycle {
       const resolving = setPendingInteractionResolving(tx, {
         id: args.interaction.id,
         resolution: resolutionJson,
+        ...(args.p6rActorHandle === undefined
+          ? {}
+          : { p6rResolvedByHandle: args.p6rActorHandle }),
       });
       if (resolving) {
         return resolving;

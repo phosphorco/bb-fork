@@ -251,6 +251,15 @@ interface GroupedPromptInputCommand {
   inputGroups?: HostDaemonPromptInput[][];
 }
 
+export const p6rTurnSpeakerSchema = z
+  .object({
+    p6rHandle: z.string().min(1),
+    p6rDisplayName: z.string().min(1),
+  })
+  .strict();
+
+export type P6rTurnSpeaker = z.infer<typeof p6rTurnSpeakerSchema>;
+
 function flattenPromptInputGroups(
   inputGroups: readonly HostDaemonPromptInput[][],
 ): HostDaemonPromptInput[] {
@@ -291,6 +300,7 @@ const threadStartCommandSchema = hostDaemonThreadTargetSchema
     // at least one input, enforced by the refinement below.
     input: z.array(promptInputSchema),
     inputGroups: z.array(z.array(promptInputSchema).min(1)).min(1).optional(),
+    p6rSpeaker: p6rTurnSpeakerSchema.optional(),
     threadStoragePath: z.string().min(1).optional(),
     /** Present means fork the new thread from this source provider session
      *  instead of starting fresh; absent means a normal start. The clone
@@ -362,6 +372,7 @@ const turnSubmitCommandSchema = hostDaemonThreadTargetSchema
     requestId: clientTurnRequestIdSchema,
     input: z.array(promptInputSchema).min(1),
     inputGroups: z.array(z.array(promptInputSchema).min(1)).min(1).optional(),
+    p6rSpeaker: p6rTurnSpeakerSchema.optional(),
     options: runtimeThreadExecutionOptionsSchema,
     bridgeLaunch: hostDaemonBridgeLaunchSchema,
     resumeContext: turnResumeContextSchema,

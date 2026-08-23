@@ -81,6 +81,9 @@ import {
   disposePluginHostWorkers,
 } from "./services/plugins/plugin-host-rpc.js";
 
+import { p6rRegisterPresenceRoutes } from "./routes/presence.js";
+import { p6rRegisterMemberRoutes } from "./routes/members.js";
+
 /**
  * `/api/v1/plugins/<id>/http/...` — the plugin-owned wire, whose auth mode is
  * declared per route by the plugin itself.
@@ -89,8 +92,28 @@ const PLUGIN_WIRE_HTTP_PATH = /^\/api\/v1\/plugins\/[^/]+\/http(?:\/|$)/u;
 import { rankAcceptedAssetEncodings } from "./asset-content-encoding.js";
 import { apiJsonCompression } from "./api-response-compression.js";
 
+import {
+  p6rCreateActorService,
+  p6rCreateLocalOperatorIdentity,
+  p6rSetRequestActor,
+} from "./services/actors.js";
+import {
+  P6R_LOCAL_OPERATOR_PROVIDER_ID,
+  p6rCreateIdentityBoundary,
+  p6rPrincipalKeyForActor,
+  p6rRequestInputFromContext,
+  p6rSetRequestPrincipal,
+} from "./services/identity.js";
+import {
+  p6rRegisterSocketActor,
+  p6rRestoreSocketActor,
+  p6rSetSocketActor,
+} from "./ws/socket-actors.js";
+
 type CloseWebSockets = () => Promise<void>;
+
 type NodeWebSocketServer = ReturnType<typeof createNodeWebSocket>["wss"];
+
 type WebSocketCloseError = Error | undefined;
 
 interface ServerApp {
@@ -151,22 +174,31 @@ interface StaticResponseHeadersArgs {
 // update — for the whole window. Not `no-store`: WebKit may still keep the
 // page in the back/forward cache and restore it without a reload.
 const STATIC_INDEX_CACHE_CONTROL = "no-cache";
+
 const STATIC_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";
 // Icons and manifests under public/ are not content-hashed but change only
 // with a release; a day of caching keeps favicon/badge flips and PWA
 // relaunches from refetching them.
 const STATIC_PUBLIC_FILE_CACHE_CONTROL = "public, max-age=86400";
+
 const WEB_SOCKET_SHUTDOWN_CODE = 1001;
+
 const WEB_SOCKET_SHUTDOWN_FORCE_CLOSE_MS = 1_000;
+
 const WEB_SOCKET_SHUTDOWN_REASON = "server-shutdown";
+
 const SLOW_API_REQUEST_LOG_THRESHOLD_MS = 1_000;
+
 const INSTALL_MACHINE_SCRIPT_PATH = fileURLToPath(
   new URL("./assets/install-machine.sh", import.meta.url),
 );
+
 const THREAD_EVENT_WAIT_PATH_PATTERN =
   /^\/api\/v1\/threads\/[^/]+\/events\/wait$/u;
+
 const PLUGIN_APP_ASSET_PATH_PATTERN =
   /^\/api\/v1\/plugins\/[^/]+\/assets\/app\.(?:js|css)$/u;
+
 const PRECOMPRESSED_STATIC_FILES = [
   { encoding: "br", extension: ".br" },
   { encoding: "gzip", extension: ".gz" },
@@ -471,6 +503,17 @@ export function createApp(
       dataDir: deps.config.dataDir,
       serverEntryUrl: import.meta.url,
     });
+  const defaultActor = p6rCreateLocalOperatorIdentity();
+  const identityBoundary = p6rCreateIdentityBoundary({
+    db: deps.db,
+    defaultActor,
+    now: Date.now,
+  });
+  const actorService = p6rCreateActorService({
+    db: deps.db,
+    defaultActor,
+    now: Date.now,
+  });
 
   app.use("*", async (context, next) => {
     captureTrustedRemoteAddress(context);
@@ -551,6 +594,28 @@ export function createApp(
     });
   });
   app.use("/api/v1/*", async (context, next) => {
+    const resolution = identityBoundary.p6rResolveRequest(
+      p6rRequestInputFromContext(context, "http"),
+    );
+    if (resolution.kind === "reject") {
+      throw new ApiError(
+        401,
+        "unauthorized",
+        "The request has no authenticated identity for this access path",
+      );
+    }
+    if (resolution.kind === "authenticated") {
+      p6rSetRequestPrincipal(context, resolution.p6rActor);
+      p6rSetRequestActor(context, {
+        p6rHandle: resolution.p6rActor.p6rHandle,
+        p6rDisplayName: resolution.p6rActor.p6rDisplayName,
+        p6rImageUrl: resolution.p6rActor.p6rImageUrl,
+        p6rClientId: "p6r-resolved",
+        p6rPrincipalKey: p6rPrincipalKeyForActor(resolution.p6rActor),
+      });
+    } else {
+      p6rSetRequestPrincipal(context, null);
+    }
     const startedAt = performance.now();
     await next();
     const durationMs = performance.now() - startedAt;
@@ -602,6 +667,7 @@ export function createApp(
     return next();
   });
   const pluginService = createPluginService({
+    p6rIdentity: identityBoundary,
     db: deps.db,
     hub: deps.hub,
     logger: deps.logger,
@@ -682,6 +748,8 @@ export function createApp(
   registerTerminalRoutes(publicApi, deps);
   registerEnvironmentRoutes(publicApi, deps);
   registerThreadRoutes(publicApi, deps);
+  p6rRegisterPresenceRoutes(publicApi, deps);
+  p6rRegisterMemberRoutes(publicApi, deps);
   registerSystemRoutes(publicApi, deps, pluginService);
   registerPluginCatalogRoutes(publicApi, pluginCatalogService);
   registerPluginRoutes(publicApi, deps, pluginService);
@@ -692,6 +760,23 @@ export function createApp(
   });
 
   const internalApi = new Hono();
+  internalApi.use("/session/tool-call", async (context, next) => {
+    const resolution = identityBoundary.p6rResolveRequest(
+      p6rRequestInputFromContext(context, "http"),
+    );
+    if (resolution.kind === "reject") {
+      throw new ApiError(
+        401,
+        "unauthorized",
+        "The tool-call transport has no authenticated identity for this access path",
+      );
+    }
+    p6rSetRequestPrincipal(
+      context,
+      resolution.kind === "authenticated" ? resolution.p6rActor : null,
+    );
+    return next();
+  });
   registerInternalHostRoutes(internalApi, deps);
   registerInternalSessionRoutes(internalApi, deps, pluginService);
   registerInternalSkillRoutes(internalApi, deps);
@@ -713,10 +798,63 @@ export function createApp(
           false,
         );
       }
+      const resolution = identityBoundary.p6rResolveRequest(
+        p6rRequestInputFromContext(context, "websocket"),
+      );
+      if (resolution.kind === "reject") {
+        throw new ApiError(
+          401,
+          "unauthorized",
+          "The websocket has no authenticated identity for this access path",
+          false,
+        );
+      }
+      const actor =
+        resolution.kind === "authenticated"
+          ? {
+              p6rHandle: resolution.p6rActor.p6rHandle,
+              p6rDisplayName: resolution.p6rActor.p6rDisplayName,
+              p6rImageUrl: resolution.p6rActor.p6rImageUrl,
+              p6rClientId: "p6r-resolved",
+              p6rPrincipalKey: p6rPrincipalKeyForActor(resolution.p6rActor),
+            }
+          : null;
+      const acceptsClaimedIdentity =
+        resolution.kind === "authenticated" &&
+        resolution.p6rActor.p6rProviderId === P6R_LOCAL_OPERATOR_PROVIDER_ID;
       return {
-        onOpen: (_event, socket) => onClientSocketOpen(deps.hub, socket),
+        onOpen: (_event, socket) => {
+          if (actor !== null) {
+            p6rRegisterSocketActor(socket, actor, {
+              p6rAllowClaimedIdentity: acceptsClaimedIdentity,
+            });
+          }
+          onClientSocketOpen(deps.hub, socket);
+        },
         onMessage: (event, socket) =>
-          onClientSocketMessage(deps, socket, event.data),
+          onClientSocketMessage(
+            {
+              ...deps,
+              p6rApplyClaimedIdentity: (targetSocket, p6rClaimedIdentity) => {
+                if (actor === null) {
+                  return;
+                }
+                if (p6rClaimedIdentity === null) {
+                  p6rRestoreSocketActor(targetSocket);
+                  return;
+                }
+                p6rSetSocketActor(
+                  targetSocket,
+                  actorService.p6rResolveClaimedIdentity(
+                    p6rClaimedIdentity,
+                    actor,
+                  ),
+                );
+              },
+            },
+            socket,
+            event.data,
+          ),
         onClose: (_event, socket) => onClientSocketClose(deps, socket),
       };
     }),
@@ -731,6 +869,17 @@ export function createApp(
           problem.status,
           "forbidden_origin",
           problem.error,
+          false,
+        );
+      }
+      const resolution = identityBoundary.p6rResolveRequest(
+        p6rRequestInputFromContext(context, "websocket"),
+      );
+      if (resolution.kind === "reject") {
+        throw new ApiError(
+          401,
+          "unauthorized",
+          "The terminal websocket has no authenticated identity for this access path",
           false,
         );
       }

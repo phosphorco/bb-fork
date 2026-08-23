@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import type { Environment, JsonValue } from "@bb/domain";
+import {
+  P6R_CLAIMED_IDENTITY_HEADER,
+  p6rEncodeClaimedIdentityHeader,
+  type Environment,
+  type JsonValue,
+} from "@bb/domain";
 import { createBbSdk } from "../src/core.js";
 import { createHttpTransport } from "../src/transport-http.js";
 import { ThreadWaitTimeoutError } from "../src/areas/threads.js";
 import type { FetchImplementation } from "../src/response.js";
+import { resolveRealtimeUrl } from "../src/realtime-url.js";
 
 interface CapturedRequest {
   bodyText: string | undefined;
@@ -103,6 +109,105 @@ function createFetchQueue(
 }
 
 describe("@bb/sdk", () => {
+  it("lists, adds, and removes Connect members through the members area", async () => {
+    const member = {
+      p6rUserId: "user-1",
+      p6rHandle: "collaborator",
+      p6rDisplayName: "Collaborator",
+      p6rImageUrl: null,
+      p6rAddedByUserId: "owner-1",
+      p6rCreatedAt: 123,
+    };
+    const queue = createFetchQueue([
+      { body: { p6rMembers: [member] } },
+      { body: member, status: 201 },
+      { body: { ok: true } },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await expect(sdk.p6rMembers.p6rList()).resolves.toEqual([member]);
+    await expect(
+      sdk.p6rMembers.p6rAdd({ p6rHandle: "collaborator" }),
+    ).resolves.toEqual(member);
+    await expect(
+      sdk.p6rMembers.p6rRemove({ p6rHandle: "collaborator" }),
+    ).resolves.toEqual({ ok: true });
+    expect(queue.requests).toEqual([
+      {
+        bodyText: undefined,
+        method: "GET",
+        url: "http://bb.test/api/v1/p6r-members",
+      },
+      {
+        bodyText: JSON.stringify({ p6rHandle: "collaborator" }),
+        method: "POST",
+        url: "http://bb.test/api/v1/p6r-members",
+      },
+      {
+        bodyText: JSON.stringify({ p6rHandle: "collaborator" }),
+        method: "DELETE",
+        url: "http://bb.test/api/v1/p6r-members",
+      },
+    ]);
+  });
+
+  it("gets the complete presence snapshot", async () => {
+    const snapshot = {
+      p6rThreads: {
+        "thread-1": [
+          {
+            p6rHandle: "collaborator",
+            p6rDisplayName: "Collaborator",
+            p6rImageUrl: null,
+            p6rTyping: true,
+          },
+        ],
+      },
+    };
+    const queue = createFetchQueue([{ body: snapshot }]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await expect(sdk.p6rPresence.p6rGet()).resolves.toEqual(snapshot);
+    expect(queue.requests[0]?.url).toBe("http://bb.test/api/v1/p6r-presence");
+  });
+
+  it("keeps legacy claims on HTTP only and never puts them in realtime URLs", async () => {
+    const identity = {
+      p6rHandle: "collaborator",
+      p6rDisplayName: "Collaborator",
+      p6rImageUrl: null,
+      p6rClientId: "cli-1",
+    };
+    let receivedHeaders: Headers | undefined;
+    const transport = createHttpTransport({
+      baseUrl: "https://bb.test",
+      p6rClaimedIdentity: identity,
+      fetch: async (_input, init) => {
+        receivedHeaders = new Headers(init?.headers);
+        return jsonResponse({ body: { p6rThreads: {} } });
+      },
+      runtime: "node",
+    });
+    const sdk = createBbSdk({ transport });
+
+    await sdk.p6rPresence.p6rGet();
+    const encoded = p6rEncodeClaimedIdentityHeader(identity);
+    expect(receivedHeaders?.get(P6R_CLAIMED_IDENTITY_HEADER)).toBe(encoded);
+    expect(resolveRealtimeUrl({ transport })).toBe("wss://bb.test/ws");
+  });
+
   it("sends thread pane presentation actions through the typed transport", async () => {
     const queue = createFetchQueue([{ body: { delivered: 3 } }]);
     const sdk = createBbSdk({

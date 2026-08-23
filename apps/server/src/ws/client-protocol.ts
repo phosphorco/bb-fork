@@ -1,6 +1,8 @@
 import { clientMessageSchema, type PongMessage } from "@bb/domain";
+import type { P6rClaimedIdentity } from "@bb/domain";
 import { decodeSocketPayload } from "./decode-payload.js";
 import type { NotificationHub } from "./hub.js";
+import { p6rReleaseSocketActor } from "./socket-actors.js";
 import type { WatchInterestCoordinator } from "./watch-interests.js";
 
 const PONG_MESSAGE: PongMessage = { type: "pong" };
@@ -24,6 +26,10 @@ export function onClientSocketMessage(
       WatchInterestCoordinator,
       "subscribe" | "unsubscribe" | "releaseSocket"
     >;
+    p6rApplyClaimedIdentity?: (
+      socket: ClientSocket,
+      identity: P6rClaimedIdentity | null,
+    ) => void;
   },
   socket: ClientSocket,
   raw: unknown,
@@ -57,6 +63,16 @@ export function onClientSocketMessage(
       // on this socket only; nothing is broadcast and no state is touched.
       socket.send(JSON.stringify(PONG_MESSAGE));
       break;
+    case "p6r-typing":
+      deps.hub.p6rSetTyping(socket, parsed.p6rThreadId, parsed.p6rTyping);
+      break;
+    case "p6r-claimed-identity":
+      if (deps.p6rApplyClaimedIdentity === undefined) {
+        socket.close(1008, "invalid-message");
+        break;
+      }
+      deps.p6rApplyClaimedIdentity(socket, parsed.p6rClaimedIdentity);
+      break;
     default: {
       const _exhaustive: never = parsed;
       throw new Error(`Unhandled client message: ${_exhaustive}`);
@@ -73,4 +89,5 @@ export function onClientSocketClose(
 ): void {
   deps.watchInterests.releaseSocket(socket);
   deps.hub.unregisterClient(socket);
+  p6rReleaseSocketActor(socket);
 }

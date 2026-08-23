@@ -12,6 +12,7 @@ import {
   type DbQueryConnection,
 } from "@bb/db";
 import type {
+  P6rActorSnapshot,
   PromptInput,
   Thread,
   ThreadQueuedMessage,
@@ -120,6 +121,7 @@ async function requireReadyQueuedMessageEnvironment(
 }
 
 export interface CreateQueuedMessageForThreadArgs {
+  p6rActor: P6rActorSnapshot | null;
   payload: CreateQueuedMessageRequest;
   thread: Thread;
 }
@@ -218,6 +220,7 @@ export async function createQueuedMessageForThread(
         }
         const { providerThreadId } = admitQueuedMessage(tx, currentThread);
         const queuedMessage = createQueuedThreadMessageInTransaction(tx, {
+          p6rActor: senderThreadId === null ? args.p6rActor : null,
           threadId: thread.id,
           content: payload.input,
           senderThreadId,
@@ -272,7 +275,9 @@ interface FormatQueuedMessageInputForSenderArgs {
 }
 
 const STALE_QUEUED_MESSAGE_CLAIM_MS = 5 * 60 * 1000;
+
 const QUEUED_MESSAGE_CLAIM_LOST_CODE = "queued_message_claim_lost";
+
 const activeQueuedMessageClaimTokens = new Set<string>();
 
 function sendQueuedMessagePayload(
@@ -421,6 +426,12 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
   const queuedMessage = queuedMessages[0]!;
 
   const senderThreadId = args.queuedMessages[0]!.senderThreadId;
+  const p6rActorHandle =
+    senderThreadId === null ? args.queuedMessages[0]!.p6rActorHandle : null;
+  const p6rActor =
+    senderThreadId === null
+      ? toThreadQueuedMessage(args.queuedMessages[0]!).p6rActor ?? null
+      : null;
   let inputGroups = args.queuedMessages.map((claimedQueuedMessage) =>
     formatQueuedMessageInputForSender({
       input: toThreadQueuedMessage(claimedQueuedMessage).content,
@@ -476,6 +487,7 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
     hostId: environment.hostId,
   });
   const preparedCommand = await prepareTurnSubmitCommandPayload(deps, {
+    p6rActorHandle,
     environment,
     execution,
     input,
@@ -500,7 +512,9 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
       if (!consumed) {
         throw createQueuedMessageClaimLostError();
       }
-      const request = appendClientTurnEventInTransaction(tx, {
+  const request = appendClientTurnEventInTransaction(tx, {
+        p6rActor,
+        p6rActorHandle,
         environmentId: thread.environmentId,
         execution,
         initiator,
@@ -587,6 +601,14 @@ async function sendClaimedQueuedMessageForThread(
     thread: args.thread,
   });
   await sendThreadMessage(deps, {
+    p6rActor:
+      args.queuedMessages[0]!.senderThreadId === null
+        ? toThreadQueuedMessage(args.queuedMessages[0]!).p6rActor ?? null
+        : null,
+    p6rActorHandle:
+      args.queuedMessages[0]!.senderThreadId === null
+        ? args.queuedMessages[0]!.p6rActorHandle
+        : null,
     beforeAppendInTransaction: ({ tx }) => {
       const consumed = deleteClaimedQueuedThreadMessageBatchInTransaction(tx, {
         queuedMessages: args.queuedMessages,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyTimelineDelta,
   computeTimelineRowDelta,
+  timelineUserConversationRowSchema,
   type TimelineRow,
 } from "../src/thread-timeline.js";
 
@@ -23,6 +24,30 @@ function row(id: string, sourceSeqStart: number, title = "t"): TimelineRow {
 }
 
 describe("timeline delta", () => {
+  it("defaults the nullable actor snapshot for old timeline payloads", () => {
+    const parsed = timelineUserConversationRowSchema.parse({
+      id: "row-1",
+      kind: "conversation",
+      role: "user",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      sourceSeqStart: 1,
+      sourceSeqEnd: 1,
+      startedAt: 1,
+      createdAt: 1,
+      text: "legacy row",
+      attachments: null,
+      initiator: "user",
+      senderThreadId: null,
+      systemMessageKind: "unlabeled",
+      systemMessageSubject: null,
+      turnRequest: { isGrouped: false, kind: "message", status: "accepted" },
+      mentions: [],
+    });
+
+    expect(parsed.p6rActor).toBeNull();
+  });
+
   it("round-trips an upsert + insert (compute then apply equals current)", () => {
     const prev = [row("a", 1), row("b", 2)];
     const current = [row("a", 1), row("b", 2, "changed"), row("c", 3)];
