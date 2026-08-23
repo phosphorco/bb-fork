@@ -595,7 +595,7 @@ describe("bb-app launcher", () => {
     }
   });
 
-  it("resolves production defaults for npx startup", () => {
+  it("resolves production defaults and directly executed entries for npx startup", () => {
     const context = resolveBbAppStartContext({
       entrypointUrl: pathToFileURL("/repo/packages/bb-app/dist/bb-app.js").href,
       env: {},

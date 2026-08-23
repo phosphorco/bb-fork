@@ -74,6 +74,8 @@ import { z } from "zod";
 
 const HOST_AUTH_FILE_NAME = "auth.json";
 const HOST_ID_FILE_NAME = "host-id";
+const BB_PACKAGED_SERVER_ENTRY = "server/dist/index.js";
+const BB_PACKAGED_DAEMON_ENTRY = "host-daemon/dist/daemon-bundle.mjs";
 const HOST_DAEMON_STATUS_TIMEOUT_MS = 60_000;
 const HEALTH_CHECK_INTERVAL_MS = 100;
 const HEALTH_CHECK_REQUEST_TIMEOUT_MS = 1_000;
@@ -1341,14 +1343,16 @@ export function resolveBbAppStartContext(
     : resolve(packageRoot, "host-daemon", "dist");
   const serverEntry = runsFromSourceCheckout
     ? resolve(workspaceRoot, "apps", "server", "dist", "index.js")
-    : resolve(packageRoot, "server", "dist", "index.js");
+    : resolve(packageRoot, BB_PACKAGED_SERVER_ENTRY);
 
   return {
     appDistDir,
     appVersion: readBbAppPackageVersion(packageRoot),
     configFile: formatBbAppConfigPath(dataDir),
     daemonBundleDir,
-    daemonEntry: resolve(daemonBundleDir, "daemon-bundle.mjs"),
+    daemonEntry: runsFromSourceCheckout
+      ? resolve(daemonBundleDir, "daemon-bundle.mjs")
+      : resolve(packageRoot, BB_PACKAGED_DAEMON_ENTRY),
     daemonLockDir: `${join(dataDir, "daemon.lock")}.lock`,
     daemonLockFile: join(dataDir, "daemon.lock"),
     daemonPort,
