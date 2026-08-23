@@ -49,6 +49,10 @@ import { createThreadFromRequest } from "../../services/threads/thread-create.js
 import { createThreadForkFromRequest } from "../../services/threads/thread-fork.js";
 import { requireChildThreadsConfirmation } from "../../services/threads/child-thread-confirmation.js";
 import {
+  executeThreadFacetParticipantPage,
+  executeThreadFacetQuery,
+} from "../../services/threads/thread-facet-query.js";
+import {
   toThreadListEntryResponses,
   toThreadResponseFromThread,
 } from "../../services/threads/thread-runtime-display.js";
@@ -252,6 +256,35 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     });
     return context.json(
       toThreadListEntryResponses(deps, { threads }) satisfies ThreadListEntry[],
+    );
+  });
+
+  post(routes.facetQuery, (context, payload) => {
+    return context.json(
+      executeThreadFacetQuery(deps, {
+        actor: p6rGetRequestPrincipal(context as unknown as Context),
+        request: payload,
+      }),
+    );
+  });
+
+  get(routes.facetParticipants, (context, query) => {
+    const threadId = context.req.param("id");
+    const pageSize = parseOptionalInteger(query.pageSize, "pageSize") ?? 50;
+    if (pageSize < 1 || pageSize > 100) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        "pageSize must be between 1 and 100",
+      );
+    }
+    return context.json(
+      executeThreadFacetParticipantPage(deps, {
+        actor: p6rGetRequestPrincipal(context as unknown as Context),
+        threadId,
+        pageSize,
+        ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+      }),
     );
   });
 

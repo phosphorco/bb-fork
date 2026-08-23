@@ -589,6 +589,51 @@ bb.hosts.declareSharedPorts(hostId, [3000, 4173]);
 const url = `https://${tunnel.label}--3000.${tunnel.baseDomain}`;
 ```
 
+### bb.experimental_facets
+
+Use `bb.experimental_facets` to project a plugin-owned, enum-valued thread
+classification without granting visibility or accepting raw thread ids.
+Declare the facet during the factory. The host binds its namespace and starts
+each successful load in reconciliation:
+
+```ts
+const phase = bb.experimental_facets.declare({
+  localName: "phase",
+  memberKind: "enum",
+  cardinality: "one",
+  assignmentScope: "shared-thread",
+  members: ["defining", "working", "polishing"] as const,
+});
+```
+
+Mint a target only from the exact object returned to this plugin generation by
+`bb.sdk.threads.get/list` or `phase.listPriorTargets()`. Clones, raw ids,
+foreign objects, mutated ids, and stale generation objects are uniformly
+refused. `replace` and `clear` establish complete values; they do not author
+thread content or change visibility.
+
+```ts
+const thread = await bb.sdk.threads.get({ threadId });
+const target = bb.experimental_facets.target(thread);
+await phase.replace(target, ["working"]);
+```
+
+On every activation, follow the bounded `listPriorTargets()` cursor to its
+terminal page, replacing or clearing each returned target, then call
+`markReady()`. Cursors are sequential and single-use. Readiness is refused
+until the census is exhausted and every still-visible prior target is
+discharged. Disable or removal revokes the current generation while retaining
+stored positive classifications; missing membership remains unknown. A
+candidate factory or commit that fails before cutover revokes only that
+candidate and keeps the previous ready generation and its handles live. Once a
+replacement commits, its generation is authoritative and stale prior handles
+cannot revoke it.
+
+The testing host stages declarations exactly like production. After calling
+an initial factory manually, invoke
+`harness.lifecycle.experimental_commitFacets()`. Its `reload(factory)` method
+commits the candidate before retiring the old generation automatically.
+
 ### bb.sdk
 
 The full bb SDK bound to this server over loopback — threads, projects,

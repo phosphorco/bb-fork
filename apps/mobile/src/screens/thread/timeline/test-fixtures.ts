@@ -45,6 +45,8 @@ export function userRow(
     turnRequest: { isGrouped: false, kind: "message", status: "accepted" },
     mentions: [],
     ...overrides,
+    p6rActorHandle: overrides.p6rActorHandle ?? null,
+    p6rActor: overrides.p6rActor ?? null,
   };
 }
 

@@ -42,9 +42,7 @@ import {
   threads,
 } from "../schema.js";
 import { createThreadId } from "../ids.js";
-import {
-  createOrderKeyBetween,
-} from "./order-keys.js";
+import { createOrderKeyBetween } from "./order-keys.js";
 
 type ThreadWriteConnection = DbConnection | DbTransaction;
 
@@ -80,7 +78,9 @@ function countThreadsWhere(
   db: ThreadWriteConnection,
   where: ThreadWhere,
 ): number {
-  return db.select({ count: count() }).from(threads).where(where).get()?.count ?? 0;
+  return (
+    db.select({ count: count() }).from(threads).where(where).get()?.count ?? 0
+  );
 }
 
 function listThreadsWhere(
@@ -90,8 +90,13 @@ function listThreadsWhere(
   return db.select().from(threads).where(where).all();
 }
 
-function hasThreadWhere(db: ThreadWriteConnection, where: ThreadWhere): boolean {
-  return db.select({ id: threads.id }).from(threads).where(where).get() !== undefined;
+function hasThreadWhere(
+  db: ThreadWriteConnection,
+  where: ThreadWhere,
+): boolean {
+  return (
+    db.select({ id: threads.id }).from(threads).where(where).get() !== undefined
+  );
 }
 
 export interface ThreadSearchHighlightRange {
@@ -308,10 +313,10 @@ export function createThread(
           sectionId: input.sectionId ?? null,
           status: input.status ?? "starting",
           parentThreadId:
-            originKind === null ? input.parentThreadId ?? null : null,
+            originKind === null ? (input.parentThreadId ?? null) : null,
           sourceThreadId:
             input.sourceThreadId ??
-            (originKind === null ? null : input.parentThreadId ?? null),
+            (originKind === null ? null : (input.parentThreadId ?? null)),
           originKind,
           originPluginId: input.originPluginId ?? null,
           p6rCreatedByHandle: input.p6rCreatedByHandle ?? null,
@@ -438,10 +443,7 @@ interface PinThreadMutationResult {
   thread: ThreadRow;
 }
 
-type PinnedThreadRootCandidate = Pick<
-  ThreadRow,
-  "id" | "parentThreadId"
->;
+type PinnedThreadRootCandidate = Pick<ThreadRow, "id" | "parentThreadId">;
 
 interface FilterVisiblePinnedThreadRootsArgs<
   TThread extends PinnedThreadRootCandidate,
@@ -505,9 +507,7 @@ function getFirstPinnedThread(db: DbQueryConnection): ThreadRow | null {
 
 function filterVisiblePinnedThreadRoots<
   TThread extends PinnedThreadRootCandidate,
->({
-  pinnedThreads,
-}: FilterVisiblePinnedThreadRootsArgs<TThread>): TThread[] {
+>({ pinnedThreads }: FilterVisiblePinnedThreadRootsArgs<TThread>): TThread[] {
   const pinnedThreadIds = new Set(pinnedThreads.map((thread) => thread.id));
   return pinnedThreads.filter(
     (thread) =>
@@ -620,7 +620,6 @@ export interface ListUnarchivedAssignedChildThreadsArgs {
   parentThreadId: string;
 }
 
-
 export interface ListNonDeletedChildThreadsArgs {
   parentThreadId: string;
 }
@@ -673,9 +672,7 @@ function statusTransitionNeedsAttention(args: StatusTransition): boolean {
     return false;
   }
 
-  return (
-    args.currentStatus === "active" || args.currentStatus === "starting"
-  );
+  return args.currentStatus === "active" || args.currentStatus === "starting";
 }
 
 function buildListThreadsFilters(options: ListThreadsOptions) {
@@ -691,9 +688,7 @@ function buildListThreadsFilters(options: ListThreadsOptions) {
     options.sourceThreadId
       ? eq(threads.sourceThreadId, options.sourceThreadId)
       : undefined,
-    options.originKind
-      ? eq(threads.originKind, options.originKind)
-      : undefined,
+    options.originKind ? eq(threads.originKind, options.originKind) : undefined,
     options.originPluginId
       ? eq(threads.originPluginId, options.originPluginId)
       : undefined,
@@ -739,7 +734,9 @@ function buildActiveProjectThreadOrderBy() {
 function buildPinnedThreadOrderBy() {
   return [
     asc(sql`CASE WHEN ${threads.pinnedAt} IS NOT NULL THEN 0 ELSE 1 END`),
-    asc(sql`CASE WHEN ${threads.pinnedAt} IS NOT NULL THEN ${threads.pinSortKey} END`),
+    asc(
+      sql`CASE WHEN ${threads.pinnedAt} IS NOT NULL THEN ${threads.pinSortKey} END`,
+    ),
     asc(sql`CASE WHEN ${threads.pinnedAt} IS NOT NULL THEN ${threads.id} END`),
   ];
 }
@@ -863,7 +860,9 @@ function findHighlightRanges(args: {
   }
 
   return mergeHighlightRanges(
-    ranges.sort((left, right) => left.start - right.start || left.end - right.end),
+    ranges.sort(
+      (left, right) => left.start - right.start || left.end - right.end,
+    ),
   );
 }
 
@@ -1159,7 +1158,8 @@ export function searchThreadsWithPendingInteractionState(
 ): ThreadSearchResults {
   const tokens = listThreadSearchQueryTokens(args.query);
   const tokenMatchQueries = listThreadSearchTokenMatchQueries(tokens);
-  const anyTokenMatchQuery = buildThreadSearchAnyTokenMatchQuery(tokenMatchQueries);
+  const anyTokenMatchQuery =
+    buildThreadSearchAnyTokenMatchQuery(tokenMatchQueries);
   if (anyTokenMatchQuery === null) {
     return {
       active: { total: 0, results: [] },
@@ -1222,6 +1222,24 @@ export function listThreadsWithPendingInteractionState(
   const rows = query.all();
 
   return rows.map(toThreadWithPendingInteractionState);
+}
+
+export function listThreadsWithPendingInteractionStateByIds(
+  db: DbConnection,
+  threadIds: readonly string[],
+): ThreadWithPendingInteractionState[] {
+  if (threadIds.length === 0) {
+    return [];
+  }
+  return threadWithPendingInteractionBaseQuery(db)
+    .where(
+      and(
+        inArray(threads.id, [...new Set(threadIds)]),
+        isNull(threads.deletedAt),
+      ),
+    )
+    .all()
+    .map(toThreadWithPendingInteractionState);
 }
 
 /**
@@ -1339,7 +1357,6 @@ export function listUnarchivedAssignedChildThreads(
     liveThreads(eq(threads.parentThreadId, args.parentThreadId)),
   );
 }
-
 
 /**
  * Live hidden threads forked from this source. A hidden fork has no navigable
@@ -1665,10 +1682,7 @@ export function updateThread(
   const changes: ThreadChangeKind[] = [];
   if ("title" in input || "sectionId" in input) changes.push("title-changed");
   if ("lastReadAt" in input) changes.push("read-state-changed");
-  if (
-    "visibility" in input &&
-    input.visibility !== existing.visibility
-  ) {
+  if ("visibility" in input && input.visibility !== existing.visibility) {
     // title-changed is the existing organization-metadata invalidation used
     // for section changes as well as titles.
     changes.push("title-changed");
@@ -1918,7 +1932,9 @@ export class ThreadLifecycleEventNotAppliedError extends Error {
   readonly reason: ApplyThreadLifecycleEventNoopReason;
 
   constructor(args: ThreadLifecycleEventNotAppliedErrorArgs) {
-    super(`Thread lifecycle event not applied (${args.reason}): ${args.detail}`);
+    super(
+      `Thread lifecycle event not applied (${args.reason}): ${args.detail}`,
+    );
     this.name = "ThreadLifecycleEventNotAppliedError";
     this.detail = args.detail;
     this.reason = args.reason;

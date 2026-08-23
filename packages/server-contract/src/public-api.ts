@@ -176,6 +176,10 @@ import type {
   ThreadHostFileContentQuery,
   ThreadListQuery,
   ThreadListResponse,
+  ThreadFacetParticipantsQuery,
+  ThreadFacetParticipantsResponse,
+  ThreadFacetQueryRequest,
+  ThreadFacetQueryResponse,
   ThreadConversationOutlineResponse,
   ThreadOpenRequest,
   ThreadOpenResponse,
@@ -289,6 +293,8 @@ import {
   threadGetQuerySchema,
   threadHostFileContentQuerySchema,
   threadListQuerySchema,
+  threadFacetParticipantsQuerySchema,
+  threadFacetQueryRequestSchema,
   threadOpenRequestSchema,
   threadPaneActionRequestSchema,
   threadSearchQuerySchema,
@@ -911,6 +917,22 @@ export const publicApiRoutes = {
         threadListQuerySchema,
       ),
       response: jsonResponse<ThreadListResponse>(),
+    }),
+    facetQuery: defineRoute({
+      path: "/threads/facet-query",
+      method: "post",
+      request: jsonRequest<EmptyInput, ThreadFacetQueryRequest>(
+        threadFacetQueryRequestSchema,
+      ),
+      response: jsonResponse<ThreadFacetQueryResponse>(),
+    }),
+    facetParticipants: defineRoute({
+      path: "/threads/:id/facet-participants",
+      method: "get",
+      request: optionalQueryRequest<PathId, ThreadFacetParticipantsQuery>(
+        threadFacetParticipantsQuerySchema,
+      ),
+      response: jsonResponse<ThreadFacetParticipantsResponse>(),
     }),
     search: defineRoute({
       path: "/threads/search",

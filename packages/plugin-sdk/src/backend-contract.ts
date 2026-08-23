@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import type { Context } from "hono";
 import type * as z from "zod";
 import type { ProviderFork } from "@bb/domain/provider-fork";
-import type { BbSdk } from "@bb/sdk";
+import type { BbSdk, ThreadGetResult, ThreadListResult } from "@bb/sdk";
 import type { ThreadResponse } from "@bb/server-contract";
 import type { JsonValue } from "./json-value.js";
 import type {
@@ -1053,6 +1053,91 @@ export interface PluginHosts {
 }
 
 // ---------------------------------------------------------------------------
+// Experimental thread facets.
+// ---------------------------------------------------------------------------
+
+export type ExperimentalThreadFacetCardinality = "one" | "many";
+
+declare const experimentalThreadFacetTargetGrantBrand: unique symbol;
+
+/**
+ * An opaque, live designation for one visible thread. Only
+ * `bb.experimental_facets.target(...)` can construct it, from the exact
+ * object returned by this plugin generation's `bb.sdk.threads.get/list` or
+ * facet census. It deliberately exposes no thread id.
+ */
+export interface ExperimentalThreadFacetTargetGrant {
+  readonly [experimentalThreadFacetTargetGrantBrand]: true;
+}
+
+export type ExperimentalThreadFacetTarget =
+  | ThreadGetResult
+  | ThreadListResult[number];
+
+export type ExperimentalThreadFacetReplacement<
+  Cardinality extends ExperimentalThreadFacetCardinality,
+  Member extends string,
+> = Cardinality extends "one"
+  ? readonly [] | readonly [Member]
+  : readonly Member[];
+
+export interface ExperimentalThreadFacetTargetPage {
+  /** Fresh host-authored thread objects, also accepted by `target(...)`. */
+  readonly targets: readonly ExperimentalThreadFacetTarget[];
+  /** Opaque, single-use continuation; null means the census is exhausted. */
+  readonly nextCursor: string | null;
+}
+
+export interface ExperimentalThreadFacetHandle<
+  Cardinality extends ExperimentalThreadFacetCardinality,
+  Member extends string,
+> {
+  /** Establish a complete authoritative replacement for this target. */
+  replace(
+    target: ExperimentalThreadFacetTargetGrant,
+    members: ExperimentalThreadFacetReplacement<Cardinality, Member>,
+  ): Promise<void>;
+  /** Establish a complete authoritative empty relation for this target. */
+  clear(target: ExperimentalThreadFacetTargetGrant): Promise<void>;
+  /**
+   * Page every visible prior snapshot target for this exact facet, including
+   * complete-empty targets. Cursors are sequential and cannot be skipped.
+   */
+  listPriorTargets(args?: {
+    cursor?: string;
+    pageSize?: number;
+  }): Promise<ExperimentalThreadFacetTargetPage>;
+  /**
+   * Complete reconciliation. Refused until the census is exhausted and all
+   * still-visible prior targets have been replaced or cleared.
+   */
+  markReady(): Promise<void>;
+}
+
+export interface ExperimentalThreadFacets {
+  /**
+   * Attenuate one exact thread object returned by this plugin generation's
+   * SDK or facet census. Clones, ids, foreign objects, and stale objects are
+   * refused uniformly.
+   */
+  target(
+    thread: ExperimentalThreadFacetTarget,
+  ): ExperimentalThreadFacetTargetGrant;
+
+  /** Stage a shared, one- or many-valued enum relation owned by this plugin. */
+  declare<
+    const Cardinality extends ExperimentalThreadFacetCardinality,
+    const Members extends readonly string[],
+  >(declaration: {
+    readonly assignmentScope: "shared-thread";
+    readonly cardinality: Cardinality;
+    readonly localName: string;
+    readonly memberKind: "enum";
+    readonly members: Members;
+  }): ExperimentalThreadFacetHandle<Cardinality, Members[number]>;
+}
+
+// ---------------------------------------------------------------------------
 // Status + the API root.
 // ---------------------------------------------------------------------------
 
@@ -1107,6 +1192,8 @@ export interface BbPluginApi {
   readonly server: PluginServerApi;
   /** Server-to-daemon host control-plane declarations. */
   readonly hosts: PluginHosts;
+  /** Experimental, authority-attenuated thread organization projections. */
+  readonly experimental_facets: ExperimentalThreadFacets;
   /**
    * The full BB SDK, bound to this server over loopback (design §4.1).
    * Bind-gated: reading this before the host binds the SDK throws. The real
@@ -1147,9 +1234,7 @@ export type P6rIdentityProviderResolution =
 
 export interface P6rIdentityProviderRegistration {
   id: string;
-  resolve(
-    request: P6rIdentityProviderRequest,
-  ): P6rIdentityProviderResolution;
+  resolve(request: P6rIdentityProviderRequest): P6rIdentityProviderResolution;
 }
 
 export interface P6rIdentityApi {

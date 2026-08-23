@@ -18,7 +18,8 @@ export type SidebarCollapseKind =
   | "environment"
   | "section"
   | "machine"
-  | "builtIn";
+  | "builtIn"
+  | "facetTriage";
 
 export interface SidebarPreferences {
   organize: SidebarOrganizeMode;
@@ -31,6 +32,8 @@ export interface SidebarPreferences {
   /** Host ids plus `NO_MACHINE_GROUP_KEY`. */
   collapsedMachineKeys: readonly string[];
   collapsedBuiltInSections: readonly CollapsibleSidebarSectionId[];
+  /** Saved facet-query view ids; presentation state only. */
+  collapsedFacetTriageIds: readonly string[];
   /**
    * Top-level section order per organize mode, as the web stores it (raw
    * section ids plus legacy anchors); `resolveSidebarSectionOrder` reconciles
@@ -73,6 +76,7 @@ const COLLAPSED_STORAGE_KEYS: Record<SidebarCollapseKind, string> = {
   section: "bb.sidebar.collapsedThreadSections",
   machine: "bb.sidebar.collapsedMachines",
   builtIn: "bb.sidebar.collapsedSections",
+  facetTriage: "bb.sidebar.collapsedFacetTriageSections",
 };
 
 function collapsedList(
@@ -92,6 +96,8 @@ function collapsedList(
       return prefs.collapsedMachineKeys;
     case "builtIn":
       return prefs.collapsedBuiltInSections;
+    case "facetTriage":
+      return prefs.collapsedFacetTriageIds;
   }
 }
 
@@ -116,6 +122,8 @@ function withCollapsedList(
         ...prefs,
         collapsedBuiltInSections: ids.filter(isCollapsibleSidebarSectionId),
       };
+    case "facetTriage":
+      return { ...prefs, collapsedFacetTriageIds: ids };
   }
 }
 
@@ -201,6 +209,9 @@ function readPreferences(
     collapsedBuiltInSections: parseStringList(
       storage.getString(COLLAPSED_STORAGE_KEYS.builtIn),
     ).filter(isCollapsibleSidebarSectionId),
+    collapsedFacetTriageIds: parseStringList(
+      storage.getString(COLLAPSED_STORAGE_KEYS.facetTriage),
+    ),
     sectionOrder: {
       project: parseStringList(
         storage.getString(SIDEBAR_SECTION_ORDER_STORAGE_KEYS.project),

@@ -4,7 +4,7 @@ import { z } from "zod";
 export const p6rPrincipalKeySchema = z
   .string()
   .min(3)
-  .max(256)
+  .max(8192)
   .regex(/^[a-z][a-z0-9+.-]*:[^\s]+$/u)
   .brand<"P6rPrincipalKey">();
 export type P6rPrincipalKey = z.infer<typeof p6rPrincipalKeySchema>;
@@ -57,7 +57,13 @@ export function p6rCreateProviderPrincipalKey(
   provider: string,
   subject: string,
 ): P6rPrincipalKey {
-  return p6rPrincipalKeySchema.parse(`${provider}:${subject}`);
+  const providerNamespace = z
+    .string()
+    .regex(/^[a-z][a-z0-9+.-]*$/u)
+    .parse(provider);
+  return p6rPrincipalKeySchema.parse(
+    `${providerNamespace}:${encodeURIComponent(subject)}`,
+  );
 }
 
 export function p6rCreateLocalPrincipalKey(

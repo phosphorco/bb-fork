@@ -35,6 +35,11 @@ import {
 } from "../internal/host-policy.js";
 import type {
   BbPluginApi,
+  ExperimentalThreadFacetCardinality,
+  ExperimentalThreadFacetHandle,
+  ExperimentalThreadFacets,
+  ExperimentalThreadFacetTarget,
+  ExperimentalThreadFacetTargetGrant,
   PluginAgentConfiguration,
   PluginAgentConfigurationContext,
   PluginAgentToolContext,
@@ -115,7 +120,6 @@ import {
  * - background services/schedules never run on timers; `harness.runService`
  *   and `harness.runSchedule` invoke them deterministically.
  */
-
 
 /**
  * `createFakePluginHost` — an in-process stand-in for the BB server's plugin
@@ -274,10 +278,22 @@ export interface FakePluginInspectionState {
   readonly pendingInteractions: readonly (PluginInteractionRequest & {
     id: string;
   })[];
+  /** Durable fake-host facet projection, exposed only for behavioral tests. */
+  readonly experimental_threadFacets: readonly {
+    localName: string;
+    generation: number;
+    ownerState: "ready" | "reconciling" | "unavailable";
+    snapshots: Readonly<Record<string, readonly string[]>>;
+  }[];
 }
 
 /** Deterministic inputs that stand in for behavior normally driven by BB. */
 export interface FakePluginBehaviorDrivers {
+  /** Set canonical host eligibility independently of a plugin-owned DTO. */
+  experimental_setThreadFacetTargetEligibility(
+    threadId: string,
+    eligibility: "visible" | "hidden" | "deleted" | "project-deleted",
+  ): void;
   /** Deliver an unexpected host-worker exit to every registered client. */
   experimental_emitHostWorkerExit(hostId: string): Promise<void>;
   /** Deliver a host signal through its registered payload schema. */
@@ -366,6 +382,8 @@ export interface FakePluginBehaviorDrivers {
 
 /** Reload/shutdown controls, kept separate from behavior and inspection. */
 export interface FakePluginLifecycleControls {
+  /** Commit factory-staged facet declarations for an initial manual load. */
+  experimental_commitFacets(): void;
   /**
    * Load a replacement against the same persisted settings, kv, and database.
    * The current host remains live when the factory throws; on success its
@@ -827,9 +845,27 @@ function normalizeAgentConfiguration(args: {
 }
 
 interface FakePluginPersistentState {
+  facetDeclarations: Map<string, FakeThreadFacetPersistentDeclaration>;
+  facetKnownTargets: Map<
+    string,
+    {
+      eligibility: "visible" | "hidden" | "deleted" | "project-deleted";
+      readonly threadId: string;
+    }
+  >;
   kvRows: Map<string, string>;
   storageRoot: string;
   storedSettings: Map<string, PluginSettingValue>;
+}
+
+interface FakeThreadFacetPersistentDeclaration {
+  assignmentScope: "shared-thread";
+  cardinality: ExperimentalThreadFacetCardinality;
+  generation: number;
+  memberKind: "enum";
+  members: readonly string[];
+  ownerState: "ready" | "reconciling" | "unavailable";
+  snapshots: Map<string, readonly string[]>;
 }
 
 const fakeHostDisposers = new WeakMap<
@@ -850,6 +886,8 @@ function createFakePluginHostInternal(
   const persistentState =
     sharedState ??
     ({
+      facetDeclarations: new Map(),
+      facetKnownTargets: new Map(),
       kvRows: new Map<string, string>(),
       storageRoot: mkdtempSync(join(tmpdir(), "bb-fake-plugin-host-")),
       storedSettings: new Map<string, PluginSettingValue>(
@@ -863,6 +901,8 @@ function createFakePluginHostInternal(
   }
   let invalidated = false;
   let disposed = false;
+  let facetsCommitted = false;
+  let facetAuthorityRevoked = false;
 
   function assertLive(): void {
     if (invalidated) throw new PluginContextStaleError(pluginId);
@@ -998,7 +1038,9 @@ function createFakePluginHostInternal(
     registerProvider(registration: P6rIdentityProviderRegistration): void {
       assertLive();
       if (p6rIdentityProvider !== null) {
-        throw new Error("this plugin already registered a p6r identity provider");
+        throw new Error(
+          "this plugin already registered a p6r identity provider",
+        );
       }
       p6rIdentityProvider = registration;
     },
@@ -1502,11 +1544,404 @@ function createFakePluginHostInternal(
     },
   };
 
+  // --- experimental thread facets ---
+  const facetRefusal = "Thread facet capability refused";
+  const facetTargets = new WeakMap<
+    object,
+    { thread: object; threadId: string }
+  >();
+  const facetGrants = new WeakMap<
+    object,
+    { thread: object; threadId: string }
+  >();
+  const stagedFacets: Array<{
+    declaration: {
+      assignmentScope: "shared-thread";
+      cardinality: ExperimentalThreadFacetCardinality;
+      localName: string;
+      memberKind: "enum";
+      members: readonly string[];
+    };
+    activeGeneration: number | null;
+    censusInFlight: boolean;
+    censusExhausted: boolean;
+    cursorPositions: Map<string, number>;
+    expectedCursor: string | null | undefined;
+    obligations: Set<string>;
+    priorTargets: readonly string[];
+  }> = [];
+
+  function refuseFacet(): never {
+    throw new Error(facetRefusal);
+  }
+
+  function assertFacetLive(): void {
+    if (invalidated || facetAuthorityRevoked) refuseFacet();
+  }
+
+  function registerFacetTarget(result: unknown): void {
+    if (typeof result !== "object" || result === null) return;
+    const threadId = Reflect.get(result, "id");
+    if (typeof threadId !== "string") return;
+    facetTargets.set(result, {
+      thread: result,
+      threadId,
+    });
+    if (!persistentState.facetKnownTargets.has(threadId)) {
+      persistentState.facetKnownTargets.set(threadId, {
+        eligibility:
+          Reflect.get(result, "deletedAt") !== null
+            ? "deleted"
+            : Reflect.get(result, "visibility") === "visible"
+              ? "visible"
+              : "hidden",
+        threadId,
+      });
+    }
+  }
+
+  function registerFacetSdkResult(path: string, result: unknown): unknown {
+    if (path === "threads.get") registerFacetTarget(result);
+    if (path === "threads.list" && Array.isArray(result)) {
+      for (const thread of result) registerFacetTarget(thread);
+    }
+    return result;
+  }
+
+  function copyStagedFacetDeclaration(declaration: {
+    assignmentScope: "shared-thread";
+    cardinality: ExperimentalThreadFacetCardinality;
+    localName: string;
+    memberKind: "enum";
+    members: readonly string[];
+  }): (typeof stagedFacets)[number]["declaration"] {
+    try {
+      const source =
+        typeof declaration === "object" && declaration !== null
+          ? declaration
+          : {};
+      return {
+        assignmentScope: Reflect.get(source, "assignmentScope"),
+        cardinality: Reflect.get(source, "cardinality"),
+        localName: Reflect.get(source, "localName"),
+        memberKind: Reflect.get(source, "memberKind"),
+        members: Reflect.get(source, "members"),
+      };
+    } catch {
+      const invalid = {};
+      return {
+        assignmentScope: Reflect.get(invalid, "assignmentScope"),
+        cardinality: Reflect.get(invalid, "cardinality"),
+        localName: Reflect.get(invalid, "localName"),
+        memberKind: Reflect.get(invalid, "memberKind"),
+        members: Reflect.get(invalid, "members"),
+      };
+    }
+  }
+
+  function validateFakeFacetDeclaration(
+    staged: (typeof stagedFacets)[number],
+  ): FakeThreadFacetPersistentDeclaration | null {
+    const { declaration } = staged;
+    if (
+      declaration.assignmentScope !== "shared-thread" ||
+      declaration.memberKind !== "enum" ||
+      typeof declaration.localName !== "string" ||
+      !/^[a-z][a-z0-9._-]{0,63}$/u.test(declaration.localName) ||
+      (declaration.cardinality !== "one" &&
+        declaration.cardinality !== "many") ||
+      !Array.isArray(declaration.members) ||
+      declaration.members.length > 4_096 ||
+      declaration.members.some(
+        (member) =>
+          typeof member !== "string" ||
+          !/^[a-z][a-z0-9._-]{0,63}$/u.test(member),
+      ) ||
+      new Set(declaration.members).size !== declaration.members.length
+    ) {
+      return null;
+    }
+    const existing = persistentState.facetDeclarations.get(
+      declaration.localName,
+    );
+    if (existing !== undefined) {
+      const appended = declaration.members.slice(existing.members.length);
+      if (
+        existing.assignmentScope !== declaration.assignmentScope ||
+        existing.cardinality !== declaration.cardinality ||
+        existing.memberKind !== declaration.memberKind ||
+        declaration.members.length < existing.members.length ||
+        appended.length > 64 ||
+        existing.members.some(
+          (member: string, index: number) =>
+            declaration.members[index] !== member,
+        )
+      ) {
+        return null;
+      }
+      return {
+        ...existing,
+        members: [...declaration.members],
+      };
+    }
+    if (declaration.members.length > 64) return null;
+    return {
+      assignmentScope: "shared-thread",
+      cardinality: declaration.cardinality,
+      generation: 0,
+      memberKind: "enum",
+      members: [...declaration.members],
+      ownerState: "unavailable",
+      snapshots: new Map(),
+    };
+  }
+
+  function commitFakeFacets(): void {
+    assertLive();
+    if (facetsCommitted) return;
+    const counts = new Map<string, number>();
+    for (const staged of stagedFacets) {
+      if (typeof staged.declaration.localName !== "string") continue;
+      counts.set(
+        staged.declaration.localName,
+        (counts.get(staged.declaration.localName) ?? 0) + 1,
+      );
+    }
+    const activatedNames = new Set<string>();
+    for (const staged of stagedFacets) {
+      const localName = staged.declaration.localName;
+      const next =
+        typeof localName === "string" && counts.get(localName) === 1
+          ? validateFakeFacetDeclaration(staged)
+          : null;
+      if (next === null) {
+        const existing =
+          typeof localName === "string"
+            ? persistentState.facetDeclarations.get(localName)
+            : undefined;
+        if (existing !== undefined) existing.ownerState = "unavailable";
+        emitLog(
+          "warn",
+          `plugin ${pluginId} thread facet ${JSON.stringify(localName)} quarantined (incompatible_declaration)`,
+        );
+        continue;
+      }
+      next.generation += 1;
+      next.ownerState = "reconciling";
+      persistentState.facetDeclarations.set(localName, next);
+      staged.activeGeneration = next.generation;
+      staged.priorTargets = [...next.snapshots.keys()].sort();
+      staged.obligations = new Set(staged.priorTargets);
+      activatedNames.add(localName);
+    }
+    for (const [localName, declaration] of persistentState.facetDeclarations) {
+      if (!activatedNames.has(localName))
+        declaration.ownerState = "unavailable";
+    }
+    facetsCommitted = true;
+  }
+
+  function revokeFakeFacets(): void {
+    if (facetAuthorityRevoked) return;
+    facetAuthorityRevoked = true;
+    for (const staged of stagedFacets) {
+      if (staged.activeGeneration === null) continue;
+      const current = persistentState.facetDeclarations.get(
+        staged.declaration.localName,
+      );
+      if (current?.generation === staged.activeGeneration) {
+        current.ownerState = "unavailable";
+      }
+    }
+  }
+
   // --- sdk ---
   const { sdk, harness: sdkHarness } = createFakeSdk({
     pluginId,
     overrides: options.sdk,
+    onResult: registerFacetSdkResult,
   });
+
+  function makeFakeFacetHandle<
+    Cardinality extends ExperimentalThreadFacetCardinality,
+    Member extends string,
+  >(
+    staged: (typeof stagedFacets)[number],
+  ): ExperimentalThreadFacetHandle<Cardinality, Member> {
+    function currentDeclaration(): FakeThreadFacetPersistentDeclaration {
+      assertFacetLive();
+      const current = persistentState.facetDeclarations.get(
+        staged.declaration.localName,
+      );
+      if (
+        staged.activeGeneration === null ||
+        current?.generation !== staged.activeGeneration ||
+        current.ownerState === "unavailable"
+      ) {
+        return refuseFacet();
+      }
+      return current;
+    }
+
+    async function replace(
+      target: ExperimentalThreadFacetTargetGrant,
+      members: readonly string[],
+    ): Promise<void> {
+      try {
+        const current = currentDeclaration();
+        const grant = facetGrants.get(target);
+        const canonicalTarget =
+          grant === undefined
+            ? undefined
+            : persistentState.facetKnownTargets.get(grant.threadId);
+        if (
+          grant !== undefined &&
+          facetTargets.get(grant.thread) === grant &&
+          Reflect.get(grant.thread, "id") === grant.threadId &&
+          canonicalTarget?.eligibility !== "visible"
+        ) {
+          // The census target became ineligible after delivery. Production
+          // atomically waives that generation's obligation without writing a
+          // snapshot, then refuses the stale write.
+          staged.obligations.delete(grant.threadId);
+          refuseFacet();
+        }
+        if (
+          grant === undefined ||
+          facetTargets.get(grant.thread) !== grant ||
+          Reflect.get(grant.thread, "id") !== grant.threadId ||
+          members.length > 64 ||
+          (current.cardinality === "one" && members.length > 1) ||
+          new Set(members).size !== members.length ||
+          members.some((member) => !current.members.includes(member))
+        ) {
+          refuseFacet();
+        }
+        current.snapshots.set(grant.threadId, [...members]);
+        staged.obligations.delete(grant.threadId);
+      } catch {
+        refuseFacet();
+      }
+    }
+
+    return {
+      replace(target, members) {
+        return replace(target, members);
+      },
+      clear(target) {
+        return replace(target, []);
+      },
+      async listPriorTargets(args) {
+        try {
+          if (staged.censusInFlight) refuseFacet();
+          staged.censusInFlight = true;
+          try {
+            currentDeclaration();
+            const supplied = args?.cursor;
+            if (
+              staged.expectedCursor === null ||
+              supplied !== staged.expectedCursor
+            ) {
+              refuseFacet();
+            }
+            const pageSize = args?.pageSize ?? 50;
+            if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+              refuseFacet();
+            }
+            const start =
+              supplied === undefined ? 0 : staged.cursorPositions.get(supplied);
+            if (start === undefined) refuseFacet();
+            const scannedThreadIds = staged.priorTargets.slice(
+              start,
+              start + pageSize,
+            );
+            const threadIds = scannedThreadIds.filter((threadId) => {
+              const known = persistentState.facetKnownTargets.get(threadId);
+              const eligible = known?.eligibility === "visible";
+              if (!eligible) staged.obligations.delete(threadId);
+              return eligible;
+            });
+            const targets: ExperimentalThreadFacetTarget[] = [];
+            for (const threadId of threadIds) {
+              try {
+                targets.push(await sdk.threads.get({ threadId }));
+              } catch (error) {
+                const known = persistentState.facetKnownTargets.get(threadId);
+                if (known?.eligibility !== "visible") {
+                  staged.obligations.delete(threadId);
+                  continue;
+                }
+                throw error;
+              }
+            }
+            const nextStart = start + scannedThreadIds.length;
+            if (nextStart >= staged.priorTargets.length) {
+              staged.censusExhausted = true;
+              staged.expectedCursor = null;
+              if (supplied !== undefined) {
+                staged.cursorPositions.delete(supplied);
+              }
+              return { targets, nextCursor: null };
+            }
+            const nextCursor = `facet-cursor-${String(staged.activeGeneration)}-${String(nextStart)}`;
+            staged.cursorPositions.set(nextCursor, nextStart);
+            staged.expectedCursor = nextCursor;
+            if (supplied !== undefined) {
+              staged.cursorPositions.delete(supplied);
+            }
+            return { targets, nextCursor };
+          } finally {
+            staged.censusInFlight = false;
+          }
+        } catch {
+          return refuseFacet();
+        }
+      },
+      async markReady() {
+        try {
+          const current = currentDeclaration();
+          if (!staged.censusExhausted || staged.obligations.size > 0) {
+            refuseFacet();
+          }
+          current.ownerState = "ready";
+        } catch {
+          refuseFacet();
+        }
+      },
+    };
+  }
+
+  const experimentalFacets: ExperimentalThreadFacets = {
+    target(thread) {
+      try {
+        assertFacetLive();
+        const record = facetTargets.get(thread);
+        if (record === undefined || thread.id !== record.threadId)
+          refuseFacet();
+        const grant = Object.freeze({}) as ExperimentalThreadFacetTargetGrant;
+        facetGrants.set(grant, record);
+        return grant;
+      } catch {
+        return refuseFacet();
+      }
+    },
+    declare(declaration) {
+      assertLive();
+      if (facetsCommitted) refuseFacet();
+      const staged = {
+        declaration: copyStagedFacetDeclaration(declaration),
+        activeGeneration: null,
+        censusInFlight: false,
+        censusExhausted: false,
+        cursorPositions: new Map<string, number>(),
+        expectedCursor: undefined,
+        obligations: new Set<string>(),
+        priorTargets: [],
+      };
+      stagedFacets.push(staged);
+      return makeFakeFacetHandle(staged);
+    },
+  };
 
   // --- thread events / dispose ---
   const threadEventHandlers: {
@@ -1792,6 +2227,7 @@ function createFakePluginHostInternal(
     status,
     server,
     hosts,
+    experimental_facets: experimentalFacets,
     get sdk() {
       assertLive();
       return sdk;
@@ -1805,6 +2241,7 @@ function createFakePluginHostInternal(
   async function disposeHost(cleanupStorage: boolean): Promise<void> {
     if (disposed) return;
     disposed = true;
+    revokeFakeFacets();
     for (const [id, pending] of pendingInteractions) {
       clearTimeout(pending.timer);
       pendingInteractions.delete(id);
@@ -1891,6 +2328,30 @@ function createFakePluginHostInternal(
         id,
         ...pending.request,
       }));
+    },
+    get experimental_threadFacets() {
+      return [...persistentState.facetDeclarations]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([localName, declaration]) => ({
+          localName,
+          generation: declaration.generation,
+          ownerState: declaration.ownerState,
+          snapshots: Object.fromEntries(
+            [...declaration.snapshots].map(([threadId, members]) => [
+              threadId,
+              [...members],
+            ]),
+          ),
+        }));
+    },
+    experimental_setThreadFacetTargetEligibility(threadId, eligibility) {
+      const target = persistentState.facetKnownTargets.get(threadId);
+      if (target === undefined) {
+        throw new Error(
+          `unknown thread facet target ${JSON.stringify(threadId)}`,
+        );
+      }
+      target.eligibility = eligibility;
     },
     async experimental_emitHostWorkerExit(hostId) {
       assertLive();
@@ -2176,12 +2637,17 @@ function createFakePluginHostInternal(
       );
       try {
         await factory(replacement.bb);
+        replacement.harness.experimental_commitFacets();
       } catch (error) {
         await fakeHostDisposers.get(replacement.harness)?.(false);
         throw error;
       }
       await disposeHost(false);
       return replacement;
+    },
+
+    experimental_commitFacets() {
+      commitFakeFacets();
     },
 
     async dispose() {

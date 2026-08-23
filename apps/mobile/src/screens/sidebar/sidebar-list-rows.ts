@@ -352,7 +352,7 @@ interface BuildSidebarListRowsArgs {
    * Top-level section order (`resolveSidebarSectionOrder`). Sections the
    * order does not name keep the model's order after the named ones.
    */
-  sectionOrder: readonly SidebarSectionId[];
+  sectionOrder: readonly string[];
   /** Copy under an expanded project with no threads. */
   emptyProjectLabel?: string;
 }
@@ -374,10 +374,33 @@ export function buildSidebarListRows({
   return rows;
 }
 
+/** Build exactly one legacy top-level section for composition with saved views. */
+export function buildSidebarSectionRows(args: {
+  model: SidebarModel;
+  collapsed: SidebarCollapsedState;
+  sectionId: SidebarSectionId;
+  emptyProjectLabel?: string;
+}): SidebarListRow[] {
+  const rows: SidebarListRow[] = [];
+  if (!args.model.isReady) return rows;
+  if (args.sectionId === "pinned") {
+    pushPinnedRows(args.model, args.collapsed, rows);
+  } else {
+    pushGroupRows(
+      args.model,
+      args.sectionId,
+      args.collapsed,
+      args.emptyProjectLabel ?? "No threads yet",
+      rows,
+    );
+  }
+  return rows;
+}
+
 /** Pinned (when shown) plus every group, sorted by the section order. */
 function orderTopLevelSections(
   model: SidebarModel,
-  sectionOrder: readonly SidebarSectionId[],
+  sectionOrder: readonly string[],
 ): SidebarSectionId[] {
   const present: SidebarSectionId[] = [
     ...(model.pinned ? (["pinned"] as const) : []),

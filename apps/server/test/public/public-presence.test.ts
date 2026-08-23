@@ -195,7 +195,7 @@ describe("GET /api/v1/p6r-presence", () => {
         p6rThreads: {
           "thread-1": [
             {
-              p6rPrincipalKey: "p6r:p6r-tailnet/p6r-tailnet/tailnet-acct-42",
+              p6rPrincipalKey: "p6r:p6r-tailnet%2Fp6r-tailnet/tailnet-acct-42",
               p6rHandle: "shared-human",
               p6rDisplayName: "Shared Human",
               p6rImageUrl: "https://example.test/shared-human.png",

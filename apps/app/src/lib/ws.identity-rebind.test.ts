@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Fake socket that records its URL provider and reconnect() calls so the
+// Fake socket that records its URL argument and reconnect() calls so the
 // tests can assert client identity never rides the upgrade URL.
 const fakeSocketState = vi.hoisted(() => {
   type UrlProvider = () => string;
@@ -14,8 +14,8 @@ const fakeSocketState = vi.hoisted(() => {
     reconnectCalls = 0;
     private readonly urlProvider: UrlProvider;
 
-    constructor(urlProvider: UrlProvider) {
-      this.urlProvider = urlProvider;
+    constructor(url: string | UrlProvider) {
+      this.urlProvider = typeof url === "function" ? url : () => url;
       instances.push(this);
     }
 

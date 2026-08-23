@@ -14,6 +14,10 @@ import {
   serviceTierSchema,
   threadOriginKindSchema,
   threadListEntrySchema,
+  p6rThreadParticipantProfileSchema,
+  threadFacetOwnerStateSchema,
+  threadFacetQueryRequestSchema,
+  threadFacetTypeIdSchema,
   threadQueuedMessageSchema,
   threadSearchSourceKindSchema,
   threadTimelineActivePromptModeSchema,
@@ -291,6 +295,70 @@ export type SendQueuedMessageResponse = z.infer<
 
 export const threadListResponseSchema = z.array(threadListEntrySchema);
 export type ThreadListResponse = z.infer<typeof threadListResponseSchema>;
+
+export const threadFacetParticipantSummarySchema = z
+  .object({
+    totalCount: z.number().int().nonnegative(),
+    profiles: z.array(p6rThreadParticipantProfileSchema).max(3),
+    nextCursor: z.string().max(4096).nullable(),
+  })
+  .strict();
+export type ThreadFacetParticipantSummary = z.infer<
+  typeof threadFacetParticipantSummarySchema
+>;
+
+export const threadFacetQueryThreadSchema = threadListEntrySchema
+  .omit({ participants: true })
+  .extend({ participantSummary: threadFacetParticipantSummarySchema });
+export type ThreadFacetQueryThread = z.infer<
+  typeof threadFacetQueryThreadSchema
+>;
+
+export { threadFacetQueryRequestSchema };
+export type ThreadFacetQueryRequest = z.infer<
+  typeof threadFacetQueryRequestSchema
+>;
+
+export const threadFacetQueryResponseSchema = z
+  .object({
+    threads: z.array(threadFacetQueryThreadSchema),
+    nextCursor: z.string().max(4096).nullable(),
+    facetStates: z
+      .array(
+        z
+          .object({
+            typeId: threadFacetTypeIdSchema,
+            ownerState: threadFacetOwnerStateSchema,
+          })
+          .strict(),
+      )
+      .max(5),
+  })
+  .strict();
+export type ThreadFacetQueryResponse = z.infer<
+  typeof threadFacetQueryResponseSchema
+>;
+
+export const threadFacetParticipantsQuerySchema = z
+  .object({
+    pageSize: z.string().regex(/^\d+$/u).optional(),
+    cursor: z.string().max(4096).optional(),
+  })
+  .strict();
+export type ThreadFacetParticipantsQuery = z.infer<
+  typeof threadFacetParticipantsQuerySchema
+>;
+
+export const threadFacetParticipantsResponseSchema = z
+  .object({
+    totalCount: z.number().int().nonnegative(),
+    profiles: z.array(p6rThreadParticipantProfileSchema).max(100),
+    nextCursor: z.string().max(4096).nullable(),
+  })
+  .strict();
+export type ThreadFacetParticipantsResponse = z.infer<
+  typeof threadFacetParticipantsResponseSchema
+>;
 
 export const THREAD_MENTION_RESOLVE_MAX_IDS = 32;
 

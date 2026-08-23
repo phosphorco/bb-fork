@@ -6,6 +6,7 @@ import {
   sidebarSectionOrderAtom,
   type SidebarOrganizationMode,
   type SidebarSectionId,
+  type SidebarTopLevelSectionId,
 } from "./sidebarCollapsedAtoms";
 import type { LegacySidebarEntityAnchor } from "@bb/client-core";
 import { usePersistedSidebarSectionOrder } from "./usePersistedSidebarSectionOrder";
@@ -40,9 +41,9 @@ interface UseSidebarModeSectionOrderArgs {
 }
 
 interface UseSidebarModeSectionOrderResult {
-  onOrderChange: (order: SidebarSectionId[]) => void;
-  order: SidebarSectionId[];
-  persistedOrder: SidebarSectionId[];
+  onOrderChange: (order: SidebarTopLevelSectionId[]) => void;
+  order: SidebarTopLevelSectionId[];
+  persistedOrder: SidebarTopLevelSectionId[];
 }
 
 export function useSidebarModeSectionOrder({
@@ -73,7 +74,7 @@ export function useSidebarModeSectionOrder({
     [persistedOrder, showPinnedSection],
   );
   const onOrderChange = useCallback(
-    (nextOrder: SidebarSectionId[]) => setStoredOrder(nextOrder),
+    (nextOrder: SidebarTopLevelSectionId[]) => setStoredOrder(nextOrder),
     [setStoredOrder],
   );
 

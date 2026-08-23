@@ -5,11 +5,15 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createConnection,
+  getThreadFacetDeclaration,
   getThread,
+  listThreadFacetOwnerProjections,
+  markProjectDeleted,
   migrate,
+  queryThreadFacetThreadIds,
   type DbConnection,
 } from "@bb/db";
-import { PERSONAL_PROJECT_ID } from "@bb/domain";
+import { PERSONAL_PROJECT_ID, serializeThreadFacetTypeId } from "@bb/domain";
 import type { Logger } from "@bb/logger";
 import {
   createPluginService,
@@ -161,6 +165,115 @@ describe("plugin bb.sdk bind gate", () => {
     expect(entry.statusDetail).toContain(
       "bb.sdk is not available until the server is listening",
     );
+  });
+
+  it("commits valid enum facets while quarantining malformed optional declarations", async () => {
+    const rootDir = await writePlugin(workDir, {
+      name: "bb-plugin-facet-mixed",
+      serverSource: `
+        import type { BbPluginApi } from "@get-bb/plugin-sdk";
+        export default function plugin(bb: BbPluginApi) {
+          bb.experimental_facets.declare({
+            assignmentScope: "shared-thread",
+            cardinality: "one",
+            localName: "legacy",
+            memberKind: "enum",
+            members: ["old"] as const,
+          });
+        }
+      `,
+    });
+    await service.installPath(rootDir);
+    await writeFile(
+      join(rootDir, "server.ts"),
+      `
+        import type { BbPluginApi } from "@get-bb/plugin-sdk";
+        export default function plugin(bb: BbPluginApi) {
+          bb.experimental_facets.declare({
+            assignmentScope: "shared-thread",
+            cardinality: "many",
+            localName: "valid",
+            memberKind: "enum",
+            members: ["requested", "fulfilled"] as const,
+          });
+          const invalid = [
+            {
+              assignmentScope: "shared-thread",
+              cardinality: "many",
+              localName: "legacy",
+              memberKind: "principal-key",
+              members: [],
+            },
+            {
+              assignmentScope: "private-principal",
+              cardinality: "many",
+              localName: "private",
+              memberKind: "enum",
+              members: ["mine"],
+            },
+            {
+              assignmentScope: "shared-thread",
+              cardinality: "many",
+              localName: "null-members",
+              memberKind: "enum",
+              members: null,
+            },
+            null,
+            new Proxy({}, { get() { throw new Error("hostile getter"); } }),
+          ].map((declaration) => Reflect.apply(
+            bb.experimental_facets.declare,
+            bb.experimental_facets,
+            [declaration],
+          ));
+          Reflect.set(globalThis, "__facetMixedInvalidHandles", invalid);
+        }
+      `,
+    );
+
+    expect((await service.reload("facet-mixed")).ok).toBe(true);
+
+    const typeId = (localName: string) =>
+      serializeThreadFacetTypeId({
+        scope: "plugin",
+        owner: "facet-mixed",
+        localName,
+      });
+    expect(getThreadFacetDeclaration(db, typeId("valid"))).toMatchObject({
+      cardinality: "many",
+      memberKind: "enum",
+      members: ["requested", "fulfilled"],
+    });
+    expect(getThreadFacetDeclaration(db, typeId("legacy"))).toMatchObject({
+      cardinality: "one",
+      memberKind: "enum",
+      members: ["old"],
+    });
+    expect(getThreadFacetDeclaration(db, typeId("private"))).toBeNull();
+    expect(getThreadFacetDeclaration(db, typeId("null-members"))).toBeNull();
+    expect(
+      listThreadFacetOwnerProjections(db, [
+        typeId("legacy"),
+        typeId("valid"),
+      ]).map(({ ownerState, typeId: id }) => ({ id, ownerState })),
+    ).toEqual([
+      { id: typeId("legacy"), ownerState: "unavailable" },
+      { id: typeId("valid"), ownerState: "reconciling" },
+    ]);
+
+    const invalidHandles = Reflect.get(
+      globalThis,
+      "__facetMixedInvalidHandles",
+    );
+    expect(Array.isArray(invalidHandles)).toBe(true);
+    if (!Array.isArray(invalidHandles)) throw new Error("missing handles");
+    expect(invalidHandles).toHaveLength(5);
+    for (const handle of invalidHandles) {
+      const markReady = Reflect.get(Object(handle), "markReady");
+      await expect(
+        Promise.resolve(Reflect.apply(markReady, handle, [])),
+      ).rejects.toThrow("Thread facet capability refused");
+    }
+    Reflect.deleteProperty(globalThis, "__facetMixedInvalidHandles");
   });
 
   it("delivers shared-port declarations through the server control plane", async () => {
@@ -361,6 +474,184 @@ describe("plugin bb.sdk bind gate", () => {
 });
 
 describe("plugin bb.sdk against a running server", () => {
+  it("attenuates facet writes to exact SDK thread objects", async () => {
+    const server = await startTestServer();
+    const workDir = await mkdtemp(join(tmpdir(), "bb-plugin-facet-live-"));
+    try {
+      const { host } = seedHostSession(server.deps, {
+        id: "host-plugin-facet-live",
+      });
+      seedPrimaryHost(server.deps, host.id);
+      const { project } = seedProjectWithSource(server.deps, {
+        hostId: host.id,
+        path: "/tmp/plugin-facet-live-source",
+      });
+      const thread = seedThread(server.deps, { projectId: project.id });
+      server.pluginService.bindSdk({ baseUrl: server.baseUrl });
+      const rootDir = await writePlugin(workDir, {
+        name: "bb-plugin-facet-live",
+        serverSource: `
+          export default function plugin(bb: any) {
+            Reflect.set(globalThis, "__facetLiveHandle", bb.experimental_facets.declare({
+              assignmentScope: "shared-thread",
+              cardinality: "one",
+              localName: "phase",
+              memberKind: "enum",
+              members: ["working"],
+            }));
+          }
+        `,
+      });
+      await server.pluginService.installPath(rootDir);
+      const api = requireApi(server.pluginService, "facet-live");
+      const typeId = serializeThreadFacetTypeId({
+        scope: "plugin",
+        owner: "facet-live",
+        localName: "phase",
+      });
+      const exact = await api.sdk.threads.get({ threadId: thread.id });
+      const handle = Reflect.get(globalThis, "__facetLiveHandle");
+      const grant = api.experimental_facets.target(exact);
+      await expect(handle.replace(grant, ["working"])).resolves.toBeUndefined();
+      await expect(handle.listPriorTargets()).resolves.toEqual({
+        targets: [],
+        nextCursor: null,
+      });
+      await expect(handle.markReady()).resolves.toBeUndefined();
+      expect(
+        listThreadFacetOwnerProjections(server.db, [typeId]),
+      ).toMatchObject([{ generation: 1, ownerState: "ready" }]);
+      expect(
+        queryThreadFacetThreadIds(server.db, {
+          filters: [{ typeId, operator: "contains", member: "working" }],
+          includeHidden: false,
+          pageSize: 10,
+        }).threadIds,
+      ).toEqual([thread.id]);
+
+      expect(() => api.experimental_facets.target({ ...exact })).toThrow(
+        "Thread facet capability refused",
+      );
+      expect(() =>
+        Reflect.apply(api.experimental_facets.target, api.experimental_facets, [
+          thread.id,
+        ]),
+      ).toThrow("Thread facet capability refused");
+      const changed = await api.sdk.threads.get({ threadId: thread.id });
+      Reflect.set(changed, "id", "changed");
+      expect(() => api.experimental_facets.target(changed)).toThrow(
+        "Thread facet capability refused",
+      );
+      const hostile = await api.sdk.threads.get({ threadId: thread.id });
+      Object.defineProperty(hostile, "id", {
+        get() {
+          throw new Error("hostile getter detail");
+        },
+      });
+      expect(() => api.experimental_facets.target(hostile)).toThrow(
+        "Thread facet capability refused",
+      );
+
+      const foreignRoot = await writePlugin(workDir, {
+        name: "bb-plugin-facet-foreign",
+        serverSource: "export default function plugin() {}",
+      });
+      await server.pluginService.installPath(foreignRoot);
+      const foreignApi = requireApi(server.pluginService, "facet-foreign");
+      const foreignThread = await foreignApi.sdk.threads.get({
+        threadId: thread.id,
+      });
+      const foreignGrant = foreignApi.experimental_facets.target(foreignThread);
+      await expect(handle.clear(foreignGrant)).rejects.toThrow(
+        "Thread facet capability refused",
+      );
+
+      await writeFile(
+        join(rootDir, "server.ts"),
+        `
+          export default function plugin(bb: any) {
+            bb.experimental_facets.declare({
+              assignmentScope: "shared-thread",
+              cardinality: "one",
+              localName: "phase",
+              memberKind: "enum",
+              members: ["working"],
+            });
+            throw new Error("candidate failed before commit");
+          }
+        `,
+      );
+      expect((await server.pluginService.reload("facet-live")).ok).toBe(false);
+      expect(server.pluginService.getApi("facet-live")).toBe(api);
+      expect(
+        listThreadFacetOwnerProjections(server.db, [typeId]),
+      ).toMatchObject([{ generation: 1, ownerState: "ready" }]);
+      await expect(handle.replace(grant, ["working"])).resolves.toBeUndefined();
+      expect(
+        queryThreadFacetThreadIds(server.db, {
+          filters: [{ typeId, operator: "contains", member: "working" }],
+          includeHidden: false,
+          pageSize: 10,
+        }).threadIds,
+      ).toEqual([thread.id]);
+
+      await writeFile(
+        join(rootDir, "server.ts"),
+        `
+          export default function plugin(bb: any) {
+            Reflect.set(globalThis, "__facetLiveNextHandle", bb.experimental_facets.declare({
+              assignmentScope: "shared-thread",
+              cardinality: "one",
+              localName: "phase",
+              memberKind: "enum",
+              members: ["working"],
+            }));
+          }
+        `,
+      );
+      expect((await server.pluginService.reload("facet-live")).ok).toBe(true);
+      expect(
+        listThreadFacetOwnerProjections(server.db, [typeId]),
+      ).toMatchObject([{ generation: 2, ownerState: "reconciling" }]);
+      await expect(handle.clear(grant)).rejects.toThrow(
+        "Thread facet capability refused",
+      );
+      const nextApi = requireApi(server.pluginService, "facet-live");
+      const nextHandle = Reflect.get(globalThis, "__facetLiveNextHandle");
+      const prior = await nextHandle.listPriorTargets();
+      expect(prior.nextCursor).toBeNull();
+      expect(prior.targets.map(({ id }: { id: string }) => id)).toEqual([
+        thread.id,
+      ]);
+      await nextHandle.replace(
+        nextApi.experimental_facets.target(prior.targets[0]),
+        ["working"],
+      );
+      await nextHandle.markReady();
+      expect(
+        listThreadFacetOwnerProjections(server.db, [typeId]),
+      ).toMatchObject([{ generation: 2, ownerState: "ready" }]);
+
+      const projectDeletedTarget = nextApi.experimental_facets.target(
+        await nextApi.sdk.threads.get({ threadId: thread.id }),
+      );
+      markProjectDeleted(server.db, server.deps.hub, {
+        projectId: project.id,
+      });
+      await expect(nextHandle.clear(projectDeletedTarget)).rejects.toThrow(
+        "Thread facet capability refused",
+      );
+      Reflect.deleteProperty(globalThis, "__facetLiveHandle");
+      Reflect.deleteProperty(globalThis, "__facetLiveNextHandle");
+    } finally {
+      Reflect.deleteProperty(globalThis, "__facetLiveHandle");
+      Reflect.deleteProperty(globalThis, "__facetLiveNextHandle");
+      await server.pluginService.stop();
+      await rm(workDir, { recursive: true, force: true });
+      await server.close();
+    }
+  });
+
   it("returns the server-side Standard Schema output after the host JSON wire", async () => {
     const server = await startTestServer();
     const workDir = await mkdtemp(join(tmpdir(), "bb-plugin-host-transform-"));

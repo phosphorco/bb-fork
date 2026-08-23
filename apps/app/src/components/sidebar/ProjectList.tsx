@@ -113,6 +113,7 @@ import {
   sidebarCollapsedThreadSectionsAtom,
   sidebarCollapsedMachinesAtom,
   sidebarOrganizationModeAtom,
+  MY_PROGRESS_SIDEBAR_SECTION_ID,
   type SidebarChronologicalSort,
   type CollapsibleSidebarSectionId,
   type SidebarOrganizationMode,
@@ -156,6 +157,7 @@ import {
   resolveThreadTitleDisplayText,
   type ThreadTitleMentionResources,
 } from "@/components/thread/ThreadTitleMentions";
+import { MyProgressSidebarSection } from "./MyProgressSidebarSection";
 
 interface ProjectListProps {
   onNewProject?: () => void;
@@ -336,7 +338,11 @@ export function getSelectedThreadSidebarExpansion({
 function isCollapsibleSidebarSectionId(
   value: string,
 ): value is CollapsibleSidebarSectionId {
-  return value === "pinned" || value === "threads";
+  return (
+    value === "pinned" ||
+    value === "threads" ||
+    value === MY_PROGRESS_SIDEBAR_SECTION_ID
+  );
 }
 
 const EMPTY_PROJECT_THREAD_LIST_STATE: ProjectThreadListState = {
@@ -1138,6 +1144,19 @@ function ProjectModeSections({
       onOrderChange={onOrderChange}
     >
       {(sectionId, consumeClickSuppression) => {
+        if (sectionId === MY_PROGRESS_SIDEBAR_SECTION_ID) {
+          return (
+            <MyProgressSidebarSection
+              key={sectionId}
+              activeThreadId={selectedThreadId}
+              consumeClickSuppression={consumeClickSuppression}
+              disabled={reorderDisabled}
+              isCollapsed={collapsedSectionIds.has(sectionId)}
+              onNavigate={onProjectSelect}
+              onToggleCollapsed={() => onToggleCollapsed(sectionId)}
+            />
+          );
+        }
         const builtInSection = renderBuiltInSidebarSection({
           sectionId,
           sections: builtInSections,
@@ -1282,6 +1301,19 @@ function SectionModeSections({
         collapsedSectionIds,
         onToggleCollapsed,
       }}
+      renderAdditionalTopLevelSection={(sectionId, consumeClickSuppression) =>
+        sectionId === MY_PROGRESS_SIDEBAR_SECTION_ID ? (
+          <MyProgressSidebarSection
+            key={sectionId}
+            activeThreadId={selectedThreadId}
+            consumeClickSuppression={consumeClickSuppression}
+            disabled={order.length < 2}
+            isCollapsed={collapsedSectionIds.has(sectionId)}
+            onNavigate={onProjectSelect}
+            onToggleCollapsed={() => onToggleCollapsed(sectionId)}
+          />
+        ) : undefined
+      }
     />
   );
 }
@@ -1422,6 +1454,19 @@ export function MachineModeSections({
       onOrderChange={onOrderChange}
     >
       {(sectionId, consumeClickSuppression) => {
+        if (sectionId === MY_PROGRESS_SIDEBAR_SECTION_ID) {
+          return (
+            <MyProgressSidebarSection
+              key={sectionId}
+              activeThreadId={selectedThreadId}
+              consumeClickSuppression={consumeClickSuppression}
+              disabled={reorderDisabled}
+              isCollapsed={collapsedSectionIds.has(sectionId)}
+              onNavigate={onProjectSelect}
+              onToggleCollapsed={() => onToggleCollapsed(sectionId)}
+            />
+          );
+        }
         const builtInSection = renderBuiltInSidebarSection({
           sectionId,
           sections: builtInSections,
@@ -1990,6 +2035,17 @@ function ProjectListComponent({
   if (projectsState.status === "loading") {
     return (
       <ProjectListShell>
+        <MyProgressSidebarSection
+          activeThreadId={selectedThreadId}
+          disabled
+          isCollapsed={collapsedSidebarSectionIds.has(
+            MY_PROGRESS_SIDEBAR_SECTION_ID,
+          )}
+          onNavigate={onProjectSelect}
+          onToggleCollapsed={() =>
+            toggleSidebarSectionCollapsed(MY_PROGRESS_SIDEBAR_SECTION_ID)
+          }
+        />
         <ProjectListNavigationLoadingState />
       </ProjectListShell>
     );

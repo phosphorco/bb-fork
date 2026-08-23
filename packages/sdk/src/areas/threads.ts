@@ -24,6 +24,9 @@ import type {
   ThreadChildSummaryResponse,
   ThreadConversationOutlineResponse,
   ThreadListResponse,
+  ThreadFacetParticipantsResponse,
+  ThreadFacetQueryRequest,
+  ThreadFacetQueryResponse,
   ThreadOpenResponse,
   ThreadPaneAction,
   ThreadPaneActionResponse,
@@ -82,6 +85,22 @@ export interface ThreadListArgs {
   unsectioned?: boolean;
 }
 
+export interface ThreadFacetQueryArgs {
+  cursor?: string;
+  filters?: ThreadFacetQueryRequest["filters"];
+  order?: ThreadFacetQueryRequest["order"];
+  pageSize?: number;
+  scope?: ThreadFacetQueryRequest["scope"];
+  signal?: AbortSignal;
+}
+
+export interface ThreadFacetParticipantsArgs {
+  cursor?: string;
+  pageSize?: number;
+  signal?: AbortSignal;
+  threadId: string;
+}
+
 export interface ThreadSearchArgs extends ThreadSearchQuery {
   signal?: AbortSignal;
 }
@@ -98,6 +117,8 @@ export interface ThreadGetArgs {
 
 export type ThreadGetResult = ThreadResponse | ThreadWithIncludesResponse;
 export type ThreadListResult = ThreadListResponse;
+export type ThreadFacetQueryResult = ThreadFacetQueryResponse;
+export type ThreadFacetParticipantsResult = ThreadFacetParticipantsResponse;
 export type ThreadSearchResult = ThreadSearchResponse;
 export type ThreadResolveMentionsResult = ResolveThreadMentionsResponse;
 export interface ThreadOutputResponse {
@@ -448,6 +469,10 @@ export interface ThreadsArea {
   get(args: ThreadGetArgs): Promise<ThreadGetResult>;
   interactions: ThreadInteractionsArea;
   list(args?: ThreadListArgs): Promise<ThreadListResult>;
+  queryFacets(args?: ThreadFacetQueryArgs): Promise<ThreadFacetQueryResult>;
+  facetParticipants(
+    args: ThreadFacetParticipantsArgs,
+  ): Promise<ThreadFacetParticipantsResult>;
   markRead(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
   markUnread(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
   open(args: ThreadOpenArgs): Promise<ThreadOpenResult>;
@@ -964,6 +989,38 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
         transport.api.v1.threads.$get(
           { query: listQuery(input) },
           ...signalRequestArgs(input?.signal),
+        ),
+      );
+    },
+    async queryFacets(input) {
+      return transport.readJson(
+        transport.api.v1.threads["facet-query"].$post(
+          {
+            json: {
+              scope: input?.scope ?? {},
+              filters: input?.filters ?? [],
+              pageSize: input?.pageSize ?? 50,
+              ...(input?.order === undefined ? {} : { order: input.order }),
+              ...(input?.cursor === undefined ? {} : { cursor: input.cursor }),
+            },
+          },
+          ...signalRequestArgs(input?.signal),
+        ),
+      );
+    },
+    async facetParticipants(input) {
+      return transport.readJson(
+        transport.api.v1.threads[":id"]["facet-participants"].$get(
+          {
+            param: { id: input.threadId },
+            query: {
+              ...(input.pageSize === undefined
+                ? {}
+                : { pageSize: String(input.pageSize) }),
+              ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+            },
+          },
+          ...signalRequestArgs(input.signal),
         ),
       );
     },

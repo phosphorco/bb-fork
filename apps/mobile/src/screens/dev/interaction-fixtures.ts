@@ -313,6 +313,7 @@ export function buildQueuedMessageFixtures(): ThreadQueuedMessage[] {
     serviceTier: "default" as const,
     createdAt: 1,
     updatedAt: 1,
+    p6rActor: null,
   };
   return [
     {

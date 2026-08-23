@@ -140,6 +140,7 @@ export function queuedMessage(
     createdAt: 1,
     updatedAt: 1,
     ...overrides,
+    p6rActor: overrides.p6rActor ?? null,
   };
 }
 

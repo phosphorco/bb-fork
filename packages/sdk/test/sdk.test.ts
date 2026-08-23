@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
+  CORE_PARTICIPANTS_FACET_TYPE_ID,
   P6R_CLAIMED_IDENTITY_HEADER,
   p6rEncodeClaimedIdentityHeader,
   type Environment,
@@ -755,6 +756,72 @@ describe("@bb/sdk", () => {
         bodyText: undefined,
         method: "GET",
         url: "http://bb.test/api/v1/threads?projectId=proj_123&archived=true",
+      },
+    ]);
+  });
+
+  it("routes bounded facet queries and participant continuation", async () => {
+    const queryResponse = { threads: [], facetStates: [], nextCursor: null };
+    const participantResponse = {
+      totalCount: 0,
+      profiles: [],
+      nextCursor: null,
+    };
+    const queue = createFetchQueue([
+      { body: queryResponse },
+      { body: participantResponse },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await expect(
+      sdk.threads.queryFacets({
+        scope: { projectId: "proj_123", hasParent: false },
+        filters: [
+          {
+            typeId: CORE_PARTICIPANTS_FACET_TYPE_ID,
+            operator: "contains",
+            member: { perspective: "request-principal" },
+          },
+        ],
+        pageSize: 25,
+        cursor: "opaque-query-cursor",
+      }),
+    ).resolves.toEqual(queryResponse);
+    await expect(
+      sdk.threads.facetParticipants({
+        threadId: "thr_123",
+        pageSize: 64,
+        cursor: "opaque-participant-cursor",
+      }),
+    ).resolves.toEqual(participantResponse);
+
+    expect(queue.requests).toEqual([
+      {
+        method: "POST",
+        url: "http://bb.test/api/v1/threads/facet-query",
+        bodyText: JSON.stringify({
+          scope: { projectId: "proj_123", hasParent: false },
+          filters: [
+            {
+              typeId: CORE_PARTICIPANTS_FACET_TYPE_ID,
+              operator: "contains",
+              member: { perspective: "request-principal" },
+            },
+          ],
+          pageSize: 25,
+          cursor: "opaque-query-cursor",
+        }),
+      },
+      {
+        method: "GET",
+        url: "http://bb.test/api/v1/threads/thr_123/facet-participants?pageSize=64&cursor=opaque-participant-cursor",
+        bodyText: undefined,
       },
     ]);
   });

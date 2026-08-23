@@ -1,19 +1,19 @@
 import { useCallback, type ReactNode } from "react";
 import type { DragEndEvent } from "@dnd-kit/core";
 import type { ConsumeDragClickSuppression } from "@/components/ui/use-drag-click-suppression";
-import type { SidebarSectionId } from "./sidebarCollapsedAtoms";
+import type { SidebarTopLevelSectionId } from "./sidebarCollapsedAtoms";
 import { SidebarSectionOrderList } from "./SidebarSectionOrderList";
-import { reorderSidebarSectionOrder } from "@bb/client-core";
 import { useSidebarReorderDnd } from "./useSidebarReorderDnd";
+import { reorderSidebarTopLevelOrder } from "./sidebarTopLevelOrder";
 
 interface ReorderableSidebarSectionOrderListProps {
   children: (
-    sectionId: SidebarSectionId,
+    sectionId: SidebarTopLevelSectionId,
     consumeClickSuppression: ConsumeDragClickSuppression,
   ) => ReactNode;
-  onOrderChange: (order: SidebarSectionId[]) => void;
-  order: readonly SidebarSectionId[];
-  reorderOrder?: readonly SidebarSectionId[];
+  onOrderChange: (order: SidebarTopLevelSectionId[]) => void;
+  order: readonly SidebarTopLevelSectionId[];
+  reorderOrder?: readonly SidebarTopLevelSectionId[];
 }
 
 export function ReorderableSidebarSectionOrderList({
@@ -31,7 +31,7 @@ export function ReorderableSidebarSectionOrderList({
       ) {
         return;
       }
-      const nextOrder = reorderSidebarSectionOrder({
+      const nextOrder = reorderSidebarTopLevelOrder({
         activeId: event.active.id,
         overId: event.over.id,
         order: reorderOrder,

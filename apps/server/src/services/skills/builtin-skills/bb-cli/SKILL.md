@@ -446,6 +446,20 @@ or artifacts, validation performed, and blockers.
   thread ever received a message.
 - Use `bb thread output <thread-id>` to read the latest final output, or
   `bb thread output --self` for the current thread.
+- Use `bb thread facets query --query-json '<json>'` for the SDK's canonical
+  bounded facet query. The strict JSON envelope accepts `scope`, at most four
+  conjunctive `filters`, one optional `order`, `pageSize` (1-100), and an
+  opaque `cursor`; omit the flag for the default first page. Filters are
+  `present`, `absent`, `contains`, or `notContains`, and membership may use
+  `{ "perspective": "request-principal" }`. Pass `--json` for the raw SDK
+  response. Reissue the unchanged envelope with `nextCursor` to continue.
+- Read `facetStates` before treating `absent` or `notContains` as negative
+  evidence. A reconciling or unavailable facet projection is unknown, not
+  false. Positive membership remains usable when returned.
+- Query rows carry the first ordered participant profiles. Page the remainder
+  with `bb thread facets participants <thread-id> [--page-size <count>]
+[--cursor <cursor>] [--json]`; the response preserves canonical participant
+  order and exact principal cardinality.
 
 For review or fix pipelines, get the environment ID from
 `bb thread show <thread-id> --json`, then spawn the follow-up with

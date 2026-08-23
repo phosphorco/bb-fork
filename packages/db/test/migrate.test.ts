@@ -303,7 +303,26 @@ function dropAppSettingsValuesTable(db: DbConnection): void {
   db.$client.prepare("DROP TABLE IF EXISTS app_settings_values").run();
 }
 
+function dropThreadFacetMigrationState(db: DbConnection): void {
+  for (const table of [
+    "thread_facet_principal_profiles",
+    "thread_facet_reconciliation_targets",
+    "thread_facet_relations",
+    "thread_facet_snapshots",
+    "thread_facet_members",
+    "thread_facet_owners",
+    "thread_facet_declarations",
+    "thread_facet_cursor_keys",
+  ]) {
+    db.$client.prepare(`DROP TABLE IF EXISTS ${table}`).run();
+  }
+  db.$client
+    .prepare("DELETE FROM __drizzle_migrations WHERE created_at = ?")
+    .run(threadFacetMigrationWhen);
+}
+
 function dropIdentityMigrationState(db: DbConnection): void {
+  dropThreadFacetMigrationState(db);
   // 0107 adds the provider-qualified actor table and canonical snapshot
   // columns. Rewind fixtures must remove both the schema and its ledger row so
   // a subsequent forward replay exercises the identity migration itself.
@@ -500,6 +519,8 @@ const eventParentToolCallPreJsonValidMigrationHash =
 const multiplayerMigrationWhen = 1786998114856;
 
 const identityMigrationWhen = 1787517263970;
+
+const threadFacetMigrationWhen = 1787520353659;
 
 const eventLargeValuesPreOptimizationHash =
   "bc111f5134183c37cf135af70231ec5a79823f9868818fdd8377e1ab3c05a23f";
@@ -5545,6 +5566,7 @@ describe("migrate", () => {
       });
 
       dropEventParentToolCallIdColumn(db);
+      dropThreadFacetMigrationState(db);
       db.$client
         .prepare<DeleteMigrationParameters>(
           "DELETE FROM __drizzle_migrations WHERE created_at >= ?",

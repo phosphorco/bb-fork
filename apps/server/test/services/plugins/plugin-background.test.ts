@@ -7,11 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   claimPluginScheduledRun,
   createConnection,
+  listThreadFacetOwnerProjections,
   listPluginSchedules,
   migrate,
   pluginSchedules,
   type DbConnection,
 } from "@bb/db";
+import { serializeThreadFacetTypeId } from "@bb/domain";
 import type { Logger } from "@bb/logger";
 import {
   createPluginService,
@@ -263,6 +265,13 @@ describe("plugin background services", () => {
       name: "bb-plugin-stubborn",
       serverSource: `
         export default function plugin(bb: any) {
+          bb.experimental_facets.declare({
+            assignmentScope: "shared-thread",
+            cardinality: "one",
+            localName: "phase",
+            memberKind: "enum",
+            members: ["working"],
+          });
           bb.background.service("socket", {
             start() {
               // Ignores the abort signal entirely.
@@ -279,6 +288,17 @@ describe("plugin background services", () => {
     expect(entry?.statusDetail).toContain("service socket did not stop");
     // Not re-loaded: that would double-start the hung service.
     expect(service.getApi("stubborn")).toBeUndefined();
+    const [facetOwner] = listThreadFacetOwnerProjections(db, [
+      serializeThreadFacetTypeId({
+        scope: "plugin",
+        owner: "stubborn",
+        localName: "phase",
+      }),
+    ]);
+    expect(facetOwner).toMatchObject({
+      generation: 2,
+      ownerState: "unavailable",
+    });
     // The plugin is unusable after this reload (#2029): the outcome must say
     // so instead of resolving as success while `bb stubborn` is gone.
     expect(outcome).toEqual({

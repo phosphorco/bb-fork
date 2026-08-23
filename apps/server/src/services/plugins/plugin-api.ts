@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -8,11 +9,21 @@ import {
   getPluginKvValue,
   listPluginKvKeys,
   setPluginKvValue,
+  activatePluginThreadFacetDeclarations,
+  listPriorThreadFacetSnapshotTargets,
+  markThreadFacetOwnerGenerationReady,
+  markThreadFacetOwnerGenerationUnavailable,
+  recordThreadFacetCensusExhausted,
+  replaceThreadFacetRelationsInGeneration,
+  waiveThreadFacetReconciliationTargetIfIneligible,
   type DbConnection,
+  type DeclarePluginThreadFacetArgs,
 } from "@bb/db";
 import {
   PLUGIN_INTERACTION_MAX_TITLE_LENGTH,
+  parseThreadFacetTypeId,
   type JsonValue,
+  type ThreadFacetTypeId,
 } from "@bb/domain";
 import type {
   BbPluginApi,
@@ -29,6 +40,11 @@ import type {
   PluginCliContext,
   PluginCliResult,
   PluginEvents,
+  ExperimentalThreadFacetCardinality,
+  ExperimentalThreadFacetHandle,
+  ExperimentalThreadFacets,
+  ExperimentalThreadFacetTarget,
+  ExperimentalThreadFacetTargetGrant,
   PluginHttp,
   PluginHttpAuthMode,
   PluginHttpHandler,
@@ -79,7 +95,13 @@ import {
   summarizeParseIssues,
   validatePluginProviderDeclaration,
 } from "@get-bb/plugin-sdk/internal/host-policy";
-import type { BbSdk, ThreadForkArgs, ThreadSpawnArgs } from "@bb/sdk";
+import type {
+  BbSdk,
+  ThreadForkArgs,
+  ThreadGetResult,
+  ThreadListResult,
+  ThreadSpawnArgs,
+} from "@bb/sdk";
 import type { ServerLogger } from "../../types.js";
 import type { PluginInteractionResult } from "../interactions/pending-interactions.js";
 import { appendPluginLogLine } from "./plugin-log.js";
@@ -153,7 +175,10 @@ export interface PluginHttpRouteRecord {
 export interface PluginRpcHandler {
   inputSchema: StandardSchemaV1;
   outputSchema: StandardSchemaV1;
-  handler: (input: never, p6rRequestContext: P6rPluginRequestContext) => unknown;
+  handler: (
+    input: never,
+    p6rRequestContext: P6rPluginRequestContext,
+  ) => unknown;
 }
 
 /** Runtime record of a registered native tool. */
@@ -269,6 +294,10 @@ export interface PluginApiHandle {
   activateP6rIdentityProvider(): void;
   /** Publish factory-time host declarations and status only after commit. */
   activate(): void;
+  /** Atomically commit the candidate's staged optional facet declarations. */
+  commitFacets(): void;
+  /** Revoke this generation's facet authority before lifecycle awaits. */
+  revokeFacets(): void;
   /** Poison every method on the handle. */
   invalidate(): void;
 }
@@ -391,11 +420,25 @@ function parsePluginAgentToolPresentation(
   return presentation;
 }
 
-function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): BbSdk {
+function wrapSdkForPlugin(
+  sdk: BbSdk,
+  pluginId: string,
+  registerThreadTarget: <ThreadTarget extends ExperimentalThreadFacetTarget>(
+    thread: ThreadTarget,
+  ) => ThreadTarget,
+): BbSdk {
   return {
     ...sdk,
     threads: {
       ...sdk.threads,
+      async get(args): Promise<ThreadGetResult> {
+        return registerThreadTarget(await sdk.threads.get(args));
+      },
+      async list(args): Promise<ThreadListResult> {
+        const threads = await sdk.threads.list(args);
+        for (const thread of threads) registerThreadTarget(thread);
+        return threads;
+      },
       fork(args: ThreadForkArgs) {
         const origin = args.origin ?? "plugin";
         return sdk.threads.fork({
@@ -418,6 +461,64 @@ function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): BbSdk {
       },
     },
   };
+}
+
+const THREAD_FACET_CAPABILITY_REFUSAL = "Thread facet capability refused";
+
+function refuseThreadFacetCapability(): never {
+  throw new Error(THREAD_FACET_CAPABILITY_REFUSAL);
+}
+
+type StagedThreadFacetDeclaration = Omit<
+  DeclarePluginThreadFacetArgs,
+  "memberKind" | "ownerPluginId"
+> & { readonly memberKind: "enum" };
+
+function copyStagedThreadFacetDeclaration(
+  declaration: StagedThreadFacetDeclaration,
+): StagedThreadFacetDeclaration {
+  try {
+    const source =
+      typeof declaration === "object" && declaration !== null
+        ? declaration
+        : {};
+    return {
+      assignmentScope: Reflect.get(source, "assignmentScope"),
+      cardinality: Reflect.get(source, "cardinality"),
+      localName: Reflect.get(source, "localName"),
+      memberKind: Reflect.get(source, "memberKind"),
+      members: Reflect.get(source, "members"),
+    };
+  } catch {
+    const invalid = {};
+    return {
+      assignmentScope: Reflect.get(invalid, "assignmentScope"),
+      cardinality: Reflect.get(invalid, "cardinality"),
+      localName: Reflect.get(invalid, "localName"),
+      memberKind: Reflect.get(invalid, "memberKind"),
+      members: Reflect.get(invalid, "members"),
+    };
+  }
+}
+
+interface ActiveThreadFacetGeneration {
+  generation: number;
+  typeId: ThreadFacetTypeId;
+}
+
+interface ThreadFacetTargetRecord {
+  readonly thread: ExperimentalThreadFacetTarget;
+  readonly threadId: string;
+}
+
+interface ThreadFacetGrantRecord extends ThreadFacetTargetRecord {}
+
+interface StagedThreadFacet {
+  readonly declaration: StagedThreadFacetDeclaration;
+  active: ActiveThreadFacetGeneration | null;
+  censusInFlight: boolean;
+  expectedCursor: string | null | undefined;
+  readonly cursorPositions: Map<string, string>;
 }
 
 export function createPluginApi(options: {
@@ -510,6 +611,8 @@ export function createPluginApi(options: {
   } = options;
   let invalidated = false;
   let activated = false;
+  let facetsCommitted = false;
+  let facetAuthorityRevoked = false;
   let wrappedSdk: BbSdk | undefined;
   let p6rIdentityProviderLease:
     | { p6rActivate(): void; p6rRelease(): void }
@@ -517,6 +620,9 @@ export function createPluginApi(options: {
   let pendingNeedsConfiguration: string | null = null;
   const pendingAgentToolProblems: string[] = [];
   const pendingSharedPorts = new Map<string, readonly number[]>();
+  const threadFacetTargets = new WeakMap<object, ThreadFacetTargetRecord>();
+  const threadFacetGrants = new WeakMap<object, ThreadFacetGrantRecord>();
+  const stagedThreadFacets: StagedThreadFacet[] = [];
   const disposeHooks: Array<() => void | Promise<void>> = [];
   const settingsRecord: PluginApiHandle["settings"] = {
     descriptors: {},
@@ -537,6 +643,224 @@ export function createPluginApi(options: {
   const hostSignalHandlers: PluginHostSignalHandler[] = [];
   const backgroundServices: PluginBackgroundServiceRecord[] = [];
   const schedules: PluginScheduleRecord[] = [];
+
+  function assertFacetAuthorityLive(): void {
+    if (invalidated || facetAuthorityRevoked) {
+      refuseThreadFacetCapability();
+    }
+  }
+
+  function registerThreadFacetTarget<
+    ThreadTarget extends ExperimentalThreadFacetTarget,
+  >(thread: ThreadTarget): ThreadTarget {
+    threadFacetTargets.set(thread, { thread, threadId: thread.id });
+    return thread;
+  }
+
+  function resolveThreadFacetGrant(
+    target: ExperimentalThreadFacetTargetGrant,
+  ): ThreadFacetGrantRecord {
+    assertFacetAuthorityLive();
+    const grant = threadFacetGrants.get(target);
+    if (grant === undefined) refuseThreadFacetCapability();
+    const current = threadFacetTargets.get(grant.thread);
+    if (current !== grant || grant.thread.id !== grant.threadId) {
+      refuseThreadFacetCapability();
+    }
+    return grant;
+  }
+
+  function requireActiveThreadFacet(
+    staged: StagedThreadFacet,
+  ): ActiveThreadFacetGeneration {
+    assertFacetAuthorityLive();
+    if (staged.active === null) refuseThreadFacetCapability();
+    return staged.active;
+  }
+
+  async function refuseFacetFailures<T>(
+    operation: () => T | Promise<T>,
+  ): Promise<T> {
+    try {
+      return await operation();
+    } catch {
+      return refuseThreadFacetCapability();
+    }
+  }
+
+  function makeThreadFacetHandle<
+    Cardinality extends ExperimentalThreadFacetCardinality,
+    Member extends string,
+  >(
+    staged: StagedThreadFacet,
+  ): ExperimentalThreadFacetHandle<Cardinality, Member> {
+    return {
+      replace(target, members) {
+        return refuseFacetFailures(() => {
+          const active = requireActiveThreadFacet(staged);
+          const grant = resolveThreadFacetGrant(target);
+          replaceThreadFacetRelationsInGeneration(db, {
+            generation: active.generation,
+            members,
+            threadId: grant.threadId,
+            typeId: active.typeId,
+          });
+        });
+      },
+      clear(target) {
+        return refuseFacetFailures(() => {
+          const active = requireActiveThreadFacet(staged);
+          const grant = resolveThreadFacetGrant(target);
+          replaceThreadFacetRelationsInGeneration(db, {
+            generation: active.generation,
+            members: [],
+            threadId: grant.threadId,
+            typeId: active.typeId,
+          });
+        });
+      },
+      listPriorTargets(args) {
+        return refuseFacetFailures(async () => {
+          if (staged.censusInFlight) refuseThreadFacetCapability();
+          staged.censusInFlight = true;
+          try {
+            const active = requireActiveThreadFacet(staged);
+            const suppliedCursor = args?.cursor;
+            if (
+              staged.expectedCursor === null ||
+              suppliedCursor !== staged.expectedCursor
+            ) {
+              refuseThreadFacetCapability();
+            }
+            const pageSize = args?.pageSize ?? 50;
+            if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+              refuseThreadFacetCapability();
+            }
+            const afterThreadId =
+              suppliedCursor === undefined
+                ? undefined
+                : staged.cursorPositions.get(suppliedCursor);
+            if (suppliedCursor !== undefined && afterThreadId === undefined) {
+              refuseThreadFacetCapability();
+            }
+            const page = listPriorThreadFacetSnapshotTargets(db, {
+              ...(afterThreadId === undefined ? {} : { afterThreadId }),
+              generation: active.generation,
+              limit: pageSize,
+              typeId: active.typeId,
+            });
+            const sdk = getSdk();
+            if (sdk === undefined) refuseThreadFacetCapability();
+            const targets: ExperimentalThreadFacetTarget[] = [];
+            for (const threadId of page.threadIds) {
+              try {
+                targets.push(
+                  registerThreadFacetTarget(
+                    await sdk.threads.get({ threadId }),
+                  ),
+                );
+              } catch (error) {
+                if (
+                  waiveThreadFacetReconciliationTargetIfIneligible(db, {
+                    ...active,
+                    threadId,
+                  })
+                ) {
+                  continue;
+                }
+                throw error;
+              }
+            }
+            if (page.nextAfterThreadId === null) {
+              recordThreadFacetCensusExhausted(db, active);
+              staged.expectedCursor = null;
+              if (suppliedCursor !== undefined) {
+                staged.cursorPositions.delete(suppliedCursor);
+              }
+              return { targets, nextCursor: null };
+            }
+            const nextCursor = randomUUID();
+            staged.cursorPositions.set(nextCursor, page.nextAfterThreadId);
+            staged.expectedCursor = nextCursor;
+            if (suppliedCursor !== undefined) {
+              staged.cursorPositions.delete(suppliedCursor);
+            }
+            return { targets, nextCursor };
+          } finally {
+            staged.censusInFlight = false;
+          }
+        });
+      },
+      markReady() {
+        return refuseFacetFailures(() => {
+          const active = requireActiveThreadFacet(staged);
+          markThreadFacetOwnerGenerationReady(db, active);
+        });
+      },
+    };
+  }
+
+  function declareThreadFacet<
+    const Cardinality extends ExperimentalThreadFacetCardinality,
+    const Members extends readonly string[],
+  >(declaration: {
+    readonly assignmentScope: "shared-thread";
+    readonly cardinality: Cardinality;
+    readonly localName: string;
+    readonly memberKind: "enum";
+    readonly members: Members;
+  }): ExperimentalThreadFacetHandle<Cardinality, Members[number]>;
+  function declareThreadFacet(
+    declaration: StagedThreadFacetDeclaration,
+  ): ExperimentalThreadFacetHandle<ExperimentalThreadFacetCardinality, string> {
+    assertLive();
+    if (facetsCommitted) refuseThreadFacetCapability();
+    const staged: StagedThreadFacet = {
+      declaration: copyStagedThreadFacetDeclaration(declaration),
+      active: null,
+      censusInFlight: false,
+      expectedCursor: undefined,
+      cursorPositions: new Map(),
+    };
+    stagedThreadFacets.push(staged);
+    return makeThreadFacetHandle(staged);
+  }
+
+  const experimentalFacets: ExperimentalThreadFacets = {
+    target(thread) {
+      try {
+        assertFacetAuthorityLive();
+        const target = threadFacetTargets.get(thread);
+        if (target === undefined || thread.id !== target.threadId) {
+          refuseThreadFacetCapability();
+        }
+        // The private unique-symbol brand is compile-time opacity; this host
+        // mint plus the WeakMap entry below is the runtime authority proof.
+        const grant = Object.freeze({}) as ExperimentalThreadFacetTargetGrant;
+        const record: ThreadFacetGrantRecord = target;
+        threadFacetGrants.set(grant, record);
+        return grant;
+      } catch {
+        return refuseThreadFacetCapability();
+      }
+    },
+    declare: declareThreadFacet,
+  };
+
+  function revokeThreadFacetAuthority(): void {
+    if (facetAuthorityRevoked) return;
+    facetAuthorityRevoked = true;
+    for (const staged of stagedThreadFacets) {
+      if (staged.active === null) continue;
+      try {
+        markThreadFacetOwnerGenerationUnavailable(db, staged.active);
+      } catch (error) {
+        logger.warn(
+          `plugin ${pluginId} thread facet revocation failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
 
   function assertLive(): void {
     if (invalidated) throw new PluginContextStaleError(pluginId);
@@ -834,7 +1158,7 @@ export function createPluginApi(options: {
           {
             inputSchema: methodContract.input,
             outputSchema: methodContract.output,
-          handler: handler as unknown as PluginRpcHandler["handler"],
+            handler: handler as unknown as PluginRpcHandler["handler"],
           },
         ]);
       }
@@ -1425,6 +1749,7 @@ export function createPluginApi(options: {
     status,
     server,
     hosts,
+    experimental_facets: experimentalFacets,
     get sdk(): BbSdk {
       assertLive();
       const sdk = getSdk();
@@ -1434,7 +1759,7 @@ export function createPluginApi(options: {
             "use it inside handlers, services, or timers, not at factory load time",
         );
       }
-      wrappedSdk ??= wrapSdkForPlugin(sdk, pluginId);
+      wrappedSdk ??= wrapSdkForPlugin(sdk, pluginId, registerThreadFacetTarget);
       return wrappedSdk;
     },
     onDispose(hook) {
@@ -1497,7 +1822,44 @@ export function createPluginApi(options: {
         pendingNeedsConfiguration = null;
       }
     },
+    commitFacets() {
+      if (facetsCommitted) return;
+      assertLive();
+      const result = activatePluginThreadFacetDeclarations(db, {
+        declarations: stagedThreadFacets.map(({ declaration }) => declaration),
+        ownerPluginId: pluginId,
+      });
+      const stagedByLocalName = new Map<string, StagedThreadFacet[]>();
+      for (const staged of stagedThreadFacets) {
+        const { localName } = staged.declaration;
+        if (typeof localName !== "string") continue;
+        const entries = stagedByLocalName.get(localName) ?? [];
+        entries.push(staged);
+        stagedByLocalName.set(localName, entries);
+      }
+      for (const activatedFacet of result.activated) {
+        const { localName } = parseThreadFacetTypeId(
+          activatedFacet.declaration.typeId,
+        );
+        const staged = stagedByLocalName.get(localName);
+        if (staged?.length !== 1) continue;
+        staged[0]!.active = {
+          generation: activatedFacet.generation,
+          typeId: activatedFacet.declaration.typeId,
+        };
+      }
+      for (const quarantined of result.quarantined) {
+        logger.warn(
+          `plugin ${pluginId} thread facet ${JSON.stringify(quarantined.localName)} quarantined (${quarantined.code})`,
+        );
+      }
+      facetsCommitted = true;
+    },
+    revokeFacets() {
+      revokeThreadFacetAuthority();
+    },
     invalidate() {
+      revokeThreadFacetAuthority();
       p6rIdentityProviderLease?.p6rRelease();
       p6rIdentityProviderLease = undefined;
       invalidated = true;

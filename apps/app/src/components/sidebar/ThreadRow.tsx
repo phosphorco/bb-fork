@@ -11,6 +11,7 @@ import {
 } from "react";
 import { useSetAtom } from "jotai";
 import type { P6rThreadParticipantProfile, ThreadListEntry } from "@bb/domain";
+import type { ThreadFacetParticipantSummary } from "@bb/server-contract";
 import type { PluginComposerThreadRowStatus } from "@get-bb/plugin-sdk";
 import { getThreadConversationCollapsedAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
 import { Icon } from "@bb/shared-ui/icon";
@@ -89,6 +90,7 @@ import { P6rSidebarPresenceDots } from "@/components/thread/presence/SidebarPres
 import { p6rPresenceInitials } from "@/components/thread/presence/PresenceAvatarRow";
 import { useP6rClaimedIdentity } from "@/lib/claimed-identity-store";
 import { useP6rThreadPresenceSummaryViewers } from "@/lib/presence-store";
+import { FacetParticipantAvatarGroup } from "./FacetParticipantAvatarGroup";
 
 const SIDEBAR_TITLE_DOUBLE_CLICK_MS = 400;
 
@@ -139,6 +141,8 @@ interface ThreadRowProps {
   crossProjectId: string | null;
   isActive: boolean;
   hasComposerDraft: boolean;
+  /** Present only for rows sourced from the bounded facet-query endpoint. */
+  facetParticipantSummary?: ThreadFacetParticipantSummary;
   onProjectSelect?: () => void;
   options: ThreadRowOptions;
 }
@@ -582,6 +586,7 @@ function ThreadRowComponent({
   crossProjectId,
   isActive,
   hasComposerDraft,
+  facetParticipantSummary,
   onProjectSelect,
   options,
 }: ThreadRowProps) {
@@ -825,7 +830,14 @@ function ThreadRowComponent({
             >
               <ThreadTitleMentions title={threadTitle} />
             </span>
-            <ThreadRowParticipants participants={thread.participants ?? []} />
+            {facetParticipantSummary === undefined ? (
+              <ThreadRowParticipants participants={thread.participants ?? []} />
+            ) : (
+              <FacetParticipantAvatarGroup
+                summary={facetParticipantSummary}
+                threadId={thread.id}
+              />
+            )}
           </span>
         )}
         {crossProjectLabel !== null ? (

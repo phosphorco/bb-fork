@@ -33,9 +33,7 @@ export {
   listStoredProjectPromptHistoryRows,
   listStoredThreadPromptHistoryRows,
 } from "./prompt-history.js";
-export type {
-  StoredPromptHistoryEntryRow,
-} from "./prompt-history.js";
+export type { StoredPromptHistoryEntryRow } from "./prompt-history.js";
 
 export {
   getProjectExecutionDefaults,
@@ -72,6 +70,7 @@ export {
   listUnarchivedHiddenSourceThreads,
   listThreads,
   listThreadsWithPendingInteractionState,
+  listThreadsWithPendingInteractionStateByIds,
   listThreadsWithPendingInteractionStateForProjects,
   pinThread,
   reorderPinnedThread,
@@ -108,6 +107,50 @@ export {
   setAppSettings,
 } from "./app-settings.js";
 export { getStoredThreadTabs, replaceStoredThreadTabs } from "./thread-tabs.js";
+export {
+  THREAD_FACET_CENSUS_PAGE_LIMIT,
+  THREAD_FACET_DIRECTORY_MEMBER_LIMIT,
+  THREAD_FACET_PLUGIN_REPLACEMENT_MEMBER_LIMIT,
+  ThreadFacetInvariantError,
+  activatePluginThreadFacetDeclarations,
+  beginThreadFacetOwnerGeneration,
+  declarePluginThreadFacet,
+  ensureCoreParticipantsProjection,
+  getThreadFacetDeclaration,
+  getOrCreateThreadFacetCursorSigningKey,
+  listCoreParticipantProfilePage,
+  listCoreParticipantProfilesByThreadIds,
+  listThreadFacetOwnerProjections,
+  listThreadIdsForFacetProjection,
+  listPriorThreadFacetSnapshotTargets,
+  markThreadFacetOwnerGenerationReady,
+  markThreadFacetOwnerGenerationUnavailable,
+  markThreadFacetOwnerUnavailable,
+  markAllPluginThreadFacetOwnersUnavailable,
+  queryThreadFacetThreadIds,
+  recordThreadFacetCensusExhausted,
+  replaceThreadFacetRelationsInGeneration,
+  threadFacetCompletenessSignature,
+  waiveThreadFacetReconciliationTargetIfIneligible,
+} from "./thread-facets.js";
+export type {
+  CoreParticipantProfilePage,
+  ActivatePluginThreadFacetDeclarationsArgs,
+  ActivatedPluginThreadFacetDeclaration,
+  ActivatePluginThreadFacetDeclarationsResult,
+  DeclarePluginThreadFacetArgs,
+  ListThreadIdsForFacetProjectionArgs,
+  PriorThreadFacetSnapshotTargetPage,
+  QueryThreadFacetIdsArgs,
+  QuarantinedPluginThreadFacetDeclaration,
+  ReplaceThreadFacetRelationsArgs,
+  ThreadFacetDeclaration,
+  ThreadFacetGeneration,
+  ThreadFacetIdPage,
+  ThreadFacetInvariantErrorCode,
+  ThreadFacetQueryPosition,
+  ThreadFacetOwnerProjection,
+} from "./thread-facets.js";
 export { getExperiments, setExperiments } from "./experiments.js";
 export {
   deleteInstalledPlugin,
@@ -211,9 +254,7 @@ export {
   listRetiredLoadedEnvironmentIdsOnHost,
   updateEnvironmentMetadata,
 } from "./environments.js";
-export type {
-  CreateEnvironmentInput,
-} from "./environments.js";
+export type { CreateEnvironmentInput } from "./environments.js";
 
 export {
   upsertHost,
@@ -246,10 +287,7 @@ export {
   getLatestStoredConversationOutlineSequence,
 } from "./events.js";
 
-export {
-  p6rGetActorSnapshot,
-  p6rUpsertActorSnapshot,
-} from "./actors.js";
+export { p6rGetActorSnapshot, p6rUpsertActorSnapshot } from "./actors.js";
 export type { P6rActorRow } from "./actors.js";
 
 export {
@@ -314,6 +352,7 @@ export {
   pruneContextWindowUsageEventsBeforeSequence,
   pruneTokenUsageEventsBeforeSequence,
   pruneResolvedItemDeltas,
+  queryInSqliteVariableBatches,
   pruneThreadEventsBeforeSequence,
 } from "./events.js";
 export type {
@@ -329,6 +368,7 @@ export type {
   ThreadClientTurnRequestKey,
   StoredTurnRequestEventRow,
   P6rGetTurnAuthorActorArgs,
+  QueryInSqliteVariableBatchesArgs,
 } from "./events.js";
 
 export {
@@ -357,9 +397,7 @@ export {
   setPendingInteractionResolving,
   setPendingInteractionResolved,
 } from "./pending-interactions.js";
-export type {
-  PendingInteractionRow,
-} from "./pending-interactions.js";
+export type { PendingInteractionRow } from "./pending-interactions.js";
 
 export {
   openSession,
@@ -369,9 +407,7 @@ export {
   heartbeatSession,
   listLatestSessionsForHosts,
 } from "./sessions.js";
-export type {
-  HostDaemonSessionRow,
-} from "./sessions.js";
+export type { HostDaemonSessionRow } from "./sessions.js";
 
 export {
   claimQueuedThreadMessage,

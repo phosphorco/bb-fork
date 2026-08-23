@@ -90,6 +90,14 @@ const pluginSdkRuntimePath = join(
   "plugin-sdk-runtime.js",
 );
 
+// Source-checkout servers do not have the built runtime beside this module.
+// Point Jiti at the workspace source so legacy `@bb/plugin-sdk` value imports
+// receive the same alias during local development and integration tests.
+const pluginSdkSourceRuntimePath = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../../../packages/plugin-sdk/src/index.ts",
+);
+
 const PLUGIN_SDK_SPECIFIER = "@get-bb/plugin-sdk";
 
 /**
@@ -120,11 +128,15 @@ export function pluginSdkAliasFor(runtimePath: string): Record<string, string> {
   };
 }
 
-const pluginSdkAlias: Record<string, string> | undefined = existsSync(
-  pluginSdkRuntimePath,
-)
-  ? pluginSdkAliasFor(pluginSdkRuntimePath)
-  : undefined;
+const pluginSdkRuntimeTarget = existsSync(pluginSdkRuntimePath)
+  ? pluginSdkRuntimePath
+  : existsSync(pluginSdkSourceRuntimePath)
+    ? pluginSdkSourceRuntimePath
+    : undefined;
+const pluginSdkAlias: Record<string, string> | undefined =
+  pluginSdkRuntimeTarget === undefined
+    ? undefined
+    : pluginSdkAliasFor(pluginSdkRuntimeTarget);
 
 /**
  * Per-root reload generation for mutable (path:/source-builtin) plugin trees.
@@ -1617,6 +1629,12 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
         factory as (api: BbPluginApi) => unknown,
         handle.api,
       );
+      if (hostArtifactProblem === null) {
+        // Facets commit before the previous generation is disposed. The old
+        // handle revokes only its own generation, so its later cleanup cannot
+        // make this candidate's new generation unavailable.
+        handle.commitFacets();
+      }
     } catch (error) {
       // The candidate never commits, so its epoch and its CommonJS evictions
       // must not outlive it: the retained plugin keeps serving its own files.
@@ -1704,62 +1722,82 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
         return hungServicesDetail(hungAfterDispose);
       }
     }
-    handle.activateP6rIdentityProvider();
-    // One map replacement is the registration commit point. Until this line,
-    // every dispatcher continues to resolve the complete previous handle.
-    disposeUnavailableProviderRegistrations(row.id);
-    loaded.set(row.id, plugin);
-    appBundles.set(row.id, appBundleCandidate.snapshot);
-    if (hostArtifactCandidate === null) hostArtifacts.delete(row.id);
-    else hostArtifacts.set(row.id, hostArtifactCandidate);
-    brandingAssets.set(row.id, brandingAssetCandidate);
-    needsConfiguration.delete(row.id);
-    agentToolProblems.delete(row.id);
-    handle.activate();
-    // Sync durable schedule rows to this load's registrations: upsert each
-    // (computing next_run_at from its cron) and drop rows for names the
-    // plugin no longer registers. Run history on kept rows survives.
-    const now = Date.now();
-    prunePluginSchedules(
-      deps.db,
-      row.id,
-      handle.schedules.map((schedule) => schedule.name),
-    );
-    for (const schedule of handle.schedules) {
-      upsertPluginSchedule(deps.db, {
-        pluginId: row.id,
-        name: schedule.name,
-        cron: schedule.cron,
-        nextRunAt: nextCronRunAt(schedule.cron, now),
-      });
-    }
-    // Services start after the factory completes (design §4.8 bind phase).
-    for (const service of plugin.services) {
-      runService(row.id, service);
-    }
-    // A factory (or an immediately-crashing service) may have already
-    // reported needs-configuration; do not paper over it with "running".
-    // A dropped tool registration or a failed frontend rebuild keeps the
-    // plugin running but rides along as the status detail.
-    if (!needsConfiguration.has(row.id)) {
-      const details = [
-        agentToolProblems.get(row.id),
-        appBundleCandidate.problem,
-      ].filter((detail): detail is string => typeof detail === "string");
-      setStatus(
+    try {
+      handle.activateP6rIdentityProvider();
+      // One map replacement is the registration commit point. Until this
+      // line, every dispatcher continues to resolve the complete previous
+      // handle.
+      disposeUnavailableProviderRegistrations(row.id);
+      loaded.set(row.id, plugin);
+      appBundles.set(row.id, appBundleCandidate.snapshot);
+      if (hostArtifactCandidate === null) hostArtifacts.delete(row.id);
+      else hostArtifacts.set(row.id, hostArtifactCandidate);
+      brandingAssets.set(row.id, brandingAssetCandidate);
+      needsConfiguration.delete(row.id);
+      agentToolProblems.delete(row.id);
+      handle.activate();
+      // Sync durable schedule rows to this load's registrations: upsert each
+      // (computing next_run_at from its cron) and drop rows for names the
+      // plugin no longer registers. Run history on kept rows survives.
+      const now = Date.now();
+      prunePluginSchedules(
+        deps.db,
         row.id,
-        "running",
-        details.length > 0 ? details.join("; ") : null,
+        handle.schedules.map((schedule) => schedule.name),
       );
+      for (const schedule of handle.schedules) {
+        upsertPluginSchedule(deps.db, {
+          pluginId: row.id,
+          name: schedule.name,
+          cron: schedule.cron,
+          nextRunAt: nextCronRunAt(schedule.cron, now),
+        });
+      }
+      // Services start after the factory completes (design §4.8 bind phase).
+      for (const service of plugin.services) {
+        runService(row.id, service);
+      }
+      // A factory (or an immediately-crashing service) may have already
+      // reported needs-configuration; do not paper over it with "running".
+      // A dropped tool registration or a failed frontend rebuild keeps the
+      // plugin running but rides along as the status detail.
+      if (!needsConfiguration.has(row.id)) {
+        const details = [
+          agentToolProblems.get(row.id),
+          appBundleCandidate.problem,
+        ].filter((detail): detail is string => typeof detail === "string");
+        setStatus(
+          row.id,
+          "running",
+          details.length > 0 ? details.join("; ") : null,
+        );
+      }
+      logger.info(`plugin ${row.id}@${manifest.version} loaded`);
+      return null;
+    } catch (error) {
+      // The facet generation committed before publication. Any later
+      // activation failure must revoke it before cleanup awaits so no
+      // owner remains reconciling without a live plugin able to finish it.
+      if (loaded.get(row.id) === plugin) loaded.delete(row.id);
+      await disposePluginInstance(row.id, plugin);
+      appBundles.delete(row.id);
+      hostArtifacts.delete(row.id);
+      deps.sharedPorts?.clearDeclarationsForOwner(row.id);
+      prunePluginSchedules(deps.db, row.id, []);
+      const detail = error instanceof Error ? error.message : String(error);
+      setStatus(row.id, "error", detail);
+      logger.warn(`plugin ${row.id} failed during activation: ${detail}`);
+      return detail;
     }
-    logger.info(`plugin ${row.id}@${manifest.version} loaded`);
-    return null;
   }
 
   async function disposePluginInstance(
     id: string,
     plugin: LoadedPlugin,
   ): Promise<void> {
+    // Revoke effect authority before the first lifecycle await. Persisted
+    // positive relations remain readable; only completeness becomes unknown.
+    plugin.handle.revokeFacets();
     disposingPluginIds.add(id);
     try {
       const hostArtifact = hostArtifacts.get(id);

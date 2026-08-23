@@ -114,6 +114,25 @@ Listing:
   titles are cut at 60 characters. Project shows the project name; the
   personal project shows "-". Use --json for the full thread records.
 
+Facet queries:
+
+  bb thread facets query [--query-json '<json>'] [--json]
+  bb thread facets participants <thread-id> [--page-size <count>] [--cursor <cursor>] [--json]
+
+  Both commands print a concise page by default; pass --json for the raw SDK
+  response. The query envelope is the SDK's canonical bounded request: scope,
+  at most four conjunctive filters, one optional order, pageSize (1-100), and
+  an opaque cursor. Omit --query-json for the default first page. Reissue the
+  unchanged envelope with nextCursor to continue.
+  Filters support present, absent, contains, and notContains; membership is
+  either an exact stable member ID or {"perspective":"request-principal"}.
+  Check facetStates before interpreting a negative: unavailable or reconciling
+  projection state is unknown, not false.
+
+  Query rows include the first ordered participant profiles and a participant
+  continuation cursor. Use facets participants with that cursor to page the
+  remaining profiles without changing canonical order or identity.
+
   bb thread search <query>                 Search threads and messages
   bb thread history <id>                   List prompt history
 

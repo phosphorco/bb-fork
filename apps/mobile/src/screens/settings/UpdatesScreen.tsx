@@ -1,6 +1,5 @@
 import type { Host } from "@bb/domain";
 import type { SystemVersionResponse } from "@bb/server-contract";
-import * as Clipboard from "expo-clipboard";
 import { useMemo, useState } from "react";
 import { Linking, Pressable, View } from "react-native";
 import { useProfiles } from "@/app-shell";
@@ -78,11 +77,6 @@ function BbAppRow({
   systemVersion: SystemVersionResponse | undefined;
 }) {
   const state = bbAppRowState(systemVersion);
-  const copyUpgradeCommand = (command: string) => {
-    void Clipboard.setStringAsync(command)
-      .then(() => toast.success("Upgrade command copied"))
-      .catch(() => toast.error("Couldn't copy upgrade command"));
-  };
   return (
     <View className="gap-2 px-4 py-3" testID="updates-bb-row">
       <View className="flex-row flex-wrap items-center gap-x-3 gap-y-1">
@@ -110,20 +104,7 @@ function BbAppRow({
         )}
       </View>
       {state.kind === "available" ? (
-        <View className="flex-row flex-wrap items-center gap-2">
-          <Text variant="mono" className="shrink text-xs" numberOfLines={1}>
-            {state.upgradeCommand}
-          </Text>
-          <Button
-            size="sm"
-            variant="outline"
-            icon="Copy"
-            onPress={() => copyUpgradeCommand(state.upgradeCommand)}
-            testID="updates-copy-upgrade"
-          >
-            Copy
-          </Button>
-        </View>
+        <Text variant="caption">{state.upgradeGuidance}</Text>
       ) : null}
     </View>
   );

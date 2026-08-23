@@ -29,4 +29,13 @@ describe("bb guide command output", () => {
     expect(output).toContain("bb terminal list --thread <thread-id>");
     expect(output).toContain("bb terminal rename <terminal-id> <title>");
   });
+
+  it("bb guide threads documents bounded facet queries and participant paging", async () => {
+    await runCommand(["guide", "threads"], registerGuideCommand);
+
+    const output = collectLogLines(vi.mocked(console.log)).join("\n");
+    expect(output).toContain("bb thread facets query");
+    expect(output).toContain("bb thread facets participants <thread-id>");
+    expect(output).toContain("projection state is unknown, not false");
+  });
 });

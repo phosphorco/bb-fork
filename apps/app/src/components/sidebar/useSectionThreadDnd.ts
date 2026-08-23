@@ -24,13 +24,14 @@ import type { NeighborReorderRequest } from "@bb/client-core";
 import {
   buildSidebarEntitySectionId,
   getSidebarDndItemId,
-  reorderSidebarSectionOrder,
   type ProjectThreadItem,
 } from "@bb/client-core";
 import {
   sidebarCollapsedThreadSectionsAtom,
   type SidebarSectionId,
+  type SidebarTopLevelSectionId,
 } from "./sidebarCollapsedAtoms";
+import { reorderSidebarTopLevelOrder } from "./sidebarTopLevelOrder";
 import {
   sidebarReorderCollisionDetection,
   useSidebarReorderDnd,
@@ -58,8 +59,8 @@ interface UseSectionThreadDndArgs {
   containerId: string;
   enabled: boolean;
   rootItems: readonly ProjectThreadItem[];
-  topLevelSectionOrder: readonly SidebarSectionId[];
-  onTopLevelSectionOrderChange: (order: SidebarSectionId[]) => void;
+  topLevelSectionOrder: readonly SidebarTopLevelSectionId[];
+  onTopLevelSectionOrderChange: (order: SidebarTopLevelSectionId[]) => void;
   pinnedReorderPending: boolean;
   pinnedThreads: readonly ThreadListEntry[];
   onReorderPinnedThread: (
@@ -551,7 +552,7 @@ export function useSectionThreadDnd({
 
       if (overId !== null && topLevelSectionIds.has(activeId)) {
         const sectionOverId = resolveSectionThreadSectionOverId(lookup, overId);
-        const nextOrder = reorderSidebarSectionOrder({
+        const nextOrder = reorderSidebarTopLevelOrder({
           activeId,
           overId: sectionOverId,
           order: topLevelSectionOrder,

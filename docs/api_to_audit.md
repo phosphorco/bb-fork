@@ -5,6 +5,35 @@ entry here (see [AGENTS.md](../AGENTS.md), "Plugin API"). Dropping the prefix
 is the deliberate stabilization step: audit the entry, rename project-wide,
 and delete the entry in the same change.
 
+## `BbPluginApi.experimental_facets`
+
+**What it does.** Lets a plugin declare an enum-valued, shared-thread
+organization relation and project complete replacements through
+host-attenuated thread targets. Declarations are staged until the candidate
+plugin load commits. The host binds namespace and generation, accepts targets
+only from the exact objects returned by that load's `bb.sdk.threads.get/list`
+or bounded prior-target census, and retains readable positive relations when
+the plugin is unavailable. Missing membership is definite only after the
+current generation exhausts and discharges its reconciliation census.
+
+**Audit before stabilizing.**
+
+1. Confirm enum-only declarations remain the smallest lawful plugin surface;
+   do not add PrincipalKey or arbitrary-value members without a separate
+   identity/authority review.
+2. Measure declaration-directory and replacement limits, prior-target census
+   page sizes, and reconciliation time for real plugins before changing any
+   compatible resource bound.
+3. Re-audit exact-object attenuation, uniform refusals, generation-bound
+   revocation, commit-before-swap reload ordering, and delete/visibility races
+   across every plugin lifecycle path.
+4. Confirm `shared-thread` remains the only admitted assignment scope. Treat a
+   future private-per-principal scope as a separately authorized capability,
+   never infer it from the member representation.
+5. Verify optional malformed declarations remain quarantined independently,
+   last-known-good declarations/positive rows remain readable, and disabled or
+   unavailable owners never turn unknown absence into false.
+
 ## `BbPluginApi.p6rIdentity`
 
 **What it does.** Lets one installed plugin register the provider-qualified

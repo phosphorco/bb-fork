@@ -103,7 +103,7 @@ import { TopLevelSidebarSection } from "./TopLevelSidebarSection";
 import {
   sidebarCollapsedThreadSectionsAtom,
   type CollapsibleSidebarSectionId,
-  type SidebarSectionId,
+  type SidebarTopLevelSectionId,
 } from "./sidebarCollapsedAtoms";
 import {
   SIDEBAR_PROJECT_GROUP_LINE_CLASS,
@@ -223,8 +223,8 @@ interface ChronologicalBuiltInSidebarSections {
 
 interface ChronologicalSectionThreadSectionsProps extends SectionThreadTreeProps {
   builtInSections?: ChronologicalBuiltInSidebarSections;
-  topLevelSectionOrder: readonly SidebarSectionId[];
-  onTopLevelSectionOrderChange: (order: SidebarSectionId[]) => void;
+  topLevelSectionOrder: readonly SidebarTopLevelSectionId[];
+  onTopLevelSectionOrderChange: (order: SidebarTopLevelSectionId[]) => void;
   pinnedReorderPending: boolean;
   pinnedThreads: readonly ThreadListEntry[];
   onReorderPinnedThread: (
@@ -238,6 +238,10 @@ interface ChronologicalSectionThreadSectionsProps extends SectionThreadTreeProps
     content: ReactNode,
     consumeClickSuppression?: ConsumeDragClickSuppression,
   ) => ReactNode;
+  renderAdditionalTopLevelSection?: (
+    sectionId: SidebarTopLevelSectionId,
+    consumeClickSuppression?: ConsumeDragClickSuppression,
+  ) => ReactNode | undefined;
 }
 
 type ProjectThreadTreeVariant = "project" | "section";
@@ -1985,6 +1989,7 @@ export const ChronologicalSectionThreadSections = memo(
     onReorderPinnedThread,
     renderPinnedSection,
     renderThreadsSection,
+    renderAdditionalTopLevelSection,
   }: ChronologicalSectionThreadSectionsProps) {
     const threads =
       threadListState.status === "ready"
@@ -2210,6 +2215,13 @@ export const ChronologicalSectionThreadSections = memo(
     const orderedSections = (
       <SidebarSectionOrderList order={topLevelSectionOrder}>
         {(sectionId) => {
+          const additionalSection = renderAdditionalTopLevelSection?.(
+            sectionId,
+            consumeClickSuppression,
+          );
+          if (additionalSection !== undefined) {
+            return additionalSection;
+          }
           const builtInSection =
             builtInSections && configuredBuiltInSections
               ? renderBuiltInSidebarSection({
@@ -2228,7 +2240,9 @@ export const ChronologicalSectionThreadSections = memo(
           if (builtInSection !== undefined) {
             return <div key={sectionId}>{builtInSection}</div>;
           }
-          const sectionItem = sectionItemsBySectionId.get(sectionId);
+          const sectionItem = sectionId.startsWith("section:")
+            ? sectionItemsBySectionId.get(sectionId as `section:${string}`)
+            : undefined;
           return sectionItem ? (
             <div key={sectionId}>{renderItems([sectionItem])}</div>
           ) : null;

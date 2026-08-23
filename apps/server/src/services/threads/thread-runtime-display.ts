@@ -14,7 +14,10 @@ import {
   type ThreadClientTurnRequestKey,
   type ThreadWithPendingInteractionState,
 } from "@bb/db";
-import { LEGACY_CODEX_GOAL_EXTENSION_KIND } from "@bb/domain";
+import {
+  LEGACY_CODEX_GOAL_EXTENSION_KIND,
+  p6rActorSnapshotSchema,
+} from "@bb/domain";
 import type {
   Thread,
   ThreadActivityState,
@@ -25,7 +28,6 @@ import type {
   P6rThreadParticipantProfile,
   ThreadWithRuntime,
 } from "@bb/domain";
-import { p6rActorSnapshotSchema } from "@bb/domain";
 import {
   extractThreadTimelineActivePlanTurn,
   extractThreadTimelineGoal,
@@ -84,6 +86,7 @@ interface ToThreadResponseWithHostArgs extends ToThreadResponseFromThreadArgs {
 }
 
 interface ToThreadListEntryResponsesArgs {
+  includeParticipants?: boolean;
   now?: number;
   threads: readonly ThreadWithPendingInteractionState[];
 }
@@ -93,7 +96,7 @@ interface ToThreadListEntryResponseFromLatestSessionArgs {
   hostConnected: boolean;
   latestSession: HostDaemonSessionRow | null;
   now?: number;
-  participants: readonly P6rThreadParticipantProfile[];
+  participants?: readonly P6rThreadParticipantProfile[];
   thread: ThreadWithPendingInteractionState;
 }
 
@@ -174,7 +177,6 @@ function buildThreadParticipantsByThreadId(
       new Map([[principalKey, 0]]),
     );
   }
-
   return participantsByThreadId;
 }
 
@@ -543,10 +545,10 @@ export function toThreadListEntryResponses(
     deps,
     args.threads,
   );
-  const participantsByThreadId = buildThreadParticipantsByThreadId(
-    deps,
-    args.threads,
-  );
+  const participantsByThreadId =
+    args.includeParticipants === false
+      ? null
+      : buildThreadParticipantsByThreadId(deps, args.threads);
   const activeHostIds = [
     ...new Set(
       args.threads.flatMap((thread) =>
@@ -578,7 +580,10 @@ export function toThreadListEntryResponses(
           ? null
           : (latestSessionByHostId.get(thread.environmentHostId) ?? null),
       now: args.now,
-      participants: participantsByThreadId.get(thread.id) ?? [],
+      participants:
+        participantsByThreadId === null
+          ? undefined
+          : (participantsByThreadId.get(thread.id) ?? []),
       thread,
     });
   });
@@ -598,7 +603,9 @@ function toThreadListEntryResponseFromLatestSession(
     environmentWorkspaceDisplayKind:
       args.thread.environmentWorkspaceDisplayKind,
     hasPendingInteraction: args.thread.hasPendingInteraction,
-    participants: [...args.participants],
+    ...(args.participants === undefined
+      ? {}
+      : { participants: [...args.participants] }),
     runtime: resolveThreadRuntimeStateFromLatestSession({
       environmentHostId: args.thread.environmentHostId,
       hostConnected: args.hostConnected,

@@ -11,6 +11,11 @@ import type {
 } from "./sidebar-preferences";
 import type { SidebarPreferenceActions } from "./use-sidebar-preferences";
 
+export const MY_PROGRESS_SIDEBAR_SECTION_ID = "facet-triage:my-progress";
+export type MobileSidebarSectionId =
+  | SidebarSectionId
+  | typeof MY_PROGRESS_SIDEBAR_SECTION_ID;
+
 /**
  * Web `useSidebarModeSectionOrder`: the stored order of each mode can still
  * hold the old aggregate token ("projects" / "sections" / "machines") that
@@ -32,11 +37,16 @@ const LEGACY_ENTITY_ANCHOR: Record<
  * survives). Pure; the hook below persists the result back like the web.
  */
 export function resolveSidebarSectionOrder(
-  model: Pick<SidebarModel, "organize" | "groups">,
+  model: {
+    organize: SidebarOrganizeMode;
+    groups: readonly { id: SidebarSectionId }[];
+  },
   storedOrder: readonly string[],
-): SidebarSectionId[] {
-  return normalizeSidebarSectionOrder({
-    storedOrder,
+): MobileSidebarSectionId[] {
+  const legacyOrder = normalizeSidebarSectionOrder({
+    storedOrder: storedOrder.filter(
+      (id) => id !== MY_PROGRESS_SIDEBAR_SECTION_ID,
+    ),
     entitySectionIds: model.groups
       .map((group) => group.id)
       .filter(
@@ -46,12 +56,53 @@ export function resolveSidebarSectionOrder(
     hasPinnedSection: true,
     hasThreadsSection: true,
   });
+
+  const savedIndex = storedOrder.indexOf(MY_PROGRESS_SIDEBAR_SECTION_ID);
+  if (savedIndex < 0) {
+    const pinnedIndex = legacyOrder.indexOf("pinned");
+    const insertionIndex = pinnedIndex < 0 ? 0 : pinnedIndex + 1;
+    return [
+      ...legacyOrder.slice(0, insertionIndex),
+      MY_PROGRESS_SIDEBAR_SECTION_ID,
+      ...legacyOrder.slice(insertionIndex),
+    ];
+  }
+
+  const legacyIds = new Set<string>(legacyOrder);
+  const legacyIndexById = new Map<string, number>(
+    legacyOrder.map((id, index) => [id, index]),
+  );
+  for (let index = savedIndex - 1; index >= 0; index -= 1) {
+    const preceding = storedOrder[index];
+    const precedingIndex =
+      preceding === undefined ? -1 : (legacyIndexById.get(preceding) ?? -1);
+    if (preceding !== undefined && legacyIds.has(preceding)) {
+      return [
+        ...legacyOrder.slice(0, precedingIndex + 1),
+        MY_PROGRESS_SIDEBAR_SECTION_ID,
+        ...legacyOrder.slice(precedingIndex + 1),
+      ];
+    }
+  }
+  for (let index = savedIndex + 1; index < storedOrder.length; index += 1) {
+    const following = storedOrder[index];
+    const followingIndex =
+      following === undefined ? -1 : (legacyIndexById.get(following) ?? -1);
+    if (following !== undefined && legacyIds.has(following)) {
+      return [
+        ...legacyOrder.slice(0, followingIndex),
+        MY_PROGRESS_SIDEBAR_SECTION_ID,
+        ...legacyOrder.slice(followingIndex),
+      ];
+    }
+  }
+  return [MY_PROGRESS_SIDEBAR_SECTION_ID, ...legacyOrder];
 }
 
 export interface SidebarSectionOrderEntry {
-  id: SidebarSectionId;
+  id: MobileSidebarSectionId;
   label: string;
-  threadCount: number;
+  threadCount: number | null;
 }
 
 /**
@@ -61,11 +112,20 @@ export interface SidebarSectionOrderEntry {
  */
 export function listSidebarSectionOrderEntries(
   model: SidebarModel,
-  order: readonly SidebarSectionId[],
+  order: readonly MobileSidebarSectionId[],
+  facetTriageThreadCount: number | null = null,
 ): SidebarSectionOrderEntry[] {
   const groupsById = new Map(model.groups.map((group) => [group.id, group]));
   const entries: SidebarSectionOrderEntry[] = [];
   for (const id of order) {
+    if (id === MY_PROGRESS_SIDEBAR_SECTION_ID) {
+      entries.push({
+        id,
+        label: "My progress",
+        threadCount: facetTriageThreadCount,
+      });
+      continue;
+    }
     if (id === "pinned") {
       if (model.pinned) {
         entries.push({
@@ -89,11 +149,11 @@ export function listSidebarSectionOrderEntries(
  * what is visible never silently relocates what is not.
  */
 export function mergeHiddenSectionOrder(
-  fullOrder: readonly SidebarSectionId[],
-  visibleOrder: readonly SidebarSectionId[],
-): SidebarSectionId[] {
+  fullOrder: readonly MobileSidebarSectionId[],
+  visibleOrder: readonly MobileSidebarSectionId[],
+): MobileSidebarSectionId[] {
   const visible = new Set(visibleOrder);
-  const merged: SidebarSectionId[] = [];
+  const merged: MobileSidebarSectionId[] = [];
   let nextVisible = 0;
   for (const id of fullOrder) {
     if (visible.has(id)) {
@@ -123,7 +183,7 @@ export function useSidebarSectionOrder(
   model: SidebarModel,
   preferences: SidebarPreferences,
   actions: Pick<SidebarPreferenceActions, "setSectionOrder">,
-): SidebarSectionId[] {
+): MobileSidebarSectionId[] {
   const storedOrder = preferences.sectionOrder[model.organize];
   const order = useMemo(
     () => resolveSidebarSectionOrder(model, storedOrder),

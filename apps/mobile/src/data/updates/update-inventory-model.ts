@@ -191,7 +191,7 @@ export type BbAppRowState =
       kind: "available";
       current: string;
       latest: string | null;
-      upgradeCommand: string;
+      upgradeGuidance: string;
     }
   | { kind: "current"; current: string };
 
@@ -208,7 +208,7 @@ export function bbAppRowState(
       kind: "available",
       current: version.currentVersion,
       latest: version.latestVersion,
-      upgradeCommand: version.upgradeCommand,
+      upgradeGuidance: version.upgradeGuidance,
     };
   }
   return { kind: "current", current: version.currentVersion };

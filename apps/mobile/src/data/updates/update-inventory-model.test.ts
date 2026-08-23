@@ -49,7 +49,7 @@ const VERSION: SystemVersionResponse = {
   source: "npm",
   updateAvailable: true,
   isDevelopment: false,
-  upgradeCommand: "npm i -g bb-app@latest",
+  upgradeGuidance: "Ask the Rosetta machine owner to update bb-app.",
 };
 
 const UPDATE_ACTION = {
@@ -237,7 +237,7 @@ describe("bbAppRowState", () => {
       kind: "available",
       current: "1.0.0",
       latest: "1.1.0",
-      upgradeCommand: "npm i -g bb-app@latest",
+      upgradeGuidance: "Ask the Rosetta machine owner to update bb-app.",
     });
     expect(bbAppRowState({ ...VERSION, updateAvailable: false })).toEqual({
       kind: "current",

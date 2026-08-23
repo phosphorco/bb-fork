@@ -1,8 +1,9 @@
 import { memo, type ReactNode } from "react";
 import type { ConsumeDragClickSuppression } from "@/components/ui/use-drag-click-suppression";
+import type { CollapsibleSidebarSectionId as CoreCollapsibleSidebarSectionId } from "@bb/client-core";
 import {
   type CollapsibleSidebarSectionId,
-  type SidebarSectionId,
+  type SidebarTopLevelSectionId,
 } from "./sidebarCollapsedAtoms";
 import {
   TopLevelSidebarSection,
@@ -14,7 +15,7 @@ import type { ThreadSplitIndicatorTarget } from "./paneContentSplitIndicator";
 
 interface SortableSidebarSectionProps extends TopLevelSidebarSectionProps {
   disabled: boolean;
-  id: SidebarSectionId;
+  id: SidebarTopLevelSectionId;
 }
 
 export interface BuiltInSidebarSectionOptions {
@@ -30,18 +31,18 @@ export interface BuiltInSidebarSectionOptions {
 interface BuiltInSidebarSectionProps extends BuiltInSidebarSectionOptions {
   consumeClickSuppression?: ConsumeDragClickSuppression;
   disabled: boolean;
-  id: CollapsibleSidebarSectionId;
+  id: CoreCollapsibleSidebarSectionId;
   isCollapsed: boolean;
-  onToggleCollapsed: (id: CollapsibleSidebarSectionId) => void;
+  onToggleCollapsed: (id: CoreCollapsibleSidebarSectionId) => void;
 }
 
 export type BuiltInSidebarSectionNodes = Record<
-  CollapsibleSidebarSectionId,
+  CoreCollapsibleSidebarSectionId,
   ReactNode
 >;
 
 export type BuiltInSidebarSectionOptionsById = Record<
-  CollapsibleSidebarSectionId,
+  CoreCollapsibleSidebarSectionId,
   BuiltInSidebarSectionOptions
 >;
 
@@ -50,7 +51,7 @@ interface RenderBuiltInSidebarSectionArgs {
   consumeClickSuppression?: ConsumeDragClickSuppression;
   disabled: boolean;
   onToggleCollapsed: (id: CollapsibleSidebarSectionId) => void;
-  sectionId: SidebarSectionId;
+  sectionId: SidebarTopLevelSectionId;
   sections: BuiltInSidebarSectionOptionsById;
   showPinnedSection: boolean;
 }
@@ -112,7 +113,7 @@ function BuiltInSidebarSection({
 }
 
 export function getBuiltInSidebarSectionNode(
-  sectionId: SidebarSectionId,
+  sectionId: SidebarTopLevelSectionId,
   sections: BuiltInSidebarSectionNodes,
 ): ReactNode | undefined {
   if (sectionId !== "pinned" && sectionId !== "threads") {

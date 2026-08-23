@@ -5,6 +5,7 @@ import { extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Hono } from "hono";
 import { terminalWebSocketQuerySchema } from "@bb/server-contract";
+import { markAllPluginThreadFacetOwnersUnavailable } from "@bb/db";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import type { ServerAppDeps } from "./types.js";
@@ -304,6 +305,7 @@ export function createApp(
   deps: ServerAppDeps,
   options?: CreateAppOptions,
 ): ServerApp {
+  markAllPluginThreadFacetOwnersUnavailable(deps.db);
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket, wss } = createNodeWebSocket({
     app,

@@ -1,5 +1,8 @@
 import { atomWithStorage } from "jotai/utils";
-import type { CollapsibleSidebarSectionId } from "@bb/client-core";
+import type {
+  CollapsibleSidebarSectionId as CoreCollapsibleSidebarSectionId,
+  SidebarSectionId,
+} from "@bb/client-core";
 import {
   createJsonLocalStorage,
   type SyncStorage,
@@ -24,10 +27,16 @@ const COLLAPSED_THREAD_SECTIONS_STORAGE_KEY =
 const LEGACY_COLLAPSED_FOLDERS_STORAGE_KEY = "bb.sidebar.collapsedFolders";
 const COLLAPSED_MACHINES_STORAGE_KEY = "bb.sidebar.collapsedMachines";
 
-export type {
-  CollapsibleSidebarSectionId,
-  SidebarSectionId,
-} from "@bb/client-core";
+/** Stable identity of the saved My progress facet-query presentation. */
+export const MY_PROGRESS_SIDEBAR_SECTION_ID = "facet-triage:my-progress";
+
+export type CollapsibleSidebarSectionId =
+  | CoreCollapsibleSidebarSectionId
+  | typeof MY_PROGRESS_SIDEBAR_SECTION_ID;
+export type SidebarTopLevelSectionId =
+  | SidebarSectionId
+  | typeof MY_PROGRESS_SIDEBAR_SECTION_ID;
+export type { SidebarSectionId };
 
 // "project" keeps the per-project grouping; "chronological" is the persisted
 // value for the cross-project Sections view that replaced the old None view;
@@ -40,6 +49,7 @@ export type SidebarChronologicalSort = "updated" | "created" | "alpha" | "none";
 
 const DEFAULT_SIDEBAR_SECTION_ORDER: readonly string[] = [
   "pinned",
+  MY_PROGRESS_SIDEBAR_SECTION_ID,
   "projects",
   "threads",
 ];
@@ -145,14 +155,14 @@ export const sidebarSectionOrderAtom = atomWithStorage<string[]>(
 
 export const sidebarManualSectionOrderAtom = atomWithStorage<string[]>(
   SIDEBAR_MANUAL_SECTION_ORDER_STORAGE_KEY,
-  ["pinned", "sections", "threads"],
+  ["pinned", MY_PROGRESS_SIDEBAR_SECTION_ID, "sections", "threads"],
   sidebarManualSectionOrderStorage,
   { getOnInit: true },
 );
 
 export const sidebarMachineSectionOrderAtom = atomWithStorage<string[]>(
   SIDEBAR_MACHINE_SECTION_ORDER_STORAGE_KEY,
-  ["pinned", "machines", "threads"],
+  ["pinned", MY_PROGRESS_SIDEBAR_SECTION_ID, "machines", "threads"],
   createJsonLocalStorage<string[]>(),
   { getOnInit: true },
 );

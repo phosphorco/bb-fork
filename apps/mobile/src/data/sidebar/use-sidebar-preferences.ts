@@ -61,6 +61,7 @@ export function useSidebarCollapsedSets(preferences: SidebarPreferences) {
       sectionKeys: new Set(preferences.collapsedSectionKeys),
       machineKeys: new Set(preferences.collapsedMachineKeys),
       builtInSections: new Set(preferences.collapsedBuiltInSections),
+      facetTriageIds: new Set(preferences.collapsedFacetTriageIds),
     }),
     [preferences],
   );

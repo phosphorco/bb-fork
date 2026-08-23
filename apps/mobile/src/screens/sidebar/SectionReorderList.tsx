@@ -1,4 +1,3 @@
-import type { SidebarSectionId } from "@bb/client-core";
 import { useCallback, useEffect, useMemo } from "react";
 import { View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
@@ -10,7 +9,10 @@ import Animated, {
   withTiming,
   type SharedValue,
 } from "react-native-reanimated";
-import type { SidebarSectionOrderEntry } from "@/data/sidebar";
+import type {
+  MobileSidebarSectionId,
+  SidebarSectionOrderEntry,
+} from "@/data/sidebar";
 import { haptic } from "@/lib/haptics/haptics";
 import { useTheme } from "@/theme";
 import { Icon, Text } from "@/ui";
@@ -23,7 +25,7 @@ const SPRING = { damping: 22, stiffness: 260, mass: 0.8 };
 interface SectionReorderListProps {
   entries: readonly SidebarSectionOrderEntry[];
   /** Fires once per drop with the full new order. */
-  onReorder: (order: SidebarSectionId[]) => void;
+  onReorder: (order: MobileSidebarSectionId[]) => void;
 }
 
 /**
@@ -192,7 +194,11 @@ function SectionReorderRow({
     <GestureDetector gesture={rowPan}>
       <Animated.View
         accessibilityRole="button"
-        accessibilityLabel={`${entry.label}, ${entry.threadCount} threads`}
+        accessibilityLabel={
+          entry.threadCount === null
+            ? entry.label
+            : `${entry.label}, ${entry.threadCount} threads`
+        }
         accessibilityHint="Drag to reorder"
         className="absolute left-0 right-0 flex-row items-center pr-4"
         style={[
@@ -223,9 +229,11 @@ function SectionReorderRow({
         <Text variant="label" numberOfLines={1} className="min-w-0 flex-1">
           {entry.label}
         </Text>
-        <View className="rounded-sm bg-surface-selected px-1.5 py-px">
-          <Text variant="chrome">{entry.threadCount}</Text>
-        </View>
+        {entry.threadCount === null ? null : (
+          <View className="rounded-sm bg-surface-selected px-1.5 py-px">
+            <Text variant="chrome">{entry.threadCount}</Text>
+          </View>
+        )}
       </Animated.View>
     </GestureDetector>
   );

@@ -1,16 +1,23 @@
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import { FlashList, type ListRenderItemInfo } from "@shopify/flash-list";
-import { useCallback, useMemo, useState } from "react";
+import { useIsFocused } from "expo-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, type StyleProp, type ViewStyle } from "react-native";
 import { useHosts } from "@/data/hosts";
 import {
   useSidebarBootstrap,
+  buildFacetTriageModel,
+  participantDisclosureTarget,
+  MY_PROGRESS_SIDEBAR_SECTION_ID,
+  shouldRefreshFacetTriage,
   useSidebarCollapsedSets,
   useSidebarModel,
+  useMyProgressFacetQuery,
   useSidebarPreferences,
   useSidebarSectionOrder,
+  type FacetParticipantDisclosureTarget,
 } from "@/data/sidebar";
-import { Button, EmptyStatePanel, Skeleton, Text } from "@/ui";
+import { Button, EmptyStatePanel, Skeleton, Text, useSheet } from "@/ui";
 import { useSidebarActions } from "./SidebarActionsProvider";
 import {
   SidebarEmptyRowView,
@@ -19,12 +26,26 @@ import {
   SidebarThreadRowView,
 } from "./SidebarRows";
 import {
-  buildSidebarListRows,
+  FacetParticipantDisclosureSheet,
+  FacetTriageContinuationRowView,
+  FacetTriageHeaderRowView,
+  FacetTriageMessageRowView,
+  FacetTriageThreadRowView,
+} from "./FacetTriageRows";
+import {
+  buildFacetTriageRows,
+  type FacetTriageListRow,
+  type FacetTriageThreadRow,
+} from "@/data/sidebar/facet-triage-rows-model";
+import {
+  buildSidebarSectionRows,
   getHeaderCollapseTarget,
   type SidebarHeaderRow,
   type SidebarListRow,
   type SidebarThreadRow,
 } from "./sidebar-list-rows";
+
+type MobileSidebarListRow = SidebarListRow | FacetTriageListRow;
 
 /**
  * FlashList keeps the first visible row anchored when rows are inserted above
@@ -68,6 +89,11 @@ export function SidebarThreadList({
 }: SidebarThreadListProps) {
   const [preferences, preferenceActions] = useSidebarPreferences();
   const collapsed = useSidebarCollapsedSets(preferences);
+  const facetTriageCollapsed = collapsed.facetTriageIds.has(
+    MY_PROGRESS_SIDEBAR_SECTION_ID,
+  );
+  const facetQuery = useMyProgressFacetQuery(!facetTriageCollapsed);
+  const isScreenFocused = useIsFocused();
   const { model, isLoading, isError, error, refetch } = useSidebarModel({
     organize: preferences.organize,
     sort: preferences.sort,
@@ -76,25 +102,84 @@ export function SidebarThreadList({
   const hosts = useHosts();
   const actions = useSidebarActions();
   const [refreshing, setRefreshing] = useState(false);
+  const participantSheet = useSheet();
+  const [participantSelection, setParticipantSelection] =
+    useState<FacetParticipantDisclosureTarget | null>(null);
 
   const sectionOrder = useSidebarSectionOrder(
     model,
     preferences,
     preferenceActions,
   );
-  const rows = useMemo(
-    () => buildSidebarListRows({ model, collapsed, sectionOrder }),
-    [model, collapsed, sectionOrder],
+  const facetModel = useMemo(
+    () => buildFacetTriageModel(facetQuery.data?.pages ?? []),
+    [facetQuery.data],
   );
+  const facetRows = useMemo(
+    () =>
+      buildFacetTriageRows({
+        collapsed: facetTriageCollapsed,
+        hasNextPage: facetQuery.hasNextPage,
+        isError: facetQuery.isError,
+        isFetchingNextPage: facetQuery.isFetchingNextPage,
+        isLoading: facetQuery.isLoading,
+        model: facetModel,
+      }),
+    [
+      facetModel,
+      facetQuery.hasNextPage,
+      facetQuery.isError,
+      facetQuery.isFetchingNextPage,
+      facetQuery.isLoading,
+      facetTriageCollapsed,
+    ],
+  );
+  const rows = useMemo<MobileSidebarListRow[]>(
+    () =>
+      sectionOrder.flatMap<MobileSidebarListRow>((sectionId) =>
+        sectionId === MY_PROGRESS_SIDEBAR_SECTION_ID
+          ? facetRows
+          : buildSidebarSectionRows({
+              model,
+              collapsed,
+              sectionId,
+            }),
+      ),
+    [collapsed, facetRows, model, sectionOrder],
+  );
+
+  const visibilityRef = useRef({
+    collapsed: facetTriageCollapsed,
+    screenFocused: isScreenFocused,
+  });
+  const facetRefetch = facetQuery.refetch;
+  useEffect(() => {
+    const next = {
+      collapsed: facetTriageCollapsed,
+      screenFocused: isScreenFocused,
+    };
+    if (
+      shouldRefreshFacetTriage({
+        hasData: facetQuery.data !== undefined,
+        previous: visibilityRef.current,
+        next,
+      })
+    ) {
+      void facetRefetch();
+    }
+    visibilityRef.current = next;
+  }, [facetQuery.data, facetRefetch, facetTriageCollapsed, isScreenFocused]);
 
   const bootstrapRefetch = bootstrap.refetch;
   const hostsRefetch = hosts.refetch;
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    Promise.allSettled([bootstrapRefetch(), hostsRefetch()]).finally(() =>
-      setRefreshing(false),
-    );
-  }, [bootstrapRefetch, hostsRefetch]);
+    Promise.allSettled([
+      bootstrapRefetch(),
+      hostsRefetch(),
+      ...(!facetTriageCollapsed ? [facetRefetch()] : []),
+    ]).finally(() => setRefreshing(false));
+  }, [bootstrapRefetch, facetRefetch, facetTriageCollapsed, hostsRefetch]);
 
   const onThreadPress = useCallback(
     (row: SidebarThreadRow) => actions.openThread(row.thread),
@@ -159,9 +244,64 @@ export function SidebarThreadList({
     [actions],
   );
 
+  const onToggleFacetTriage = useCallback(
+    () =>
+      preferenceActions.toggleCollapsed(
+        "facetTriage",
+        MY_PROGRESS_SIDEBAR_SECTION_ID,
+      ),
+    [preferenceActions],
+  );
+  const onFacetThreadPress = useCallback(
+    (row: FacetTriageThreadRow) => actions.openThread(row.thread),
+    [actions],
+  );
+  const onFacetThreadLongPress = useCallback(
+    (row: FacetTriageThreadRow) => actions.openThreadMenu(row.thread),
+    [actions],
+  );
+  const onShowParticipantOverflow = useCallback(
+    (row: FacetTriageThreadRow) => {
+      setParticipantSelection(participantDisclosureTarget(row.thread));
+      participantSheet.present();
+    },
+    [participantSheet],
+  );
+
   const renderItem = useCallback(
-    ({ item }: ListRenderItemInfo<SidebarListRow>) => {
+    ({ item }: ListRenderItemInfo<MobileSidebarListRow>) => {
       switch (item.type) {
+        case "facet-triage-header":
+          return (
+            <FacetTriageHeaderRowView
+              row={item}
+              onPress={onToggleFacetTriage}
+              onLongPress={actions.openSectionReorder}
+            />
+          );
+        case "facet-triage-thread":
+          return (
+            <FacetTriageThreadRowView
+              row={item}
+              onPress={onFacetThreadPress}
+              onLongPress={onFacetThreadLongPress}
+              onShowOverflow={onShowParticipantOverflow}
+            />
+          );
+        case "facet-triage-message":
+          return (
+            <FacetTriageMessageRowView
+              row={item}
+              onRetry={() => void facetRefetch()}
+            />
+          );
+        case "facet-triage-continuation":
+          return (
+            <FacetTriageContinuationRowView
+              row={item}
+              onLoadMore={() => void facetQuery.fetchNextPage()}
+            />
+          );
         case "header":
           return (
             <SidebarHeaderRowView
@@ -206,85 +346,87 @@ export function SidebarThreadList({
       onToggleEnvironment,
       onToggleHeader,
       onToggleThread,
+      actions.openSectionReorder,
+      facetQuery,
+      facetRefetch,
+      onFacetThreadLongPress,
+      onFacetThreadPress,
+      onShowParticipantOverflow,
+      onToggleFacetTriage,
     ],
   );
 
-  if (!model.isReady) {
-    if (isError) {
-      return (
-        <View className="gap-3 p-4" testID="sidebar-list-error">
-          <EmptyStatePanel>
-            <Text className="text-center text-sm text-muted-foreground">
-              Could not load threads.
-            </Text>
-            <Text
-              variant="caption"
-              className="pt-1 text-center"
-              numberOfLines={3}
-            >
-              {error?.message ?? "Unknown error"}
-            </Text>
-          </EmptyStatePanel>
-          <Button variant="outline" icon="RotateCcw" onPress={refetch}>
-            Retry
-          </Button>
-        </View>
-      );
-    }
-    if (isLoading) {
-      return (
-        <View className="flex-1">
-          <SidebarListSkeleton />
-        </View>
-      );
-    }
-  }
-
   const isEmpty =
     model.isReady && model.projects.length === 0 && model.threads.length === 0;
+  const legacyFooter = !model.isReady ? (
+    isError ? (
+      <View className="gap-3 p-4" testID="sidebar-list-error">
+        <EmptyStatePanel>
+          <Text className="text-center text-sm text-muted-foreground">
+            Could not load threads.
+          </Text>
+          <Text
+            variant="caption"
+            className="pt-1 text-center"
+            numberOfLines={3}
+          >
+            {error?.message ?? "Unknown error"}
+          </Text>
+        </EmptyStatePanel>
+        <Button variant="outline" icon="RotateCcw" onPress={refetch}>
+          Retry
+        </Button>
+      </View>
+    ) : isLoading ? (
+      <SidebarListSkeleton />
+    ) : null
+  ) : isEmpty ? (
+    <View className="gap-3 px-4 pt-6" testID="sidebar-list-empty">
+      <EmptyStatePanel>
+        No projects yet. Add a project to start threads on a machine, or start a
+        personal thread.
+      </EmptyStatePanel>
+      <Button icon="FolderPlus" onPress={actions.createProject}>
+        New project
+      </Button>
+      <Button
+        variant="outline"
+        icon="MessageSquarePlus"
+        onPress={() => actions.createThread({ projectId: PERSONAL_PROJECT_ID })}
+      >
+        New thread
+      </Button>
+    </View>
+  ) : null;
 
   return (
-    <FlashList
-      data={rows}
-      keyExtractor={keyExtractor}
-      getItemType={getItemType}
-      renderItem={renderItem}
-      maintainVisibleContentPosition={DISABLE_MAINTAIN_POSITION}
-      refreshing={refreshing}
-      onRefresh={onRefresh}
-      ListEmptyComponent={
-        isEmpty ? (
-          <View className="gap-3 px-4 pt-6" testID="sidebar-list-empty">
-            <EmptyStatePanel>
-              No projects yet. Add a project to start threads on a machine, or
-              start a personal thread.
-            </EmptyStatePanel>
-            <Button icon="FolderPlus" onPress={actions.createProject}>
-              New project
-            </Button>
-            <Button
-              variant="outline"
-              icon="MessageSquarePlus"
-              onPress={() =>
-                actions.createThread({ projectId: PERSONAL_PROJECT_ID })
-              }
-            >
-              New thread
-            </Button>
-          </View>
-        ) : null
-      }
-      contentContainerStyle={contentContainerStyle}
-      keyboardShouldPersistTaps="handled"
-      testID={testID}
-    />
+    <>
+      <FlashList
+        data={rows}
+        keyExtractor={keyExtractor}
+        getItemType={getItemType}
+        renderItem={renderItem}
+        maintainVisibleContentPosition={DISABLE_MAINTAIN_POSITION}
+        refreshing={refreshing}
+        onRefresh={onRefresh}
+        ListFooterComponent={legacyFooter}
+        contentContainerStyle={contentContainerStyle}
+        keyboardShouldPersistTaps="handled"
+        testID={testID}
+      />
+      <FacetParticipantDisclosureSheet
+        controller={participantSheet}
+        selection={participantSelection}
+        onDismiss={() => setParticipantSelection(null)}
+      />
+    </>
   );
 }
 
-function keyExtractor(row: SidebarListRow): string {
+function keyExtractor(row: MobileSidebarListRow): string {
   return row.key;
 }
 
-function getItemType(row: SidebarListRow): string {
+function getItemType(row: MobileSidebarListRow): string {
   return row.type;
 }

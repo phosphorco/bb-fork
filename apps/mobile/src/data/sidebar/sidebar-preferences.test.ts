@@ -33,6 +33,7 @@ describe("createSidebarPreferencesStore", () => {
       collapsedSectionKeys: [],
       collapsedMachineKeys: [],
       collapsedBuiltInSections: [],
+      collapsedFacetTriageIds: [],
       sectionOrder: { project: [], manual: [], machine: [] },
     });
     const store = createSidebarPreferencesStore(
@@ -129,6 +130,14 @@ describe("createSidebarPreferencesStore", () => {
     store.setCollapsed("builtIn", "threads", true);
     store.setCollapsed("builtIn", "projects", true);
     expect(store.getSnapshot().collapsedBuiltInSections).toEqual(["threads"]);
+
+    store.setCollapsed("facetTriage", "facet-triage:my-progress", true);
+    expect(store.getSnapshot().collapsedFacetTriageIds).toEqual([
+      "facet-triage:my-progress",
+    ]);
+    expect(storage.dump()["bb.sidebar.collapsedFacetTriageSections"]).toBe(
+      '["facet-triage:my-progress"]',
+    );
   });
 
   it("stops notifying after unsubscribe", () => {

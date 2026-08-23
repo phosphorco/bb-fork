@@ -70,6 +70,7 @@ function withSpawnAttribution(pluginId: string, args: unknown[]): unknown[] {
 export function createFakeSdk(options: {
   pluginId: string;
   overrides?: FakeSdkOverrides;
+  onResult?: (path: string, result: unknown) => unknown;
 }): { sdk: BbSdk; harness: FakeSdkHarness } {
   const calls: FakeSdkCall[] = [];
   const stubs = new Map<string, (...args: unknown[]) => unknown>();
@@ -99,7 +100,11 @@ export function createFakeSdk(options: {
           `createFakePluginHost({ sdk: { ... } }) or harness.sdk.stub("${path}", fn)`,
       );
     }
-    return stub(...args);
+    const result = stub(...args);
+    if (result instanceof Promise) {
+      return result.then((value) => options.onResult?.(path, value) ?? value);
+    }
+    return options.onResult?.(path, result) ?? result;
   }
 
   const nodes = new Map<string, unknown>();

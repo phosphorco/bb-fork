@@ -4,13 +4,13 @@ import {
   SortableContext,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
-import type { SidebarSectionId } from "./sidebarCollapsedAtoms";
+import type { SidebarTopLevelSectionId } from "./sidebarCollapsedAtoms";
 import type { SidebarReorderDndContextProps } from "./useSidebarReorderDnd";
 
 interface SidebarSectionOrderListProps {
-  children: (sectionId: SidebarSectionId) => ReactNode;
+  children: (sectionId: SidebarTopLevelSectionId) => ReactNode;
   dndContextProps?: SidebarReorderDndContextProps;
-  order: readonly SidebarSectionId[];
+  order: readonly SidebarTopLevelSectionId[];
 }
 
 export function SidebarSectionOrderList({

@@ -1403,7 +1403,9 @@ The canonical release summary.
     // chrome every other section of Settings is drawn in.
     expect(updateSurface?.querySelector(".bg-card")).not.toBeNull();
     expect(updateSurface?.querySelector(".divide-y")).not.toBeNull();
-    expect(screen.queryByText(/^Update available/)).toBeNull();
+    expect(
+      screen.getByText("Update available", { selector: ".sr-only" }),
+    ).toBeDefined();
 
     // Opening the page is the check. Nothing to click, and the forced refresh
     // still bypasses the cached version.

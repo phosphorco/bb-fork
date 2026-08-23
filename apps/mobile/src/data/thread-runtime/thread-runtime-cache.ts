@@ -301,6 +301,8 @@ export function buildOptimisticUserMessageRow({
   const mentions =
     textChunks.length === 1 ? (textChunks[0]?.mentions ?? []) : [];
   return {
+    p6rActorHandle: null,
+    p6rActor: null,
     id: createOptimisticTimelineRowId(),
     kind: "conversation",
     role: "user",
@@ -584,6 +586,7 @@ function buildOptimisticQueuedMessage({
     groupWithNext: false,
     createdAt,
     updatedAt: createdAt,
+    p6rActor: null,
   };
 }
 

@@ -82,7 +82,7 @@ const CLIENT_TURN_REQUEST_KEY_BATCH_SIZE = 995;
 // for seconds while deleting thousands of redundant rows at once.
 const RESOLVED_ITEM_DELTA_PRUNE_BATCH_SIZE = 500;
 
-interface QueryInSqliteVariableBatchesArgs<TValue, TRow> {
+export interface QueryInSqliteVariableBatchesArgs<TValue, TRow> {
   dedupeKey: (value: TValue) => string;
   fixedVariableCount: number;
   maximumValueCount?: number;
@@ -91,7 +91,7 @@ interface QueryInSqliteVariableBatchesArgs<TValue, TRow> {
   variableCountPerValue: number;
 }
 
-function queryInSqliteVariableBatches<TValue, TRow>(
+export function queryInSqliteVariableBatches<TValue, TRow>(
   args: QueryInSqliteVariableBatchesArgs<TValue, TRow>,
 ): TRow[] {
   const values = [

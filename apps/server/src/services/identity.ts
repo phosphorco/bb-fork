@@ -7,8 +7,7 @@ import {
 import type { Context } from "hono";
 import {
   p6rActorSnapshotSchema,
-  p6rCreateLocalPrincipalKey,
-  p6rCreateProviderPrincipalKey,
+  p6rPrincipalKeyForActorSnapshot,
   type P6rPrincipalKey,
   type P6rActorSnapshot,
   type P6rClaimedIdentity,
@@ -28,16 +27,7 @@ export const P6R_LOCAL_OPERATOR_PROVIDER_ID = "p6r-local-operator";
 export function p6rPrincipalKeyForActor(
   actor: P6rActorSnapshot,
 ): P6rPrincipalKey {
-  if (actor.p6rProviderId === P6R_LOCAL_OPERATOR_PROVIDER_ID) {
-    return p6rCreateLocalPrincipalKey(actor.p6rSubject);
-  }
-  if (actor.p6rProviderId === "claimed") {
-    return p6rCreateProviderPrincipalKey("claimed", actor.p6rSubject);
-  }
-  return p6rCreateProviderPrincipalKey(
-    "p6r",
-    `${actor.p6rProviderId}/${actor.p6rSubject}`,
-  );
+  return p6rPrincipalKeyForActorSnapshot(actor);
 }
 
 export interface P6rRequestResolution {

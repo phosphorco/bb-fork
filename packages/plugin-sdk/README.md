@@ -91,6 +91,40 @@ when their disposer removes them. See the
 [`content-script` reference plugin](../../examples/plugins/content-script/README.md)
 for a cleanup-safe editor enhancement.
 
+## Experimental thread facets
+
+`bb.experimental_facets` projects plugin-owned enum classifications without
+granting thread visibility or accepting raw thread ids. Declare facets during
+the backend factory, then use the returned handle from a service or lifecycle
+workflow. A target grant can be minted only from the exact object returned by
+that plugin load's `bb.sdk.threads.get/list` or by the handle's bounded
+`listPriorTargets()` census; clones and stale objects are refused.
+
+Every activation starts in reconciliation. Page the complete prior-target
+census in order, replace or clear every returned target, follow only the
+returned cursor, and call `markReady()` after the terminal page. `clear()` is
+an authoritative complete-empty value. If the plugin stops before readiness,
+stored positive classifications remain readable while missing membership is
+unknown.
+
+```ts
+const phase = bb.experimental_facets.declare({
+  localName: "phase",
+  memberKind: "enum",
+  cardinality: "one",
+  assignmentScope: "shared-thread",
+  members: ["defining", "working", "polishing"] as const,
+});
+
+const thread = await bb.sdk.threads.get({ threadId });
+await phase.replace(bb.experimental_facets.target(thread), ["working"]);
+```
+
+The backend fake stages declarations too. After invoking an initial plugin
+factory manually, call `harness.lifecycle.experimental_commitFacets()`; fake
+host `reload(factory)` performs that commit automatically before retiring the
+old generation.
+
 ## External plugin tests
 
 The packed package includes executable JavaScript and portable declarations

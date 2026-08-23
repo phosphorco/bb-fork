@@ -23,6 +23,8 @@ const PROJECT_DEFAULT_EXECUTION_OPTIONS_QUERY_KEY =
 const PROJECT_PROMPT_HISTORY_QUERY_KEY = "projectPromptHistory";
 export const SIDEBAR_NAVIGATION_QUERY_KEY = "sidebarNavigation";
 export const THREADS_QUERY_KEY = "threads";
+const MY_PROGRESS_FACET_QUERY_KIND = "facet-my-progress";
+const THREAD_FACET_PARTICIPANTS_QUERY_KIND = "facet-participants";
 const THREAD_SEARCH_QUERY_KEY = "threadSearch";
 const THREADS_DISABLED_QUERY_KEY = "threadsDisabled";
 export const THREAD_QUERY_KEY = "thread";
@@ -166,6 +168,16 @@ export type SidebarNavigationQueryKey = readonly [
   typeof SIDEBAR_NAVIGATION_QUERY_KEY,
 ];
 type ThreadsQueryKey = readonly [typeof THREADS_QUERY_KEY];
+export type MyProgressFacetQueryKey = readonly [
+  typeof THREADS_QUERY_KEY,
+  typeof MY_PROGRESS_FACET_QUERY_KIND,
+];
+export type ThreadFacetParticipantsQueryKey = readonly [
+  typeof THREADS_QUERY_KEY,
+  typeof THREAD_FACET_PARTICIPANTS_QUERY_KIND,
+  string,
+  string,
+];
 type ThreadListQueryKey = readonly [
   typeof THREADS_QUERY_KEY,
   ThreadListQueryFilters,
@@ -634,6 +646,22 @@ export function sidebarNavigationQueryKey(): SidebarNavigationQueryKey {
 
 export function threadsQueryKey(): ThreadsQueryKey {
   return [THREADS_QUERY_KEY];
+}
+
+export function myProgressFacetQueryKey(): MyProgressFacetQueryKey {
+  return [THREADS_QUERY_KEY, MY_PROGRESS_FACET_QUERY_KIND];
+}
+
+export function threadFacetParticipantsQueryKey(
+  threadId: string,
+  initialCursor: string,
+): ThreadFacetParticipantsQueryKey {
+  return [
+    THREADS_QUERY_KEY,
+    THREAD_FACET_PARTICIPANTS_QUERY_KIND,
+    threadId,
+    initialCursor,
+  ];
 }
 
 export function threadListQueryKey(

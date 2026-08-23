@@ -1,8 +1,4 @@
-import {
-  isThreadRead,
-  type SidebarSectionDefinition,
-  type SidebarSectionId,
-} from "@bb/client-core";
+import { isThreadRead, type SidebarSectionDefinition } from "@bb/client-core";
 import type { ThreadListEntry } from "@bb/domain";
 import { BbHttpError } from "@bb/sdk/browser";
 import { useRouter } from "expo-router";
@@ -29,6 +25,7 @@ import {
   useSidebarPreferences,
   useSidebarSectionOrder,
   type SidebarOrganizeMode,
+  type MobileSidebarSectionId,
   type SidebarPreferenceActions,
   type SidebarPreferences,
   type SidebarProject,
@@ -889,7 +886,7 @@ function SectionReorderSheetBody({
     [model, order],
   );
   const onReorder = useCallback(
-    (visibleOrder: SidebarSectionId[]) =>
+    (visibleOrder: MobileSidebarSectionId[]) =>
       preferenceActions.setSectionOrder(
         organize,
         mergeHiddenSectionOrder(order, visibleOrder),
