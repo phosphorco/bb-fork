@@ -108,7 +108,7 @@ describe("experimental thread facets", () => {
       {
         assignmentScope: "shared-thread",
         cardinality: "many",
-        localName: "identity",
+        localName: "principal-member-kind",
         memberKind: "principal-key",
         members: [],
       },
