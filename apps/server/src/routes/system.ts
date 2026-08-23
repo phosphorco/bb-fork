@@ -20,6 +20,7 @@ import {
   resolveCodeTheme,
   type AppKeybindingOverrides,
   type AppTheme,
+  type P6rActorSnapshot,
 } from "@bb/domain";
 import {
   publicApiRoutes,
@@ -29,6 +30,10 @@ import {
 import type { Hono } from "hono";
 import type { ServerAppDeps, ServerRuntimeConfig } from "../types.js";
 import type { PluginService } from "../services/plugins/plugin-service.js";
+import {
+  P6R_LOCAL_OPERATOR_PROVIDER_ID,
+  p6rPrincipalKeyForActor,
+} from "../services/identity.js";
 import { ApiError } from "../errors.js";
 import {
   resolveVoiceTranscriptionEnabled,
@@ -151,7 +156,10 @@ export function registerSystemRoutes(
     return resolveAppTheme(themeRoot, themeId, faviconColor);
   }
 
-  async function buildSystemConfigResponse(serverUrl: string) {
+  async function buildSystemConfigResponse(
+    serverUrl: string,
+    p6rCurrentPrincipal: P6rActorSnapshot | null,
+  ) {
     const keybindingOverrides = readAppKeybindingOverrides();
     const primaryHostId = resolvePrimaryHostId(deps);
     const localHelperPorts = [
@@ -161,6 +169,20 @@ export function registerSystemRoutes(
       ]),
     ];
     return {
+      p6rCurrentPrincipalProfile:
+        p6rCurrentPrincipal === null
+          ? null
+          : {
+              p6rPrincipalKey: p6rPrincipalKeyForActor(p6rCurrentPrincipal),
+              ...p6rCurrentPrincipal,
+              assurance:
+                p6rCurrentPrincipal.p6rProviderId === "claimed"
+                  ? ("claimed" as const)
+                  : p6rCurrentPrincipal.p6rProviderId ===
+                      P6R_LOCAL_OPERATOR_PROVIDER_ID
+                    ? ("local-operator" as const)
+                    : ("trusted-provider" as const),
+            },
       generalSettings: getAppSettings(deps.db),
       keybindings: applyAppKeybindingOverrides(
         DEFAULT_APP_KEYBINDINGS,
@@ -191,7 +213,15 @@ export function registerSystemRoutes(
 
   get(routes.config, async (context) => {
     const serverUrl = resolveSystemServerUrl(context.req, deps.config);
-    return context.json(await buildSystemConfigResponse(serverUrl));
+    return context.json(
+      await buildSystemConfigResponse(
+        serverUrl,
+        (context.get("p6rRequestPrincipal") as
+          | P6rActorSnapshot
+          | null
+          | undefined) ?? null,
+      ),
+    );
   });
 
   put(routes.generalSettings, (context, payload) => {

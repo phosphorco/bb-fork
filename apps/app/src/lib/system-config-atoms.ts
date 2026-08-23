@@ -16,6 +16,7 @@ import { wsManager } from "./ws";
 
 // Offline/unavailable app behavior should fail closed independently of server defaults.
 const unavailableSystemConfig: SystemConfigResponse = {
+  p6rCurrentPrincipalProfile: null,
   generalSettings: defaultAppSettings,
   keybindings: [],
   defaultKeybindings: [],

@@ -4,6 +4,7 @@ import { appSettingsSchema, defaultAppSettings } from "@bb/domain";
 import { systemConfigResponseSchema } from "@bb/server-contract";
 import { readJson } from "../helpers/json.js";
 import { withTestHarness } from "../helpers/test-app.js";
+import { p6rCreateLocalOperatorIdentity } from "../../src/services/actors.js";
 
 describe("general settings", () => {
   it("defaults general settings in /system/config", async () => {
@@ -12,6 +13,13 @@ describe("general settings", () => {
       expect(response.status).toBe(200);
       const body = systemConfigResponseSchema.parse(await readJson(response));
       expect(body.generalSettings).toEqual(defaultAppSettings);
+      const localOperator = p6rCreateLocalOperatorIdentity();
+      expect(body.p6rCurrentPrincipalProfile).toMatchObject({
+        p6rPrincipalKey: `local:${localOperator.p6rHandle}`,
+        p6rProviderId: "p6r-local-operator",
+        p6rHandle: localOperator.p6rHandle,
+        assurance: "local-operator",
+      });
       // A fresh server with no enrolled host is the only null-primary case.
       expect(body.primaryHostId).toBeNull();
     });

@@ -35,6 +35,22 @@ export function p6rIsRemoteAppContext(): boolean {
   );
 }
 
+export function p6rShouldOfferClaimedIdentity(args: {
+  remote: boolean;
+  serverBoundaryResolved: boolean;
+  assurance: "trusted-provider" | "claimed" | "local-operator" | null;
+  hasClaimedIdentity: boolean;
+  dismissed: boolean;
+}): boolean {
+  return (
+    args.remote &&
+    args.serverBoundaryResolved &&
+    args.assurance !== "trusted-provider" &&
+    !args.hasClaimedIdentity &&
+    !args.dismissed
+  );
+}
+
 function readStorage(key: string): string | null {
   try {
     return localStorage.getItem(key);

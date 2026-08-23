@@ -6,6 +6,7 @@ import {
   p6rIsRemoteAppContext,
   p6rResetClaimedIdentityStoreForTest,
   p6rSetClaimedDisplayName,
+  p6rShouldOfferClaimedIdentity,
 } from "./claimed-identity-store";
 
 afterEach(() => {
@@ -77,5 +78,37 @@ describe("claimed identity store", () => {
     p6rSetClaimedDisplayName("Alice");
     p6rClearClaimedIdentity();
     expect(localStorage.getItem("bb.p6rClaimedIdentity")).toBeNull();
+  });
+
+  it.each([
+    ["trusted provider", "trusted-provider", false],
+    ["unclaimed no-provider", null, true],
+    ["claimed mode before a local claim", "claimed", true],
+    ["local operator", "local-operator", true],
+  ] as const)(
+    "keeps the claim prompt assurance-aware for %s",
+    (_label, assurance, expected) => {
+      expect(
+        p6rShouldOfferClaimedIdentity({
+          remote: true,
+          serverBoundaryResolved: true,
+          assurance,
+          hasClaimedIdentity: false,
+          dismissed: false,
+        }),
+      ).toBe(expected);
+    },
+  );
+
+  it("does not offer a claim before the server boundary resolves", () => {
+    expect(
+      p6rShouldOfferClaimedIdentity({
+        remote: true,
+        serverBoundaryResolved: false,
+        assurance: null,
+        hasClaimedIdentity: false,
+        dismissed: false,
+      }),
+    ).toBe(false);
   });
 });

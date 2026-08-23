@@ -9,6 +9,7 @@ import {
   experimentsSchema,
   featureFlagsSchema,
   permissionModeSchema,
+  p6rPrincipalKeySchema,
   pluginThemeMetaSchema,
   providerInfoSchema,
 } from "@bb/domain";
@@ -157,6 +158,24 @@ export type SystemProviderStatesResponse = z.infer<
 >;
 
 export const systemConfigResponseSchema = z.object({
+  /**
+   * The server-resolved human for this request. Presentation is descriptive;
+   * `p6rPrincipalKey` alone denotes identity. Null means an unclaimed remote
+   * no-provider request, never an authentication fallback.
+   */
+  p6rCurrentPrincipalProfile: z
+    .object({
+      p6rPrincipalKey: p6rPrincipalKeySchema,
+      p6rProviderId: z.string().min(1).max(256),
+      p6rSubject: z.string().min(1).max(512),
+      p6rHandle: z.string().min(1).max(512),
+      p6rDisplayName: z.string().min(1).max(512),
+      p6rImageUrl: z.string().max(2_048).nullable(),
+      assurance: z.enum(["trusted-provider", "claimed", "local-operator"]),
+    })
+    .strict()
+    .nullable()
+    .optional(),
   /** App-wide Settings → General preferences, persisted server-side. */
   generalSettings: appSettingsSchema,
   /** Server-resolved keyboard bindings shared by every connected app window. */

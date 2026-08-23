@@ -3,6 +3,8 @@ import { p6rNormalizeHandle } from "@bb/domain";
 import { Button } from "@bb/shared-ui/button";
 import { Input } from "@bb/shared-ui/input";
 import { SettingsSection } from "@/components/ui/settings-section";
+import { P6rAvatar } from "@/components/identity/P6rAvatar";
+import { useSystemConfig } from "@/hooks/queries/system-queries";
 import {
   p6rClearClaimedIdentity,
   p6rSetClaimedDisplayName,
@@ -17,6 +19,12 @@ import {
  */
 export function P6rIdentitySettingsSection() {
   const identity = useP6rClaimedIdentity();
+  const systemConfig = useSystemConfig();
+  const trustedProfile =
+    systemConfig.data?.p6rCurrentPrincipalProfile?.assurance ===
+    "trusted-provider"
+      ? systemConfig.data.p6rCurrentPrincipalProfile
+      : null;
   const [p6rDisplayName, setDisplayName] = useState(
     identity?.p6rDisplayName ?? "",
   );
@@ -32,6 +40,31 @@ export function P6rIdentitySettingsSection() {
     event.preventDefault();
     p6rSetClaimedDisplayName(p6rDisplayName);
   };
+
+  if (trustedProfile !== null) {
+    return (
+      <SettingsSection
+        title="Identity"
+        description="Your trusted Tailnet identity is supplied by the configured provider. BB uses its provider-qualified principal for attribution, presence, and directed attention."
+      >
+        <div className="flex items-center gap-3">
+          <P6rAvatar
+            p6rDisplayName={trustedProfile.p6rDisplayName}
+            p6rImageUrl={trustedProfile.p6rImageUrl}
+            className="size-10 shrink-0 rounded-full bg-muted text-sm font-medium"
+          />
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium text-foreground">
+              {trustedProfile.p6rDisplayName}
+            </p>
+            <p className="truncate text-xs text-subtle-foreground/75">
+              @{trustedProfile.p6rHandle} · Trusted Tailnet identity
+            </p>
+          </div>
+        </div>
+      </SettingsSection>
+    );
+  }
 
   return (
     <SettingsSection

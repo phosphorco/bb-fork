@@ -12,9 +12,11 @@ import {
 import { Input } from "@bb/shared-ui/input";
 import {
   p6rIsRemoteAppContext,
+  p6rShouldOfferClaimedIdentity,
   p6rSetClaimedDisplayName,
   useP6rClaimedIdentity,
 } from "@/lib/claimed-identity-store";
+import { useSystemConfig } from "@/hooks/queries/system-queries";
 
 // Session-scoped so "Not now" doesn't nag again until the next visit, while a
 // fresh session still offers the prompt to an unidentified remote viewer.
@@ -44,9 +46,21 @@ function p6rMarkPromptDismissed(): void {
  */
 export function P6rClaimIdentityDialog() {
   const identity = useP6rClaimedIdentity();
+  const systemConfig = useSystemConfig();
   const [dismissed, setDismissed] = useState(p6rWasPromptDismissedThisSession);
   const [p6rDisplayName, setDisplayName] = useState("");
-  const open = p6rIsRemoteAppContext() && identity === null && !dismissed;
+  // Wait for the server boundary before offering the lower-assurance claim.
+  // A provider-authenticated browser must never be asked to identify itself
+  // again or be allowed to form a parallel claimed identity.
+  const open = p6rShouldOfferClaimedIdentity({
+    remote: p6rIsRemoteAppContext(),
+    serverBoundaryResolved:
+      systemConfig.isSuccess &&
+      systemConfig.data.p6rCurrentPrincipalProfile !== undefined,
+    assurance: systemConfig.data?.p6rCurrentPrincipalProfile?.assurance ?? null,
+    hasClaimedIdentity: identity !== null,
+    dismissed,
+  });
   if (!open) {
     return null;
   }
