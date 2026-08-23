@@ -35,13 +35,14 @@
 31. **Protocol-147 batching adaptation** aligns participant fixtures and batched events with the canonical base.
 32. **Canonical identity witnesses** aligns generated, migration-ledger, and protocol witnesses with upstream protocol 147.
 33. **Namespaced participant batching** keeps the new batched query surface inside the p6r downstream namespace boundary.
+34. **Post-ledger staging recovery** idempotently merges and removes interrupted actor/collaborator staging even when canonical 0105 was already recorded.
 
 ## Exact protocol-147 receipt
 
 - Upstream: `c942421a454ee4157004274053eec5f36c81d7eb`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: thirty-three patches in `patches/series`.
-- Result tree: `e1f2b8b3298c6a5f46ec4514a2d261943b79a0ea`.
+- Patch queue: thirty-four patches in `patches/series`.
+- Result tree: `8f5d2f61584e9dbcfc7ef9051c44cf5fc2678e98`.
 
 ## Compatibility boundaries
 

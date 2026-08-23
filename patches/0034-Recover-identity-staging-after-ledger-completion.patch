@@ -1,0 +1,166 @@
+From 6401d4ce4a6e42775b4e0084e69cabed2845fbe7 Mon Sep 17 00:00:00 2001
+From: Rosetta <its-rosetta@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 23:38:34 -0400
+Subject: [PATCH] Recover identity staging after ledger completion
+
+---
+ packages/db/src/migrate.ts       |   6 +-
+ packages/db/test/migrate.test.ts | 104 +++++++++++++++++--------------
+ 2 files changed, 58 insertions(+), 52 deletions(-)
+
+diff --git a/packages/db/src/migrate.ts b/packages/db/src/migrate.ts
+index 6abc091652c89ac235af7c426fd6bc05db39dafb..cc24f654d82d410ab15d1c002152e7038db0eeb9 100644
+--- a/packages/db/src/migrate.ts
++++ b/packages/db/src/migrate.ts
+@@ -1330,8 +1330,7 @@ const P6R_STAGED_MULTIPLAYER_ACTORS = "_bb_p6r_multiplayer_actors_pending";
+ const P6R_STAGED_MULTIPLAYER_COLLABORATORS =
+   "_bb_p6r_multiplayer_collaborators_pending";
+ const p6rLegacyMigrationWhens = [
+-  1786998114856,
+-  1787090005295,
++  1786998114856, 1787090005295,
+   // Shipped by the protocol-136 deployment before upstream claimed 0101.
+   // This timestamp sorts after upstream's new 0101, so it must be removed
+   // before Drizzle chooses the first unapplied canonical migration.
+@@ -1539,6 +1538,7 @@ function p6rStageExistingMultiplayerSchema(
+     "0105_p6r_identity_authorship",
+   );
+   const appliedCreatedAts = readAppliedMigrationCreatedAts(db);
++  p6rRecoverInterruptedMultiplayerStaging(db);
+   if (appliedCreatedAts.has(identityMigration.createdAt)) {
+     return null;
+   }
+@@ -1563,8 +1563,6 @@ function p6rStageExistingMultiplayerSchema(
+     return null;
+   }
+ 
+-  p6rRecoverInterruptedMultiplayerStaging(db);
+-
+   for (const createdAt of p6rLegacyMigrationWhens) {
+     db.$client
+       .prepare<
+diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
+index acad5bdf1d026653e2d52e591f1b01bbf8003882..0a4d7ba8c2f7e42f82112a9448e198ac7c532e40 100644
+--- a/packages/db/test/migrate.test.ts
++++ b/packages/db/test/migrate.test.ts
+@@ -1799,12 +1799,17 @@ describe("migrate", () => {
+     }
+   });
+ 
+-  it("resumes an interrupted provider-qualified multiplayer staging pass", () => {
+-    const db = createConnection(":memory:");
+-
+-    try {
+-      migrate(db);
+-      db.$client.exec(`
++  it.each([
++    ["before canonical ledger completion", false],
++    ["after canonical ledger completion", true],
++  ])(
++    "resumes an interrupted provider-qualified multiplayer staging pass %s",
++    (_label, identityApplied) => {
++      const db = createConnection(":memory:");
++
++      try {
++        migrate(db);
++        db.$client.exec(`
+         INSERT INTO p6r_actors
+           (p6r_provider_id, p6r_subject, p6r_handle, p6r_display_name,
+            p6r_image_url, p6r_first_seen_at, p6r_last_seen_at)
+@@ -1845,48 +1850,51 @@ describe("migrate", () => {
+            p6r_first_seen_at, p6r_last_seen_at)
+         VALUES ('current', 'Current Collaborator', NULL, 3, 4);
+       `);
+-      db.$client
+-        .prepare("DELETE FROM __drizzle_migrations WHERE created_at = ?")
+-        .run(identityMigrationWhen);
+-      db.$client
+-        .prepare(
+-          "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
+-        )
+-        .run("interrupted-staging-high-water", identityMigrationWhen + 1);
+-
+-      migrate(db);
+-
+-      expect(
+-        db.$client
+-          .prepare<
+-            [],
+-            MigrationCountRow
+-          >("SELECT COUNT(*) AS count FROM p6r_actors")
+-          .get()?.count,
+-      ).toBe(2);
+-      expect(
+-        db.$client
+-          .prepare<
+-            [],
+-            MigrationCountRow
+-          >("SELECT COUNT(*) AS count FROM p6r_collaborators")
+-          .get()?.count,
+-      ).toBe(2);
+-      expect(
+-        db.$client
+-          .prepare<
+-            [],
+-            MigrationCountRow
+-          >("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name LIKE '_bb_p6r_multiplayer_%_pending'")
+-          .get()?.count,
+-      ).toBe(0);
+-      expect(readAppliedMigrationCreatedAts(db)).toContain(
+-        identityMigrationWhen,
+-      );
+-    } finally {
+-      closeConnection(db);
+-    }
+-  });
++        if (!identityApplied) {
++          db.$client
++            .prepare("DELETE FROM __drizzle_migrations WHERE created_at = ?")
++            .run(identityMigrationWhen);
++          db.$client
++            .prepare(
++              "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
++            )
++            .run("interrupted-staging-high-water", identityMigrationWhen + 1);
++        }
++
++        migrate(db);
++
++        expect(
++          db.$client
++            .prepare<
++              [],
++              MigrationCountRow
++            >("SELECT COUNT(*) AS count FROM p6r_actors")
++            .get()?.count,
++        ).toBe(2);
++        expect(
++          db.$client
++            .prepare<
++              [],
++              MigrationCountRow
++            >("SELECT COUNT(*) AS count FROM p6r_collaborators")
++            .get()?.count,
++        ).toBe(2);
++        expect(
++          db.$client
++            .prepare<
++              [],
++              MigrationCountRow
++            >("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name LIKE '_bb_p6r_multiplayer_%_pending'")
++            .get()?.count,
++        ).toBe(0);
++        expect(readAppliedMigrationCreatedAts(db)).toContain(
++          identityMigrationWhen,
++        );
++      } finally {
++        closeConnection(db);
++      }
++    },
++  );
+ 
+   it("replays the frozen identity migration from a disposable snapshot", () => {
+     const db = createConnection(":memory:");
+-- 
+2.43.0
+
