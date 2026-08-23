@@ -1980,12 +1980,17 @@ describe("migrate", () => {
     }
   });
 
-  it("resumes an interrupted provider-qualified multiplayer staging pass", () => {
-    const db = createConnection(":memory:");
+  it.each([
+    ["before canonical ledger completion", false],
+    ["after canonical ledger completion", true],
+  ])(
+    "resumes an interrupted provider-qualified multiplayer staging pass %s",
+    (_label, identityApplied) => {
+      const db = createConnection(":memory:");
 
-    try {
-      migrate(db);
-      db.$client.exec(`
+      try {
+        migrate(db);
+        db.$client.exec(`
         INSERT INTO p6r_actors
           (p6r_provider_id, p6r_subject, p6r_handle, p6r_display_name,
            p6r_image_url, p6r_first_seen_at, p6r_last_seen_at)
@@ -2026,48 +2031,51 @@ describe("migrate", () => {
            p6r_first_seen_at, p6r_last_seen_at)
         VALUES ('current', 'Current Collaborator', NULL, 3, 4);
       `);
-      db.$client
-        .prepare("DELETE FROM __drizzle_migrations WHERE created_at = ?")
-        .run(identityMigrationWhen);
-      db.$client
-        .prepare(
-          "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
-        )
-        .run("interrupted-staging-high-water", identityMigrationWhen + 1);
+        if (!identityApplied) {
+          db.$client
+            .prepare("DELETE FROM __drizzle_migrations WHERE created_at = ?")
+            .run(identityMigrationWhen);
+          db.$client
+            .prepare(
+              "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
+            )
+            .run("interrupted-staging-high-water", identityMigrationWhen + 1);
+        }
 
-      migrate(db);
+        migrate(db);
 
-      expect(
-        db.$client
-          .prepare<
-            [],
-            MigrationCountRow
-          >("SELECT COUNT(*) AS count FROM p6r_actors")
-          .get()?.count,
-      ).toBe(2);
-      expect(
-        db.$client
-          .prepare<
-            [],
-            MigrationCountRow
-          >("SELECT COUNT(*) AS count FROM p6r_collaborators")
-          .get()?.count,
-      ).toBe(2);
-      expect(
-        db.$client
-          .prepare<
-            [],
-            MigrationCountRow
-          >("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name LIKE '_bb_p6r_multiplayer_%_pending'")
-          .get()?.count,
-      ).toBe(0);
-      expect(readAppliedMigrationCreatedAts(db)).toContain(
-        identityMigrationWhen,
-      );
-    } finally {
-      closeConnection(db);
-    }
-  });
+        expect(
+          db.$client
+            .prepare<
+              [],
+              MigrationCountRow
+            >("SELECT COUNT(*) AS count FROM p6r_actors")
+            .get()?.count,
+        ).toBe(2);
+        expect(
+          db.$client
+            .prepare<
+              [],
+              MigrationCountRow
+            >("SELECT COUNT(*) AS count FROM p6r_collaborators")
+            .get()?.count,
+        ).toBe(2);
+        expect(
+          db.$client
+            .prepare<
+              [],
+              MigrationCountRow
+            >("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name LIKE '_bb_p6r_multiplayer_%_pending'")
+            .get()?.count,
+        ).toBe(0);
+        expect(readAppliedMigrationCreatedAts(db)).toContain(
+          identityMigrationWhen,
+        );
+      } finally {
+        closeConnection(db);
+      }
+    },
+  );
 
   it("replays the frozen identity migration from a disposable snapshot", () => {
     const db = createConnection(":memory:");

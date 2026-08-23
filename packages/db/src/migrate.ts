@@ -1330,8 +1330,7 @@ const P6R_STAGED_MULTIPLAYER_ACTORS = "_bb_p6r_multiplayer_actors_pending";
 const P6R_STAGED_MULTIPLAYER_COLLABORATORS =
   "_bb_p6r_multiplayer_collaborators_pending";
 const p6rLegacyMigrationWhens = [
-  1786998114856,
-  1787090005295,
+  1786998114856, 1787090005295,
   // Shipped by the protocol-136 deployment before upstream claimed 0101.
   // This timestamp sorts after upstream's new 0101, so it must be removed
   // before Drizzle chooses the first unapplied canonical migration.
@@ -1535,6 +1534,7 @@ function p6rStageExistingMultiplayerSchema(
     "0107_p6r_identity_authorship",
   );
   const appliedCreatedAts = readAppliedMigrationCreatedAts(db);
+  p6rRecoverInterruptedMultiplayerStaging(db);
   if (appliedCreatedAts.has(identityMigration.createdAt)) {
     return null;
   }
@@ -1558,8 +1558,6 @@ function p6rStageExistingMultiplayerSchema(
   if (!hasLegacyLedger && !hasForkSchema) {
     return null;
   }
-
-  p6rRecoverInterruptedMultiplayerStaging(db);
 
   for (const createdAt of p6rLegacyMigrationWhens) {
     db.$client
