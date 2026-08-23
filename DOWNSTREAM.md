@@ -26,13 +26,17 @@
 22. **Participant overflow tooltip lint repair** retains the accessible participant names while removing the redundant native tooltip rejected by the application lint boundary.
 23. **Generated plugin SDK template receipt** embeds the PrincipalKey request context and provider-scoped subject denotation handle in the exact bb-app plugin declaration templates.
 24. **Distinct no-provider identity modes** keeps loopback on the local operator while remote no-provider requests and sockets may carry only an explicit claimed presentation with a server-authored claimed PrincipalKey.
+25. **Provider avatar fallback** keeps provider presentation resilient when an avatar source is absent or invalid.
+26. **Bounded participant queries** batches participant event reads within SQLite binding limits.
+27. **Interrupted identity staging recovery** reconciles durable actor and collaborator staging before the provider-qualified migration resumes.
+28. **Unbounded supervised server startup** lets production-sized database migrations reach health without a fixed wall-clock deadline while retaining bounded health requests and immediate child-exit failure.
 
 ## Exact 0.39 receipt
 
 - Upstream: `desktop-v0.39.0` at `b33abbff098ac4c857578e7350d492dcaa65d489`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: twenty-five patches in `patches/series`.
-- Result tree: `603e723a469a7db4b7e08799c911260ca2aafab0`.
+- Patch queue: twenty-eight patches in `patches/series`.
+- Result tree: `a982c570c9cd6f0724f7c7fb9a1b9ef3b853eba0`.
 
 ## Compatibility boundaries
 
