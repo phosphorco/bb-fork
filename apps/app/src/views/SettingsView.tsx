@@ -89,6 +89,11 @@ import { getWorkspaceOpenTargetFallbackLabel } from "@/components/workspace-open
 import type { LocalHostDaemonAccessState } from "@/lib/local-host-daemon-access";
 import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 
+import { P6rIdentitySettingsSection } from "@/components/settings/IdentitySettingsSection";
+
+// Route views render icons outside the shell's core set. Importing the
+// so those icons never flash blank waiting for an on-demand load.
+
 const LOCAL_EDITOR_INTEGRATION_DOCS_URL =
   "https://github.com/get-bb/bb/blob/main/docs/multiple-devices.md#open-bb-from-another-browser";
 
@@ -234,11 +239,13 @@ const FAVICON_COLOR_LABELS: Record<FaviconColorPreference, string> = {
 
 const SETTINGS_DROPDOWN_TRIGGER_CLASS =
   "h-7 w-full justify-between border-border/60 bg-card px-2 text-xs sm:w-36";
+
 const SETTINGS_DROPDOWN_CONTENT_CLASS =
   "min-w-[var(--radix-dropdown-menu-trigger-width)]";
 
 const CREATE_CUSTOM_PALETTE_PROMPT =
   "Create a custom bb palette. First run `bb theme dir` to find the custom theme directory. Ask me for the palette name and visual direction, then create `<theme-dir>/<name>/theme.css` with light and dark theme variables compatible with bb's theme tokens.";
+
 const PALETTE_SETTING_DESCRIPTION =
   "Palettes change bb's colors, including syntax colors in diffs and file previews. Choose a built-in palette or create one from a prompt.";
 
@@ -531,14 +538,20 @@ export function LocalOpenTargetSettingsSection({
 }
 
 const IN_APP_BROWSER_LINK_SETTING_LABEL = "Open links in the in-app browser";
+
 const REWRITE_LOCALHOST_LINKS_SETTING_LABEL = "Rewrite localhost links";
+
 const NAVIGATE_TO_THREAD_AFTER_CREATE_SETTING_LABEL =
   "Navigate to threads on creation";
+
 const RICH_TEXT_EDITING_SETTING_LABEL = "Markdown formatting in prompt box";
+
 const UNHANDLED_PROVIDER_EVENTS_SETTING_LABEL =
   "Show unhandled provider events";
+
 const STEER_ACTIVE_THREAD_ON_ENTER_SETTING_LABEL =
   "Steer running threads on Enter";
+
 const STREAMER_MODE_SETTING_LABEL = "Streamer mode";
 
 export function AppearanceSettingsSection({
@@ -808,11 +821,16 @@ export function DebugSettingsSection({
 }
 
 const CHANGELOG_PREVIEW_EXPERIMENT_LABEL = "Changelog preview";
+
 const EDIT_MESSAGES_EXPERIMENT_LABEL = "Edit messages";
+
 const MOBILE_APP_EXPERIMENT_LABEL = "Mobile app";
+
 const PROVIDER_SESSION_REAPING_EXPERIMENT_LABEL =
   "Idle provider session release";
+
 const TIMELINE_WINDOWING_EXPERIMENT_LABEL = "Timeline windowing";
+
 export function ExperimentsSettingsSection({
   changelogPreviewEnabled,
   disabled,
@@ -948,6 +966,8 @@ export function SettingsView() {
         }
       />
     );
+  } else if (activeSection === "p6rIdentity") {
+    content = <P6rIdentitySettingsSection />;
   } else if (activeSection === "appearance") {
     content = (
       <AppearanceSettingsSection

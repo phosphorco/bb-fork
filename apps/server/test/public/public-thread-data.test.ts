@@ -15,6 +15,7 @@ import {
   reorderQueuedThreadMessage,
   setQueuedThreadMessageGroupBoundary,
   setThreadExecutionOverride,
+  getLatestThreadSequence,
 } from "@bb/db";
 import {
   encodeClientTurnRequestIdNumber,
@@ -22,6 +23,9 @@ import {
   threadScope,
   threadSchema,
   turnScope,
+  type P6rActorSnapshot,
+  P6R_CLAIMED_IDENTITY_HEADER,
+  p6rEncodeClaimedIdentityHeader,
 } from "@bb/domain";
 import {
   type TimelineRow,
@@ -35,6 +39,7 @@ import {
   threadWithIncludesResponseSchema,
   timelineTurnSummaryDetailsResponseSchema,
   uploadedPromptAttachmentSchema,
+  threadListResponseSchema,
 } from "@bb/server-contract";
 import { renderTemplate } from "@bb/templates";
 import { z } from "zod";
@@ -63,6 +68,8 @@ import {
 } from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
 
+import { p6rCreateLocalOperatorIdentity } from "../../src/services/actors.js";
+
 const queuedMessageIdResponseSchema = z.object({
   id: z.string(),
 });
@@ -84,7 +91,246 @@ const clientTurnRequestedDataSchema = z.object({
 
 type TimelineTurnRow = Extract<TimelineRow, { kind: "turn" }>;
 
+const queuedActor: P6rActorSnapshot = {
+  p6rProviderId: "p6r-fixture/provider",
+  p6rSubject: "queued-author",
+  p6rHandle: "queued-author",
+  p6rDisplayName: "Queued Author",
+  p6rImageUrl: null,
+};
+
 describe("public thread data routes", () => {
+  it("exposes ordered canonical participants in native thread-list entries", async () => {
+    await withTestHarness(async (harness) => {
+      const { project, thread } = seedThreadFixture(harness);
+      const firstSequence =
+        getLatestThreadSequence(harness.db, { threadId: thread.id }) + 1;
+      insertEvents(harness.db, harness.hub, [
+        {
+          threadId: thread.id,
+          scope: threadScope(),
+          sequence: firstSequence,
+          type: "client/turn/requested",
+          itemId: null,
+          itemKind: null,
+          parentToolCallId: null,
+          data: JSON.stringify({
+            initiator: "user",
+            input: [],
+            senderThreadId: null,
+          }),
+          p6rActorHandle: "same-presentation",
+          p6rActorProviderId: "github",
+          p6rActorSubject: "acct-42",
+          p6rActorDisplayName: "Same Person",
+          p6rActorImageUrl: "https://example.test/same.png",
+        },
+        {
+          threadId: thread.id,
+          scope: threadScope(),
+          sequence: firstSequence + 1,
+          type: "client/turn/requested",
+          itemId: null,
+          itemKind: null,
+          parentToolCallId: null,
+          data: JSON.stringify({
+            initiator: "user",
+            input: [],
+            senderThreadId: null,
+          }),
+          p6rActorHandle: "same-presentation",
+          p6rActorProviderId: "google",
+          p6rActorSubject: "acct-42",
+          p6rActorDisplayName: "Same Person",
+          p6rActorImageUrl: "https://example.test/same.png",
+        },
+      ]);
+
+      const response = await harness.app.request(
+        `/api/v1/threads?projectId=${project.id}`,
+      );
+      expect(response.status).toBe(200);
+      const listedThreads = threadListResponseSchema.parse(
+        await readJson(response),
+      );
+      expect(listedThreads).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: thread.id,
+            participants: [
+              {
+                p6rPrincipalKey: "p6r:github/acct-42",
+                p6rDisplayName: "Same Person",
+                p6rImageUrl: "https://example.test/same.png",
+              },
+              {
+                p6rPrincipalKey: "p6r:google/acct-42",
+                p6rDisplayName: "Same Person",
+                p6rImageUrl: "https://example.test/same.png",
+              },
+            ],
+          }),
+        ]),
+      );
+    });
+  });
+
+  it("refreshes repeated participant snapshots without changing authored order", async () => {
+    await withTestHarness(async (harness) => {
+      const { project, thread } = seedThreadFixture(harness);
+      const firstSequence =
+        getLatestThreadSequence(harness.db, { threadId: thread.id }) + 1;
+      const actorEvent = (
+        sequence: number,
+        providerId: string,
+        displayName: string,
+        imageUrl: string,
+      ) => ({
+        threadId: thread.id,
+        scope: threadScope(),
+        sequence,
+        type: "client/turn/requested" as const,
+        itemId: null,
+        itemKind: null,
+        parentToolCallId: null,
+        data: JSON.stringify({
+          initiator: "user",
+          input: [],
+          senderThreadId: null,
+        }),
+        p6rActorHandle: "same-presentation",
+        p6rActorProviderId: providerId,
+        p6rActorSubject: "acct-42",
+        p6rActorDisplayName: displayName,
+        p6rActorImageUrl: imageUrl,
+      });
+      insertEvents(harness.db, harness.hub, [
+        actorEvent(firstSequence, "github", "GitHub Initial", "old.png"),
+        actorEvent(firstSequence + 1, "google", "Google Person", "google.png"),
+        actorEvent(firstSequence + 2, "github", "GitHub Updated", "new.png"),
+      ]);
+
+      const response = await harness.app.request(
+        `/api/v1/threads?projectId=${project.id}`,
+      );
+      expect(response.status).toBe(200);
+      const listedThreads = threadListResponseSchema.parse(
+        await readJson(response),
+      );
+      expect(listedThreads).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: thread.id,
+            participants: [
+              {
+                p6rPrincipalKey: "p6r:github/acct-42",
+                p6rDisplayName: "GitHub Updated",
+                p6rImageUrl: "new.png",
+              },
+              {
+                p6rPrincipalKey: "p6r:google/acct-42",
+                p6rDisplayName: "Google Person",
+                p6rImageUrl: "google.png",
+              },
+            ],
+          }),
+        ]),
+      );
+    });
+  });
+
+  it("attributes direct human sends to the resolved request actor", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedThreadFixture(harness);
+      const response = await harness.app.request(
+        `/api/v1/threads/${thread.id}/send`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [P6R_CLAIMED_IDENTITY_HEADER]: p6rEncodeClaimedIdentityHeader({
+              p6rClientId: "browser-alice",
+              p6rDisplayName: "Alice",
+              p6rHandle: "alice",
+              p6rImageUrl: null,
+            }),
+          },
+          body: JSON.stringify({
+            input: [{ type: "text", text: "Human-authored message" }],
+            mode: "start",
+            model: "gpt-5",
+            permissionMode: "full",
+            reasoningLevel: "medium",
+            serviceTier: "default",
+          }),
+        },
+      );
+
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(
+        harness.db
+          .select({ p6rActorHandle: events.p6rActorHandle })
+          .from(events)
+          .where(
+            and(
+              eq(events.threadId, thread.id),
+              eq(events.type, "client/turn/requested"),
+            ),
+          )
+          .get(),
+        // A client claim is ignored by the no-provider loopback fallback.
+      ).toEqual({
+        p6rActorHandle: p6rCreateLocalOperatorIdentity().p6rHandle,
+      });
+    });
+  });
+
+  it("attributes manual stops to the resolved request actor", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedThreadFixture(harness, {
+        thread: { status: "active" },
+      });
+      const responsePromise = harness.app.request(
+        `/api/v1/threads/${thread.id}/stop`,
+        {
+          method: "POST",
+          headers: {
+            [P6R_CLAIMED_IDENTITY_HEADER]: p6rEncodeClaimedIdentityHeader({
+              p6rClientId: "browser-alice",
+              p6rDisplayName: "Alice",
+              p6rHandle: "alice",
+              p6rImageUrl: null,
+            }),
+          },
+        },
+      );
+      const stop = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.stop" && command.threadId === thread.id,
+      );
+      await reportQueuedCommandSuccess(harness, stop, {
+        providerCheckpointId: null,
+      });
+      const response = await responsePromise;
+
+      expect(response.status).toBe(200);
+      expect(
+        harness.db
+          .select({ p6rActorHandle: events.p6rActorHandle })
+          .from(events)
+          .where(
+            and(
+              eq(events.threadId, thread.id),
+              eq(events.type, "system/thread/interrupted"),
+            ),
+          )
+          .get(),
+      ).toEqual({
+        p6rActorHandle: p6rCreateLocalOperatorIdentity().p6rHandle,
+      });
+    });
+  });
   it("manages sections through the canonical public route lifecycle", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);
@@ -1654,153 +1900,148 @@ describe("public thread data routes", () => {
     });
   });
 
-  it(
-    "expands the newest slice when a large delegation parent completes last",
-    async () => {
-      await withTestHarness(async (harness) => {
-        const { environment, thread } = seedThreadFixture(harness);
-        const providerThreadId = "provider-thread-1";
-        const turnId = "parent-turn";
-        const parentToolCallId = "agent-call";
-        type EventInput = Parameters<typeof insertEvents>[2][number];
-        const eventInputs: EventInput[] = [];
-        let sequence = 0;
-        const push = (
-          event: Omit<EventInput, "environmentId" | "sequence" | "threadId">,
-        ): void => {
-          sequence += 1;
-          eventInputs.push({
-            ...event,
-            environmentId: environment.id,
-            sequence,
-            threadId: thread.id,
-          });
-        };
-
-        push({
-          providerThreadId,
-          scope: turnScope(turnId),
-          type: "turn/started",
-          itemId: null,
-          itemKind: null,
-          parentToolCallId: null,
-          data: JSON.stringify({}),
+  it("expands the newest slice when a large delegation parent completes last", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness);
+      const providerThreadId = "provider-thread-1";
+      const turnId = "parent-turn";
+      const parentToolCallId = "agent-call";
+      type EventInput = Parameters<typeof insertEvents>[2][number];
+      const eventInputs: EventInput[] = [];
+      let sequence = 0;
+      const push = (
+        event: Omit<EventInput, "environmentId" | "sequence" | "threadId">,
+      ): void => {
+        sequence += 1;
+        eventInputs.push({
+          ...event,
+          environmentId: environment.id,
+          sequence,
+          threadId: thread.id,
         });
+      };
+
+      push({
+        providerThreadId,
+        scope: turnScope(turnId),
+        type: "turn/started",
+        itemId: null,
+        itemKind: null,
+        parentToolCallId: null,
+        data: JSON.stringify({}),
+      });
+      push({
+        providerThreadId,
+        scope: turnScope(turnId),
+        type: "item/started",
+        itemId: parentToolCallId,
+        itemKind: "toolCall",
+        parentToolCallId: null,
+        data: JSON.stringify({
+          item: {
+            type: "toolCall",
+            id: parentToolCallId,
+            tool: "Agent",
+            arguments: { prompt: "Do the long task." },
+            status: "pending",
+          },
+        }),
+      });
+      for (let item = 0; item < 650; item += 1) {
+        const itemId = `command-${item}`;
+        const command = "x".repeat(25_000);
         push({
           providerThreadId,
           scope: turnScope(turnId),
           type: "item/started",
-          itemId: parentToolCallId,
-          itemKind: "toolCall",
-          parentToolCallId: null,
+          itemId,
+          itemKind: "commandExecution",
+          parentToolCallId,
           data: JSON.stringify({
             item: {
-              type: "toolCall",
-              id: parentToolCallId,
-              tool: "Agent",
-              arguments: { prompt: "Do the long task." },
+              type: "commandExecution",
+              id: itemId,
+              command,
+              cwd: "/tmp/test",
+              parentToolCallId,
               status: "pending",
+              approvalStatus: null,
             },
           }),
         });
-        for (let item = 0; item < 650; item += 1) {
-          const itemId = `command-${item}`;
-          const command = "x".repeat(25_000);
-          push({
-            providerThreadId,
-            scope: turnScope(turnId),
-            type: "item/started",
-            itemId,
-            itemKind: "commandExecution",
-            parentToolCallId,
-            data: JSON.stringify({
-              item: {
-                type: "commandExecution",
-                id: itemId,
-                command,
-                cwd: "/tmp/test",
-                parentToolCallId,
-                status: "pending",
-                approvalStatus: null,
-              },
-            }),
-          });
-          push({
-            providerThreadId,
-            scope: turnScope(turnId),
-            type: "item/completed",
-            itemId,
-            itemKind: "commandExecution",
-            parentToolCallId,
-            data: JSON.stringify({
-              item: {
-                type: "commandExecution",
-                id: itemId,
-                command,
-                cwd: "/tmp/test",
-                parentToolCallId,
-                status: "completed",
-                approvalStatus: null,
-                exitCode: 0,
-                aggregatedOutput: `output ${item}`,
-              },
-            }),
-          });
-        }
         push({
           providerThreadId,
           scope: turnScope(turnId),
           type: "item/completed",
-          itemId: parentToolCallId,
-          itemKind: "toolCall",
-          parentToolCallId: null,
+          itemId,
+          itemKind: "commandExecution",
+          parentToolCallId,
           data: JSON.stringify({
             item: {
-              type: "toolCall",
-              id: parentToolCallId,
-              tool: "Agent",
-              arguments: { prompt: "Do the long task." },
-              result: "",
+              type: "commandExecution",
+              id: itemId,
+              command,
+              cwd: "/tmp/test",
+              parentToolCallId,
               status: "completed",
+              approvalStatus: null,
+              exitCode: 0,
+              aggregatedOutput: `output ${item}`,
             },
           }),
         });
-        push({
-          providerThreadId,
-          scope: turnScope(turnId),
-          type: "turn/completed",
-          itemId: null,
-          itemKind: null,
-          parentToolCallId: null,
-          data: JSON.stringify({ status: "completed", providerThreadId }),
-        });
-        insertEvents(harness.deps.db, harness.deps.hub, eventInputs);
-
-        const timelineResponse = await harness.app.request(
-          `/api/v1/threads/${thread.id}/timeline`,
-        );
-        expect(timelineResponse.status).toBe(200);
-        const timeline = threadTimelineResponseSchema.parse(
-          await readJson(timelineResponse),
-        );
-        const turnRow = timeline.rows.find(
-          (row): row is TimelineTurnRow => row.kind === "turn",
-        );
-        expect(turnRow).toBeDefined();
-        if (!turnRow) {
-          throw new Error("Expected a turn row");
-        }
-        expect(turnRow.sourceSeqStart).toBeGreaterThan(2);
-
-        const detailsResponse = await harness.app.request(
-          `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=${turnRow.turnId}&sourceSeqStart=${turnRow.sourceSeqStart}&sourceSeqEnd=${turnRow.sourceSeqEnd}`,
-        );
-        expect(detailsResponse.status).toBe(200);
+      }
+      push({
+        providerThreadId,
+        scope: turnScope(turnId),
+        type: "item/completed",
+        itemId: parentToolCallId,
+        itemKind: "toolCall",
+        parentToolCallId: null,
+        data: JSON.stringify({
+          item: {
+            type: "toolCall",
+            id: parentToolCallId,
+            tool: "Agent",
+            arguments: { prompt: "Do the long task." },
+            result: "",
+            status: "completed",
+          },
+        }),
       });
-    },
-    10_000,
-  );
+      push({
+        providerThreadId,
+        scope: turnScope(turnId),
+        type: "turn/completed",
+        itemId: null,
+        itemKind: null,
+        parentToolCallId: null,
+        data: JSON.stringify({ status: "completed", providerThreadId }),
+      });
+      insertEvents(harness.deps.db, harness.deps.hub, eventInputs);
 
+      const timelineResponse = await harness.app.request(
+        `/api/v1/threads/${thread.id}/timeline`,
+      );
+      expect(timelineResponse.status).toBe(200);
+      const timeline = threadTimelineResponseSchema.parse(
+        await readJson(timelineResponse),
+      );
+      const turnRow = timeline.rows.find(
+        (row): row is TimelineTurnRow => row.kind === "turn",
+      );
+      expect(turnRow).toBeDefined();
+      if (!turnRow) {
+        throw new Error("Expected a turn row");
+      }
+      expect(turnRow.sourceSeqStart).toBeGreaterThan(2);
+
+      const detailsResponse = await harness.app.request(
+        `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=${turnRow.turnId}&sourceSeqStart=${turnRow.sourceSeqStart}&sourceSeqEnd=${turnRow.sourceSeqEnd}`,
+      );
+      expect(detailsResponse.status).toBe(200);
+    });
+  }, 10_000);
   it("hydrates turn-summary details with future accepted input context", async () => {
     await withTestHarness(async (harness) => {
       const { environment, thread } = seedThreadFixture(harness);
@@ -3152,6 +3393,12 @@ describe("public thread data routes", () => {
           method: "POST",
           headers: {
             "content-type": "application/json",
+            [P6R_CLAIMED_IDENTITY_HEADER]: p6rEncodeClaimedIdentityHeader({
+              p6rClientId: "browser-alice",
+              p6rDisplayName: "Alice",
+              p6rHandle: "alice",
+              p6rImageUrl: null,
+            }),
           },
           body: JSON.stringify({
             input: [{ type: "text", text: "Queued message ready to send" }],
@@ -3169,16 +3416,21 @@ describe("public thread data routes", () => {
         ({ command }) =>
           command.type === "turn.submit" && command.threadId === thread.id,
       );
+      const localOperator = p6rCreateLocalOperatorIdentity();
       expect(queued.command).toMatchObject({
         environmentId: environment.id,
         input: [{ type: "text", text: "Queued message ready to send" }],
+        p6rSpeaker: {
+          p6rDisplayName: localOperator.p6rDisplayName,
+          p6rHandle: localOperator.p6rHandle,
+        },
         resumeContext: {
           providerThreadId: "provider-queued-message-create-idle-auto-send",
         },
       });
       expect("inputGroups" in queued.command).toBe(false);
       const requestedEvent = harness.db
-        .select({ data: events.data })
+        .select({ p6rActorHandle: events.p6rActorHandle, data: events.data })
         .from(events)
         .where(
           and(
@@ -3186,8 +3438,11 @@ describe("public thread data routes", () => {
             eq(events.type, "client/turn/requested"),
           ),
         )
-        .get();
+        .orderBy(events.sequence)
+        .all()
+        .at(-1);
       expect(requestedEvent).toBeTruthy();
+      expect(requestedEvent?.p6rActorHandle).toBe(localOperator.p6rHandle);
       expect(
         Object.hasOwn(JSON.parse(requestedEvent!.data), "inputGroups"),
       ).toBe(false);
@@ -3211,10 +3466,12 @@ describe("public thread data routes", () => {
       const firstQueuedMessage = seedQueuedMessage(harness.deps, {
         threadId: thread.id,
         content: textInput("First grouped queued message"),
+        p6rActor: queuedActor,
       });
       const secondQueuedMessage = seedQueuedMessage(harness.deps, {
         threadId: thread.id,
         content: textInput("Second grouped queued message"),
+        p6rActor: queuedActor,
       });
       const thirdQueuedMessage = seedQueuedMessage(harness.deps, {
         threadId: thread.id,
@@ -3299,19 +3556,56 @@ describe("public thread data routes", () => {
         "Second grouped queued message",
       ]);
 
+      if (queued.command.type !== "turn.submit") {
+        throw new Error("Expected a queued turn.submit command");
+      }
+      const acceptedSequence =
+        getLatestThreadSequence(harness.db, { threadId: thread.id }) + 1;
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId: "provider-queued-message-group",
+        scope: turnScope("queued-group-accepted"),
+        sequence: acceptedSequence,
+        type: "turn/started",
+        data: {},
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId: "provider-queued-message-group",
+        scope: turnScope("queued-group-accepted"),
+        sequence: acceptedSequence + 1,
+        type: "turn/input/accepted",
+        data: {
+          clientRequestId: queued.command.requestId,
+        },
+      });
+
       const timelineResponse = await harness.app.request(
         `/api/v1/threads/${thread.id}/timeline`,
       );
-      expect(timelineResponse.status).toBe(200);
+      expect(
+        timelineResponse.status,
+        await timelineResponse.clone().text(),
+      ).toBe(200);
       const timeline = threadTimelineResponseSchema.parse(
         await readJson(timelineResponse),
       );
       const userRows = timeline.rows.filter(
         (row) => row.kind === "conversation" && row.role === "user",
       );
-      expect(userRows.map((row) => row.text).slice(-2)).toEqual([
-        "First grouped queued message",
-        "Second grouped queued message",
+      expect(userRows.slice(-2)).toEqual([
+        expect.objectContaining({
+          text: "First grouped queued message",
+          p6rActor: queuedActor,
+          turnRequest: expect.objectContaining({ status: "accepted" }),
+        }),
+        expect.objectContaining({
+          text: "Second grouped queued message",
+          p6rActor: queuedActor,
+          turnRequest: expect.objectContaining({ status: "accepted" }),
+        }),
       ]);
     });
   });

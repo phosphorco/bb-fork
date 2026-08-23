@@ -70,6 +70,7 @@ export default {
 };
 
 const noop = () => {};
+
 const STORY_BRANCH_NAME = "bb/design-system-polish";
 
 // FollowUp commits the provider — omit `onChange` so the picker renders the
@@ -81,6 +82,7 @@ const baseExecution = makeExecutionControlsProps({
     hasMultiple: true,
   },
 });
+
 const claudePlanExecution = makeExecutionControlsProps({
   provider: {
     options: STORY_PROVIDER_OPTIONS,
@@ -107,6 +109,7 @@ const claudePlanExecution = makeExecutionControlsProps({
     onChange: noop,
   },
 });
+
 const codexModelLoadError = {
   providerId: "codex",
   code: "failed",
@@ -520,6 +523,7 @@ function makeStoryQueuedMessage(id: string, text: string): ThreadQueuedMessage {
     groupWithNext: false,
     createdAt: 0,
     updatedAt: 0,
+    p6rActor: null,
   };
 }
 

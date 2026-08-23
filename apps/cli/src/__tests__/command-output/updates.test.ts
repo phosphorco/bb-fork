@@ -41,7 +41,8 @@ const version = {
   source: "npm" as const,
   updateAvailable: true,
   isDevelopment: false,
-  upgradeCommand: "npx bb-app@latest",
+  upgradeGuidance:
+    "Update this primary server through Rosetta machine deployment by replacing its managed bb-app artifact. Enrolled execution machines receive this server's exact bb-app distribution automatically; manage or retry them in Settings → Machines.",
 };
 
 function providerStatus(args: {
@@ -114,7 +115,10 @@ describe("bb updates command output", () => {
     const output = collectLogPayloads(vi.mocked(console.log)).join("\n");
     expect(output).toContain("bb-app");
     expect(output).toContain("0.0.32 -> 0.0.33");
-    expect(output).toContain("Update available (run: npx bb-app@latest)");
+    expect(output).toContain(
+      "Update available — Update this primary server through Rosetta machine deployment by replacing its managed bb-app artifact.",
+    );
+    expect(output).not.toContain("npx bb-app@latest");
     expect(output).toContain("workstation · Codex");
     expect(output).toContain("0.140.0 -> 0.141.0");
     expect(output).toContain("workstation · Claude Code");
@@ -217,3 +221,4 @@ describe("bb updates command output", () => {
     ]);
   });
 });
+// weave: run 'weave explain apps/cli/src/__tests__/command-output/updates.test.ts' for per-hunk detail, 'weave check' to verify your resolution

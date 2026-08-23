@@ -1,10 +1,19 @@
 import type { HeaderPair } from "@bb/tunnel-contract";
 
-const SKIP_REQUEST_HEADERS = new Set(["host", "content-length", "connection"]);
+const SKIP_REQUEST_HEADERS = new Set([
+  "host",
+  "content-length",
+  "connection",
+  "x-p6r-via-tunnel",
+]);
+
+export const P6R_TUNNEL_ORIGIN_HEADER = "x-p6r-via-tunnel";
 
 interface LoopbackHeaderRewrite {
   publicOrigin: string;
   loopbackOrigin: string;
+  /** Stamp the trusted marker when this header set is re-issued by a tunnel. */
+  p6rMarkTunnelOrigin?: boolean;
   /**
    * When set, inject a Host header (share streams). When omitted, Host is
    * dropped — bare-handle behavior, byte-identical to pre-share.
@@ -27,6 +36,9 @@ export function headersForLoopbackRequest(
   }
   if (rewrite.host !== undefined) {
     forwarded.Host = rewrite.host;
+  }
+  if (rewrite.p6rMarkTunnelOrigin) {
+    forwarded[P6R_TUNNEL_ORIGIN_HEADER] = "1";
   }
   return forwarded;
 }

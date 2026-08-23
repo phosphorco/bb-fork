@@ -20,6 +20,45 @@ import {
 import { withTestHarness } from "../helpers/test-app.js";
 
 describe("public authorization regressions", () => {
+  it("rejects a remote anonymous human-authored thread create before persistence", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps, {
+        id: "host-anonymous-create",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/anonymous-create-source",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/anonymous-create-workspace",
+      });
+      const response = await harness.app.request(
+        `http://203.0.113.42:3334/api/v1/threads`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            origin: "app",
+            projectId: project.id,
+            providerId: "codex",
+            input: [{ type: "text", text: "anonymous authored create" }],
+            environment: { type: "reuse", environmentId: environment.id },
+          }),
+        },
+      );
+      expect(response.status).toBe(401);
+      expect(
+        harness.db
+          .select()
+          .from(threads)
+          .where(eq(threads.projectId, project.id))
+          .all(),
+      ).toHaveLength(0);
+    });
+  });
+
   it("does not delete a project source through another project route", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps, {

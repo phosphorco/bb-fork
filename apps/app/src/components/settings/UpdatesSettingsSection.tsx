@@ -74,7 +74,6 @@ import {
 } from "@/hooks/useUpdateInventory";
 import { useHostDaemon } from "@/hooks/useHostDaemon";
 import { useDesktopUpdateInfo } from "@/hooks/useDesktopUpdateInfo";
-import { copyToClipboardWithToast } from "@/lib/clipboard";
 import {
   hostCanRetryUpdate,
   hostNeedsUpdate,
@@ -93,11 +92,16 @@ const EMPTY_PROVIDER_CLI_FAILURES: ReadonlyMap<
   string,
   ProviderCliInstallFailure
 > = new Map();
+
 const CHANGELOG_URL = "https://getbb.app/changelog";
+
 const CHANGELOG_STALE_TIME_MS = 5 * 60_000;
+
 const CHANGELOG_DISMISSED_VERSION_STORAGE_KEY =
   "bb.settings.updates.dismissed-changelog-version";
+
 const CHANGELOG_DISMISS_CONFIRMATION_MS = 2_000;
+
 const CHANGELOG_DISMISS_EXIT_MS = 180;
 
 interface ChangelogDismissal {
@@ -855,8 +859,8 @@ interface BbAppUpdateRowsProps {
 
 /**
  * The bb app's own row: on desktop the shell auto-downloads and applies on
- * relaunch; on web/npm installs the server can't replace itself, so the row
- * surfaces the upgrade command instead of a fake update button.
+ * relaunch; for the managed web server, server-owned guidance explains the
+ * deployment path instead of inventing a self-update action.
  */
 export function BbAppUpdateRows({
   systemVersion,
@@ -888,7 +892,7 @@ export function BbAppUpdateRows({
         </span>
       }
     >
-      <span className="flex min-w-0 items-baseline gap-2">
+      <span className="flex min-w-0 flex-wrap items-baseline gap-2">
         {name}
         {caption}
       </span>
@@ -959,17 +963,6 @@ export function BbAppUpdateRows({
   const name = (
     <RowName
       name="bb app"
-      detail={
-        systemVersion.updateAvailable ? (
-          // The command is a readback of what the button copies, so it sits in
-          // the same slot a machine row gives its provider name — secondary to
-          // the thing's identity — instead of as a filled block competing with
-          // the version column for the right edge.
-          <span className="hidden truncate font-mono text-2xs text-muted-foreground sm:inline">
-            {systemVersion.upgradeCommand}
-          </span>
-        ) : undefined
-      }
       current={systemVersion.currentVersion}
       latest={
         systemVersion.updateAvailable ? systemVersion.latestVersion : null
@@ -980,18 +973,10 @@ export function BbAppUpdateRows({
   if (systemVersion.updateAvailable) {
     return row(
       name,
-      <RowStateControl
-        state="update-available"
-        actionIcon="Copy"
-        actionLabel="Copy the upgrade command"
-        actionTooltip="Copy command"
-        onClick={() => {
-          void copyToClipboardWithToast(systemVersion.upgradeCommand, {
-            successMessage: "Upgrade command copied",
-            errorMessage: "Couldn't copy upgrade command",
-          });
-        }}
-      />,
+      <RowStateControl state="update-available" />,
+      <p className="basis-full text-xs text-muted-foreground">
+        {systemVersion.upgradeGuidance}
+      </p>,
     );
   }
 
@@ -1650,7 +1635,9 @@ export function UpdatesSettingsSection({
                 onStartInstall={(hostId, issue) =>
                   startInstall({ hostId, issue })
                 }
-                onOpenProvider={() => navigate(getSettingsRoutePath("providers"))}
+                onOpenProvider={() =>
+                  navigate(getSettingsRoutePath("providers"))
+                }
               />
             </MachineUpdatesSection>
           );

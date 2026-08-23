@@ -3,6 +3,8 @@ import {
   getEnvironment,
   getThread,
   listEvents,
+  p6rGetTurnAuthorActor,
+  p6rUpsertActorSnapshot,
 } from "@bb/db";
 import {
   PERSONAL_PROJECT_ID,
@@ -35,6 +37,8 @@ import {
 } from "../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 
+import { appendThreadEvent } from "../../src/services/threads/thread-events.js";
+
 function threadStartTurnRequest(
   harness: { db: Parameters<typeof listEvents>[0] },
   threadId: string,
@@ -56,6 +60,80 @@ function installTelemetryCaptureSpy(harness: TestAppHarness) {
 }
 
 describe("thread creation telemetry", () => {
+  it("carries the resolver actor from initial create through accepted authorship", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps, {
+        id: "host-initial-durable-author",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/initial-durable-author",
+      });
+      seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/initial-durable-author",
+      });
+      const actor = {
+        p6rProviderId: "p6r-fixture/provider",
+        p6rSubject: "initial-subject",
+        p6rHandle: "initial-author",
+        p6rDisplayName: "Initial Author",
+        p6rImageUrl: null,
+      } as const;
+      p6rUpsertActorSnapshot(harness.db, actor, 1);
+
+      const thread = await createThreadFromRequest(harness.deps, {
+        p6rCreatedByActor: actor,
+        p6rCreatedByHandle: actor.p6rHandle,
+        environment: {
+          type: "host",
+          hostId: host.id,
+          workspace: { type: "unmanaged", path: "/tmp/initial-durable-author" },
+        },
+        input: textInput("Initial authored turn"),
+        origin: "app",
+        projectId: project.id,
+        providerId: "codex",
+        startedOnBehalfOf: null,
+      });
+      const requested = listEvents(harness.db, { threadId: thread.id }).find(
+        (event) => event.type === "client/turn/requested",
+      );
+      if (!requested) throw new Error("Expected initial requested event");
+      expect(requested.p6rActorProviderId).toBe(actor.p6rProviderId);
+      expect(requested.p6rActorSubject).toBe(actor.p6rSubject);
+      expect(requested.p6rActorHandle).toBe(actor.p6rHandle);
+      const requestData = turnRequestEventDataSchema.parse(
+        JSON.parse(requested.data),
+      );
+      const turnId = "initial-authored-turn";
+      appendThreadEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: thread.environmentId,
+        type: "turn/started",
+        scope: turnScope(turnId),
+        data: { providerThreadId: "initial-provider-thread" },
+      });
+      appendThreadEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: thread.environmentId,
+        type: "turn/input/accepted",
+        scope: turnScope(turnId),
+        data: {
+          providerThreadId: "initial-provider-thread",
+          clientRequestId: requestData.requestId,
+        },
+      });
+      expect(
+        p6rGetTurnAuthorActor(harness.db, {
+          threadId: thread.id,
+          turnId,
+        }),
+      ).toEqual(actor);
+    });
+  });
+
   it("captures initial user messages", async () => {
     await withTestHarness(async (harness) => {
       const capture = installTelemetryCaptureSpy(harness);

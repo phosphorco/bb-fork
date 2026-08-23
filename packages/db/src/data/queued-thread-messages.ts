@@ -11,7 +11,7 @@ import {
   notInArray,
   or,
 } from "drizzle-orm";
-import type { PermissionMode, PromptInput } from "@bb/domain";
+import type { P6rActorSnapshot, PermissionMode, PromptInput } from "@bb/domain";
 import type {
   DbConnection,
   DbQueryConnection,
@@ -19,13 +19,15 @@ import type {
 } from "../connection.js";
 import type { DbNotifier } from "../notifier.js";
 import { environments, queuedThreadMessages, threads } from "../schema.js";
-import { createQueuedThreadMessageClaimToken, createQueuedThreadMessageId } from "../ids.js";
 import {
-  createOrderKeyAfter,
-  createOrderKeyBetween,
-} from "./order-keys.js";
+  createQueuedThreadMessageClaimToken,
+  createQueuedThreadMessageId,
+} from "../ids.js";
+import { createOrderKeyAfter, createOrderKeyBetween } from "./order-keys.js";
 
 export interface CreateQueuedThreadMessageInput {
+  p6rActor?: P6rActorSnapshot | null;
+  p6rActorHandle?: string | null;
   threadId: string;
   content: PromptInput[];
   senderThreadId?: string | null;
@@ -40,6 +42,7 @@ export interface UpdateQueuedThreadMessageInput {
   expectedUpdatedAt: number;
   id: string;
   threadId: string;
+  p6rActor?: P6rActorSnapshot | null;
 }
 
 export type QueuedThreadMessageRow = typeof queuedThreadMessages.$inferSelect;
@@ -169,7 +172,8 @@ export type UpdateQueuedThreadMessageResult =
   | { kind: "claimed" }
   | { kind: "stale" };
 
-export type ReleaseQueuedMessageClaimArgs = ClaimedQueuedThreadMessageMutationArgs;
+export type ReleaseQueuedMessageClaimArgs =
+  ClaimedQueuedThreadMessageMutationArgs;
 
 class ReorderQueuedThreadMessageRollback extends Error {
   constructor(readonly result: ReorderQueuedThreadMessageResult) {
@@ -188,7 +192,10 @@ function collectLeadGroupIds(
     const nextQueuedMessage = queuedMessages[index + 1];
     if (
       !nextQueuedMessage ||
-      !queuedMessageGroupingEnvelopeMatches(firstQueuedMessage, nextQueuedMessage)
+      !queuedMessageGroupingEnvelopeMatches(
+        firstQueuedMessage,
+        nextQueuedMessage,
+      )
     ) {
       break;
     }
@@ -210,8 +217,19 @@ function queuedMessageGroupingEnvelopeMatches(
   firstQueuedMessage: QueuedThreadMessageRow | null,
   queuedMessage: QueuedThreadMessageRow,
 ): boolean {
+  const actorsMatch =
+    firstQueuedMessage !== null &&
+    (firstQueuedMessage.p6rActorProviderId !== null ||
+    firstQueuedMessage.p6rActorSubject !== null ||
+    queuedMessage.p6rActorProviderId !== null ||
+    queuedMessage.p6rActorSubject !== null
+      ? firstQueuedMessage.p6rActorProviderId ===
+          queuedMessage.p6rActorProviderId &&
+        firstQueuedMessage.p6rActorSubject === queuedMessage.p6rActorSubject
+      : firstQueuedMessage.p6rActorHandle === queuedMessage.p6rActorHandle);
   return (
     firstQueuedMessage !== null &&
+    actorsMatch &&
     queuedMessage.senderThreadId === firstQueuedMessage.senderThreadId &&
     queuedMessage.model === firstQueuedMessage.model &&
     queuedMessage.reasoningLevel === firstQueuedMessage.reasoningLevel &&
@@ -224,7 +242,9 @@ function isQueuedThreadMessageClaimed(row: QueuedThreadMessageRow): boolean {
   return row.claimedAt !== null || row.claimToken !== null;
 }
 
-function requireClaimedQueuedThreadMessage(row: QueuedThreadMessageRow | null): ClaimedQueuedThreadMessageRow | null {
+function requireClaimedQueuedThreadMessage(
+  row: QueuedThreadMessageRow | null,
+): ClaimedQueuedThreadMessageRow | null {
   if (!row || row.claimedAt === null || row.claimToken === null) {
     return null;
   }
@@ -275,7 +295,10 @@ function getLastQueuedThreadMessage(
       .select()
       .from(queuedThreadMessages)
       .where(eq(queuedThreadMessages.threadId, threadId))
-      .orderBy(desc(queuedThreadMessages.sortKey), desc(queuedThreadMessages.id))
+      .orderBy(
+        desc(queuedThreadMessages.sortKey),
+        desc(queuedThreadMessages.id),
+      )
       .limit(1)
       .get() ?? null
   );
@@ -303,7 +326,10 @@ function getPreviousUnclaimedQueuedThreadMessage(
           ),
         ),
       )
-      .orderBy(desc(queuedThreadMessages.sortKey), desc(queuedThreadMessages.id))
+      .orderBy(
+        desc(queuedThreadMessages.sortKey),
+        desc(queuedThreadMessages.id),
+      )
       .limit(1)
       .get() ?? null
   );
@@ -407,7 +433,10 @@ function applyQueuedThreadMessageGroupBoundary(
     }
     const hasMixedExecutionOptions = groupedMessages.some(
       (queuedMessage) =>
-        !queuedMessageGroupingEnvelopeMatches(firstQueuedMessage, queuedMessage),
+        !queuedMessageGroupingEnvelopeMatches(
+          firstQueuedMessage,
+          queuedMessage,
+        ),
     );
     if (hasMixedExecutionOptions) {
       return { kind: "invalid_execution_options" };
@@ -462,9 +491,7 @@ function applyPreservedLeadGroupAfterReorder(
       .run();
   }
 
-  return changed
-    ? listQueuedThreadMessages(db, threadId)
-    : queuedMessages;
+  return changed ? listQueuedThreadMessages(db, threadId) : queuedMessages;
 }
 
 /**
@@ -491,6 +518,11 @@ export function createQueuedThreadMessageInTransaction(
       threadId: input.threadId,
       content: JSON.stringify(input.content),
       senderThreadId: input.senderThreadId ?? null,
+      p6rActorHandle: input.p6rActor?.p6rHandle ?? input.p6rActorHandle ?? null,
+      p6rActorProviderId: input.p6rActor?.p6rProviderId ?? null,
+      p6rActorSubject: input.p6rActor?.p6rSubject ?? null,
+      p6rActorDisplayName: input.p6rActor?.p6rDisplayName ?? null,
+      p6rActorImageUrl: input.p6rActor?.p6rImageUrl ?? null,
       model: input.model,
       reasoningLevel: input.reasoningLevel,
       permissionMode: input.permissionMode,
@@ -541,6 +573,15 @@ export function updateQueuedThreadMessage(
         .update(queuedThreadMessages)
         .set({
           content: JSON.stringify(input.content),
+          ...(input.p6rActor !== undefined
+            ? {
+                p6rActorHandle: input.p6rActor?.p6rHandle ?? null,
+                p6rActorProviderId: input.p6rActor?.p6rProviderId ?? null,
+                p6rActorSubject: input.p6rActor?.p6rSubject ?? null,
+                p6rActorDisplayName: input.p6rActor?.p6rDisplayName ?? null,
+                p6rActorImageUrl: input.p6rActor?.p6rImageUrl ?? null,
+              }
+            : {}),
           updatedAt: Math.max(Date.now(), existing.updatedAt + 1),
         })
         .where(eq(queuedThreadMessages.id, input.id))
@@ -588,30 +629,32 @@ export function hasQueuedThreadMessages(
 export function listIdleThreadsWithQueuedMessages(
   db: DbConnection,
 ): QueuedMessageThreadRow[] {
-  return db
-    .select({
-      threadId: threads.id,
-      oldestQueuedMessageCreatedAt: min(queuedThreadMessages.createdAt),
-    })
-    .from(queuedThreadMessages)
-    .innerJoin(threads, eq(threads.id, queuedThreadMessages.threadId))
-    // A gone environment (destroying/destroyed) is never reprovisioned, so its
-    // queued rows can never drain. Leave them out of the sweep instead of
-    // failing the same send every cycle (#1789).
-    .innerJoin(environments, eq(environments.id, threads.environmentId))
-    .where(
-      and(
-        eq(threads.status, "idle"),
-        isNull(threads.archivedAt),
-        isNull(threads.deletedAt),
-        notInArray(environments.status, ["destroying", "destroyed"]),
-        isNull(queuedThreadMessages.claimedAt),
-        isNull(queuedThreadMessages.claimToken),
-      ),
-    )
-    .groupBy(threads.id)
-    .orderBy(asc(min(queuedThreadMessages.createdAt)), asc(threads.id))
-    .all();
+  return (
+    db
+      .select({
+        threadId: threads.id,
+        oldestQueuedMessageCreatedAt: min(queuedThreadMessages.createdAt),
+      })
+      .from(queuedThreadMessages)
+      .innerJoin(threads, eq(threads.id, queuedThreadMessages.threadId))
+      // A gone environment (destroying/destroyed) is never reprovisioned, so its
+      // queued rows can never drain. Leave them out of the sweep instead of
+      // failing the same send every cycle (#1789).
+      .innerJoin(environments, eq(environments.id, threads.environmentId))
+      .where(
+        and(
+          eq(threads.status, "idle"),
+          isNull(threads.archivedAt),
+          isNull(threads.deletedAt),
+          notInArray(environments.status, ["destroying", "destroyed"]),
+          isNull(queuedThreadMessages.claimedAt),
+          isNull(queuedThreadMessages.claimToken),
+        ),
+      )
+      .groupBy(threads.id)
+      .orderBy(asc(min(queuedThreadMessages.createdAt)), asc(threads.id))
+      .all()
+  );
 }
 
 export function claimQueuedThreadMessage(
@@ -626,7 +669,11 @@ export function claimQueuedThreadMessage(
         .from(queuedThreadMessages)
         .where(eq(queuedThreadMessages.id, id))
         .get();
-      if (!existing || existing.claimedAt !== null || existing.claimToken !== null) {
+      if (
+        !existing ||
+        existing.claimedAt !== null ||
+        existing.claimToken !== null
+      ) {
         return null;
       }
 
@@ -706,10 +753,7 @@ export function claimQueuedThreadMessageGroup(
         return null;
       }
 
-      const queuedMessages = listQueuedThreadMessages(
-        tx,
-        existing.threadId,
-      );
+      const queuedMessages = listQueuedThreadMessages(tx, existing.threadId);
       const existingIndex = queuedMessages.findIndex(
         (queuedMessage) => queuedMessage.id === id,
       );
@@ -807,10 +851,7 @@ export function reorderQueuedThreadMessage({
           return { kind: "invalid_neighbor_order" };
         }
 
-        const currentQueuedMessages = listQueuedThreadMessages(
-          tx,
-          threadId,
-        );
+        const currentQueuedMessages = listQueuedThreadMessages(tx, threadId);
         const originalLeadGroupIds = collectLeadGroupIds(currentQueuedMessages);
         const currentIndex = currentQueuedMessages.findIndex(
           (queuedMessage) => queuedMessage.id === queuedMessageId,
@@ -1126,7 +1167,9 @@ export function deleteQueuedThreadMessage(
       const existing = getQueuedThreadMessageForMutation(tx, id);
       if (!existing) return null;
       clearPreviousQueuedMessageGroupEdgeInTransaction(tx, existing);
-      tx.delete(queuedThreadMessages).where(eq(queuedThreadMessages.id, id)).run();
+      tx.delete(queuedThreadMessages)
+        .where(eq(queuedThreadMessages.id, id))
+        .run();
       return existing;
     },
     { behavior: "immediate" },

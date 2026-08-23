@@ -28,6 +28,8 @@ import type { TelemetryEvent } from "../../../src/services/system/telemetry.js";
 import { createNoopTelemetryService } from "../../../src/services/system/telemetry.js";
 import { createProviderRegistryService } from "../../../src/services/providers/provider-registry.js";
 
+import { p6rCreateIdentityBoundary } from "../../../src/services/identity.js";
+
 const logger = testLogger as unknown as Logger;
 
 async function writePlugin(
@@ -108,14 +110,26 @@ describe("plugin service", () => {
   let db: DbConnection;
   let workDir: string;
   let service: PluginService;
+  let identity: ReturnType<typeof p6rCreateIdentityBoundary>;
 
   beforeEach(async () => {
     db = createConnection(":memory:");
     migrate(db);
     workDir = await mkdtemp(join(tmpdir(), "bb-plugin-test-"));
+    identity = p6rCreateIdentityBoundary({
+      db,
+      defaultActor: {
+        p6rHandle: "local",
+        p6rDisplayName: "Local Operator",
+        p6rImageUrl: null,
+        p6rClientId: "local",
+      },
+      now: () => 1,
+    });
     service = createPluginService({
       telemetry: createNoopTelemetryService(),
       db,
+      p6rIdentity: identity,
       hub: {
         getDaemonSessionIdForHost: () => null,
         notifyPluginSignal: () => 0,
@@ -302,6 +316,168 @@ describe("plugin service", () => {
     expect(service.list().find((p) => p.id === "cycler")?.status).toBe(
       "running",
     );
+  });
+
+  it("activates an initial provider only after its candidate factory succeeds", async () => {
+    const rootDir = await writePlugin(workDir, {
+      name: "bb-plugin-identity-initial",
+      serverSource: `export default function plugin(bb: any) {
+        bb.p6rIdentity.registerProvider({ id: "fixture", resolve: () => ({
+          kind: "authenticated", p6rSubject: "initial", p6rHandle: "initial",
+          p6rDisplayName: "Initial", p6rImageUrl: null,
+        }) });
+      }`,
+    });
+    const entry = await service.installPath(rootDir);
+    expect(entry.status).toBe("running");
+    expect(
+      identity.p6rResolveRequest({
+        transport: "http",
+        method: "GET",
+        path: "/",
+        url: "http://remote.example/",
+        host: "remote.example",
+        origin: "http://remote.example",
+        headers: {},
+      }),
+    ).toMatchObject({
+      kind: "authenticated",
+      p6rActor: { p6rSubject: "initial" },
+    });
+  });
+
+  it("atomically replaces a same-plugin provider on successful reload", async () => {
+    const rootDir = await writePlugin(workDir, {
+      name: "bb-plugin-identity-reload",
+      serverSource: `export default function plugin(bb: any) {
+        bb.p6rIdentity.registerProvider({ id: "fixture", resolve: () => ({
+          kind: "authenticated", p6rSubject: "v1", p6rHandle: "v1",
+          p6rDisplayName: "V1", p6rImageUrl: null,
+        }) });
+      }`,
+    });
+    await service.installPath(rootDir);
+    await writeFile(
+      join(rootDir, "server.ts"),
+      `export default function plugin(bb: any) {
+      bb.p6rIdentity.registerProvider({ id: "fixture", resolve: () => ({
+        kind: "authenticated", p6rSubject: "v2", p6rHandle: "v2",
+        p6rDisplayName: "V2", p6rImageUrl: null,
+      }) });
+    }`,
+    );
+    await service.reload("identity-reload");
+    expect(
+      identity.p6rResolveRequest({
+        transport: "http",
+        method: "GET",
+        path: "/",
+        url: "http://remote.example/",
+        host: "remote.example",
+        origin: "http://remote.example",
+        headers: {},
+      }),
+    ).toMatchObject({ kind: "authenticated", p6rActor: { p6rSubject: "v2" } });
+  });
+
+  it("rolls back a failed provider candidate and keeps the old resolver live", async () => {
+    const rootDir = await writePlugin(workDir, {
+      name: "bb-plugin-identity-rollback",
+      serverSource: `export default function plugin(bb: any) {
+        bb.p6rIdentity.registerProvider({ id: "fixture", resolve: () => ({
+          kind: "authenticated", p6rSubject: "stable", p6rHandle: "stable",
+          p6rDisplayName: "Stable", p6rImageUrl: null,
+        }) });
+      }`,
+    });
+    await service.installPath(rootDir);
+    await writeFile(
+      join(rootDir, "server.ts"),
+      `export default function plugin(bb: any) {
+      bb.p6rIdentity.registerProvider({ id: "fixture", resolve: () => ({
+        kind: "authenticated", p6rSubject: "candidate", p6rHandle: "candidate",
+        p6rDisplayName: "Candidate", p6rImageUrl: null,
+      }) });
+      throw new Error("candidate failed");
+    }`,
+    );
+    await service.reload("identity-rollback");
+    expect(
+      identity.p6rResolveRequest({
+        transport: "http",
+        method: "GET",
+        path: "/",
+        url: "http://remote.example/",
+        host: "remote.example",
+        origin: "http://remote.example",
+        headers: {},
+      }),
+    ).toMatchObject({
+      kind: "authenticated",
+      p6rActor: { p6rSubject: "stable" },
+    });
+  });
+
+  it("rejects a competing provider without disposing the valid owner", async () => {
+    const owner = await writePlugin(workDir, {
+      name: "bb-plugin-identity-owner",
+      serverSource: `export default function plugin(bb: any) {
+        bb.p6rIdentity.registerProvider({ id: "fixture", resolve: () => ({
+          kind: "authenticated", p6rSubject: "owner", p6rHandle: "owner",
+          p6rDisplayName: "Owner", p6rImageUrl: null,
+        }) });
+      }`,
+    });
+    await service.installPath(owner);
+    const competitor = await writePlugin(workDir, {
+      name: "bb-plugin-identity-competitor",
+      serverSource: `export default function plugin(bb: any) {
+        bb.p6rIdentity.registerProvider({ id: "fixture", resolve: () => ({
+          kind: "authenticated", p6rSubject: "competitor", p6rHandle: "competitor",
+          p6rDisplayName: "Competitor", p6rImageUrl: null,
+        }) });
+      }`,
+    });
+    expect((await service.installPath(competitor)).status).toBe("error");
+    expect(
+      identity.p6rResolveRequest({
+        transport: "http",
+        method: "GET",
+        path: "/",
+        url: "http://remote.example/",
+        host: "remote.example",
+        origin: "http://remote.example",
+        headers: {},
+      }),
+    ).toMatchObject({
+      kind: "authenticated",
+      p6rActor: { p6rSubject: "owner" },
+    });
+  });
+
+  it("releases the active provider when its plugin is disabled", async () => {
+    const rootDir = await writePlugin(workDir, {
+      name: "bb-plugin-identity-disable",
+      serverSource: `export default function plugin(bb: any) {
+        bb.p6rIdentity.registerProvider({ id: "fixture", resolve: () => ({
+          kind: "authenticated", p6rSubject: "enabled", p6rHandle: "enabled",
+          p6rDisplayName: "Enabled", p6rImageUrl: null,
+        }) });
+      }`,
+    });
+    await service.installPath(rootDir);
+    await service.setEnabled("identity-disable", false);
+    expect(
+      identity.p6rResolveRequest({
+        transport: "http",
+        method: "GET",
+        path: "/",
+        url: "http://remote.example/",
+        host: "remote.example",
+        origin: "http://remote.example",
+        headers: {},
+      }),
+    ).toEqual({ kind: "not-applicable", p6rRequestPrincipal: null });
   });
 
   // The fixture above writes TypeScript, which jiti always transpiles, so it

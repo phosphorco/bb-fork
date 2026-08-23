@@ -24,6 +24,7 @@ import {
 } from "@bb/domain";
 import type {
   EnvironmentStatus,
+  P6rActorSnapshot,
   PermissionMode,
   PromptInput,
   RecordedPermissionMode,
@@ -240,6 +241,7 @@ export function seedQueuedMessage(
   args: {
     content: PromptInput[];
     threadId: string;
+    p6rActor?: P6rActorSnapshot | null;
     model?: string;
     reasoningLevel?: string;
     permissionMode?: PermissionMode;
@@ -248,6 +250,7 @@ export function seedQueuedMessage(
   },
 ) {
   return createQueuedThreadMessage(deps.db, deps.hub, {
+    p6rActor: args.p6rActor,
     threadId: args.threadId,
     content: args.content,
     model: args.model ?? "gpt-5",

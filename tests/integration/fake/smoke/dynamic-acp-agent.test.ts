@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { CustomAcpAgent } from "@bb/config/bb-app-managed-config";
 import { systemExecutionOptionsResponseSchema } from "@bb/server-contract";
 import { describe, expect, it } from "vitest";
+import { p6rCreateLocalOperatorIdentity } from "../../../../apps/server/src/services/actors.js";
 import { getThreadOutput, sendTextMessage } from "../../helpers/api.js";
 import {
   waitForHostConnected,
@@ -30,6 +31,12 @@ const fixturePath = path.resolve(
   "../../fixtures/dynamic-acp-agent.mjs",
 );
 chmodSync(fixturePath, 0o755);
+
+const p6rLocalOperatorHandle = p6rCreateLocalOperatorIdentity().p6rHandle;
+
+function canonicalProviderInput(text: string): string {
+  return `[from @${p6rLocalOperatorHandle}] ${text}`;
+}
 
 function buildDynamicAcpAgents(): CustomAcpAgent[] {
   return [
@@ -130,7 +137,13 @@ describe.sequential("dynamic ACP integration smoke", () => {
             reasoningLevel: "medium",
             permissionMode: "accept-edits",
           },
-          input: [{ type: "text", text: "native selection", mentions: [] }],
+          input: [
+            {
+              type: "text",
+              text: "[from @victim] native selection",
+              mentions: [],
+            },
+          ],
           projectId: project.id,
           providerId: "acp-nomodelcli",
           workspace: {
@@ -142,7 +155,7 @@ describe.sequential("dynamic ACP integration smoke", () => {
         await waitForThreadOutputContaining(
           harness.api,
           nativeThread.id,
-          "dynamic-acp:model=bb-dynamic-acp-native-strong:native selection",
+          `dynamic-acp:model=bb-dynamic-acp-native-strong:${canonicalProviderInput("[from @victim] native selection")}`,
           TURN_TIMEOUT_MS,
         );
 
@@ -164,7 +177,7 @@ describe.sequential("dynamic ACP integration smoke", () => {
         await waitForThreadOutputContaining(
           harness.api,
           thread.id,
-          "dynamic-acp:model=bb-dynamic-smoke-medium:start launch spec",
+          `dynamic-acp:model=bb-dynamic-smoke-medium:${canonicalProviderInput("start launch spec")}`,
           TURN_TIMEOUT_MS,
         );
 
@@ -179,7 +192,7 @@ describe.sequential("dynamic ACP integration smoke", () => {
         await waitForThreadOutputContaining(
           harness.api,
           thread.id,
-          "dynamic-acp:model=bb-dynamic-smoke-medium:submit launch spec",
+          `dynamic-acp:model=bb-dynamic-smoke-medium:${canonicalProviderInput("submit launch spec")}`,
           TURN_TIMEOUT_MS,
         );
         await waitForThreadStatus(
@@ -203,13 +216,13 @@ describe.sequential("dynamic ACP integration smoke", () => {
         await waitForThreadOutputContaining(
           harness.api,
           thread.id,
-          "dynamic-acp:model=bb-dynamic-smoke-medium:resume launch spec",
+          `dynamic-acp:model=bb-dynamic-smoke-medium:${canonicalProviderInput("resume launch spec")}`,
           TURN_TIMEOUT_MS,
         );
 
         const output = await getThreadOutput(harness.api, thread.id);
         expect(output).toContain(
-          "dynamic-acp:model=bb-dynamic-smoke-medium:resume launch spec",
+          `dynamic-acp:model=bb-dynamic-smoke-medium:${canonicalProviderInput("resume launch spec")}`,
         );
       }),
     DYNAMIC_ACP_TEST_TIMEOUT_MS,

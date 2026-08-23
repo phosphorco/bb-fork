@@ -18,12 +18,23 @@ import {
   type MigrationWarningLogger,
 } from "../src/index.js";
 
+import {
+  p6rAttributionRestoreSql,
+  p6rStageAttributionColumn,
+} from "../src/migrate.js";
+
 type InsertMigrationParameters = [string, number];
+
 type DeleteMigrationParameters = [number];
+
 type DeleteMigrationsParameters = [number, number, number, number];
+
 type TableNameParameters = [string];
+
 type QueuedMessageMigrationInsertParameters = [string, string, number, number];
+
 type ProjectSortKeyMigrationInsertParameters = [string, string, number, number];
+
 type ThreadSortKeyMigrationInsertParameters = [string, string, string, number];
 
 interface IndexNameRow {
@@ -292,6 +303,42 @@ function dropAppSettingsValuesTable(db: DbConnection): void {
   db.$client.prepare("DROP TABLE IF EXISTS app_settings_values").run();
 }
 
+function dropIdentityMigrationState(db: DbConnection): void {
+  // 0107 adds the provider-qualified actor table and canonical snapshot
+  // columns. Rewind fixtures must remove both the schema and its ledger row so
+  // a subsequent forward replay exercises the identity migration itself.
+  db.$client.prepare("DROP TABLE IF EXISTS p6r_actors").run();
+  db.$client.prepare("DROP TABLE IF EXISTS p6r_collaborators").run();
+  for (const table of [
+    "events",
+    "pending_interactions",
+    "queued_thread_messages",
+    "threads",
+  ] as const) {
+    const columns = new Set(
+      db.$client
+        .prepare<[], TableInfoRow>(`PRAGMA table_info(${table})`)
+        .all()
+        .map((column) => column.name),
+    );
+    for (const column of [
+      "p6r_actor_provider_id",
+      "p6r_actor_subject",
+      "p6r_actor_display_name",
+      "p6r_actor_image_url",
+      "p6r_resolved_by_handle",
+      "p6r_created_by_handle",
+    ]) {
+      if (columns.has(column)) {
+        db.$client.prepare(`ALTER TABLE ${table} DROP COLUMN ${column}`).run();
+      }
+    }
+  }
+  db.$client
+    .prepare("DELETE FROM __drizzle_migrations WHERE created_at = ?")
+    .run(identityMigrationWhen);
+}
+
 function dropRewindAddedTables(db: DbConnection): void {
   // Several tests migrate to head, rewind the schema to a legacy state, then
   // re-apply forward. Tables added by recent migrations must be dropped as part
@@ -315,6 +362,7 @@ function dropRewindAddedTables(db: DbConnection): void {
   db.$client.prepare("DROP TABLE IF EXISTS plugin_kv").run();
   db.$client.prepare("DROP TABLE IF EXISTS plugin_settings").run();
   db.$client.prepare("DROP TABLE IF EXISTS plugin_schedules").run();
+  dropIdentityMigrationState(db);
   db.$client
     .prepare("ALTER TABLE hosts DROP COLUMN last_rejected_protocol_version")
     .run();
@@ -378,135 +426,189 @@ function requirePublishedMigrationWhen(tag: string): number {
 }
 
 const baselineWhen = requirePublishedMigrationWhen("0000_baseline");
+
 const publishedTerminalSessionUserInputWhen = requirePublishedMigrationWhen(
   "0001_terminal_session_user_input",
 );
+
 const closedSessionPruneIndexesWhen = requirePublishedMigrationWhen(
   "0002_closed_session_prune_indexes",
 );
+
 const threadDynamicContextFileStatesWhen = 1779139400002;
+
 const commandLookupIndexesWhen = 1779943370189;
+
 const threadPinningMigrationWhen = 1779990051923;
+
 const operationStateBackfillMigrationWhen = 1780687798957;
+
 const eventProducerColumnsMigrationWhen = 1780692763264;
+
 const terminalSessionRuntimeStateHonestyWhen = 1780718665310;
+
 const hostDaemonSessionObservabilityMigrationWhen = 1780719536955;
+
 const threadTypeRemovalMigrationWhen = 1780973302146;
+
 const threadSearchMigrationWhen = 1781660000001;
+
 const threadSearchRowidFtsMigrationWhen = 1781660000002;
+
 const branchLocalThreadSearchMigrationWhen = 1781403656070;
+
 const branchLocalThreadSearchRowidFtsMigrationWhen = 1781403656071;
+
 const rowidThreadSearchMigrationHash =
   "025358fe89253aec7f5bd970dc3eb88d0e834f0d58fb9d75329a5d39899340f4";
+
 const legacyExperimentsMigrationWhen = 1781299832942;
+
 const eventLargeValuesMigrationWhen = 1781403656069;
+
 const eventLargeValuesRestoreMigrationWhen = 1781557200000;
+
 const cleanupModeDropMigrationWhen = 1781557300000;
+
 const stopRequestedAtDropMigrationWhen = 1781557400000;
+
 const cleanupRequestedAtDropMigrationWhen = 1781557500000;
+
 const threadSourceOriginMigrationWhen = 1781660000000;
+
 const threadlessTerminalSessionsMigrationWhen = 1782173519934;
+
 const threadSectionsMigrationWhen = 1782252763916;
+
 const threadSectionsRepairMigrationWhen = 1784257485616;
+
 const queuedMessageGroupingMigrationWhen = 1782273194188;
+
 const pendingInteractionsMigrationWhen = 1783626227375;
+
 const permissionModesMigrationWhen = 1784311522462;
+
 const branchLocalThreadTabsMigrationWhen = 1783633750817;
+
+const branchLocalMultiplayerMigrationWhen = 1784389648607;
+
 const eventParentToolCallMigrationWhen = 1787181956957;
+
 const eventParentToolCallPreJsonValidMigrationHash =
   "79d39e7b68d1db8ba02614fe4cc227cc0c154d77c7183f2e37ed2d8475412993";
+
+const multiplayerMigrationWhen = 1786998114856;
+
+const identityMigrationWhen = 1787517263970;
+
 const eventLargeValuesPreOptimizationHash =
   "bc111f5134183c37cf135af70231ec5a79823f9868818fdd8377e1ab3c05a23f";
+
 const queuedMessageSortKeyMigrationPath = resolve(
   __dirname,
   "..",
   "drizzle",
   "0004_wild_justice.sql",
 );
+
 const pluginCatalogMigrationPath = resolve(
   __dirname,
   "..",
   "drizzle",
   "0072_bizarre_the_liberteens.sql",
 );
+
 const sideChatVisibilityBackfillMigrationPath = resolve(
   __dirname,
   "..",
   "drizzle",
   "0079_side_chat_plugin.sql",
 );
+
 const sideChatPluginOnlyMigrationPath = resolve(
   __dirname,
   "..",
   "drizzle",
   "0084_side_chat_plugin_only.sql",
 );
+
 const experimentKeyValueMigrationPath = resolve(
   __dirname,
   "..",
   "drizzle",
   "0090_equal_reaper.sql",
 );
+
 const appSettingsKeyValueMigrationPath = resolve(
   __dirname,
   "..",
   "drizzle",
   "0102_app_settings_key_value.sql",
 );
+
 const providerSettingsToPluginsMigrationPath = resolve(
   __dirname,
   "..",
   "drizzle",
   "0105_provider_settings_to_plugins.sql",
 );
+
 const retireRequestedAtMigrationPath = resolve(
   __dirname,
   "..",
   "drizzle",
   "0091_daffy_dark_phoenix.sql",
 );
+
 const pluginArtifactCheckoutRootMigrationPath = resolve(
   __dirname,
   "..",
   "drizzle",
   "0094_mighty_polaris.sql",
 );
+
 const namedMarketplaceCatalogMigrationPath = resolve(
   __dirname,
   "..",
   "drizzle",
   "0095_normal_elektra.sql",
 );
+
 const curatedMarketplaceRenameMigrationPath = resolve(
   __dirname,
   "..",
   "drizzle",
   "0098_rename_curated_marketplace.sql",
 );
+
 const sidebarOrderingMigrationPath = resolve(
   __dirname,
   "..",
   "drizzle",
   "0005_strong_exodus.sql",
 );
+
 const threadPinningMigrationPath = resolve(
   __dirname,
   "..",
   "drizzle",
   "0008_thread_pinning.sql",
 );
+
 const pendingInteractionSchemaHonestyMigrationPath = resolve(
   __dirname,
   "..",
   "drizzle",
   "0019_pending_interactions_schema_honesty.sql",
 );
+
 const eventLargeValuesMigrationPath = resolve(
   __dirname,
   "..",
   "drizzle",
   "0031_mysterious_zaran.sql",
 );
+
 function closeConnection(db: DbConnection): void {
   db.$client.close();
 }
@@ -805,6 +907,7 @@ function dropQueuedMessageSenderThreadIdColumn(db: DbConnection): void {
 /** Tables created by migrations after 0023, dropped so migrate() re-applies. */
 function dropPost0023Tables(db: DbConnection): void {
   dropEventParentToolCallIdColumn(db);
+  dropIdentityMigrationState(db);
   dropEnvironmentRetireRequestedAtColumn(db);
   dropPluginArtifactGitCheckoutRootColumn(db);
   dropProjectGitRemoteUrlColumn(db);
@@ -1609,9 +1712,10 @@ describe("migrate", () => {
       });
       expect(
         db.$client
-          .prepare<[], { key: string; value: string }>(
-            "SELECT key, value FROM app_settings_values WHERE key LIKE 'codex%' OR key LIKE 'claudeCode%' ORDER BY key",
-          )
+          .prepare<
+            [],
+            { key: string; value: string }
+          >("SELECT key, value FROM app_settings_values WHERE key LIKE 'codex%' OR key LIKE 'claudeCode%' ORDER BY key")
           .all(),
       ).toEqual([
         { key: "claudeCodeMemoryEnabled", value: "true" },
@@ -1673,22 +1777,49 @@ describe("migrate", () => {
 
       expect(
         db.$client
-          .prepare<[], { pluginId: string; key: string; value: string; updatedAt: number }>(
-            "SELECT plugin_id AS pluginId, key, value, updated_at AS updatedAt FROM plugin_settings ORDER BY plugin_id, key",
-          )
+          .prepare<
+            [],
+            { pluginId: string; key: string; value: string; updatedAt: number }
+          >("SELECT plugin_id AS pluginId, key, value, updated_at AS updatedAt FROM plugin_settings ORDER BY plugin_id, key")
           .all(),
       ).toEqual([
-        { pluginId: "provider-claude-code", key: "memoryEnabled", value: "false", updatedAt: 99 },
-        { pluginId: "provider-claude-code", key: "subagentsDisabled", value: "false", updatedAt: 14 },
-        { pluginId: "provider-claude-code", key: "workflowsDisabled", value: "true", updatedAt: 15 },
-        { pluginId: "provider-codex", key: "memoryEnabled", value: "false", updatedAt: 11 },
-        { pluginId: "provider-codex", key: "subagentsDisabled", value: "true", updatedAt: 12 },
+        {
+          pluginId: "provider-claude-code",
+          key: "memoryEnabled",
+          value: "false",
+          updatedAt: 99,
+        },
+        {
+          pluginId: "provider-claude-code",
+          key: "subagentsDisabled",
+          value: "false",
+          updatedAt: 14,
+        },
+        {
+          pluginId: "provider-claude-code",
+          key: "workflowsDisabled",
+          value: "true",
+          updatedAt: 15,
+        },
+        {
+          pluginId: "provider-codex",
+          key: "memoryEnabled",
+          value: "false",
+          updatedAt: 11,
+        },
+        {
+          pluginId: "provider-codex",
+          key: "subagentsDisabled",
+          value: "true",
+          updatedAt: 12,
+        },
       ]);
       expect(
         db.$client
-          .prepare<[], { key: string }>(
-            "SELECT key FROM app_settings_values ORDER BY key",
-          )
+          .prepare<
+            [],
+            { key: string }
+          >("SELECT key FROM app_settings_values ORDER BY key")
           .all(),
       ).toEqual([{ key: "showKeyboardHints" }]);
     } finally {
@@ -1765,6 +1896,296 @@ describe("migrate", () => {
           .get(),
       ).toEqual({ count: 0 });
       expect(getAppSettings(db)).toEqual(defaultAppSettings);
+    } finally {
+      closeConnection(db);
+    }
+  });
+
+  it("preserves data from the branch-local multiplayer migration", () => {
+    const db = createConnection(":memory:");
+
+    try {
+      migrate(db);
+      db.$client.exec(`
+        ALTER TABLE p6r_collaborators RENAME TO collaborators;
+        ALTER TABLE collaborators RENAME COLUMN p6r_handle TO handle;
+        ALTER TABLE collaborators RENAME COLUMN p6r_display_name TO display_name;
+        ALTER TABLE collaborators RENAME COLUMN p6r_image_url TO image_url;
+        ALTER TABLE collaborators RENAME COLUMN p6r_first_seen_at TO first_seen_at;
+        ALTER TABLE collaborators RENAME COLUMN p6r_last_seen_at TO last_seen_at;
+        ALTER TABLE events RENAME COLUMN p6r_actor_handle TO actor_handle;
+        ALTER TABLE pending_interactions RENAME COLUMN p6r_resolved_by_handle TO resolved_by_handle;
+        ALTER TABLE queued_thread_messages RENAME COLUMN p6r_actor_handle TO actor_handle;
+        ALTER TABLE threads RENAME COLUMN p6r_created_by_handle TO created_by_handle;
+      `);
+      db.$client
+        .prepare(
+          `INSERT INTO collaborators
+            (handle, display_name, image_url, first_seen_at, last_seen_at)
+           VALUES ('cole', 'Cole', 'https://example.com/cole.png', 1, 2)`,
+        )
+        .run();
+      db.$client
+        .prepare<DeleteMigrationParameters>(
+          "DELETE FROM __drizzle_migrations WHERE created_at = ?",
+        )
+        .run(multiplayerMigrationWhen);
+      db.$client
+        .prepare<InsertMigrationParameters>(
+          "INSERT OR REPLACE INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
+        )
+        .run("branch-local-multiplayer", branchLocalMultiplayerMigrationWhen);
+      dropIdentityMigrationState(db);
+
+      migrate(db);
+
+      expect(
+        db.$client
+          .prepare<[], { displayName: string; imageUrl: string | null }>(
+            `SELECT p6r_display_name AS displayName, p6r_image_url AS imageUrl
+             FROM p6r_collaborators WHERE p6r_handle = 'cole'`,
+          )
+          .get(),
+      ).toEqual({
+        displayName: "Cole",
+        imageUrl: "https://example.com/cole.png",
+      });
+      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
+        multiplayerMigrationWhen,
+      );
+      expect(readAppliedMigrationCreatedAts(db)).toContain(1787001047515);
+    } finally {
+      closeConnection(db);
+    }
+  });
+
+  it("replays the frozen identity migration from a disposable snapshot", () => {
+    const db = createConnection(":memory:");
+
+    try {
+      migrate(db);
+      const host = upsertHost(db, noopNotifier, {
+        name: "identity-migration-witness-host",
+        type: "persistent",
+      });
+      const { project } = createProject(db, noopNotifier, {
+        name: "identity-migration-witness-project",
+        source: {
+          type: "local_path",
+          hostId: host.id,
+          path: "/tmp/identity-migration-witness",
+        },
+      });
+      const thread = createThread(db, noopNotifier, {
+        projectId: project.id,
+        providerId: "codex",
+      });
+
+      // Rollback boundary: this witness rewinds only the generated 0107
+      // schema in an in-memory snapshot. It never rolls back a live database.
+      dropIdentityMigrationState(db);
+      db.$client.exec(
+        "ALTER TABLE pending_interactions ADD COLUMN p6r_resolved_by_handle text",
+      );
+      const insertPending = db.$client.prepare<
+        [string, string, string, string, string, number, number, string]
+      >(
+        `INSERT INTO pending_interactions
+          (id, thread_id, origin_kind, status, payload, created_at, updated_at,
+           p6r_resolved_by_handle)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (let index = 0; index < 12; index += 1) {
+        insertPending.run(
+          `identity-witness-${index}`,
+          thread.id,
+          "provider",
+          "resolved",
+          JSON.stringify({ index }),
+          index + 1,
+          index + 1,
+          `operator-${index}`,
+        );
+      }
+
+      // This unrelated row is deliberately below the generated 0107 timestamp
+      // so Drizzle must tolerate it while still applying the next migration.
+      db.$client
+        .prepare<InsertMigrationParameters>(
+          "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
+        )
+        .run("unrelated-witness-row", 1787100000000);
+
+      expect(
+        db.$client
+          .prepare<
+            [],
+            MigrationCountRow
+          >("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'p6r_actors'")
+          .get()?.count,
+      ).toBe(0);
+      expect(
+        db.$client
+          .prepare<
+            [],
+            MigrationCountRow
+          >("SELECT COUNT(*) AS count FROM pending_interactions WHERE p6r_resolved_by_handle IS NOT NULL")
+          .get()?.count,
+      ).toBe(12);
+      expect(readAppliedMigrationCreatedAts(db)).toEqual(
+        expect.arrayContaining([1787001047515, 1787031224925]),
+      );
+      expect(readAppliedMigrationCreatedAts(db)).not.toContain(1787090005295);
+
+      migrate(db);
+
+      expect(readAppliedMigrationCreatedAts(db)).toEqual(
+        expect.arrayContaining([
+          1787001047515,
+          1787031224925,
+          identityMigrationWhen,
+          1787100000000,
+        ]),
+      );
+      expect(readAppliedMigrationCreatedAts(db)).not.toContain(1787090005295);
+      expect(
+        db.$client
+          .prepare<
+            [],
+            MigrationCountRow
+          >("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'p6r_actors'")
+          .get()?.count,
+      ).toBe(1);
+      expect(
+        db.$client
+          .prepare<
+            [],
+            MigrationCountRow
+          >("SELECT COUNT(*) AS count FROM pending_interactions WHERE p6r_resolved_by_handle IS NOT NULL")
+          .get()?.count,
+      ).toBe(12);
+      expect(
+        db.$client
+          .prepare<
+            [],
+            MigrationCountRow
+          >("SELECT COUNT(*) AS count FROM p6r_actors")
+          .get()?.count,
+      ).toBe(0);
+      expect(
+        db.$client
+          .prepare<[], { value: string }>(
+            `SELECT p6r_resolved_by_handle AS value
+             FROM pending_interactions
+             WHERE id = 'identity-witness-11'`,
+          )
+          .get(),
+      ).toEqual({ value: "operator-11" });
+
+      migrate(db);
+
+      expect(
+        db.$client
+          .prepare<
+            [],
+            MigrationCountRow
+          >("SELECT COUNT(*) AS count FROM pending_interactions WHERE p6r_resolved_by_handle IS NOT NULL")
+          .get()?.count,
+      ).toBe(12);
+      expect(readAppliedMigrationCreatedAts(db)).toContain(
+        identityMigrationWhen,
+      );
+    } finally {
+      closeConnection(db);
+    }
+  });
+
+  it("stages sparse legacy authorship and restores it with indexed lookups", () => {
+    const db = createConnection(":memory:");
+
+    try {
+      const eventCount = 100_000;
+      const knownAuthorCount = 100;
+      db.$client.exec(`
+        CREATE TABLE sparse_events (
+          id TEXT PRIMARY KEY,
+          actor_handle TEXT
+        );
+        WITH RECURSIVE rows(value) AS (
+          SELECT 1
+          UNION ALL
+          SELECT value + 1 FROM rows WHERE value < ${eventCount}
+        )
+        INSERT INTO sparse_events (id, actor_handle)
+        SELECT
+          printf('event-%06d', value),
+          CASE
+            WHEN value <= ${knownAuthorCount}
+            THEN printf('operator-%03d', value)
+            ELSE NULL
+          END
+        FROM rows;
+      `);
+
+      const stagingTable = p6rStageAttributionColumn(
+        db,
+        "sparse_events",
+        "actor_handle",
+        "p6r_actor_handle",
+      );
+      const stagedCount = db.$client
+        .prepare<
+          [],
+          MigrationCountRow
+        >(`SELECT COUNT(*) AS count FROM ${stagingTable}`)
+        .get()?.count;
+      expect(stagedCount).toBe(knownAuthorCount);
+
+      db.$client.exec(
+        "ALTER TABLE sparse_events ADD COLUMN p6r_actor_handle text",
+      );
+      const restoreSql = p6rAttributionRestoreSql(
+        "sparse_events",
+        "p6r_actor_handle",
+        stagingTable,
+      );
+      const plan = db.$client
+        .prepare<[], { detail: string }>(`EXPLAIN QUERY PLAN ${restoreSql}`)
+        .all()
+        .map((row) => row.detail);
+      expect(plan).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(
+            new RegExp(`SEARCH ${stagingTable} USING PRIMARY KEY \\(id=\\?\\)`),
+          ),
+        ]),
+      );
+
+      db.$client.exec(`${restoreSql}; DROP TABLE ${stagingTable};`);
+      expect(
+        db.$client
+          .prepare<
+            [],
+            MigrationCountRow
+          >("SELECT COUNT(*) AS count FROM sparse_events WHERE p6r_actor_handle IS NOT NULL")
+          .get()?.count,
+      ).toBe(knownAuthorCount);
+      expect(
+        db.$client
+          .prepare<
+            [],
+            { value: string }
+          >("SELECT p6r_actor_handle AS value FROM sparse_events WHERE id = 'event-000100'")
+          .get(),
+      ).toEqual({ value: "operator-100" });
+      expect(
+        db.$client
+          .prepare<
+            [],
+            { value: string | null }
+          >("SELECT p6r_actor_handle AS value FROM sparse_events WHERE id = 'event-000101'")
+          .get(),
+      ).toEqual({ value: null });
     } finally {
       closeConnection(db);
     }
@@ -2016,6 +2437,7 @@ describe("migrate", () => {
       dropPluginArtifactGitCheckoutRootColumn(db);
       dropMarketplaceCatalogSchema(db);
       dropEventParentToolCallIdColumn(db);
+      dropIdentityMigrationState(db);
 
       restoreLegacyThreadOriginColumn(db);
       migrate(db);
@@ -2284,6 +2706,11 @@ describe("migrate", () => {
         )
         .run(pendingInteractionsMigrationWhen);
       db.$client
+        .prepare<DeleteMigrationParameters>(
+          "DELETE FROM __drizzle_migrations WHERE created_at = ?",
+        )
+        .run(multiplayerMigrationWhen);
+      db.$client
         .prepare<InsertMigrationParameters>(
           `
             INSERT INTO __drizzle_migrations (hash, created_at)
@@ -2291,6 +2718,7 @@ describe("migrate", () => {
           `,
         )
         .run("branch-local-thread-tabs", branchLocalThreadTabsMigrationWhen);
+      dropIdentityMigrationState(db);
 
       migrate(db);
 
@@ -2420,6 +2848,7 @@ describe("migrate", () => {
       dropPluginArtifactGitCheckoutRootColumn(db);
       dropMarketplaceCatalogSchema(db);
       dropEventParentToolCallIdColumn(db);
+      dropIdentityMigrationState(db);
 
       restoreLegacyThreadOriginColumn(db);
       expect(
@@ -2521,6 +2950,7 @@ describe("migrate", () => {
       dropPluginArtifactGitCheckoutRootColumn(db);
       dropMarketplaceCatalogSchema(db);
       dropEventParentToolCallIdColumn(db);
+      dropIdentityMigrationState(db);
 
       restoreLegacyThreadOriginColumn(db);
       expect(() => migrate(db)).not.toThrow();
@@ -4052,6 +4482,11 @@ describe("migrate", () => {
         "data",
         "created_at",
         "parent_tool_call_id",
+        "p6r_actor_handle",
+        "p6r_actor_provider_id",
+        "p6r_actor_subject",
+        "p6r_actor_display_name",
+        "p6r_actor_image_url",
       ]);
       const eventIndexNames = readIndexNames({
         db,

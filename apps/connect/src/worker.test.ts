@@ -124,6 +124,16 @@ vi.mock("./machine-label.js", () => ({
   handleAssignMachineLabel: vi.fn(),
 }));
 
+vi.mock("./members.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("./members.js")>("./members.js");
+  return {
+    ...actual,
+    p6rAdmitServerMember: vi.fn(async () => false),
+    p6rHandleServerMembers: vi.fn(),
+  };
+});
+
 vi.mock("./cache.js", async () => {
   const actual =
     await vi.importActual<typeof import("./cache.js")>("./cache.js");
@@ -161,21 +171,36 @@ import {
 } from "./servers.js";
 import { SECURE_DESKTOP_SESSION_COOKIE as DESKTOP_SESSION_COOKIE } from "./cloud-dev.js";
 import { handleAssignMachineLabel } from "./machine-label.js";
+import { p6rAdmitServerMember, p6rHandleServerMembers } from "./members.js";
 import { serveWithCache } from "./cache.js";
 import worker, { offlinePage, relativeTime, wantsHtml } from "./worker.js";
 import { TUNNEL_OFFLINE_HEADER, TunnelDO } from "./tunnel-do.js";
 
 const mockParseCookie = vi.mocked(parseCookie);
+
 const mockResolveLabel = vi.mocked(resolveLabel);
+
 const mockMarkMachineSeen = vi.mocked(markMachineSeen);
+
 const mockVerifyMachine = vi.mocked(verifyMachineCredentialDetails);
+
 const mockVerifySession = vi.mocked(verifySessionCookie);
+
 const mockServeWithCache = vi.mocked(serveWithCache);
+
 const mockHandleListAccountServers = vi.mocked(handleListAccountServers);
+
 const mockHandleCreateDesktopSession = vi.mocked(handleCreateDesktopSession);
+
 const mockHandleDisconnectServer = vi.mocked(handleDisconnectServer);
+
 const mockVerifyDesktopSession = vi.mocked(verifyDesktopSessionCookie);
+
 const mockHandleAssignMachineLabel = vi.mocked(handleAssignMachineLabel);
+
+const mockAdmitServerMember = vi.mocked(p6rAdmitServerMember);
+
+const mockHandleServerMembers = vi.mocked(p6rHandleServerMembers);
 
 /** A resolved server row; overrides let a test tweak one field. */
 function resolvedServer(
@@ -220,7 +245,9 @@ function resolvedMachine(
 }
 
 const BASE = "getbb.app";
+
 const OWNER = "user-owner";
+
 const OTHER = "user-other";
 
 function makeEnv(doFetch: (req: Request) => Promise<Response> | Response) {
@@ -374,6 +401,44 @@ describe("POST /api/connect/machine-label", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ label: "sawyer-air" });
     expect(mockHandleAssignMachineLabel).toHaveBeenCalledWith(request, env);
+    expect(mockResolveLabel).not.toHaveBeenCalled();
+    expect(captured).toHaveLength(0);
+  });
+});
+
+describe("/api/p6r-servers/:serverId/p6r-members", () => {
+  it("intercepts collection and item routes before host routing", async () => {
+    mockHandleServerMembers
+      .mockResolvedValueOnce(Response.json([]))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const { env, ctx, captured } = makeEnv(() => new Response("origin"));
+
+    const collectionRequest = visitorRequest(
+      "unknown.getbb.app",
+      "/api/p6r-servers/srv-1/p6r-members",
+    );
+    const collection = await worker.fetch(collectionRequest, env as never, ctx);
+    const itemRequest = visitorRequest(
+      "unknown.getbb.app",
+      "/api/p6r-servers/srv-1/p6r-members/user-2",
+      { method: "DELETE" },
+    );
+    const item = await worker.fetch(itemRequest, env as never, ctx);
+
+    expect(collection.status).toBe(200);
+    expect(item.status).toBe(204);
+    expect(mockHandleServerMembers).toHaveBeenNthCalledWith(
+      1,
+      collectionRequest,
+      env,
+      { p6rServerId: "srv-1", p6rMemberUserId: null },
+    );
+    expect(mockHandleServerMembers).toHaveBeenNthCalledWith(
+      2,
+      itemRequest,
+      env,
+      { p6rServerId: "srv-1", p6rMemberUserId: "user-2" },
+    );
     expect(mockResolveLabel).not.toHaveBeenCalled();
     expect(captured).toHaveLength(0);
   });
@@ -1066,6 +1131,111 @@ describe("gate worker share hosts", () => {
     );
     expect(res.status).toBe(403);
     expect(await res.text()).toContain("not your server");
+    expect(captured).toHaveLength(0);
+  });
+
+  it("admits a server member session and records the admission before proxying", async () => {
+    mockVerifySession.mockResolvedValue(OTHER);
+    mockAdmitServerMember.mockResolvedValueOnce(true);
+    const { env, ctx, captured } = makeEnv(() => new Response("member-origin"));
+    const response = await worker.fetch(
+      visitorRequest("sawyer.getbb.app", "/threads"),
+      env as never,
+      ctx,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("member-origin");
+    expect(mockAdmitServerMember).toHaveBeenCalledWith(
+      expect.anything(),
+      "srv1",
+      OTHER,
+      "sawyer",
+    );
+    expect(captured).toHaveLength(1);
+  });
+
+  it.each([
+    ["owner", OWNER, "GET", "/api/v1/p6r-members"],
+    ["owner", OWNER, "POST", "/api/v1/p6r-members"],
+    ["owner", OWNER, "DELETE", "/api/v1/p6r-members/user-member"],
+    ["member", OTHER, "GET", "/api/v1/p6r-members"],
+    ["member", OTHER, "POST", "/api/v1/p6r-members"],
+    ["member", OTHER, "DELETE", "/api/v1/p6r-members/user-member"],
+  ] as const)(
+    "blocks %s visitor %s %s before the tunnel",
+    async (_sessionKind, sessionUserId, method, path) => {
+      mockVerifySession.mockResolvedValue(sessionUserId);
+      if (sessionUserId === OTHER)
+        mockAdmitServerMember.mockResolvedValue(true);
+      const { env, ctx, captured } = makeEnv(() => new Response("origin"));
+
+      const response = await worker.fetch(
+        visitorRequest("sawyer.getbb.app", path, { method }),
+        env as never,
+        ctx,
+      );
+
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toEqual({
+        error: "member management is only available from the owner console",
+      });
+      expect(captured).toHaveLength(0);
+      expect(mockServeWithCache).not.toHaveBeenCalled();
+    },
+  );
+
+  it("blocks member-management websocket upgrades before the tunnel", async () => {
+    const { env, ctx, captured } = makeEnv(() => new Response("upgraded"));
+    const response = await worker.fetch(
+      visitorRequest("sawyer.getbb.app", "/api/v1/p6r-members/live", {
+        headers: { upgrade: "websocket" },
+      }),
+      env as never,
+      ctx,
+    );
+
+    expect(response.status).toBe(403);
+    expect(captured).toHaveLength(0);
+  });
+
+  it.each([
+    ["owner", OWNER],
+    ["member", OTHER],
+  ] as const)(
+    "continues forwarding unrelated /api/v1 paths for a %s visitor",
+    async (_sessionKind, sessionUserId) => {
+      mockVerifySession.mockResolvedValue(sessionUserId);
+      if (sessionUserId === OTHER)
+        mockAdmitServerMember.mockResolvedValue(true);
+      const { env, ctx, captured } = makeEnv(() => new Response("origin"));
+
+      const response = await worker.fetch(
+        visitorRequest("sawyer.getbb.app", "/api/v1/threads"),
+        env as never,
+        ctx,
+      );
+
+      expect(response.status).toBe(200);
+      expect(captured).toHaveLength(1);
+    },
+  );
+
+  it("does not treat a desktop cookie as member identity", async () => {
+    mockParseCookie.mockImplementation((_header, name) =>
+      name === DESKTOP_SESSION_COOKIE ? "desktop-token" : null,
+    );
+    mockVerifyDesktopSession.mockResolvedValue(OTHER);
+    mockAdmitServerMember.mockResolvedValueOnce(true);
+    const { env, ctx, captured } = makeEnv(() => new Response("origin"));
+    const response = await worker.fetch(
+      visitorRequest("sawyer.getbb.app", "/"),
+      env as never,
+      ctx,
+    );
+
+    expect(response.status).toBe(403);
+    expect(mockAdmitServerMember).not.toHaveBeenCalled();
     expect(captured).toHaveLength(0);
   });
 

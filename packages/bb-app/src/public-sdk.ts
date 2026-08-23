@@ -68,7 +68,9 @@ export class BBSdk implements BbSdk {
   readonly files: BbSdk["files"];
   readonly guide: BbSdk["guide"];
   readonly hosts: BbSdk["hosts"];
+  readonly p6rMembers: BbSdk["p6rMembers"];
   readonly plugins: BbSdk["plugins"];
+  readonly p6rPresence: BbSdk["p6rPresence"];
   readonly projects: BbSdk["projects"];
   readonly providers: BbSdk["providers"];
   readonly skills: BbSdk["skills"];
@@ -86,7 +88,9 @@ export class BBSdk implements BbSdk {
     this.files = sdk.files;
     this.guide = sdk.guide;
     this.hosts = sdk.hosts;
+    this.p6rMembers = sdk.p6rMembers;
     this.plugins = sdk.plugins;
+    this.p6rPresence = sdk.p6rPresence;
     this.projects = sdk.projects;
     this.providers = sdk.providers;
     this.skills = sdk.skills;

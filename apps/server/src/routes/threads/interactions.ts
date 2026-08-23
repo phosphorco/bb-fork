@@ -3,15 +3,28 @@ import {
   typedRoutes,
   type PublicApiSchema,
 } from "@bb/server-contract";
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import { z } from "zod";
 import type { AppDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
 import { requirePublicThread } from "../../services/lib/entity-lookup.js";
+import { p6rGetRequestPrincipal } from "../../services/identity.js";
 
 const pendingInteractionIdSchema = z
   .string()
   .regex(/^pint_[23456789abcdefghijkmnpqrstuvwxyz]{10}$/);
+
+function requireP6rInteractionActor(context: Context): string {
+  const actor = p6rGetRequestPrincipal(context);
+  if (actor === null) {
+    throw new ApiError(
+      401,
+      "unauthorized",
+      "Interaction mutation requires an authenticated actor",
+    );
+  }
+  return actor.p6rHandle;
+}
 
 function parsePendingInteractionId(rawInteractionId: string): string {
   const parsedInteractionId =
@@ -56,15 +69,16 @@ export function registerThreadInteractionRoutes(
 
   post(routes.resolveInteraction, (context, payload) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
-    return context.json(
-      deps.pendingInteractions.resolvePendingInteraction({
-        threadId: thread.id,
-        interactionId: parsePendingInteractionId(
-          context.req.param("interactionId"),
-        ),
-        resolution: payload,
-      }),
+    const interactionId = parsePendingInteractionId(
+      context.req.param("interactionId"),
     );
+    const interaction = deps.pendingInteractions.resolvePendingInteraction({
+      p6rActorHandle: requireP6rInteractionActor(context as unknown as Context),
+      threadId: thread.id,
+      interactionId,
+      resolution: payload,
+    });
+    return context.json(interaction);
   });
 
   post(routes.respondToInteraction, (context, payload) => {
@@ -78,6 +92,9 @@ export function registerThreadInteractionRoutes(
     }
     return context.json(
       deps.pendingInteractions.respondToPluginInteraction({
+        p6rActorHandle: requireP6rInteractionActor(
+          context as unknown as Context,
+        ),
         threadId: thread.id,
         interactionId: parsePendingInteractionId(
           context.req.param("interactionId"),
@@ -91,6 +108,9 @@ export function registerThreadInteractionRoutes(
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     return context.json(
       deps.pendingInteractions.cancelPluginInteraction({
+        p6rActorHandle: requireP6rInteractionActor(
+          context as unknown as Context,
+        ),
         threadId: thread.id,
         interactionId: parsePendingInteractionId(
           context.req.param("interactionId"),

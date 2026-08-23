@@ -36,6 +36,8 @@ function timelineCursor(args: TimelineTestRowArgs): TimelinePaginationCursor {
 
 function userRow(args: TimelineTestRowArgs): TimelineUserConversationRow {
   return {
+    p6rActorHandle: null,
+    p6rActor: null,
     id: args.id,
     threadId: "thread-1",
     turnId: "turn-1",

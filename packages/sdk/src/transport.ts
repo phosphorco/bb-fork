@@ -1,4 +1,5 @@
 import type { ApiClient } from "@bb/server-contract";
+import type { P6rClaimedIdentity } from "@bb/domain";
 import type {
   FetchImplementation,
   JsonBodyOf,
@@ -10,6 +11,7 @@ export type BbSdkRuntime = "node" | "browser";
 export interface BbSdkTransport {
   api: ApiClient["api"];
   baseUrl: string;
+  p6rClaimedIdentityHeader?: string;
   fetch: FetchImplementation;
   realtimeUrl?: string;
   runtime: BbSdkRuntime;
@@ -55,6 +57,7 @@ export interface BbSdkContext {}
 
 export interface CreateHttpTransportArgs {
   baseUrl?: string;
+  p6rClaimedIdentity?: P6rClaimedIdentity;
   fetch?: FetchImplementation;
   realtimeUrl?: string;
   runtime: BbSdkRuntime;

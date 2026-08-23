@@ -85,6 +85,8 @@ export function makeTimelineResponse(
 
 export function makePendingSteerTimelineRow(): TimelineUserConversationRow {
   return {
+    p6rActorHandle: null,
+    p6rActor: null,
     ...makeTimelineBase({
       id: "pending-steer-1",
       sourceSeqStart: 12,

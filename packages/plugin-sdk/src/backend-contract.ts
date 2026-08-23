@@ -15,6 +15,8 @@ import type {
   ExperimentalHostSignals,
 } from "./host-contract.js";
 
+import type { P6rActorSnapshot } from "@bb/domain";
+
 /**
  * The backend plugin API contract — the `bb` object handed to a plugin's
  * `server.ts` factory (`export default function plugin(bb: BbPluginApi)`).
@@ -173,8 +175,15 @@ export type PluginThreadEventHandler<E extends PluginThreadEventName> = (
 
 export type PluginHttpAuthMode = "local" | "token" | "none";
 
+/** Ambient request facts supplied by core after the shared identity boundary. */
+export interface P6rPluginRequestContext {
+  /** Null means no authenticated actor was available for this request. */
+  p6rRequestPrincipal: P6rActorSnapshot | null;
+}
+
 export type PluginHttpHandler = (
   context: Context,
+  p6rRequestContext: P6rPluginRequestContext,
 ) => Response | Promise<Response>;
 
 export interface PluginHttp {
@@ -360,6 +369,8 @@ export type PluginAgentToolResult =
 export interface PluginAgentToolContext {
   threadId: string;
   projectId: string;
+  /** The durable actor of the accepted authored unit that initiated this turn. */
+  p6rTurnAuthor: P6rActorSnapshot | null;
   /** The tool-call request's abort signal (aborts if the daemon round-trip
    * is torn down mid-call). */
   signal: AbortSignal;
@@ -1072,6 +1083,8 @@ export interface BbPluginApi {
   readonly storage: PluginStorage;
   /** HTTP routes under /api/v1/plugins/<id>/http/* (design §4.6). */
   readonly http: PluginHttp;
+  /** Exclusive provider-qualified inbound identity registration. */
+  readonly p6rIdentity: P6rIdentityApi;
   /** RPC methods under /api/v1/plugins/<id>/rpc/<method> (design §4.6). */
   readonly rpc: PluginRpc;
   /** Ephemeral push to connected frontends (design §4.7). */
@@ -1109,4 +1122,36 @@ export interface BbPluginApi {
    * The sanctioned place to clear timers and close connections.
    */
   onDispose(hook: () => void | Promise<void>): void;
+}
+
+export interface P6rIdentityProviderRequest {
+  transport: "http" | "websocket";
+  method: string;
+  path: string;
+  url: string;
+  host: string;
+  origin: string | null;
+  headers: Readonly<Record<string, string>>;
+}
+
+export type P6rIdentityProviderResolution =
+  | {
+      kind: "authenticated";
+      p6rSubject: string;
+      p6rHandle: string;
+      p6rDisplayName: string;
+      p6rImageUrl: string | null;
+    }
+  | { kind: "not-applicable" }
+  | { kind: "reject" };
+
+export interface P6rIdentityProviderRegistration {
+  id: string;
+  resolve(
+    request: P6rIdentityProviderRequest,
+  ): P6rIdentityProviderResolution;
+}
+
+export interface P6rIdentityApi {
+  registerProvider(registration: P6rIdentityProviderRegistration): void;
 }

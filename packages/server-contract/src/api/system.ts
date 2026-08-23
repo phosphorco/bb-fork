@@ -22,6 +22,7 @@ export const systemExecutionOptionsModelLoadErrorCodeSchema = z.enum([
   "timeout",
   "failed",
 ]);
+
 export type SystemExecutionOptionsModelLoadErrorCode = z.infer<
   typeof systemExecutionOptionsModelLoadErrorCodeSchema
 >;
@@ -30,6 +31,7 @@ export const systemExecutionOptionsModelLoadErrorSchema = z.object({
   providerId: z.string().min(1),
   code: systemExecutionOptionsModelLoadErrorCodeSchema,
 });
+
 export type SystemExecutionOptionsModelLoadError = z.infer<
   typeof systemExecutionOptionsModelLoadErrorSchema
 >;
@@ -58,6 +60,7 @@ export const systemExecutionOptionsResponseSchema = z.object({
    */
   modelLoadError: systemExecutionOptionsModelLoadErrorSchema.nullable(),
 });
+
 export type SystemExecutionOptionsResponse = z.infer<
   typeof systemExecutionOptionsResponseSchema
 >;
@@ -91,6 +94,7 @@ export const systemProvidersQuerySchema = z
   })
   .partial()
   .superRefine(rejectMultipleProviderHostSelectors);
+
 export type SystemProvidersQuery = z.infer<typeof systemProvidersQuerySchema>;
 
 export const systemExecutionOptionsQuerySchema = z
@@ -100,6 +104,7 @@ export const systemExecutionOptionsQuerySchema = z
   })
   .partial()
   .superRefine(rejectMultipleProviderHostSelectors);
+
 export type SystemExecutionOptionsQuery = z.infer<
   typeof systemExecutionOptionsQuerySchema
 >;
@@ -112,6 +117,7 @@ export const systemUsageLimitsQuerySchema = z.object({
   hostId: z.string().min(1).optional(),
   providerId: z.string().min(1).optional(),
 });
+
 export type SystemUsageLimitsQuery = z.infer<
   typeof systemUsageLimitsQuerySchema
 >;
@@ -123,11 +129,13 @@ export interface SystemVoiceTranscriptionForm {
 // SystemProviderInfo is the same shape as ProviderInfo from domain.
 // Re-export with the API-facing name for backward compatibility.
 export { providerInfoSchema as systemProviderInfoSchema } from "@bb/domain";
+
 export type { ProviderInfo as SystemProviderInfo } from "@bb/domain";
 
 export const systemVoiceTranscriptionResponseSchema = z.object({
   text: z.string(),
 });
+
 export type SystemVoiceTranscriptionResponse = z.infer<
   typeof systemVoiceTranscriptionResponseSchema
 >;
@@ -137,11 +145,13 @@ export const systemProviderStateSchema = providerHealthSchema.extend({
   providerId: z.string().min(1),
   displayName: z.string().min(1),
 });
+
 export type SystemProviderState = z.infer<typeof systemProviderStateSchema>;
 
 export const systemProviderStatesResponseSchema = z.object({
   providers: z.array(systemProviderStateSchema),
 });
+
 export type SystemProviderStatesResponse = z.infer<
   typeof systemProviderStatesResponseSchema
 >;
@@ -184,11 +194,13 @@ export const systemConfigResponseSchema = z.object({
   /** Absolute path of the active bb data directory (where ui/, theme/, the DB live). */
   dataDir: z.string(),
 });
+
 export type SystemConfigResponse = z.infer<typeof systemConfigResponseSchema>;
 
 export const systemAttentionResponseSchema = z.object({
   hasAttention: z.boolean(),
 });
+
 export type SystemAttentionResponse = z.infer<
   typeof systemAttentionResponseSchema
 >;
@@ -207,6 +219,7 @@ export const themeCatalogResponseSchema = z.object({
   /** The active palette, resolved server-side. */
   active: appThemeSchema,
 });
+
 export type ThemeCatalogResponse = z.infer<typeof themeCatalogResponseSchema>;
 
 export const systemVersionResponseSchema = z.object({
@@ -220,15 +233,17 @@ export const systemVersionResponseSchema = z.object({
   updateAvailable: z.boolean(),
   /** Mirrors deps.config.isDevelopment so the frontend can skip the toast. */
   isDevelopment: z.boolean(),
-  /** Command users should run to upgrade. Server-owned product policy. */
-  upgradeCommand: z.string(),
+  /** Deployment-specific update instructions. Server-owned product policy. */
+  upgradeGuidance: z.string(),
 });
+
 export type SystemVersionResponse = z.infer<typeof systemVersionResponseSchema>;
 
 export const systemVersionQuerySchema = z.object({
   /** "true" bypasses the server-side npm latest cache for a manual check. */
   force: z.enum(["true", "false"]).optional(),
 });
+
 export type SystemVersionQuery = z.infer<typeof systemVersionQuerySchema>;
 
 export const systemConfigReloadResponseSchema = z.object({
@@ -246,12 +261,14 @@ export const cliSkillMachineStatusSchema = z.enum([
   "missing",
   "unknown",
 ]);
+
 export type CliSkillMachineStatus = z.infer<typeof cliSkillMachineStatusSchema>;
 
 export const systemCliSkillsStatusQuerySchema = z.object({
   /** Comma-separated machine ids; omit for every enrolled machine. */
   hostIds: z.string().optional(),
 });
+
 export type SystemCliSkillsStatusQuery = z.infer<
   typeof systemCliSkillsStatusQuerySchema
 >;
@@ -265,6 +282,7 @@ export const systemCliSkillsStatusResponseSchema = z.object({
     }),
   ),
 });
+
 export type SystemCliSkillsStatusResponse = z.infer<
   typeof systemCliSkillsStatusResponseSchema
 >;
@@ -273,6 +291,7 @@ export type SystemCliSkillsStatusResponse = z.infer<
 export const systemInstallCliSkillsRequestSchema = z.object({
   hostIds: z.array(z.string().min(1)).min(1).max(64),
 });
+
 export type SystemInstallCliSkillsRequest = z.infer<
   typeof systemInstallCliSkillsRequestSchema
 >;
@@ -305,9 +324,11 @@ export const systemInstallCliSkillsResponseSchema = z.object({
     ]),
   ),
 });
+
 export type SystemInstallCliSkillsResponse = z.infer<
   typeof systemInstallCliSkillsResponseSchema
 >;
+
 export type SystemConfigReloadResponse = z.infer<
   typeof systemConfigReloadResponseSchema
 >;

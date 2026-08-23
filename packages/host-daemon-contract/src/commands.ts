@@ -50,20 +50,28 @@ import {
 
 export {
   DAEMON_BUNDLED_PROVIDER_BRIDGE_IDS,
+
   HOST_ARTIFACT_MAX_BYTES,
+
   HOST_DAEMON_PROTOCOL_VERSION,
 } from "./protocol.js";
 export {
   workspaceResolutionFailureCodeSchema,
+
   workspaceResolutionFailureSchema,
+
   type WorkspaceResolutionFailure,
+
   type WorkspaceResolutionFailureCode,
 } from "./workspace.js";
 
 export {
   BRANCH_LIST_LIMIT_MAX,
+
   BRANCH_LIST_QUERY_MAX_LENGTH,
+
   FILE_LIST_LIMIT_MAX,
+
   FILE_LIST_QUERY_MAX_LENGTH,
 } from "@bb/domain";
 const INJECTED_SKILL_NAME_PATTERN =
@@ -73,6 +81,7 @@ export const workspaceContextSchema = z.object({
   workspacePath: z.string().min(1),
   workspaceProvisionType: workspaceProvisionTypeSchema,
 });
+
 export type WorkspaceContext = z.infer<typeof workspaceContextSchema>;
 
 function isConnectBaseDomain(value: string): boolean {
@@ -103,6 +112,7 @@ export const hostDaemonConnectTunnelIdentitySchema = z
     baseDomain: z.string().min(1).refine(isConnectBaseDomain),
   })
   .strict();
+
 export type HostDaemonConnectTunnelIdentity = z.infer<
   typeof hostDaemonConnectTunnelIdentitySchema
 >;
@@ -150,6 +160,7 @@ export const hostDaemonInjectedSkillSourceSchema = z.discriminatedUnion(
       .strict(),
   ],
 );
+
 export type HostDaemonInjectedSkillSource = z.infer<
   typeof hostDaemonInjectedSkillSourceSchema
 >;
@@ -178,6 +189,7 @@ export const hostDaemonAcpLaunchSpecSchema = z
     permissionCli: acpPermissionCliSchema.optional(),
   })
   .strict();
+
 export type HostDaemonAcpLaunchSpec = z.infer<
   typeof hostDaemonAcpLaunchSpecSchema
 >;
@@ -280,6 +292,7 @@ const hostDaemonBridgeLaunchSchema = z
     envPassthrough: z.array(z.string().min(1)),
   })
   .strict();
+
 export type HostDaemonBridgeLaunch = z.infer<
   typeof hostDaemonBridgeLaunchSchema
 >;
@@ -333,6 +346,15 @@ interface GroupedPromptInputCommand {
   inputGroups?: HostDaemonPromptInput[][];
 }
 
+export const p6rTurnSpeakerSchema = z
+  .object({
+    p6rHandle: z.string().min(1),
+    p6rDisplayName: z.string().min(1),
+  })
+  .strict();
+
+export type P6rTurnSpeaker = z.infer<typeof p6rTurnSpeakerSchema>;
+
 function flattenPromptInputGroups(
   inputGroups: readonly HostDaemonPromptInput[][],
 ): HostDaemonPromptInput[] {
@@ -373,6 +395,7 @@ const threadStartCommandSchema = hostDaemonThreadTargetSchema
     // at least one input, enforced by the refinement below.
     input: z.array(promptInputSchema),
     inputGroups: z.array(z.array(promptInputSchema).min(1)).min(1).optional(),
+    p6rSpeaker: p6rTurnSpeakerSchema.optional(),
     threadStoragePath: z.string().min(1).optional(),
     /** Present means fork the new thread from this source provider session
      *  instead of starting fresh; absent means a normal start. The clone
@@ -428,6 +451,7 @@ const turnSubmitTargetSchema = z.discriminatedUnion("mode", [
     expectedTurnId: z.string().min(1).nullable(),
   }),
 ]);
+
 export type TurnSubmitTarget = z.infer<typeof turnSubmitTargetSchema>;
 
 /**
@@ -444,6 +468,7 @@ const turnSubmitCommandSchema = hostDaemonThreadTargetSchema
     requestId: clientTurnRequestIdSchema,
     input: z.array(promptInputSchema).min(1),
     inputGroups: z.array(z.array(promptInputSchema).min(1)).min(1).optional(),
+    p6rSpeaker: p6rTurnSpeakerSchema.optional(),
     options: runtimeThreadExecutionOptionsSchema,
     acpLaunchSpec: hostDaemonAcpLaunchSpecSchema.optional(),
     bridgeLaunch: hostDaemonBridgeLaunchSchema,
@@ -581,6 +606,7 @@ const hostReadFileCommandSchema = z
   });
 
 const hostReadFileRelativeDotfilePolicySchema = z.enum(["allow", "deny"]);
+
 export type HostReadFileRelativeDotfilePolicy = z.infer<
   typeof hostReadFileRelativeDotfilePolicySchema
 >;
@@ -642,6 +668,7 @@ const hostListFilesCommandSchema = z.object({
 });
 
 const hostPathEntryKindSchema = z.enum(["file", "directory"]);
+
 export type HostPathEntryKind = z.infer<typeof hostPathEntryKindSchema>;
 
 const hostPathEntrySchema = z.object({
@@ -651,6 +678,7 @@ const hostPathEntrySchema = z.object({
   score: z.number(),
   positions: z.array(z.number().int().nonnegative()),
 });
+
 export type HostPathEntry = z.infer<typeof hostPathEntrySchema>;
 
 const hostListPathsCommandSchema = z
@@ -789,6 +817,7 @@ const directoryEntrySchema = z.object({
   name: z.string(),
   path: z.string(),
 });
+
 export type DirectoryEntry = z.infer<typeof directoryEntrySchema>;
 
 const directoryListingSchema = z.object({
@@ -800,9 +829,11 @@ const directoryListingSchema = z.object({
 });
 
 const hostCommandSourceSchema = z.enum(["skill", "command"]);
+
 export type HostCommandSource = z.infer<typeof hostCommandSourceSchema>;
 
 const hostCommandOriginSchema = z.enum(["project", "user"]);
+
 export type HostCommandOrigin = z.infer<typeof hostCommandOriginSchema>;
 
 /**
@@ -819,6 +850,7 @@ const hostProviderCommandSchema = z.object({
   description: z.string().nullable(),
   argumentHint: z.string().nullable(),
 });
+
 export type HostProviderCommand = z.infer<typeof hostProviderCommandSchema>;
 
 /**
@@ -854,6 +886,7 @@ const skillRootKindSchema = z.enum([
   "shared-user",
   "plugin",
 ]);
+
 export type SkillRootKind = z.infer<typeof skillRootKindSchema>;
 
 /**
@@ -871,6 +904,7 @@ const discoveredSkillSchema = z.object({
   /** True when discovery followed either the skill directory or SKILL.md symlink. */
   linked: z.boolean(),
 });
+
 export type DiscoveredSkill = z.infer<typeof discoveredSkillSchema>;
 
 /**
@@ -981,6 +1015,7 @@ const hostInstallGlobalSkillSchema = z
     entryPath: z.string().min(1),
   })
   .strict();
+
 export type HostInstallGlobalSkill = z.infer<
   typeof hostInstallGlobalSkillSchema
 >;
@@ -1086,7 +1121,9 @@ const providerInstallationRunCommandSchema = z
 
 /** Host-local readiness returned by a provider bridge. */
 export const providerHealthSchema = experimental_providerHealthSchema;
+
 export type ProviderHealth = z.infer<typeof providerHealthSchema>;
+
 export type ProviderHealthResult = z.infer<
   typeof experimental_providerHealthResultSchema
 >;
@@ -1196,6 +1233,7 @@ const environmentProvisionCommandSchema = z.discriminatedUnion(
     personalEnvironmentProvisionCommandSchema,
   ],
 );
+
 export type EnvironmentProvisionCommand = z.infer<
   typeof environmentProvisionCommandSchema
 >;
@@ -1494,6 +1532,7 @@ const globalSkillsStatusResultSchema = z
     ),
   })
   .strict();
+
 export type HostGlobalSkillsStatusResult = z.infer<
   typeof globalSkillsStatusResultSchema
 >;
@@ -1521,42 +1560,55 @@ const providerListModelsResultSchema = z.object({
 const threadStartResultSchema = z.object({
   providerThreadId: z.string().min(1),
 });
+
 const turnSubmitResultSchema = z.object({
   appliedAs: z.enum(["new-turn", "steer"]),
 });
+
 const threadStopResultSchema = z
   .object({
     providerCheckpointId: z.string().min(1).nullable(),
   })
   .strict();
+
 const emptyCommandResultSchema = z.object({});
+
 const projectPathResultSchema = z.object({ path: z.string().min(1) }).strict();
+
 const projectInspectResultSchema = projectPathResultSchema
   .extend({ gitRemoteUrl: z.string().min(1).nullable() })
   .strict();
+
 const projectCloneResultSchema = projectInspectResultSchema;
+
 const codexInferenceCompleteResultSchema = z.object({
   model: z.string().min(1),
   value: jsonObjectSchema,
 });
+
 const codexVoiceTranscribeResultSchema = z.object({
   model: z.string().min(1),
   text: z.string(),
 });
+
 const environmentProvisionResultSchema =
   discoveredWorkspacePropertiesSchema.extend({
     transcript: z.array(provisioningTranscriptEntrySchema),
   });
+
 const environmentProvisionCancelResultSchema = z.object({
   aborted: z.boolean(),
 });
+
 const workspaceCommitResultSchema = z.object({
   commitSha: z.string().min(1),
   commitSubject: z.string().min(1),
 });
+
 const workspaceSquashMergeResultSchema = workspaceCommitResultSchema.extend({
   merged: z.boolean(),
 });
+
 const workspacePullRequestActionResultSchema = z.object({}).strict();
 // ---------------------------------------------------------------------------
 // Provider usage limits (live read from the host's provider credentials)
@@ -1569,6 +1621,7 @@ const workspacePullRequestActionResultSchema = z.object({}).strict();
  * and `cost` carries optional Cursor on-demand spend in USD cents.
  */
 export const providerUsageWindowSchema = experimental_providerUsageWindowSchema;
+
 export type ProviderUsageWindow = z.infer<typeof providerUsageWindowSchema>;
 
 /**
@@ -1587,7 +1640,9 @@ export type ProviderUsageWindow = z.infer<typeof providerUsageWindowSchema>;
  *   `planLabel`/`accountEmail` when they were known locally before the call.
  */
 const providerUsageSchema = experimental_providerUsageSchema;
+
 export type ProviderUsage = z.infer<typeof providerUsageSchema>;
+
 export type ProviderUsageResult = z.infer<
   typeof experimental_providerUsageResultSchema
 >;
@@ -1597,6 +1652,7 @@ export const providerUsageResponseSchema = z.record(
   z.string().min(1),
   providerUsageSchema,
 );
+
 export type ProviderUsageResponse = z.infer<typeof providerUsageResponseSchema>;
 
 const providerUsageCommandSchema = z
@@ -1616,7 +1672,9 @@ const providerCliInstallResultSchema = z
   .strict();
 
 type HostDaemonCommandTransport = "settled" | "onlineRpc";
+
 export type HostDaemonCommandEnvironmentLane = "read" | "write";
+
 type HostDaemonFlushEventsBeforeResult = boolean | "when-initiated";
 
 interface HostDaemonCommandDescriptor<
@@ -2176,21 +2234,27 @@ export const hostDaemonCommandRegistry = {
 };
 
 type HostDaemonCommandRegistry = typeof hostDaemonCommandRegistry;
+
 type AnyHostDaemonCommandDescriptor =
   HostDaemonCommandRegistry[keyof HostDaemonCommandRegistry];
+
 type HostDaemonCommandDescriptorForTransport<
   Transport extends HostDaemonCommandTransport,
 > = Extract<AnyHostDaemonCommandDescriptor, { transport: Transport }>;
+
 type HostDaemonRetryableOnlineRpcCommandDescriptor = Extract<
   HostDaemonCommandDescriptorForTransport<"onlineRpc">,
   { retryable: true }
 >;
+
 type HostDaemonCommandTypeForTransport<
   Transport extends HostDaemonCommandTransport,
 > = HostDaemonCommandDescriptorForTransport<Transport>["type"];
+
 type HostDaemonSchemaForTransport<
   Transport extends HostDaemonCommandTransport,
 > = HostDaemonCommandDescriptorForTransport<Transport>["schema"];
+
 type HostDaemonRetryableOnlineRpcCommandSchema =
   HostDaemonRetryableOnlineRpcCommandDescriptor["schema"];
 
@@ -2202,13 +2266,16 @@ type HostDaemonResultSchemaMapForTransport<
 
 type HostDaemonCommandResultSchemaMap =
   HostDaemonResultSchemaMapForTransport<"settled">;
+
 type HostDaemonOnlineRpcResultSchemaMap =
   HostDaemonResultSchemaMapForTransport<"onlineRpc">;
 
 export type HostDaemonSettledCommandType =
   HostDaemonCommandTypeForTransport<"settled">;
+
 export type HostDaemonOnlineRpcCommandType =
   HostDaemonCommandTypeForTransport<"onlineRpc">;
+
 export type HostDaemonRpcCommandType =
   | HostDaemonSettledCommandType
   | HostDaemonOnlineRpcCommandType;
@@ -2216,11 +2283,14 @@ export type HostDaemonRpcCommandType =
 export type HostDaemonCommand = z.infer<
   HostDaemonSchemaForTransport<"settled">
 >;
+
 export type HostDaemonOnlineRpcCommand = z.infer<
   HostDaemonSchemaForTransport<"onlineRpc">
 >;
+
 export type HostDaemonRetryableOnlineRpcCommand =
   z.infer<HostDaemonRetryableOnlineRpcCommandSchema>;
+
 export type HostDaemonRpcCommand =
   | HostDaemonCommand
   | HostDaemonOnlineRpcCommand;
@@ -2274,12 +2344,14 @@ function hostDaemonResultSchemaByTypeForTransport<
 
 export const HOST_DAEMON_SETTLED_COMMAND_TYPES =
   hostDaemonCommandTypesForTransport("settled");
+
 export const HOST_DAEMON_ONLINE_RPC_COMMAND_TYPES =
   hostDaemonCommandTypesForTransport("onlineRpc");
 
 const hostDaemonSettledCommandTypes = new Set<string>(
   HOST_DAEMON_SETTLED_COMMAND_TYPES,
 );
+
 const hostDaemonOnlineRpcCommandTypes = new Set<string>(
   HOST_DAEMON_ONLINE_RPC_COMMAND_TYPES,
 );
@@ -2310,6 +2382,7 @@ function isHostDaemonOnlineRpcCommandTypeValue(
 
 export const hostDaemonSettledCommandTypeSchema =
   z.custom<HostDaemonSettledCommandType>(isHostDaemonSettledCommandTypeValue);
+
 const hostDaemonOnlineRpcCommandTypeSchema =
   z.custom<HostDaemonOnlineRpcCommandType>(
     isHostDaemonOnlineRpcCommandTypeValue,
@@ -2317,12 +2390,15 @@ const hostDaemonOnlineRpcCommandTypeSchema =
 
 export const hostDaemonCommandSchema =
   hostDaemonCommandSchemaForTransport("settled");
+
 export const hostDaemonOnlineRpcCommandSchema =
   hostDaemonCommandSchemaForTransport("onlineRpc");
+
 export const hostDaemonRpcCommandSchema = z.union([
   hostDaemonOnlineRpcCommandSchema,
   hostDaemonCommandSchema,
 ]);
+
 export const hostDaemonRpcCommandTypeSchema = z.union([
   hostDaemonOnlineRpcCommandTypeSchema,
   hostDaemonSettledCommandTypeSchema,
@@ -2336,6 +2412,7 @@ export function isHostDaemonCommand(
 
 export const hostDaemonCommandResultSchemaByType =
   hostDaemonResultSchemaByTypeForTransport("settled");
+
 export const hostDaemonOnlineRpcResultSchemaByType =
   hostDaemonResultSchemaByTypeForTransport("onlineRpc");
 

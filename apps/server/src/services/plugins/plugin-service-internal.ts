@@ -23,7 +23,9 @@ import type { ProviderRegistryService } from "../providers/provider-registry.js"
 import type { PluginHostArtifactRegistry } from "./plugin-host-artifact-registry.js";
 export type {
   PluginHandlerStats,
+
   PluginRuntimeStatus,
+
   PluginUpdateCheckEntry,
 } from "@bb/server-contract";
 
@@ -64,6 +66,10 @@ export interface PluginHostArtifactSnapshot {
 }
 
 export interface PluginServiceDeps {
+  p6rIdentity?: Pick<
+    import("../identity.js").P6rIdentityBoundary,
+    "p6rStageProvider"
+  >;
   db: DbConnection;
   /** Omitted only by isolated plugin-runtime tests without a daemon plane. */
   sharedPorts?: Pick<

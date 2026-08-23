@@ -26,6 +26,7 @@ import {
   pluginTokenRequestSchema,
   pluginUpdateCheckRequestSchema,
 } from "@bb/server-contract";
+import { p6rGetRequestPrincipal } from "../services/identity.js";
 
 /** The slice of server deps the "local" auth checks need (origin allowlist). */
 interface PluginRoutesDeps {
@@ -36,9 +37,13 @@ interface PluginRoutesDeps {
 type WireAuthProblem = BrowserRequestProblem | { status: 401; error: string };
 
 const compressBrotli = promisify(brotliCompress);
+
 const compressGzip = promisify(gzip);
+
 const MIN_COMPRESSED_APP_ASSET_BYTES = 1_024;
+
 const MAX_CACHED_APP_ASSETS = 64;
+
 const APP_ASSET_ENCODINGS = [
   {
     encoding: "br",
@@ -669,6 +674,7 @@ export function registerPluginRoutes(
       method,
       lookup.value,
       input,
+      { p6rRequestPrincipal: p6rGetRequestPrincipal(context) },
     );
     if (!outcome.ok) {
       return context.json(

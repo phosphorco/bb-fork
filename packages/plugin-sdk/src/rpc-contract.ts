@@ -83,6 +83,7 @@ export function defineRpcContract<const Contract extends PluginRpcContract>(
 export type PluginRpcHandlers<Contract extends PluginRpcContract> = {
   [Method in keyof Contract]: (
     input: StandardSchemaV1InferOutput<Contract[Method]["input"]>,
+    p6rRequestContext?: import("./backend-contract.js").P6rPluginRequestContext,
   ) =>
     | StandardSchemaV1InferInput<Contract[Method]["output"]>
     | Promise<StandardSchemaV1InferInput<Contract[Method]["output"]>>;

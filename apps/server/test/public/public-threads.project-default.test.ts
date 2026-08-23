@@ -1,11 +1,15 @@
 import { getThread } from "@bb/db";
 import {
+  P6R_CLAIMED_IDENTITY_HEADER,
   PERSONAL_PROJECT_ID,
+  p6rEncodeClaimedIdentityHeader,
   threadSchema,
+  type P6rClaimedIdentity,
   type ProjectSourceCheckout,
 } from "@bb/domain";
 import { describe, expect, it } from "vitest";
 import { resolveProjectDefaultThreadEnvironment } from "../../src/services/threads/thread-default-policy.js";
+import { p6rCreateLocalOperatorIdentity } from "../../src/services/actors.js";
 import { getActiveThreadProvisionContext } from "../../src/services/threads/thread-provisioning-active-context.js";
 import {
   requireManagedWorktreeEnvironmentProvisionLiveCommand,
@@ -23,6 +27,7 @@ import {
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 
 interface CreateThreadBodyOverrides {
+  p6rClaimedIdentity?: P6rClaimedIdentity;
   environment: unknown;
   origin?: string;
   originPluginId?: string;
@@ -35,7 +40,16 @@ async function postCreateThread(
 ): Promise<Response> {
   return harness.app.request("/api/v1/threads", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(overrides.p6rClaimedIdentity !== undefined
+        ? {
+            [P6R_CLAIMED_IDENTITY_HEADER]: p6rEncodeClaimedIdentityHeader(
+              overrides.p6rClaimedIdentity,
+            ),
+          }
+        : {}),
+    },
     body: JSON.stringify({
       origin: overrides.origin ?? "sdk",
       ...(overrides.originPluginId !== undefined
@@ -241,6 +255,35 @@ describe("project-default thread environment", () => {
 });
 
 describe("plugin thread attribution", () => {
+  it("records the creator for human origins", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const response = await postCreateThread(harness, project.id, {
+        p6rClaimedIdentity: {
+          p6rClientId: "browser-alice",
+          p6rDisplayName: "Alice",
+          p6rHandle: "alice",
+          p6rImageUrl: null,
+        },
+        environment: {
+          type: "host",
+          hostId: host.id,
+          workspace: { type: "unmanaged", path: null },
+        },
+        origin: "app",
+      });
+
+      expect(response.status).toBe(201);
+      const created = threadSchema.parse(await readJson(response));
+      expect(getThread(harness.db, created.id)?.p6rCreatedByHandle).toBe(
+        p6rCreateLocalOperatorIdentity().p6rHandle,
+      );
+    });
+  });
+
   it("persists and surfaces originPluginId for plugin-origin threads", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);
@@ -256,6 +299,12 @@ describe("plugin thread attribution", () => {
       });
 
       const response = await postCreateThread(harness, project.id, {
+        p6rClaimedIdentity: {
+          p6rClientId: "browser-alice",
+          p6rDisplayName: "Alice",
+          p6rHandle: "alice",
+          p6rImageUrl: null,
+        },
         origin: "plugin",
         originPluginId: "linear",
         environment: {
@@ -268,6 +317,7 @@ describe("plugin thread attribution", () => {
       const created = threadSchema.parse(await readJson(response));
       expect(created.originPluginId).toBe("linear");
       expect(getThread(harness.db, created.id)?.originPluginId).toBe("linear");
+      expect(getThread(harness.db, created.id)?.p6rCreatedByHandle).toBeNull();
 
       const getResponse = await harness.app.request(
         `/api/v1/threads/${created.id}`,

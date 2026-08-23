@@ -56,23 +56,28 @@ const acceptedMessage = {
   kind: "message" as const,
   status: "accepted" as const,
 };
+
 const RAW_THREAD_ID = "thr_dcwivn5n8w";
+
 const rawThreadIdTarget = makeThreadListEntry({
   id: RAW_THREAD_ID,
   projectId: "proj_demo",
   title: "Raw thread ID mention target",
   titleFallback: "Raw thread ID mention target",
 });
+
 const pendingSteer = {
   isGrouped: false,
   kind: "steer" as const,
   status: "pending" as const,
 };
+
 const acceptedSteer = {
   isGrouped: false,
   kind: "steer" as const,
   status: "accepted" as const,
 };
+
 const handleStoryMessageEdit = () => undefined;
 
 interface StoryMentionArgs {
@@ -510,6 +515,7 @@ const mixedAttachments: TimelineConversationAttachments = {
 
 const mentionedMessageText =
   "Ask @thread:thr_parent and @apps/app/src/components/promptbox/PromptBoxInternal.tsx to review the prompt mention flow.";
+
 const mentionedMessageMentions: PromptTextMention[] = [
   storyMention({
     text: mentionedMessageText,
@@ -546,7 +552,9 @@ export function Overview() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
+            p6rShowAuthor={false}
             originKind={null}
             initiator="user"
             senderThreadId={null}
@@ -574,7 +582,9 @@ export function Overview() {
         >
           <TimelineStage>
             <ConversationMessageContent
+              p6rActorHandle={null}
               role="user"
+              p6rShowAuthor={false}
               originKind={null}
               initiator="user"
               senderThreadId={null}
@@ -596,8 +606,10 @@ export function Overview() {
       >
         <TimelineStage>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
             originKind={null}
+            p6rShowAuthor={false}
             initiator="user"
             senderThreadId={null}
             senderThreadTitle={null}
@@ -615,8 +627,10 @@ export function Overview() {
       <StoryRow label="short">
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
             originKind={null}
+            p6rShowAuthor={false}
             initiator="user"
             senderThreadId={null}
             senderThreadTitle={null}
@@ -637,8 +651,10 @@ export function Overview() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
             originKind={null}
+            p6rShowAuthor={false}
             initiator="user"
             senderThreadId={null}
             senderThreadTitle={null}
@@ -660,8 +676,10 @@ export function Overview() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
             originKind={null}
+            p6rShowAuthor={false}
             initiator="user"
             senderThreadId={null}
             senderThreadTitle={null}
@@ -682,8 +700,10 @@ export function Overview() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
             originKind={null}
+            p6rShowAuthor={false}
             initiator="user"
             senderThreadId={null}
             senderThreadTitle={null}
@@ -704,8 +724,10 @@ export function Overview() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
             originKind={null}
+            p6rShowAuthor={false}
             initiator="user"
             senderThreadId={null}
             senderThreadTitle={null}
@@ -723,8 +745,10 @@ export function Overview() {
       <StoryRow label="with image" hint="single localImage attachment">
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
             originKind={null}
+            p6rShowAuthor={false}
             initiator="user"
             senderThreadId={null}
             senderThreadTitle={null}
@@ -746,8 +770,10 @@ export function Overview() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
             originKind={null}
+            p6rShowAuthor={false}
             initiator="user"
             senderThreadId={null}
             senderThreadTitle={null}
@@ -776,8 +802,10 @@ export function Overview() {
       >
         <TimelineStage>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
             originKind={null}
+            p6rShowAuthor={false}
             initiator="agent"
             resolveSegmentLinkHref={resolveThreadLink}
             senderThreadId="thr_ux3h8sxg65"
@@ -799,8 +827,10 @@ export function Overview() {
       >
         <TimelineStage>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
             originKind={null}
+            p6rShowAuthor={false}
             initiator="agent"
             resolveSegmentLinkHref={resolveThreadLink}
             onTitleAction={() => () => undefined}
@@ -823,8 +853,10 @@ export function Overview() {
       >
         <div className="flex w-full max-w-[760px] flex-col gap-3">
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
             originKind={null}
+            p6rShowAuthor={false}
             initiator="agent"
             resolveSegmentLinkHref={resolveThreadLink}
             senderThreadId="thr_h4u3fgr6be"
@@ -839,8 +871,10 @@ export function Overview() {
             turnRequest={acceptedSteer}
           />
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
             originKind={null}
+            p6rShowAuthor={false}
             initiator="system"
             senderThreadId={null}
             senderThreadTitle={null}
@@ -861,8 +895,10 @@ export function Overview() {
       >
         <TimelineStage>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
             originKind={null}
+            p6rShowAuthor={false}
             initiator="system"
             senderThreadId={null}
             senderThreadTitle={null}
@@ -883,8 +919,10 @@ export function Overview() {
       >
         <TimelineStage>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
             originKind={null}
+            p6rShowAuthor={false}
             initiator="system"
             senderThreadId={null}
             senderThreadTitle={null}
@@ -905,8 +943,10 @@ export function Overview() {
       >
         <TimelineStage>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
             originKind={null}
+            p6rShowAuthor={false}
             initiator="system"
             senderThreadId={null}
             senderThreadTitle={null}
@@ -965,7 +1005,9 @@ export function ActionOverflow() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
+            p6rShowAuthor={false}
             originKind={null}
             initiator="user"
             senderThreadId={null}
@@ -986,7 +1028,9 @@ export function ActionOverflow() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
+            p6rShowAuthor={false}
             originKind={null}
             initiator="user"
             senderThreadId={null}
@@ -1009,7 +1053,9 @@ export function ActionOverflow() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
+            p6rShowAuthor={false}
             originKind={null}
             initiator="user"
             senderThreadId={null}
@@ -1033,7 +1079,9 @@ export function ActionOverflow() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
+            p6rShowAuthor={false}
             originKind={null}
             initiator="user"
             senderThreadId={null}
@@ -1062,7 +1110,9 @@ export function ParentChildSystemMessages() {
         <StoryRow key={fixture.label} label={fixture.label} hint={fixture.hint}>
           <TimelineStage>
             <ConversationMessageContent
+              p6rActorHandle={null}
               role="user"
+              p6rShowAuthor={false}
               initiator="system"
               senderThreadId={null}
               senderThreadTitle={null}

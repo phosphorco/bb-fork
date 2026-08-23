@@ -209,6 +209,11 @@ import type {
   UploadedPromptAttachment,
   WorkspaceFileListResponse,
   WorkspacePathListResponse,
+  P6rAddMemberRequest,
+  P6rMember,
+  P6rMemberListResponse,
+  P6rRemoveMemberRequest,
+  P6rPresenceSnapshotResponse,
 } from "./api-types.js";
 import type {
   ThreadTabsWireResponse,
@@ -306,10 +311,13 @@ import {
   updateProjectRequestSchema,
   updateProjectSourceRequestSchema,
   updateThreadRequestSchema,
+  p6rAddMemberRequestSchema,
+  p6rRemoveMemberRequestSchema,
 } from "./api-types.js";
 import type { ApiError } from "./errors.js";
 
 type PathProjectSourceId = { param: { id: string; sourceId: string } };
+
 type PathThreadInteractionId = {
   param: { id: string; interactionId: string };
 };
@@ -1312,6 +1320,40 @@ export const publicApiRoutes = {
         threadFilesRawQuerySchema,
       ),
       response: binaryResponse<Uint8Array>(),
+    }),
+  },
+
+  p6rPresence: {
+    p6rSnapshot: defineRoute({
+      path: "/p6r-presence",
+      method: "get",
+      request: noRequest(),
+      response: jsonResponse<P6rPresenceSnapshotResponse>(),
+    }),
+  },
+
+  p6rMembers: {
+    p6rList: defineRoute({
+      path: "/p6r-members",
+      method: "get",
+      request: noRequest(),
+      response: jsonResponse<P6rMemberListResponse>(),
+    }),
+    p6rAdd: defineRoute({
+      path: "/p6r-members",
+      method: "post",
+      request: jsonRequest<EmptyInput, P6rAddMemberRequest>(
+        p6rAddMemberRequestSchema,
+      ),
+      response: jsonResponse<P6rMember>({ status: 201 }),
+    }),
+    p6rRemove: defineRoute({
+      path: "/p6r-members",
+      method: "delete",
+      request: jsonRequest<EmptyInput, P6rRemoveMemberRequest>(
+        p6rRemoveMemberRequestSchema,
+      ),
+      response: jsonResponse<{ ok: true }>(),
     }),
   },
 

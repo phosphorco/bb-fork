@@ -32,7 +32,9 @@ export default {
 };
 
 const noop = () => {};
+
 const NO_JOBS: ReadonlySet<string> = new Set();
+
 const STORY_NOW = 1_800_000_000_000;
 
 const NPM_VERSION = {
@@ -41,7 +43,8 @@ const NPM_VERSION = {
   source: "npm" as const,
   updateAvailable: false,
   isDevelopment: false,
-  upgradeCommand: "npx bb-app@latest",
+  upgradeGuidance:
+    "Update this primary server through Rosetta machine deployment by replacing its managed bb-app artifact. Enrolled execution machines receive this server's exact bb-app distribution automatically; manage or retry them in Settings → Machines.",
 };
 
 const DESKTOP_UPDATE = {
@@ -368,7 +371,7 @@ export function UpdateStates() {
 
         <State
           name="Update available"
-          note="A web install cannot replace itself, so its action copies the upgrade command."
+          note="A managed web install cannot replace itself, so it shows the server-owned deployment path."
         >
           <StoryAppState>
             <BbAppUpdateRows

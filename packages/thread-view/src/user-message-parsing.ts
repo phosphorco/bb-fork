@@ -314,6 +314,11 @@ function buildClientUserMessage({
       : { scope: decoded.scope }),
     initiator,
     senderThreadId,
+    p6rActorHandle: rowMeta.p6rActorHandle,
+    p6rActorProviderId: rowMeta.p6rActorProviderId,
+    p6rActorSubject: rowMeta.p6rActorSubject,
+    p6rActorDisplayName: rowMeta.p6rActorDisplayName,
+    p6rActorImageUrl: rowMeta.p6rActorImageUrl,
     // Legacy defaulting lives in `storedTurnRequestEventDataSchema`, so decoded
     // rows always carry concrete values at runtime. These `??` fallbacks only
     // satisfy the base in-flight schema's `.optional()` static type; they never
@@ -511,6 +516,11 @@ export function parseProviderUserMessage(
       : {}),
     initiator: "system",
     senderThreadId: null,
+    p6rActorHandle: null,
+    p6rActorProviderId: null,
+    p6rActorSubject: null,
+    p6rActorDisplayName: null,
+    p6rActorImageUrl: null,
     systemMessageKind: "unlabeled",
     systemMessageSubject: null,
     turnRequest: { isGrouped: false, kind: "steer", status: "accepted" },

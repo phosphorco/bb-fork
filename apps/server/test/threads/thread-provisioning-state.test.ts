@@ -90,11 +90,20 @@ describe("thread provisioning state", () => {
   it("keeps reprovision progress in live context and records prompt history", () => {
     const { db, environment, hub, thread } = setup();
     const input = textInput("resume after reprovision");
+    const p6rActor = {
+      p6rProviderId: "p6r-fixture/provider",
+      p6rSubject: "subject-1",
+      p6rHandle: "canonical-alice",
+      p6rDisplayName: "Canonical Alice",
+      p6rImageUrl: null,
+    };
 
     const provisioningId = createThreadProvisioningId();
     const context = requestThreadReprovision(
       { db, hub },
       {
+        p6rActor,
+        p6rActorHandle: "legacy-foreign",
         thread,
         environment,
         provisionEventSequence: 0,
@@ -112,6 +121,8 @@ describe("thread provisioning state", () => {
       },
     );
 
+    expect(context.request.p6rActor).toEqual(p6rActor);
+    expect(context.request.p6rActorHandle).toBe("canonical-alice");
     expect(context.state).toEqual({
       environmentId: environment.id,
       provisionEventSequence: 0,

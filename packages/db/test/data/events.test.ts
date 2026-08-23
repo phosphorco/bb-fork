@@ -56,6 +56,7 @@ import {
   pruneThreadEventsBeforeSequence,
   listLatestOpenBackgroundTaskStateRowsForThread,
   STORED_TIMELINE_BYTE_PREFLIGHT_EVENT_LIMIT,
+  p6rCountDistinctThreadEventActors,
 } from "../../src/data/events.js";
 import { createEnvironment } from "../../src/data/environments.js";
 import { createProject } from "../../src/data/projects.js";
@@ -203,6 +204,65 @@ describe("events", () => {
     });
     const all = listEvents(db, { threadId: thread.id });
     expect(all).toHaveLength(2);
+  });
+
+  it("counts distinct attributed human message authors only", () => {
+    const { db, thread } = setup();
+
+    insertEvents(db, noopNotifier, [
+      {
+        threadId: thread.id,
+        sequence: 1,
+        type: "client/turn/requested",
+        ...threadEventFields,
+        data: clientTurnRequestData("request-null", "legacy message"),
+      },
+      {
+        p6rActorHandle: "alice",
+        threadId: thread.id,
+        sequence: 2,
+        type: "client/turn/requested",
+        ...threadEventFields,
+        data: clientTurnRequestData("request-alice", "alice message"),
+      },
+      {
+        p6rActorHandle: "bob",
+        threadId: thread.id,
+        sequence: 3,
+        type: "system/thread/interrupted",
+        ...threadEventFields,
+        data: JSON.stringify({ reason: "manual-stop" }),
+      },
+    ]);
+
+    expect(listEvents(db, { threadId: thread.id })).toMatchObject([
+      { p6rActorHandle: null },
+      { p6rActorHandle: "alice" },
+      { p6rActorHandle: "bob" },
+    ]);
+    expect(
+      p6rCountDistinctThreadEventActors(db, { threadId: thread.id }),
+    ).toBe(1);
+    expect(
+      p6rCountDistinctThreadEventActors(db, {
+        p6rExcludedHandle: "alice",
+        threadId: thread.id,
+      }),
+    ).toBe(0);
+
+    insertEvents(db, noopNotifier, [
+      {
+        p6rActorHandle: "bob",
+        threadId: thread.id,
+        sequence: 4,
+        type: "client/turn/requested",
+        ...threadEventFields,
+        data: clientTurnRequestData("request-bob", "bob message"),
+      },
+    ]);
+    expect(
+      p6rCountDistinctThreadEventActors(db, { threadId: thread.id }),
+    ).toBe(2);
   });
 
   it("stores derived item columns when provided", () => {

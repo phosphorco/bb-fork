@@ -10,8 +10,12 @@ import type {
   StartedOnBehalfOf,
   ThreadCreateOrigin,
 } from "@bb/server-contract";
+import type { P6rActorSnapshot } from "@bb/domain";
 
 export interface ThreadCreateServiceRequestInput {
+  /** Server-resolved actor; never accepted from the public payload. */
+  p6rCreatedByActor?: P6rActorSnapshot | null;
+  p6rCreatedByHandle?: string | null;
   /**
    * May be the server-resolved "project-default" marker; thread creation
    * resolves it into a concrete environment before any provisioning logic.

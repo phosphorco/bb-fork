@@ -9,6 +9,8 @@ import {
   SETTINGS_SECTION_ROUTE_PATH,
 } from "@/lib/route-paths";
 
+import { p6rIsRemoteAppContext } from "@/lib/claimed-identity-store";
+
 /**
  * The settings buckets: shared between the settings sidebar (which replaces
  * the app sidebar on /settings routes) and SettingsView (which renders the
@@ -17,6 +19,7 @@ import {
 export const SETTINGS_NAV_SECTIONS = [
   { icon: "Settings", id: "general", label: "General" },
   { icon: "Zap", id: "providers", label: "Providers" },
+  { icon: "UserRound", id: "p6rIdentity", label: "Identity" },
   { icon: "Palette", id: "appearance", label: "Appearance" },
   { icon: "SlidersHorizontal", id: "keyboard", label: "Keyboard" },
   { icon: "ChartColumn", id: "usage", label: "Usage limits" },
@@ -95,6 +98,11 @@ export function useSettingsNavState(): SettingsNavState {
       return (
         hasDaemon || accessState !== "unavailable" || fileOpeners.length > 0
       );
+    }
+    if (section.id === "p6rIdentity") {
+      // Claimed identity only applies to remote sessions; desktop/localhost
+      // run as the local operator with no identity to edit.
+      return p6rIsRemoteAppContext();
     }
     return true;
   });

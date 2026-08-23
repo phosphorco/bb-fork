@@ -6,6 +6,7 @@ import { registerFileCommands } from "./commands/file.js";
 import { registerGuideCommand } from "./commands/guide.js";
 import { registerManagerCommands } from "./commands/manager.js";
 import { registerMarketplaceCommands } from "./commands/marketplace.js";
+import { p6rRegisterMembersCommands } from "./commands/members.js";
 import { registerMachineCommands } from "./commands/machine.js";
 import { registerProjectCommands } from "./commands/project.js";
 import { registerPluginCommands } from "./commands/plugin.js";
@@ -39,6 +40,7 @@ import { resolveBbCliVersion } from "./version.js";
 maybeReexecViaBbCli();
 
 const program = new Command();
+
 let cliRuntimeContext: CliRuntimeContext | undefined;
 
 function getCliRuntimeContext(): CliRuntimeContext {
@@ -89,6 +91,7 @@ registerSettingsCommands(program, getUrl);
 registerProjectCommands(program, getUrl);
 registerProviderCommands(program, getUrl);
 registerManagerCommands(program);
+p6rRegisterMembersCommands(program, getUrl);
 registerMachineCommands(program, getUrl);
 registerUpdatesCommands(program, getUrl);
 registerTerminalCommands(program, getUrl);

@@ -89,6 +89,7 @@ import {
   type PluginHttpRouteRecord,
   type PluginMentionTrigger,
   type PluginRpcHandler,
+  type P6rPluginRequestContext,
 } from "./plugin-api.js";
 import {
   syncPluginCommandsSkill,
@@ -132,6 +133,8 @@ import type {
   PluginWireLookup,
   PluginResolvedAgentConfiguration,
 } from "./plugin-service-internal.js";
+// The build engine's natives (esbuild, Tailwind oxide) are dynamically
+// imported inside buildPluginApp — importing this loads nothing heavy.
 export type {
   PluginAgentToolContribution,
   PluginMentionResolveResult,
@@ -348,6 +351,7 @@ export interface PluginService {
     method: string,
     handler: PluginRpcHandler,
     input: unknown,
+    p6rRequestContext?: P6rPluginRequestContext,
   ): Promise<
     { ok: true; result: JsonValue } | { ok: false; error: PluginRpcError }
   >;
@@ -2037,7 +2041,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
         id,
         `http ${route.method} ${route.path}`,
         async () => {
-          const response = await route.handler(context);
+          const response = await route.handler(context, {
+            p6rRequestPrincipal:
+              context.get("p6rRequestPrincipal") ?? null,
+          });
           return adoptHttpRouteResponse(response);
         },
       );
@@ -2048,14 +2055,23 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       );
     },
 
-    async invokeRpcHandler(id, method, handler, input) {
+    async invokeRpcHandler(
+      id,
+      method,
+      handler,
+      input,
+      p6rRequestContext = { p6rRequestPrincipal: null },
+    ) {
       const outcome = await invokeWrapped(id, `rpc ${method}`, async () => {
         const parsedInput = await validateRpcValue(
           handler.inputSchema,
           input,
           "input",
         );
-        const result = await handler.handler(parsedInput as never);
+        const result = await handler.handler(
+          parsedInput as never,
+          p6rRequestContext,
+        );
         const parsedOutput = await validateRpcValue(
           handler.outputSchema,
           result,

@@ -73,6 +73,7 @@ function makeQueuedMessage({
     groupWithNext: false,
     createdAt: 0,
     updatedAt: 0,
+    p6rActor: null,
   };
 }
 

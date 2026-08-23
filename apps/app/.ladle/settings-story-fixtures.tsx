@@ -154,7 +154,8 @@ const systemVersion = {
   source: "npm",
   updateAvailable: false,
   isDevelopment: false,
-  upgradeCommand: "npx bb-app@latest",
+  upgradeGuidance:
+    "Update this primary server through Rosetta machine deployment by replacing its managed bb-app artifact. Enrolled execution machines receive this server's exact bb-app distribution automatically; manage or retry them in Settings → Machines.",
 } satisfies SystemVersionResponse;
 
 const settingsUpdateMachine = {

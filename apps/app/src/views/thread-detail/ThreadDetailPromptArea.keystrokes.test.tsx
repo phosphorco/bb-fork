@@ -310,6 +310,7 @@ function makeQueuedMessage(): ThreadQueuedMessage {
     groupWithNext: false,
     createdAt: 1,
     updatedAt: 1,
+    p6rActor: null,
   };
 }
 

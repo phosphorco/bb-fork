@@ -283,18 +283,31 @@ interface CommandExitCodeArgs {
 }
 
 const DEFAULT_THREAD_ID = "thread-1";
+
 const DEFAULT_TURN_ID = "turn-1";
+
 const DEFAULT_COMMAND_ID = "command-1";
+
 const DEFAULT_CONVERSATION_ID = "conversation-1";
+
 const DEFAULT_DELEGATION_ID = "delegation-1";
+
 const DEFAULT_FILE_CHANGE_ID = "file-change-1";
+
 const DEFAULT_QUESTION_ID = "question-1";
+
 const DEFAULT_SYSTEM_ID = "system-1";
+
 const DEFAULT_TOOL_ID = "tool-1";
+
 const DEFAULT_TURN_ROW_ID = "turn-summary-1";
+
 const DEFAULT_WEB_FETCH_ID = "web-fetch-1";
+
 const DEFAULT_WEB_SEARCH_ID = "web-search-1";
+
 const DEFAULT_IMAGE_VIEW_ID = "image-view-1";
+
 const DEFAULT_WORKFLOW_ID = "workflow-1";
 
 function rowSequence({ seq, sourceSeqStart }: RowSequenceArgs): number {
@@ -423,6 +436,8 @@ export function conversationRow({
   if (role === "user") {
     const resolvedInitiator: ThreadTurnInitiator = initiator ?? "user";
     return {
+      p6rActorHandle: null,
+      p6rActor: null,
       ...rowBase,
       kind: "conversation",
       role,

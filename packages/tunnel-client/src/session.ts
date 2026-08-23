@@ -22,10 +22,13 @@ import { headersForLoopbackRequest } from "./headers.js";
 import type { TunnelClientLogger } from "./logger.js";
 
 const HEARTBEAT_INTERVAL_MS = 20_000;
+
 const HEARTBEAT_DEADLINE_MS = 60_000;
 
 const UNREGISTERED_PORT_BODY = "this port is not shared";
+
 const textEncoder = new TextEncoder();
+
 const INITIAL_THREAD_LOAD_PATH =
   /^\/api\/v1\/threads\/[^/]+\/(?:timeline|conversation-outline)(?:\?|$)/u;
 
@@ -108,6 +111,7 @@ interface HttpStream {
   chunks: Buffer[];
   abort: AbortController;
 }
+
 interface WsStream {
   socket: NodeWebSocket;
   buffered: Frame[];
@@ -306,6 +310,7 @@ export class TunnelSession {
     const headers = headersForLoopbackRequest(meta.headers, {
       publicOrigin: resolved.publicOrigin,
       loopbackOrigin: new URL(resolved.origin).origin,
+      p6rMarkTunnelOrigin: true,
       ...(resolved.host !== undefined ? { host: resolved.host } : {}),
     });
     try {
@@ -388,6 +393,7 @@ export class TunnelSession {
     const headers = headersForLoopbackRequest(frame.headers, {
       publicOrigin: resolved.publicOrigin,
       loopbackOrigin: new URL(resolved.origin).origin,
+      p6rMarkTunnelOrigin: true,
       ...(resolved.host !== undefined ? { host: resolved.host } : {}),
     });
     const countsAsRemoteClient = isBareBbRealtimeWs(frame.path, frame.target);

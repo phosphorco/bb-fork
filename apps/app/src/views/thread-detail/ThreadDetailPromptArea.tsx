@@ -122,6 +122,9 @@ import {
   type FollowUpExecutionSelection,
 } from "@bb/client-core";
 
+import { P6rThreadTypingIndicator } from "@/components/thread/presence/ThreadPresenceIndicators";
+import { useP6rTypingEmitter } from "@/hooks/useTypingEmitter";
+
 const ignorePromptBannerFileClick = () => {};
 
 export interface ThreadDetailSentMessageEdit {
@@ -829,6 +832,11 @@ export function ThreadDetailPromptArea({
       thread.id,
     ],
   );
+  useP6rTypingEmitter({
+    threadId: thread.id,
+    draftText: activeComposerDraft.text,
+    enabled: !shouldHideComposer,
+  });
   const hasPromptDraftInput = currentPromptDraftInput.length > 0;
   const canSubmitModifierShortcut = canSubmitFollowUpShortcut({
     hasPromptDraftInput,
@@ -1571,10 +1579,12 @@ export function ThreadDetailPromptArea({
       ),
     [childPendingInteractions],
   );
+
   const promptStack = useMemo(
     () => (
       <>
         {childPendingInteractionBanners}
+        <P6rThreadTypingIndicator threadId={thread.id} />
         {activeWorkflows.map((workflow) => (
           <ThreadWorkflowCard
             key={workflow.id}

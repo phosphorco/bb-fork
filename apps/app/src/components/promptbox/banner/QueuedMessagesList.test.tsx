@@ -63,6 +63,7 @@ function makeQueuedMessage(id: string, text: string): ThreadQueuedMessage {
     groupWithNext: false,
     createdAt: 0,
     updatedAt: 0,
+    p6rActor: null,
   };
 }
 

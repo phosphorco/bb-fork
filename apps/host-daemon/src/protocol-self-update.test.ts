@@ -78,6 +78,10 @@ describe("protocol self-update", () => {
       "updated",
     );
     expect(test.fetchFn).toHaveBeenCalledTimes(2);
+    expect(test.fetchFn.mock.calls.map(([input]) => String(input))).toEqual([
+      "https://server.example.test/install/version",
+      "https://server.example.test/install/bb-app.tgz",
+    ]);
     expect(test.installTarball).toHaveBeenCalledOnce();
   });
 

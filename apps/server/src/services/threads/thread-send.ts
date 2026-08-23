@@ -12,6 +12,7 @@ import type {
   Thread,
   ThreadTurnInitiator,
   TurnRequestTarget,
+  P6rActorSnapshot,
 } from "@bb/domain";
 import type { SendMessageRequest } from "@bb/server-contract";
 import { renderTemplate } from "@bb/templates";
@@ -64,7 +65,9 @@ import { validatePromptAttachmentReferences } from "../projects/attachments.js";
 import { resolvePluginMentionContextInputs } from "../plugins/plugin-mentions.js";
 
 type SendThreadMessageMode = SendMessageRequest["mode"];
+
 type TextPromptInput = Extract<PromptInput, { type: "text" }>;
+
 type SendThreadMessageTrigger = "auto-dispatch" | "user";
 
 type SendThreadMessagePayload = SendMessageRequest & {
@@ -72,6 +75,8 @@ type SendThreadMessagePayload = SendMessageRequest & {
 };
 
 interface SendThreadMessageArgs {
+  p6rActor?: P6rActorSnapshot | null;
+  p6rActorHandle?: string | null;
   beforeAppendInTransaction?: SendThreadMessageTransactionPreflight;
   environment: Environment;
   /**
@@ -128,6 +133,8 @@ interface SendThreadMessageQueueRequest {
 }
 
 interface AppendAndQueueSendThreadMessageArgs {
+  p6rActor: P6rActorSnapshot | null;
+  p6rActorHandle: string | null;
   beforeAppendInTransaction?: SendThreadMessageTransactionPreflight;
   db: DbConnection;
   environmentId: string | null;
@@ -328,6 +335,8 @@ function captureUserMessageSentTelemetry(
 }
 
 function appendAndQueueSendThreadMessageInTransaction({
+  p6rActor,
+  p6rActorHandle,
   beforeAppendInTransaction,
   db,
   environmentId,
@@ -349,6 +358,8 @@ function appendAndQueueSendThreadMessageInTransaction({
         appendPreparedClientTurnRequestedEventWithNotificationInTransaction(
           tx,
           {
+            p6rActor,
+            p6rActorHandle,
             threadId: thread.id,
             environmentId,
             type: "client/turn/requested",
@@ -406,6 +417,10 @@ export async function sendThreadMessage(
     senderThreadId: payload.senderThreadId,
     targetThread: thread,
   });
+  const p6rActor = senderThreadId === null ? (args.p6rActor ?? null) : null;
+  const p6rActorHandle =
+    p6rActor?.p6rHandle ??
+    (senderThreadId === null ? (args.p6rActorHandle ?? null) : null);
   let inputGroups = payload.inputGroups
     ? payload.inputGroups.map((inputGroup) =>
         senderThreadId
@@ -475,6 +490,8 @@ export async function sendThreadMessage(
 
   if (
     await dispatchTurnDuringReprovision({
+      p6rActor,
+      p6rActorHandle,
       beforeRequestAppendInTransaction: args.beforeAppendInTransaction,
       deps,
       environment,
@@ -514,6 +531,7 @@ export async function sendThreadMessage(
 
   if (mode === "start") {
     const commandArgs = {
+      p6rActorHandle,
       thread,
       // Normal sends target the existing provider session. A history
       // replacement deliberately starts from a staged provider fork instead.
@@ -550,6 +568,8 @@ export async function sendThreadMessage(
         }
       : await prepareReadyThreadTurnCommand(deps, commandArgs);
     const queuedRequest = appendAndQueueSendThreadMessageInTransaction({
+      p6rActor,
+      p6rActorHandle,
       beforeAppendInTransaction: ({ tx }) => {
         args.beforeAppendInTransaction?.({ tx });
         ensureThreadCanStartRequest(thread);
@@ -627,6 +647,7 @@ export async function sendThreadMessage(
     hostId: readyEnvironment.hostId,
   });
   const preparedCommand = await prepareTurnSubmitCommandPayload(deps, {
+    p6rActorHandle,
     thread,
     input,
     ...(inputGroups !== undefined ? { inputGroups } : {}),
@@ -649,6 +670,8 @@ export async function sendThreadMessage(
     requestId,
   });
   const queuedRequest = appendAndQueueSendThreadMessageInTransaction({
+    p6rActor,
+    p6rActorHandle,
     beforeAppendInTransaction: args.beforeAppendInTransaction,
     db: deps.db,
     environmentId: thread.environmentId,

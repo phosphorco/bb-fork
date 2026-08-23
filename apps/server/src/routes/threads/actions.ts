@@ -26,14 +26,16 @@ import {
   type PublicApiSchema,
   type SendMessageRequest,
 } from "@bb/server-contract";
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import {
   createStandaloneBuiltinCompactCommandInput,
+  type P6rActorSnapshot,
   type Thread,
   type ThreadQueuedMessage,
 } from "@bb/domain";
 import type { AppDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
+import { p6rGetRequestPrincipal } from "../../services/identity.js";
 import { toThreadQueuedMessage } from "../../services/threads/thread-queued-messages.js";
 import {
   requestEnvironmentCleanup,
@@ -164,6 +166,18 @@ async function compactThreadContext(
   });
 }
 
+function requireP6rRequestPrincipal(context: Context): P6rActorSnapshot {
+  const actor = p6rGetRequestPrincipal(context);
+  if (actor === null) {
+    throw new ApiError(
+      401,
+      "unauthorized",
+      "This authored action requires an authenticated actor",
+    );
+  }
+  return actor;
+}
+
 function toQueuedMessageGroupBoundaryResponse(
   result: SetQueuedThreadMessageGroupBoundaryResult,
 ): ThreadQueuedMessage[] {
@@ -233,6 +247,7 @@ function assertPinnedThreadOrderResult(
 }
 
 interface CreateQueuedMessageForThreadArgs {
+  p6rActor: P6rActorSnapshot;
   payload: CreateQueuedMessageRequest;
   thread: Thread;
 }
@@ -331,6 +346,7 @@ async function createQueuedMessageForThread(
         }
         const { providerThreadId } = admitQueuedMessage(tx, currentThread);
         const queuedMessage = createQueuedThreadMessageInTransaction(tx, {
+          p6rActor: senderThreadId === null ? args.p6rActor : null,
           threadId: thread.id,
           content: payload.input,
           senderThreadId,
@@ -371,6 +387,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.send, async (context, payload) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
+    const p6rActor = requireP6rRequestPrincipal(context as unknown as Context);
     const shouldQueue =
       thread.status === "active" &&
       (payload.mode === "queue-if-active" ||
@@ -378,6 +395,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     if (shouldQueue) {
       ensureThreadIsNotAwaitingUserInteraction(deps, thread.id);
       await createQueuedMessageForThread(deps, {
+        p6rActor,
         payload: queuedMessagePayloadFromSendRequest(payload),
         thread,
       });
@@ -387,6 +405,8 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
       thread,
     });
     await sendThreadMessage(deps, {
+      p6rActor,
+      p6rActorHandle: p6rActor.p6rHandle,
       environment,
       payload,
       thread,
@@ -396,6 +416,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
   });
 
   post(routes.editMessage, async (context, payload) => {
+    requireP6rRequestPrincipal(context as unknown as Context);
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     const environment = await requireThreadCommandEnvironment(deps, {
       thread,
@@ -410,7 +431,9 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.createQueuedMessage, async (context, payload) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
+    const p6rActor = requireP6rRequestPrincipal(context as unknown as Context);
     const queuedMessage = await createQueuedMessageForThread(deps, {
+      p6rActor,
       payload,
       thread,
     });
@@ -418,6 +441,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
   });
 
   post(routes.sendQueuedMessage, async (context, payload) => {
+    requireP6rRequestPrincipal(context as unknown as Context);
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     ensureThreadIsWritable(thread);
     ensureThreadIsNotAwaitingUserInteraction(deps, thread.id);
@@ -467,6 +491,18 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
   patch(routes.updateQueuedMessage, async (context, payload) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     ensureThreadIsWritable(thread);
+    const p6rActor =
+      (context.get("p6rRequestPrincipal") as
+        | P6rActorSnapshot
+        | null
+        | undefined) ?? null;
+    if (!p6rActor) {
+      throw new ApiError(
+        401,
+        "unauthorized",
+        "Authenticated actor is required",
+      );
+    }
     await validatePromptAttachmentReferences({
       dataDir: deps.config.dataDir,
       input: payload.input,
@@ -477,6 +513,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
       expectedUpdatedAt: payload.expectedUpdatedAt,
       id: context.req.param("queuedMessageId"),
       threadId: thread.id,
+      p6rActor,
     });
     if (result.kind === "not_found") {
       throw new ApiError(404, "invalid_request", "Queued message not found");
@@ -518,12 +555,18 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
   });
 
   post(routes.stop, async (context) => {
+    const p6rActor = requireP6rRequestPrincipal(context as unknown as Context);
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     const environment = resolveThreadHostCommandEnvironment({
       db: deps.db,
       thread,
     });
-    await stopThreadForCurrentState(deps, thread, environment);
+    await stopThreadForCurrentState(
+      deps,
+      thread,
+      environment,
+      p6rActor.p6rHandle,
+    );
     return context.json({ ok: true });
   });
 

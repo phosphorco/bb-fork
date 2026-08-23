@@ -6,6 +6,7 @@ import type {
   SystemMessageSubject,
   Thread,
   ThreadTurnInitiator,
+  P6rActorSnapshot,
 } from "@bb/domain";
 import { createThreadProvisioningId } from "@bb/db";
 import type { DbTransaction } from "@bb/db";
@@ -36,6 +37,8 @@ export interface ReadyThreadEnvironment extends Environment {
 }
 
 interface DispatchTurnDuringReprovisionArgs {
+  p6rActor?: P6rActorSnapshot | null;
+  p6rActorHandle?: string | null;
   beforeRequestAppendInTransaction?: (args: { tx: DbTransaction }) => void;
   deps: LoggedPendingInteractionWorkSessionDeps;
   environment: Environment;
@@ -164,6 +167,8 @@ export async function dispatchTurnDuringReprovision(
     {
       beforeProvisionCommandStart: () => {
         requestThreadReprovision(args.deps, {
+          p6rActor: args.p6rActor ?? null,
+          p6rActorHandle: args.p6rActorHandle ?? null,
           beforeRequestAppendInTransaction:
             args.beforeRequestAppendInTransaction,
           thread: args.thread,

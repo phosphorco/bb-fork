@@ -22,7 +22,8 @@ describe("GET /api/v1/system/version", () => {
           source: "npm",
           updateAvailable: false,
           isDevelopment: true,
-          upgradeCommand: "npx bb-app@latest",
+          upgradeGuidance:
+            "Update this primary server through Rosetta machine deployment by replacing its managed bb-app artifact. Enrolled execution machines receive this server's exact bb-app distribution automatically; manage or retry them in Settings → Machines.",
         }),
         isDevelopment: true,
       },

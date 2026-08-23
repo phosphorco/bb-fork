@@ -337,6 +337,32 @@ instruction providers or mention providers are rejected.
 Listeners are different: `bb.events.on`, settings `onChange`, and `onDispose`
 are additive, so registering multiple listeners is supported.
 
+### bb.p6rIdentity — verified inbound identity
+
+`bb.p6rIdentity.registerProvider({ id, resolve })` is exclusive: only one
+provider registration can own the boundary. Registration is staged on the
+candidate plugin generation and activated only at its atomic commit. A
+successful same-plugin reload replaces the old provider once; a failed
+candidate leaves the old provider live, a competing plugin is rejected without
+disposing that live provider, and disable/removal releases the registration.
+
+`resolve(request)` is synchronous and returns exactly `authenticated`,
+`not-applicable`, or `reject`. Core composes the provider id from the owning
+plugin id and registration id. The provider's `p6rSubject` is an exact opaque,
+immutable, nonblank identity; it is not trimmed or otherwise canonicalized.
+Reject, throw, malformed output, and timeout all fail closed as `reject`. On a
+provider-owned remote path, loopback local-operator fallback cannot rescue
+those outcomes. Only no-provider or `not-applicable` resolution can yield an
+anonymous nullable principal for ordinary route policy; authored mutations
+still require an authenticated actor.
+
+Plugin HTTP/RPC handlers receive only the shared-boundary ambient nullable
+`p6rRequestPrincipal`. Agent tools receive only the separate durable nullable
+`p6rTurnAuthor` from the accepted authored unit that initiated the turn. The
+two carriers are not interchangeable: neither may be supplied by client
+claims, URL/query/body/header identity, the internal transport caller, or
+transcript parsing of `[from=...]`.
+
 ### bb.log
 
 `bb.log.debug|info|warn|error(message: string)` — goes to the server log

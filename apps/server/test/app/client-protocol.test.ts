@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  onClientSocketClose,
   onClientSocketMessage,
   onClientSocketOpen,
 } from "../../src/ws/client-protocol.js";
 import { NotificationHub } from "../../src/ws/hub.js";
+import {
+  p6rGetSocketActor,
+  p6rRegisterSocketActor,
+} from "../../src/ws/socket-actors.js";
 import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
 
 function createProtocolDeps(hub: NotificationHub) {
@@ -211,5 +216,24 @@ describe("client websocket protocol", () => {
 
     expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
     expect(deps.watchInterests.subscribe).not.toHaveBeenCalled();
+  });
+
+  it("releases the socket actor when the client socket closes", () => {
+    const hub = new NotificationHub();
+    const deps = createProtocolDeps(hub);
+    const socket = createMockHubSocket();
+    const actor = {
+      p6rHandle: "sawyer",
+      p6rDisplayName: "Sawyer",
+      p6rImageUrl: null,
+      p6rClientId: "browser-1",
+    };
+
+    onClientSocketOpen(hub, socket);
+    p6rRegisterSocketActor(socket, actor);
+    onClientSocketClose(deps, socket);
+
+    expect(p6rGetSocketActor(socket)).toBeNull();
+    expect(deps.watchInterests.releaseSocket).toHaveBeenCalledWith(socket);
   });
 });

@@ -6,6 +6,7 @@ import { createPendingInteractionId } from "../ids.js";
 import { pendingInteractions } from "../schema.js";
 
 type PendingInteractionWriteConnection = DbConnection | DbTransaction;
+
 type PendingInteractionReadConnection = DbConnection | DbTransaction;
 
 export type PendingInteractionRow = typeof pendingInteractions.$inferSelect;
@@ -47,6 +48,7 @@ export interface SetPendingInteractionTerminalStateArgs {
   allowedCurrentStatuses?: readonly PendingInteractionStatus[];
   id: string;
   resolution: string | null;
+  p6rResolvedByHandle?: string;
   resolvedAt?: number;
   status: "interrupted" | "resolved";
   statusReason: string | null;
@@ -55,6 +57,7 @@ export interface SetPendingInteractionTerminalStateArgs {
 export interface SetPendingInteractionResolvingArgs {
   id: string;
   resolution: string;
+  p6rResolvedByHandle?: string;
 }
 
 export interface InterruptPendingInteractionsForThreadsArgs {
@@ -106,6 +109,9 @@ function updatePendingInteractionTerminalState(
         resolution: args.resolution,
         statusReason: args.statusReason,
         resolvedAt: args.resolvedAt ?? now,
+        ...(args.p6rResolvedByHandle === undefined
+          ? {}
+          : { p6rResolvedByHandle: args.p6rResolvedByHandle }),
         updatedAt: now,
       })
       .where(
@@ -249,12 +255,16 @@ export function setPendingInteractionResolved(
   args: {
     id: string;
     resolution: string;
+    p6rResolvedByHandle?: string;
   },
 ): PendingInteractionRow | null {
   return updatePendingInteractionTerminalState(db, {
     id: args.id,
     allowedCurrentStatuses: ["pending", "resolving"],
     resolution: args.resolution,
+    ...(args.p6rResolvedByHandle === undefined
+      ? {}
+      : { p6rResolvedByHandle: args.p6rResolvedByHandle }),
     status: "resolved",
     statusReason: null,
   });
@@ -273,6 +283,9 @@ export function setPendingInteractionResolving(
         status: "resolving",
         resolution: args.resolution,
         statusReason: null,
+        ...(args.p6rResolvedByHandle === undefined
+          ? {}
+          : { p6rResolvedByHandle: args.p6rResolvedByHandle }),
         updatedAt: now,
       })
       .where(
@@ -290,6 +303,7 @@ export function setPendingInteractionInterrupted(
   db: PendingInteractionWriteConnection,
   args: {
     id: string;
+    p6rResolvedByHandle?: string;
     statusReason: string;
   },
 ): PendingInteractionRow | null {
@@ -297,6 +311,9 @@ export function setPendingInteractionInterrupted(
     id: args.id,
     allowedCurrentStatuses: ["pending", "resolving"],
     resolution: null,
+    ...(args.p6rResolvedByHandle === undefined
+      ? {}
+      : { p6rResolvedByHandle: args.p6rResolvedByHandle }),
     status: "interrupted",
     statusReason: args.statusReason,
   });

@@ -12,7 +12,9 @@ import { outputJson } from "./helpers.js";
 import { resolveMachineId } from "./machine.js";
 
 type ProviderCliKey = string;
+
 type ProviderCliStatus = HostProviderCliStatusResponse[string];
+
 type ProviderCliStatusResponse = HostProviderCliStatusResponse;
 
 interface UpdatesCommandOptions {
@@ -198,7 +200,7 @@ export function registerUpdatesCommands(
         const appState = version.isDevelopment
           ? "development mode"
           : version.updateAvailable
-            ? `${UPDATE_STATE_PRESENTATION["update-available"].label} (run: ${version.upgradeCommand})`
+            ? `${UPDATE_STATE_PRESENTATION["update-available"].label} — ${version.upgradeGuidance}`
             : UPDATE_STATE_PRESENTATION["up-to-date"].label;
         const appVersionLabel =
           version.latestVersion !== null &&
@@ -320,3 +322,4 @@ export function registerUpdatesCommands(
       }),
     );
 }
+// weave: run 'weave explain apps/cli/src/commands/updates.ts' for per-hunk detail, 'weave check' to verify your resolution

@@ -76,6 +76,8 @@ class ResizeObserverMock implements ResizeObserver {
 
 function userConversationRow(index = 1): TimelineRow {
   return {
+    p6rActorHandle: null,
+    p6rActor: null,
     id: `row_user_${index}`,
     threadId: "thr_toc_test",
     turnId: `turn_${index}`,
@@ -320,6 +322,7 @@ function manyUserItems(count: number): TocItem[] {
 }
 
 let scrollElement: HTMLElement;
+
 let scrollElementIntoView: ReturnType<typeof vi.fn>;
 
 function openTocPanel(): void {

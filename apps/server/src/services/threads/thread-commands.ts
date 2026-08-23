@@ -1,4 +1,4 @@
-import { environments, events, threads } from "@bb/db";
+import { environments, events, p6rGetCollaborator, threads } from "@bb/db";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import {
   PromptInput,
@@ -16,6 +16,7 @@ import {
   type HostDaemonCommand,
   type ThreadStopIntent,
   type TurnSubmitTarget,
+  type P6rTurnSpeaker,
 } from "@bb/host-daemon-contract";
 import type { AppDeps, LoggedWorkSessionDeps } from "../../types.js";
 import type { CommandResultSideEffectsDeps } from "../../internal/command-result-side-effects.js";
@@ -67,6 +68,7 @@ interface ThreadUnarchiveCommandEnvironment {
 }
 
 export interface ThreadStartCommandArgs {
+  p6rActorHandle?: string | null;
   environment: ThreadRuntimeCommandEnvironment;
   execution: ResolvedThreadExecutionOptions;
   // Non-null ⇒ clone the parent's provider session at its branch point (native
@@ -83,6 +85,7 @@ export interface ThreadStartCommandArgs {
 }
 
 interface PreparedTurnSubmitCommandBuildArgs {
+  p6rSpeaker?: P6rTurnSpeaker;
   deps: Pick<
     AppDeps,
     "config" | "db" | "providerRegistry" | "pluginHostArtifacts"
@@ -100,6 +103,7 @@ interface PreparedTurnSubmitCommandBuildArgs {
 }
 
 interface PrepareTurnSubmitCommandPayloadArgs {
+  p6rActorHandle?: string | null;
   environment: ThreadRuntimeCommandEnvironment;
   execution: ResolvedThreadExecutionOptions;
   permissionEscalation: PermissionEscalation;
@@ -166,6 +170,23 @@ function providerSupportsThreadRename(
     return true;
   }
   return registration.info.capabilities.supportsThreadRename;
+}
+
+function p6rResolveTurnSpeaker(
+  deps: Pick<AppDeps, "db">,
+  args: { p6rActorHandle?: string | null; threadId: string },
+): P6rTurnSpeaker | undefined {
+  if (!args.p6rActorHandle) {
+    return undefined;
+  }
+  // The verified request principal is the author of this turn. History is not
+  // an authorization or attribution prerequisite: this covers the initial
+  // turn, same-human follow-ups, and every later human handoff.
+  const collaborator = p6rGetCollaborator(deps.db, args.p6rActorHandle);
+  return {
+    p6rHandle: args.p6rActorHandle,
+    p6rDisplayName: collaborator?.p6rDisplayName ?? args.p6rActorHandle,
+  };
 }
 
 function providerSupportsThreadArchiveForwarding(
@@ -296,6 +317,10 @@ export async function buildThreadStartCommand(
     args.providerId,
   );
   const bridgeLaunch = requireBridgeLaunchForProviderId(deps, args.providerId);
+  const p6rSpeaker = p6rResolveTurnSpeaker(deps, {
+    p6rActorHandle: args.p6rActorHandle,
+    threadId: args.thread.id,
+  });
   return {
     type: "thread.start",
     environmentId: args.environment.id,
@@ -313,6 +338,7 @@ export async function buildThreadStartCommand(
     ...(args.inputGroups !== undefined
       ? { inputGroups: args.inputGroups }
       : {}),
+    ...(p6rSpeaker !== undefined ? { p6rSpeaker } : {}),
     options: toRuntimeExecutionOptions({
       ...args,
       deps,
@@ -350,6 +376,7 @@ function buildPreparedTurnSubmitCommandPayload(
     ...(args.inputGroups !== undefined
       ? { inputGroups: args.inputGroups }
       : {}),
+    ...(args.p6rSpeaker !== undefined ? { p6rSpeaker: args.p6rSpeaker } : {}),
     options: toRuntimeExecutionOptions({
       ...args,
       input: args.input,
@@ -398,6 +425,10 @@ export async function prepareTurnSubmitCommandPayload(
     environment: args.environment,
     model: args.execution.model,
   });
+  const p6rSpeaker = p6rResolveTurnSpeaker(deps, {
+    p6rActorHandle: args.p6rActorHandle,
+    threadId: args.thread.id,
+  });
   return buildPreparedTurnSubmitCommandPayload({
     deps,
     environmentId: args.environment.id,
@@ -409,6 +440,7 @@ export async function prepareTurnSubmitCommandPayload(
       ? { inputGroups: args.inputGroups }
       : {}),
     providerThreadId,
+    ...(p6rSpeaker !== undefined ? { p6rSpeaker } : {}),
     runtimeContext,
     target: args.target,
     threadId: args.thread.id,

@@ -226,10 +226,12 @@ type TimelineOperationMessage = Extract<
   EventProjectionMessage,
   { kind: "operation" }
 >;
+
 type TimelineWorkflowMessage = Extract<
   EventProjectionMessage,
   { kind: "workflow" }
 >;
+
 type TimelineGenericSystemOperationKind = Exclude<
   TimelineSystemOperationKind,
   "parent-change"
@@ -567,6 +569,20 @@ function convertMessage(
           attachments: toConversationAttachments(message.attachments),
           initiator: message.initiator,
           senderThreadId: message.senderThreadId,
+          p6rActorHandle: message.p6rActorHandle,
+          p6rActor:
+            message.p6rActorProviderId != null &&
+            message.p6rActorSubject != null &&
+            message.p6rActorHandle != null &&
+            message.p6rActorDisplayName != null
+              ? {
+                  p6rProviderId: message.p6rActorProviderId,
+                  p6rSubject: message.p6rActorSubject,
+                  p6rHandle: message.p6rActorHandle,
+                  p6rDisplayName: message.p6rActorDisplayName,
+                  p6rImageUrl: message.p6rActorImageUrl ?? null,
+                }
+              : null,
           systemMessageKind: message.systemMessageKind,
           systemMessageSubject: message.systemMessageSubject,
           turnRequest: message.turnRequest,
@@ -817,6 +833,20 @@ function convertSteerMessage(
     attachments: toConversationAttachments(message.attachments),
     initiator: message.initiator,
     senderThreadId: message.senderThreadId,
+    p6rActorHandle: message.p6rActorHandle,
+    p6rActor:
+      message.p6rActorProviderId != null &&
+      message.p6rActorSubject != null &&
+      message.p6rActorHandle != null &&
+      message.p6rActorDisplayName != null
+        ? {
+            p6rProviderId: message.p6rActorProviderId,
+            p6rSubject: message.p6rActorSubject,
+            p6rHandle: message.p6rActorHandle,
+            p6rDisplayName: message.p6rActorDisplayName,
+            p6rImageUrl: message.p6rActorImageUrl ?? null,
+          }
+        : null,
     systemMessageKind: message.systemMessageKind,
     systemMessageSubject: message.systemMessageSubject,
     turnRequest: message.turnRequest,

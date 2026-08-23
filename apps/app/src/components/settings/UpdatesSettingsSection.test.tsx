@@ -232,7 +232,8 @@ function makeInventory(overrides: Partial<UpdateInventory>): UpdateInventory {
       source: "npm",
       updateAvailable: false,
       isDevelopment: false,
-      upgradeCommand: "npx bb-app@latest",
+      upgradeGuidance:
+        "Update this primary server through Rosetta machine deployment by replacing its managed bb-app artifact. Enrolled execution machines receive this server's exact bb-app distribution automatically; manage or retry them in Settings → Machines.",
     },
     desktopInfo: null,
     appUpdateAvailable: false,
@@ -270,7 +271,9 @@ function renderSection({
 }
 
 const useUpdateInventoryMock = vi.mocked(useUpdateInventory);
+
 const useDesktopUpdateInfoMock = vi.mocked(useDesktopUpdateInfo);
+
 const useProviderCliInstallRunnerMock = vi.mocked(useProviderCliInstallRunner);
 
 beforeEach(() => {
@@ -1357,7 +1360,7 @@ The canonical release summary.
     );
   });
 
-  it("forces the web update check and shows the upgrade command inline", async () => {
+  it("forces the web update check and shows managed deployment guidance", async () => {
     useDesktopUpdateInfoMock.mockReturnValue({
       desktopApi: null,
       desktopInfo: null,
@@ -1369,7 +1372,8 @@ The canonical release summary.
       source: "npm" as const,
       updateAvailable: true,
       isDevelopment: false,
-      upgradeCommand: "npx bb-app@latest",
+      upgradeGuidance:
+        "Update this primary server through Rosetta machine deployment by replacing its managed bb-app artifact. Enrolled execution machines receive this server's exact bb-app distribution automatically; manage or retry them in Settings → Machines.",
     };
     useUpdateInventoryMock.mockReturnValue(
       makeInventory({
@@ -1382,15 +1386,16 @@ The canonical release summary.
     vi.mocked(sdk.system.version).mockResolvedValue(availableVersion);
 
     renderSection();
-    expect(screen.getByText("npx bb-app@latest")).toBeDefined();
+    expect(screen.queryByText("npx bb-app@latest")).toBeNull();
+    expect(
+      screen.getByText(
+        "Update this primary server through Rosetta machine deployment by replacing its managed bb-app artifact. Enrolled execution machines receive this server's exact bb-app distribution automatically; manage or retry them in Settings → Machines.",
+      ),
+    ).toBeDefined();
     expect(screen.getByText("0.0.6")).toBeDefined();
-    // Icon-only row action: the accessible name carries what the label used to.
-    const copyButton = screen.getByRole("button", {
-      name: "Update available · Copy the upgrade command",
-    });
-    expect(copyButton.textContent).toBe("");
-    // Row actions are plain regardless of domain.
-    expect(copyButton.className).not.toContain("bg-secondary");
+    expect(
+      screen.queryByRole("button", { name: /Copy the upgrade command/i }),
+    ).toBeNull();
     const updateSurface = document.querySelector(
       '[data-updates-machine="host_primary"]',
     );

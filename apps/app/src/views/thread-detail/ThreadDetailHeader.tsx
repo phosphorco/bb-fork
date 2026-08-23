@@ -47,6 +47,7 @@ const THREAD_HEADER_ACTION_BUTTON_CLASS = cn(
   COARSE_POINTER_TOOLBAR_ACTION_BUTTON_CLASS,
   "border-border/70 bg-transparent font-normal hover:bg-state-hover",
 );
+
 const NARROW_SPLIT_HEADER_MAX_WIDTH = 560;
 
 interface ThreadDetailHeaderProps {
@@ -64,6 +65,8 @@ interface ThreadDetailHeaderProps {
   onToggleSecondaryPanel: () => void;
   /** Plugin-contributed thread action buttons (design §4.9); optional. */
   pluginActions?: ReactNode;
+  /** Avatar row of the other p6rCollaborators currently viewing this thread. */
+  p6rPresenceIndicator?: ReactNode;
   threadHeaderGitActions: ThreadHeaderGitAction[];
   threadId: string;
   threadTitle: string;
@@ -78,6 +81,7 @@ export function ThreadDetailHeader({
   onOpenThreadGitAction,
   onToggleSecondaryPanel,
   pluginActions,
+  p6rPresenceIndicator,
   threadHeaderGitActions,
   threadId,
   threadTitle,
@@ -231,6 +235,7 @@ export function ThreadDetailHeader({
         className="flex items-center gap-1"
         data-thread-header-workflow-actions=""
       >
+        {p6rPresenceIndicator}
         {pluginActions}
         {!usesResponsiveActionOverflow && workspaceOpenButton ? (
           <span className="inline-flex" data-thread-header-responsive-action="">

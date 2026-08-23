@@ -81,6 +81,7 @@ import type {
   StandardSchemaV1Issue,
   StandardSchemaV1Result,
   JsonValue,
+  P6rIdentityProviderRegistration,
 } from "@get-bb/plugin-sdk";
 import {
   createFakeSdk,
@@ -101,6 +102,31 @@ import {
  * attribution, atomic reload, and dispose order (services aborted, hooks LIFO,
  * database closed, stale handles throw). New tests can keep host inputs,
  * assertions, and shutdown explicit through `harness.behavior`,
+ * `harness.inspection`, and `harness.lifecycle`; direct members remain aliases.
+ *
+ * Deliberately different from the real host:
+ * - storage is process-local: kv in a Map, `storage.database()` one shared
+ *   better-sqlite3 handle in a temp directory (same data across calls, like
+ *   the host's shared file), secret settings alongside plain values (no files).
+ * - `bb.sdk` is always bound (no listen gate) and every unstubbed method
+ *   throws instead of hitting a server.
+ * - http auth modes are recorded but not enforced — signature checks and
+ *   token handling inside handlers still run.
+ * - background services/schedules never run on timers; `harness.runService`
+ *   and `harness.runSchedule` invoke them deterministically.
+ */
+
+
+/**
+ * `createFakePluginHost` — an in-process stand-in for the BB server's plugin
+ * runtime (apps/server/src/services/plugins/plugin-api.ts), for unit-testing
+ * a plugin's `server.ts` without a server. `bb` satisfies {@link BbPluginApi};
+ * `harness` drives and inspects it.
+ *
+ * Faithful where a plugin can observe it: registration name validation and
+ * error messages, the kv 256KB cap, append-only database migrations, settings
+ * read/update semantics (including onChange), schema-validated rpc/cli
+ * invocation shapes (strict JSON boundaries, exit-code normalization), `threads.spawn`
  * `harness.inspection`, and `harness.lifecycle`; direct members remain aliases.
  *
  * Deliberately different from the real host:
@@ -204,6 +230,7 @@ export interface ExperimentalFakeHostRpcCall {
 
 /** Everything the plugin registered, exposed raw for assertions. */
 export interface FakePluginRegistrations {
+  p6rIdentityProvider: P6rIdentityProviderRegistration | null;
   settingsDescriptors: PluginSettingDescriptors;
   httpRoutes: FakeHttpRouteRecord[];
   rpcMethods: string[];
@@ -451,7 +478,10 @@ function jsonRoundTrip(value: unknown, what: string): unknown {
 interface FakeRpcRecord {
   inputSchema: StandardSchemaV1;
   outputSchema: StandardSchemaV1;
-  handler: (input: never) => unknown;
+  handler: (
+    input: never,
+    p6rRequestContext?: import("../backend-contract.js").P6rPluginRequestContext,
+  ) => unknown;
 }
 
 type FakeHostWorkerExitSubscription = (event: {
@@ -963,6 +993,17 @@ function createFakePluginHostInternal(
     },
   };
 
+  let p6rIdentityProvider: P6rIdentityProviderRegistration | null = null;
+  const p6rIdentity = {
+    registerProvider(registration: P6rIdentityProviderRegistration): void {
+      assertLive();
+      if (p6rIdentityProvider !== null) {
+        throw new Error("this plugin already registered a p6r identity provider");
+      }
+      p6rIdentityProvider = registration;
+    },
+  };
+
   // --- http ---
   const httpRoutes: FakeHttpRouteRecord[] = [];
   const http: PluginHttp = {
@@ -1053,7 +1094,10 @@ function createFakePluginHostInternal(
           {
             inputSchema: methodContract.input,
             outputSchema: methodContract.output,
-            handler: handler as (input: never) => unknown,
+            handler: handler as unknown as (
+              input: never,
+              p6rRequestContext?: import("../backend-contract.js").P6rPluginRequestContext,
+            ) => unknown,
           },
         ]);
       }
@@ -1736,6 +1780,7 @@ function createFakePluginHostInternal(
     settings,
     storage,
     http,
+    p6rIdentity,
     rpc,
     realtime,
     background,
@@ -1808,6 +1853,9 @@ function createFakePluginHostInternal(
     experimental_hostRpcCalls: hostRpcCalls,
     sdk: sdkHarness,
     registrations: {
+      get p6rIdentityProvider() {
+        return p6rIdentityProvider;
+      },
       settingsDescriptors,
       httpRoutes,
       get rpcMethods() {
@@ -1931,7 +1979,9 @@ function createFakePluginHostInternal(
       );
       let result: unknown;
       try {
-        result = await record.handler(validatedInput as never);
+        result = await record.handler(validatedInput as never, {
+          p6rRequestPrincipal: null,
+        });
       } catch (error) {
         return throwRpcError({
           code: "handler_error",
@@ -1997,7 +2047,9 @@ function createFakePluginHostInternal(
       const app = new Hono();
       app.on(route.method, route.path, async (context) => {
         try {
-          return adoptHttpRouteResponse(await route.handler(context));
+          return adoptHttpRouteResponse(
+            await route.handler(context, { p6rRequestPrincipal: null }),
+          );
         } catch (error) {
           const message = errorMessage(error);
           emitLog(
@@ -2076,6 +2128,7 @@ function createFakePluginHostInternal(
         threadId: ctx?.threadId ?? "thread-test",
         projectId: ctx?.projectId ?? "project-test",
         signal: ctx?.signal ?? new AbortController().signal,
+        p6rTurnAuthor: ctx?.p6rTurnAuthor ?? null,
       });
     },
 

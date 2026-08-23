@@ -7,6 +7,7 @@ import {
   listLatestSessionsForHosts,
   listOpenTurnInputAcceptedRowsByThreadIds,
   listStoredClientTurnRequestRowsByKeys,
+  listStoredEventRowsByThreadIdsAndTypes,
   type DbConnection,
   type HostDaemonSessionRow,
   type StoredEventRow,
@@ -21,8 +22,10 @@ import type {
   ThreadListEntry,
   ThreadRuntimeState,
   ThreadStatus,
+  P6rThreadParticipantProfile,
   ThreadWithRuntime,
 } from "@bb/domain";
+import { p6rActorSnapshotSchema } from "@bb/domain";
 import {
   extractThreadTimelineActivePlanTurn,
   extractThreadTimelineGoal,
@@ -31,6 +34,7 @@ import {
 import type { ThreadResponse } from "@bb/server-contract";
 import { DAEMON_ACTIVE_WORK_DISCONNECT_GRACE_MS } from "../../constants.js";
 import type { NotificationHub } from "../../ws/hub.js";
+import { p6rPrincipalKeyForActor } from "../identity.js";
 import { resolveProviderPlanCommand } from "../providers/provider-plan-command.js";
 import type { ProviderRegistryService } from "../providers/provider-registry.js";
 import { canThreadSpawnChild } from "./thread-parent.js";
@@ -89,6 +93,7 @@ interface ToThreadListEntryResponseFromLatestSessionArgs {
   hostConnected: boolean;
   latestSession: HostDaemonSessionRow | null;
   now?: number;
+  participants: readonly P6rThreadParticipantProfile[];
   thread: ThreadWithPendingInteractionState;
 }
 
@@ -106,6 +111,72 @@ const EMPTY_THREAD_ACTIVITY: ThreadActivityState = {
   activePlanModeCount: 0,
   activeWorkflowCount: 0,
 };
+
+const PARTICIPANT_EVENT_TYPES = [
+  "client/thread/start",
+  "client/turn/requested",
+  "client/turn/start",
+] as const;
+
+function buildThreadParticipantsByThreadId(
+  deps: ThreadRuntimeDisplayDeps,
+  threads: readonly ThreadWithPendingInteractionState[],
+): Map<string, P6rThreadParticipantProfile[]> {
+  const rows = listStoredEventRowsByThreadIdsAndTypes(deps.db, {
+    threadIds: threads.map((thread) => thread.id),
+    types: PARTICIPANT_EVENT_TYPES,
+  });
+  const participantsByThreadId = new Map<
+    string,
+    P6rThreadParticipantProfile[]
+  >();
+  const participantIndexesByThreadId = new Map<string, Map<string, number>>();
+
+  for (const row of rows) {
+    if (row.p6rActorProviderId === null || row.p6rActorSubject === null) {
+      continue;
+    }
+    const displayName = row.p6rActorDisplayName ?? row.p6rActorHandle;
+    if (displayName === null) {
+      continue;
+    }
+    const actorResult = p6rActorSnapshotSchema.safeParse({
+      p6rProviderId: row.p6rActorProviderId,
+      p6rSubject: row.p6rActorSubject,
+      p6rHandle: row.p6rActorHandle ?? displayName,
+      p6rDisplayName: displayName,
+      p6rImageUrl: row.p6rActorImageUrl,
+    });
+    if (!actorResult.success) {
+      continue;
+    }
+    const principalKey = p6rPrincipalKeyForActor(actorResult.data);
+    const participant: P6rThreadParticipantProfile = {
+      p6rPrincipalKey: principalKey,
+      p6rDisplayName: actorResult.data.p6rDisplayName,
+      p6rImageUrl: actorResult.data.p6rImageUrl,
+    };
+    const participants = participantsByThreadId.get(row.threadId);
+    const indexes = participantIndexesByThreadId.get(row.threadId);
+    if (participants && indexes) {
+      const existingIndex = indexes.get(principalKey);
+      if (existingIndex === undefined) {
+        indexes.set(principalKey, participants.length);
+        participants.push(participant);
+      } else {
+        participants[existingIndex] = participant;
+      }
+      continue;
+    }
+    participantsByThreadId.set(row.threadId, [participant]);
+    participantIndexesByThreadId.set(
+      row.threadId,
+      new Map([[principalKey, 0]]),
+    );
+  }
+
+  return participantsByThreadId;
+}
 
 function threadStatusRuntimeState(status: ThreadStatus): ThreadRuntimeState {
   switch (status) {
@@ -266,9 +337,9 @@ export function buildThreadStatusChangeMetadata(
         environmentHostId: resolveThreadEnvironmentHostId(deps, thread),
         status: thread.status,
       }),
-      activity: buildThreadActivityStateByThreadId(deps, [thread]).get(
-        thread.id,
-      ) ?? EMPTY_THREAD_ACTIVITY,
+      activity:
+        buildThreadActivityStateByThreadId(deps, [thread]).get(thread.id) ??
+        EMPTY_THREAD_ACTIVITY,
       latestAttentionAt: thread.latestAttentionAt,
       updatedAt: thread.updatedAt,
     },
@@ -472,6 +543,10 @@ export function toThreadListEntryResponses(
     deps,
     args.threads,
   );
+  const participantsByThreadId = buildThreadParticipantsByThreadId(
+    deps,
+    args.threads,
+  );
   const activeHostIds = [
     ...new Set(
       args.threads.flatMap((thread) =>
@@ -503,6 +578,7 @@ export function toThreadListEntryResponses(
           ? null
           : (latestSessionByHostId.get(thread.environmentHostId) ?? null),
       now: args.now,
+      participants: participantsByThreadId.get(thread.id) ?? [],
       thread,
     });
   });
@@ -522,6 +598,7 @@ function toThreadListEntryResponseFromLatestSession(
     environmentWorkspaceDisplayKind:
       args.thread.environmentWorkspaceDisplayKind,
     hasPendingInteraction: args.thread.hasPendingInteraction,
+    participants: [...args.participants],
     runtime: resolveThreadRuntimeStateFromLatestSession({
       environmentHostId: args.thread.environmentHostId,
       hostConnected: args.hostConnected,

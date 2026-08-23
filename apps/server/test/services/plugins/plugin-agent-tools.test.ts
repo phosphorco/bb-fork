@@ -3,8 +3,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { createConnection, migrate, type DbConnection } from "@bb/db";
-import { encodeClientTurnRequestIdNumber } from "@bb/domain";
+import {
+  createConnection,
+  insertEvents,
+  listEvents,
+  migrate,
+  p6rUpsertActorSnapshot,
+  type DbConnection,
+} from "@bb/db";
+import {
+  encodeClientTurnRequestIdNumber,
+  threadScope,
+  turnScope,
+} from "@bb/domain";
 import type { Logger } from "@bb/logger";
 import { RESERVED_AGENT_TOOL_NAMES } from "../../../src/services/plugins/plugin-api.js";
 import {
@@ -17,6 +28,8 @@ import {
 } from "../../../src/services/threads/thread-commands.js";
 import { UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME } from "../../../src/services/threads/thread-environment-directory.js";
 import { resolveExecutionOptions } from "../../../src/services/threads/thread-runtime-config.js";
+import { appendThreadEvent } from "../../../src/services/threads/thread-events.js";
+import { createThreadFromRequest } from "../../../src/services/threads/thread-create.js";
 import { internalAuthHeaders } from "../../helpers/commands.js";
 import { readJson } from "../../helpers/json.js";
 import { textInput } from "../../helpers/prompt-input.js";
@@ -175,6 +188,7 @@ describe("bb.agents.registerTool", () => {
       threadId: "thr_1",
       projectId: "proj_1",
       signal: new AbortController().signal,
+      p6rTurnAuthor: null,
     };
     const alpha = service.findAgentTool("alpha_tool")!;
     await expect(
@@ -220,6 +234,7 @@ describe("bb.agents.registerTool", () => {
       threadId: "thr_1",
       projectId: "proj_1",
       signal: new AbortController().signal,
+      p6rTurnAuthor: null,
     };
     const found = service.findAgentTool("search_issues")!;
     await expect(
@@ -1003,6 +1018,117 @@ describe("plugin tools reach thread runtime config", () => {
 });
 
 describe("internal tool-call dispatch to plugin tools", () => {
+  it("propagates the initial human create actor into p6rTurnAuthor", async () => {
+    await withTestHarness(async (harness) => {
+      const pluginsDir = await mkdtemp(
+        join(tmpdir(), "bb-plugin-initial-author-"),
+      );
+      try {
+        const rootDir = await writePlugin(pluginsDir, {
+          name: "bb-plugin-initial-author",
+          serverSource: `export default function plugin(bb: any) {
+            bb.agents.registerTool({
+              name: "initial_author_probe",
+              description: "Reports the durable initial author",
+              parameters: { type: "object" },
+              execute: (_input: any, ctx: any) => JSON.stringify(ctx.p6rTurnAuthor),
+            });
+          }`,
+        });
+        expect((await harness.pluginService.installPath(rootDir)).status).toBe(
+          "running",
+        );
+        const { session } = seedHostSession(harness.deps, {
+          id: "session-initial-author",
+        });
+        const { project } = seedProjectWithSource(harness.deps, {
+          hostId: session.hostId,
+          path: "/tmp/initial-author-source",
+        });
+        seedEnvironment(harness.deps, {
+          hostId: session.hostId,
+          projectId: project.id,
+          path: "/tmp/initial-author-workspace",
+        });
+        const actor = {
+          p6rProviderId: "p6r-fixture/provider",
+          p6rSubject: "initial-tool-subject",
+          p6rHandle: "initial-tool-author",
+          p6rDisplayName: "Initial Tool Author",
+          p6rImageUrl: null,
+        } as const;
+        p6rUpsertActorSnapshot(harness.db, actor, 1);
+        const thread = await createThreadFromRequest(harness.deps, {
+          p6rCreatedByActor: actor,
+          p6rCreatedByHandle: actor.p6rHandle,
+          environment: {
+            type: "host",
+            hostId: session.hostId,
+            workspace: {
+              type: "unmanaged",
+              path: "/tmp/initial-author-workspace",
+            },
+          },
+          input: textInput("initial tool turn"),
+          origin: "app",
+          projectId: project.id,
+          providerId: "codex",
+          startedOnBehalfOf: null,
+        });
+        const requested = listEvents(harness.db, { threadId: thread.id }).find(
+          (event) => event.type === "client/turn/requested",
+        );
+        if (!requested) throw new Error("Expected initial request event");
+        const requestData = JSON.parse(requested.data) as { requestId: string };
+        const turnId = "turn-initial-author";
+        appendThreadEvent(harness.deps, {
+          threadId: thread.id,
+          environmentId: thread.environmentId,
+          type: "turn/started",
+          scope: turnScope(turnId),
+          data: { providerThreadId: "provider-initial-author" },
+        });
+        appendThreadEvent(harness.deps, {
+          threadId: thread.id,
+          environmentId: thread.environmentId,
+          type: "turn/input/accepted",
+          scope: turnScope(turnId),
+          data: {
+            providerThreadId: "provider-initial-author",
+            clientRequestId: requestData.requestId,
+          },
+        });
+        const response = await harness.app.request(
+          "/internal/session/tool-call",
+          {
+            method: "POST",
+            headers: internalAuthHeaders(harness),
+            body: JSON.stringify({
+              sessionId: session.id,
+              threadId: thread.id,
+              providerThreadId: "provider-initial-author",
+              turnId,
+              callId: "call-initial-author",
+              tool: "initial_author_probe",
+              arguments: {},
+            }),
+          },
+        );
+        expect(await readJson(response)).toEqual({
+          success: true,
+          contentItems: [
+            {
+              type: "inputText",
+              text: JSON.stringify(actor),
+            },
+          ],
+        });
+      } finally {
+        await rm(pluginsDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("dispatches by name to plugin tools and keeps update_environment_directory working", async () => {
     await withTestHarness(async (harness) => {
       const pluginsDir = await mkdtemp(join(tmpdir(), "bb-plugin-tools-wire-"));
@@ -1019,6 +1145,8 @@ describe("internal tool-call dispatch to plugin tools", () => {
                   "thread=" + ctx.threadId +
                   " project=" + ctx.projectId +
                   " aborted=" + String(ctx.signal?.aborted) +
+                  " author=" + JSON.stringify(ctx.p6rTurnAuthor) +
+                  " transportPrincipal=" + String(ctx.p6rRequestPrincipal) +
                   " params=" + JSON.stringify(params),
               });
             }
@@ -1026,6 +1154,18 @@ describe("internal tool-call dispatch to plugin tools", () => {
         });
         const entry = await harness.pluginService.installPath(rootDir);
         expect(entry.status).toBe("running");
+        const pluginApi = harness.pluginService.getApi("wired");
+        if (!pluginApi) throw new Error("wired plugin API was not loaded");
+        pluginApi.p6rIdentity.registerProvider({
+          id: "transport",
+          resolve: () => ({
+            kind: "authenticated",
+            p6rSubject: "transport-subject",
+            p6rHandle: "transport-actor",
+            p6rDisplayName: "Transport Actor",
+            p6rImageUrl: null,
+          }),
+        });
         // A zod-backed tool registered on the live handle (mid-session
         // registration surface; applies to sessions started afterwards).
         harness.pluginService.getApi("wired")!.agents.registerTool({
@@ -1050,6 +1190,53 @@ describe("internal tool-call dispatch to plugin tools", () => {
           environmentId: environment.id,
           status: "active",
         });
+        const turnId = "turn-plugin-tool";
+        const requestId = encodeClientTurnRequestIdNumber({ value: 9001 });
+        const actor = {
+          p6rProviderId: "p6r-fixture/provider",
+          p6rSubject: "accepted-subject",
+          p6rHandle: "accepted-author",
+          p6rDisplayName: "Accepted Author",
+          p6rImageUrl: null,
+        } as const;
+        p6rUpsertActorSnapshot(harness.db, actor, 1);
+        insertEvents(harness.db, harness.hub, [
+          {
+            threadId: thread.id,
+            environmentId: environment.id,
+            providerThreadId: "provider-plugin-tool",
+            scope: threadScope(),
+            sequence: 1,
+            type: "client/turn/requested",
+            itemId: null,
+            itemKind: null,
+            parentToolCallId: null,
+            p6rActorHandle: actor.p6rHandle,
+            p6rActorProviderId: actor.p6rProviderId,
+            p6rActorSubject: actor.p6rSubject,
+            p6rActorDisplayName: actor.p6rDisplayName,
+            p6rActorImageUrl: actor.p6rImageUrl,
+            data: JSON.stringify({
+              requestId,
+              transcript: "[from=client-claimed-spoof]",
+            }),
+          },
+          {
+            threadId: thread.id,
+            environmentId: environment.id,
+            providerThreadId: "provider-plugin-tool",
+            scope: turnScope(turnId),
+            sequence: 2,
+            type: "turn/input/accepted",
+            itemId: null,
+            itemKind: null,
+            parentToolCallId: null,
+            data: JSON.stringify({
+              clientRequestId: requestId,
+              transcript: "[from=transcript-spoof]",
+            }),
+          },
+        ]);
 
         const postToolCall = (tool: string, args: unknown) =>
           harness.app.request("/internal/session/tool-call", {
@@ -1073,7 +1260,7 @@ describe("internal tool-call dispatch to plugin tools", () => {
           contentItems: [
             {
               type: "inputText",
-              text: `thread=${thread.id} project=${project.id} aborted=false params={"foo":1}`,
+              text: `thread=${thread.id} project=${project.id} aborted=false author={"p6rProviderId":"p6r-fixture/provider","p6rSubject":"accepted-subject","p6rHandle":"accepted-author","p6rDisplayName":"Accepted Author","p6rImageUrl":null} transportPrincipal=undefined params={"foo":1}`,
             },
           ],
         });

@@ -107,6 +107,7 @@ interface FakeRuntimeState {
   startedInstructions: string | undefined;
   startedThreadId: string | undefined;
   steeredClientRequestId: ClientTurnRequestId | undefined;
+  steeredInput: PromptInput[] | undefined;
   steeredTurnId: string | undefined;
   steeredTurnInstructions: string | undefined;
   stoppedThreadId: string | undefined;
@@ -281,6 +282,7 @@ export function createFakeRuntime() {
     startedInstructions: undefined,
     startedThreadId: undefined,
     steeredClientRequestId: undefined,
+    steeredInput: undefined,
     steeredTurnId: undefined,
     steeredTurnInstructions: undefined,
     stoppedThreadId: undefined,
@@ -368,6 +370,7 @@ export function createFakeRuntime() {
     async steerTurn(args) {
       state.steeredTurnId = args.expectedTurnId;
       state.steeredClientRequestId = args.clientRequestId;
+      state.steeredInput = args.input;
       state.steeredTurnInstructions = args.instructions;
       return { status: "steered" };
     },

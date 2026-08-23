@@ -1,4 +1,7 @@
-import type { ThreadListEntry } from "@bb/domain";
+import {
+  p6rCreateProviderPrincipalKey,
+  type ThreadListEntry,
+} from "@bb/domain";
 import { describe, expect, it } from "vitest";
 import { toPluginSidebarThread } from "./plugin-sidebar-threads";
 
@@ -170,6 +173,44 @@ describe("toPluginSidebarThread", () => {
 
   it("carries the provider so a row can draw an agent glyph", () => {
     expect(toPluginSidebarThread(makeThread()).providerId).toBe("codex");
+  });
+
+  it("projects ordered participant profiles without collapsing equal presentation", () => {
+    const mapped = toPluginSidebarThread(
+      makeThread({
+        participants: [
+          {
+            p6rPrincipalKey: p6rCreateProviderPrincipalKey("github", "acct-42"),
+            p6rDisplayName: "Sawyer",
+            p6rImageUrl: "https://example.test/github.png",
+          },
+          {
+            p6rPrincipalKey: p6rCreateProviderPrincipalKey("google", "acct-42"),
+            p6rDisplayName: "Sawyer",
+            p6rImageUrl: "https://example.test/google.png",
+          },
+        ],
+      }),
+    );
+
+    expect(mapped.p6rParticipants).toEqual([
+      {
+        p6rPrincipalKey: "github:acct-42",
+        p6rDisplayName: "Sawyer",
+        p6rImageUrl: "https://example.test/github.png",
+      },
+      {
+        p6rPrincipalKey: "google:acct-42",
+        p6rDisplayName: "Sawyer",
+        p6rImageUrl: "https://example.test/google.png",
+      },
+    ]);
+  });
+
+  it("omits the optional contribution when the host has no participant projection", () => {
+    expect(
+      Object.hasOwn(toPluginSidebarThread(makeThread()), "p6rParticipants"),
+    ).toBe(false);
   });
 
   // A personal-project thread has a machine but no worktree, so the machine

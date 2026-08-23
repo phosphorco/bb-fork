@@ -154,6 +154,7 @@ function makeQueuedMessage(
     createdAt: 1,
     updatedAt: 1,
     ...message,
+    p6rActor: message.p6rActor ?? null,
   };
 }
 

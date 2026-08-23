@@ -6,11 +6,12 @@ import {
   fireEvent,
   render,
   screen,
+  within,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
 import { createStore, Provider } from "jotai";
-import type { ThreadListEntry } from "@bb/domain";
+import { p6rPrincipalKeySchema, type ThreadListEntry } from "@bb/domain";
 import type { PluginComposerThreadRowStatus } from "@get-bb/plugin-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -91,6 +92,7 @@ function createThread(
     environmentName: null,
     environmentBranchName: null,
     environmentWorkspaceDisplayKind: "other",
+    participants: [],
     runtime: {
       displayStatus: "idle",
       hostReconnectGraceExpiresAt: null,
@@ -250,6 +252,45 @@ afterEach(() => {
 });
 
 describe("ThreadRow", () => {
+  it("renders the supplied participant profiles in server order", () => {
+    renderThreadRow({
+      thread: createThread({
+        participants: [
+          {
+            p6rPrincipalKey: p6rPrincipalKeySchema.parse("p6r:github/alice"),
+            p6rDisplayName: "Alice Chen",
+            p6rImageUrl: "https://example.test/alice.png",
+          },
+          {
+            p6rPrincipalKey: p6rPrincipalKeySchema.parse("p6r:google/bob"),
+            p6rDisplayName: "Bob Stone",
+            p6rImageUrl: "https://example.test/bob.png",
+          },
+        ],
+      }),
+    });
+
+    const participants = screen.getByRole("group", {
+      name: "Thread participants: Alice Chen, Bob Stone",
+    });
+    const renderedText = participants.textContent ?? "";
+    expect(renderedText).toContain("Alice Chen");
+    expect(renderedText).toContain("Bob Stone");
+    expect(renderedText.indexOf("Alice Chen")).toBeLessThan(
+      renderedText.indexOf("Bob Stone"),
+    );
+    expect(
+      within(participants)
+        .getByRole("img", { name: "Alice Chen" })
+        .getAttribute("src"),
+    ).toBe("https://example.test/alice.png");
+    expect(
+      within(participants)
+        .getByRole("img", { name: "Bob Stone" })
+        .getAttribute("src"),
+    ).toBe("https://example.test/bob.png");
+  });
+
   const splitWorkingCases: Array<{
     label: string;
     pluginStatus?: PluginComposerThreadRowStatus;

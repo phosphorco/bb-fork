@@ -199,3 +199,4 @@ export const HOST_ARTIFACT_MAX_BYTES = 256 * 1024 * 1024;
  * the runtime read without pulling the validation layer in.
  */
 export const DAEMON_BUNDLED_PROVIDER_BRIDGE_IDS: readonly string[] = ["pi"];
+// weave: run 'weave explain packages/host-daemon-contract/src/protocol.ts' for per-hunk detail, 'weave check' to verify your resolution

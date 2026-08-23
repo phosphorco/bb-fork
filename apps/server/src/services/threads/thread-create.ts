@@ -502,6 +502,14 @@ async function createProvisioningThread(
       threadId: thread.id,
     });
     context = requestThreadProvision(deps, {
+      p6rActor:
+        args.request.startedOnBehalfOf === null
+          ? (args.request.p6rCreatedByActor ?? null)
+          : null,
+      p6rActorHandle:
+        args.request.startedOnBehalfOf === null
+          ? (args.request.p6rCreatedByHandle ?? null)
+          : null,
       thread,
       environmentIntent: args.environmentIntent,
       execution,

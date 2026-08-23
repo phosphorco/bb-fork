@@ -36,7 +36,9 @@ import {
 afterEach(cleanupTempDirs);
 
 let nextClientRequestIdValue = 1;
+
 const IMAGE_ATTACHMENT_LIMIT_BYTES = 10 * 1024 * 1024;
+
 const FILE_ATTACHMENT_LIMIT_BYTES = 25 * 1024 * 1024;
 
 type TextPromptInput = Extract<PromptInput, { type: "text" }>;
@@ -1535,6 +1537,10 @@ describe("thread command dispatch", () => {
         threadId: "thread-1",
         requestId: runRequestId,
         input: [textPromptInput("hello")],
+        p6rSpeaker: {
+          p6rDisplayName: "Alice",
+          p6rHandle: "alice",
+        },
         options: {
           model: "gpt-5",
           serviceTier: "default",
@@ -1571,6 +1577,10 @@ describe("thread command dispatch", () => {
         threadId: "thread-1",
         requestId: steerRequestId,
         input: [textPromptInput("adjust")],
+        p6rSpeaker: {
+          p6rDisplayName: "Bob",
+          p6rHandle: "bob",
+        },
         options: {
           model: "gpt-5",
           serviceTier: "default",
@@ -1602,10 +1612,13 @@ describe("thread command dispatch", () => {
 
     expect(runResult).toEqual({ appliedAs: "new-turn" });
     expect(steerResult).toEqual({ appliedAs: "steer" });
-    expect(harness.runtimeState.ranTurnText).toBe("hello");
+    expect(harness.runtimeState.ranTurnText).toBe("[from @alice] hello");
     expect(harness.runtimeState.ranTurnClientRequestId).toBe(runRequestId);
     expect(harness.runtimeState.steeredTurnId).toBe("turn-1");
     expect(harness.runtimeState.steeredClientRequestId).toBe(steerRequestId);
+    expect(harness.runtimeState.steeredInput).toEqual([
+      textPromptInput("[from @bob] adjust"),
+    ]);
     expect(harness.runtimeState.steeredTurnInstructions).toBe(
       "Be a helpful coding agent.",
     );

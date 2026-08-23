@@ -595,6 +595,9 @@ export const threads = sqliteTable(
     // Id of the plugin that spawned this thread (create origin "plugin").
     // NULL for every other origin.
     originPluginId: text("origin_plugin_id"),
+    // Normalized handle of the human who created the thread. NULL = created by
+    // an agent/plugin/system origin or pre-multiplayer history.
+    p6rCreatedByHandle: text("p6r_created_by_handle"),
     visibility: text("visibility", { enum: threadVisibilityValues })
       .notNull()
       .default("visible"),
@@ -720,6 +723,42 @@ export const threadDynamicContextFileStates = sqliteTable(
   ],
 );
 
+// Authenticated actor snapshots, keyed by the provider-qualified immutable
+// principal. Handles and display fields are mutable presentation snapshots.
+export const p6rActors = sqliteTable(
+  "p6r_actors",
+  {
+    p6rProviderId: text("p6r_provider_id").notNull(),
+    p6rSubject: text("p6r_subject").notNull(),
+    p6rHandle: text("p6r_handle").notNull(),
+    p6rDisplayName: text("p6r_display_name").notNull(),
+    p6rImageUrl: text("p6r_image_url"),
+    p6rFirstSeenAt: integer("p6r_first_seen_at").notNull(),
+    p6rLastSeenAt: integer("p6r_last_seen_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.p6rProviderId, table.p6rSubject] })],
+);
+
+// Claimed multiplayer identities, retained only as a compatibility snapshot
+// for old installations and old callers. New authority never joins on this
+// handle; canonical actor identity is stored in p6r_actors above.
+// The old x-p6r-claimed-identity
+// handshake on request/socket connect. bb never verifies these: admission is
+// enforced at the boundary (connect gate / network) and any admitted client
+// has owner parity, so attribution is honor-system by design. Keyed by
+// normalized handle — the same handle on two devices is the same person; a
+// rename creates a new collaborator and history keeps the old handle.
+// Attribution columns elsewhere store the handle as plain text (no FK): adding
+// an FK would force drizzle to rebuild the large events table, and dangling
+// handles are harmless soft references.
+export const p6rCollaborators = sqliteTable("p6r_collaborators", {
+  p6rHandle: text("p6r_handle").primaryKey(),
+  p6rDisplayName: text("p6r_display_name").notNull(),
+  p6rImageUrl: text("p6r_image_url"),
+  p6rFirstSeenAt: integer("p6r_first_seen_at").notNull(),
+  p6rLastSeenAt: integer("p6r_last_seen_at").notNull(),
+});
+
 export const events = sqliteTable(
   "events",
   {
@@ -738,11 +777,18 @@ export const events = sqliteTable(
     itemId: text("item_id"),
     itemKind: text("item_kind").$type<ThreadEventItemType>(),
     parentToolCallId: text("parent_tool_call_id"),
-    data: text("data").notNull().default("{}"),
     toolName: text("tool_name").generatedAlwaysAs(
       sql`CASE WHEN json_valid(data) THEN json_extract(data, '$.item.tool') END`,
       { mode: "virtual" },
     ),
+    // Normalized handle of the human who initiated this event. NULL = not
+    // human-initiated (agent/provider/system) or pre-multiplayer history.
+    p6rActorHandle: text("p6r_actor_handle"),
+    p6rActorProviderId: text("p6r_actor_provider_id"),
+    p6rActorSubject: text("p6r_actor_subject"),
+    p6rActorDisplayName: text("p6r_actor_display_name"),
+    p6rActorImageUrl: text("p6r_actor_image_url"),
+    data: text("data").notNull().default("{}"),
     createdAt: integer("created_at").notNull(),
   },
   (table) => [
@@ -890,6 +936,14 @@ export const queuedThreadMessages = sqliteTable(
       .references(() => threads.id, { onDelete: "cascade" }),
     content: text("content").notNull(),
     senderThreadId: text("sender_thread_id"),
+    // Normalized handle of the human who queued the message, carried through
+    // so attribution survives the queue. NULL = queued by a non-human sender
+    // (e.g. another thread) or pre-multiplayer history.
+    p6rActorHandle: text("p6r_actor_handle"),
+    p6rActorProviderId: text("p6r_actor_provider_id"),
+    p6rActorSubject: text("p6r_actor_subject"),
+    p6rActorDisplayName: text("p6r_actor_display_name"),
+    p6rActorImageUrl: text("p6r_actor_image_url"),
     model: text("model").notNull(),
     reasoningLevel: text("reasoning_level").notNull(),
     permissionMode: text("permission_mode").$type<PermissionMode>().notNull(),
@@ -1020,6 +1074,9 @@ export const pendingInteractions = sqliteTable(
     status: text("status").$type<PendingInteractionStatus>().notNull(),
     payload: text("payload").notNull(),
     resolution: text("resolution"),
+    // Normalized handle of the human who resolved the interaction. NULL =
+    // unresolved, resolved by system/expiry, or pre-multiplayer history.
+    p6rResolvedByHandle: text("p6r_resolved_by_handle"),
     statusReason: text("status_reason"),
     createdAt: integer("created_at").notNull(),
     expiresAt: integer("expires_at"),

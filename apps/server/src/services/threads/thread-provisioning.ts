@@ -8,6 +8,7 @@ import {
   type Thread,
   type ThreadTurnInitiator,
   type TurnRequestTarget,
+  type P6rActorSnapshot,
 } from "@bb/domain";
 import type { StartedOnBehalfOf } from "@bb/server-contract";
 import type { AppDeps } from "../../types.js";
@@ -43,6 +44,8 @@ import { applyLoggedThreadLifecycleEvent } from "./lifecycle-outcome.js";
 import { recordAcceptedPromptHistoryEntry } from "../prompt-history.js";
 
 interface RequestThreadProvisionArgs {
+  p6rActor?: P6rActorSnapshot | null;
+  p6rActorHandle?: string | null;
   environmentIntent: ThreadProvisionEnvironmentIntent;
   execution: ResolvedThreadExecutionOptions;
   // Non-null ⇒ provision this thread by cloning the source provider session
@@ -61,6 +64,8 @@ interface RequestThreadProvisionArgs {
 }
 
 interface RequestThreadReprovisionArgs {
+  p6rActor?: P6rActorSnapshot | null;
+  p6rActorHandle?: string | null;
   beforeRequestAppendInTransaction?: (args: { tx: DbTransaction }) => void;
   environment: Environment;
   provisionEventSequence: number;
@@ -207,6 +212,7 @@ async function startThreadIfEnvironmentReady(
   // established and the thread lands idle; the user steers the first executed
   // turn later. Submitted fork prompts carry their input and run immediately.
   await requestThreadStart(deps, {
+    p6rActorHandle: args.context.request.p6rActorHandle,
     thread: args.thread,
     environment: {
       id: args.environment.id,
@@ -240,6 +246,8 @@ export function requestThreadProvision(
   const senderThreadId = args.startedOnBehalfOf?.senderThreadId ?? null;
   const target: TurnRequestTarget = { kind: "thread-start" };
   const request = appendClientTurnEvent(deps, {
+    p6rActor: initiator === "user" ? (args.p6rActor ?? null) : null,
+    p6rActorHandle: initiator === "user" ? (args.p6rActorHandle ?? null) : null,
     threadId: args.thread.id,
     environmentId: args.thread.environmentId,
     type: "client/turn/requested",
@@ -259,6 +267,8 @@ export function requestThreadProvision(
     requestSequence: request.sequence,
   });
   appendClientTurnEvent(deps, {
+    p6rActor: initiator === "user" ? (args.p6rActor ?? null) : null,
+    p6rActorHandle: initiator === "user" ? (args.p6rActorHandle ?? null) : null,
     threadId: args.thread.id,
     environmentId: args.thread.environmentId,
     type: "client/thread/start",
@@ -293,6 +303,8 @@ export function requestThreadReprovision(
           tx,
           {
             threadId: args.thread.id,
+            p6rActor: args.p6rActor ?? null,
+            p6rActorHandle: args.p6rActorHandle ?? null,
             environmentId: args.environment.id,
             type: "client/turn/requested",
             input: args.input,
@@ -331,6 +343,8 @@ export function requestThreadReprovision(
   );
 
   const context = createReprovisioningContext({
+    p6rActor: args.p6rActor ?? null,
+    p6rActorHandle: args.p6rActorHandle ?? null,
     clientRequestId: request.requestId,
     provisionEventSequence: args.provisionEventSequence,
     execution: args.execution,

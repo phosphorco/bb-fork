@@ -263,6 +263,8 @@ interface TimelineRendererStaticContextValue {
   resolveMentionLink: PromptMentionLinkResolver | undefined;
   resolveSegmentLinkHref: TimelineTitleLinkResolver | undefined;
   resolveUserAttachmentImageSrc: UserAttachmentImageSrcResolver | undefined;
+  /** True when 2+ distinct authors are loaded; user rows then show author chips. */
+  p6rShowMessageAuthors: boolean;
   threadId: string | undefined;
   workspaceRootPath: string | undefined;
 }
@@ -401,11 +403,14 @@ type TimelineRowTitleRenderState =
     };
 
 type TimelineRowsListSpacing = "top-level" | "nested" | "bundle";
+
 type TimelineRawRows = readonly TimelineRow[];
+
 type GetTimelineViewRows = (
   rows: TimelineRawRows,
   options?: BuildTimelineViewRowsOptions,
 ) => ThreadTimelineViewRow[];
+
 type TimelineRowsListItem =
   | {
       kind: "row";
@@ -444,21 +449,29 @@ const SenderThreadMetadataContext = createContext<ReadonlyMap<
   string,
   SenderThreadMetadata
 > | null>(null);
+
 const TimelineTurnStateContext =
   createContext<TimelineTurnStateContextValue | null>(null);
+
 const LatestActionableAssistantMessageIdContext = createContext<string | null>(
   null,
 );
+
 const LatestActionableUserMessageIdContext = createContext<string | null>(null);
 // The assistant message still receiving text deltas (the timeline's trailing
 // row while the runtime runs), or null. Read by ConversationRow so only that
 // body renders through the settled/tail streaming split.
 const StreamingAssistantMessageIdContext = createContext<string | null>(null);
+
 const EMPTY_ROW_ID_SET: ReadonlySet<string> = new Set<string>();
+
 const TimelineSearchExpansionContext =
   createContext<ReadonlySet<string>>(EMPTY_ROW_ID_SET);
+
 const TimelineWindowingEnabledContext = createContext(false);
+
 const TIMELINE_TERMINAL_EXPANSION_RETENTION = 24;
+
 const SKILL_FILE_NAME = "SKILL.md";
 
 function useTimelineRendererStaticContext(): TimelineRendererStaticContextValue {
@@ -814,6 +827,42 @@ function isForkSeedAnchorRow(row: TimelineConversationViewRow): boolean {
 }
 
 /**
+ * Whether the loaded timeline shows more than one distinct human author
+ * (2+ distinct non-null `p6rActorHandle`s on user rows). Single-author threads
+ * stay chip-free so the classic solo layout is untouched; the moment a second
+ * collaborator's message loads, every attributed user row gains its author.
+ */
+export function p6rTimelineHasMultipleMessageAuthors(
+  rows: readonly ThreadTimelineViewRow[],
+): boolean {
+  const handles = new Set<string>();
+
+  const visitRows = (
+    candidateRows: readonly ThreadTimelineViewRow[],
+  ): boolean => {
+    for (const row of candidateRows) {
+      if (row.kind === "conversation") {
+        if (row.role === "user" && row.p6rActorHandle !== null) {
+          handles.add(row.p6rActorHandle);
+          if (handles.size >= 2) {
+            return true;
+          }
+        }
+        continue;
+      }
+      if (row.kind === "turn" && row.children !== null) {
+        if (visitRows(row.children)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  return visitRows(rows);
+}
+
+/**
  * Finds the final assistant row whose action bar is available in the rendered
  * timeline. Completed turn details and delegated-agent output intentionally do
  * not expose message actions, so they cannot claim the mobile inline footer.
@@ -1082,6 +1131,7 @@ const ConversationRowContent = memo(function ConversationRowContent({
     resolveSegmentLinkHref,
     resolveUserAttachmentImageSrc,
     threadId,
+    p6rShowMessageAuthors,
     workspaceRootPath,
   } = useTimelineRendererStaticContext();
   const senderThreadMetadataById = useSenderThreadMetadataContext();
@@ -1159,9 +1209,11 @@ const ConversationRowContent = memo(function ConversationRowContent({
       : undefined;
     return (
       <ConversationMessageContent
+        p6rActorHandle={row.p6rActorHandle}
         attachments={row.attachments}
         originKind={originKind}
         initiator={row.initiator}
+        p6rShowAuthor={p6rShowMessageAuthors}
         mentions={row.mentions}
         mobileActionDisplay={mobileActionDisplay}
         onAddToChat={onSelectionAddToChat}
@@ -2288,6 +2340,10 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
   );
   const projectId = props.projectId;
   const senderThreadMetadataById = useSenderThreadMetadataById();
+  const p6rShowMessageAuthors = useMemo(
+    () => p6rTimelineHasMultipleMessageAuthors(rows),
+    [rows],
+  );
   // Single plugin-slot subscription for the whole timeline; messages read the
   // stable registry from context instead of each opening a store subscription.
   // Provide getServerSnapshot so renderToStaticMarkup / SSR tests work.
@@ -2433,6 +2489,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
       resolveMentionLink: props.resolveMentionLink,
       resolveSegmentLinkHref,
       resolveUserAttachmentImageSrc: props.resolveUserAttachmentImageSrc,
+      p6rShowMessageAuthors,
       threadId: props.threadId,
       workspaceRootPath: props.workspaceRootPath,
     }),
@@ -2460,6 +2517,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
       props.resolveMentionLink,
       resolveSegmentLinkHref,
       props.resolveUserAttachmentImageSrc,
+      p6rShowMessageAuthors,
       props.threadId,
       props.workspaceRootPath,
     ],

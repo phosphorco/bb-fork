@@ -215,7 +215,8 @@ describe("system cache effects", () => {
       source: "npm",
       updateAvailable: true,
       isDevelopment: false,
-      upgradeCommand: "npx bb-app@latest",
+      upgradeGuidance:
+        "Update this primary server through Rosetta machine deployment by replacing its managed bb-app artifact. Enrolled execution machines receive this server's exact bb-app distribution automatically; manage or retry them in Settings → Machines.",
     });
 
     invalidateRealtimeQueriesAfterServerReconnect({
@@ -434,9 +435,7 @@ describe("system cache effects", () => {
     });
 
     // The TOC has an observer, so reconnect invalidation refetches it.
-    await vi.waitFor(() =>
-      expect(diffFilesQueryFn).toHaveBeenCalledTimes(1),
-    );
+    await vi.waitFor(() => expect(diffFilesQueryFn).toHaveBeenCalledTimes(1));
     // The observer-less patch entry is evicted so a stale patch can't survive
     // the reconnect.
     expect(queryClient.getQueryData(diffPatchKey)).toBeUndefined();

@@ -11,8 +11,11 @@ import type {
   BbSdkTransport,
 } from "./transport.js";
 
+import type { P6rClaimedIdentity } from "@bb/domain";
+
 export interface CreateBrowserTransportArgs {
   baseUrl?: string;
+  p6rClaimedIdentity?: P6rClaimedIdentity;
   fetch?: typeof fetch;
   realtimeUrl?: string;
   websocket?: BbRealtimeSocketFactory;
@@ -34,6 +37,9 @@ export function createBrowserTransport(
 ): BbSdkTransport {
   return createHttpTransport({
     baseUrl: args.baseUrl,
+    ...(args.p6rClaimedIdentity
+      ? { p6rClaimedIdentity: args.p6rClaimedIdentity }
+      : {}),
     fetch: args.fetch,
     realtimeUrl: args.realtimeUrl,
     runtime: "browser",
@@ -53,6 +59,7 @@ export function createBrowserBbSdk(
 export const bb = createBrowserBbSdk();
 
 export { BbHttpError, BbRequestTimeoutError } from "./response.js";
+
 export type { BbHttpErrorArgs } from "./response.js";
 export { createBbSdk, createBuiltinPlanCommandTextInput, createHttpTransport };
 export type { BbSdk, BbSdkAreas, BbSdkContext, BbSdkTransport };

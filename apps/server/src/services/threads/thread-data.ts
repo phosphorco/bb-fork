@@ -101,6 +101,7 @@ function parseStoredEventRow(row: StoredEventRow): ThreadEventRow {
     threadId: row.threadId,
     seq: row.sequence,
     createdAt: row.createdAt,
+    p6rActorHandle: row.p6rActorHandle,
     event: parseStoredEvent(row),
   });
 }

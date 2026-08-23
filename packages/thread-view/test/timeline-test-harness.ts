@@ -63,6 +63,7 @@ export interface TimelineEventFactoryDefaults {
 }
 
 export interface EventFactoryRowOptions {
+  p6rActorHandle?: string | null;
   createdAt?: number;
   id?: string;
   seq?: number;
@@ -476,6 +477,7 @@ export function createTimelineEventFactory(
       threadId: options?.threadId ?? defaults.threadId,
       seq,
       createdAt: options?.createdAt ?? seq,
+      p6rActorHandle: options?.p6rActorHandle ?? null,
     };
   }
 

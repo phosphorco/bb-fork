@@ -287,6 +287,11 @@ export function toThreadEventWithMeta(
       id: row.id,
       seq: row.sequence,
       createdAt: row.createdAt,
+      p6rActorHandle: row.p6rActorHandle,
+      p6rActorProviderId: row.p6rActorProviderId,
+      p6rActorSubject: row.p6rActorSubject,
+      p6rActorDisplayName: row.p6rActorDisplayName,
+      p6rActorImageUrl: row.p6rActorImageUrl,
     },
   };
 }
@@ -2067,8 +2072,7 @@ export function buildTimelineTurnSummaryDetails(
   // route actually holds, so the parent expansion spends what is left rather
   // than a pre-closure estimate of it. The subtraction may go negative, which
   // is the safe direction: the parent fetch then stays inside its bounds.
-  const detailsEventDataBytes =
-    byteLengthOfStoredEventRows(wholeItemEventRows);
+  const detailsEventDataBytes = byteLengthOfStoredEventRows(wholeItemEventRows);
   const eventRowsWithParentedChildren = ensureTimelineWindowParentedRows(db, {
     maxInlineOutputChars: detailsInlineOutputLimit,
     outOfBoundsChildDataByteLimit:

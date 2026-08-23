@@ -57,7 +57,8 @@ describe("createAppVersionService", () => {
       latestVersion: null,
       source: "npm",
       updateAvailable: false,
-      upgradeCommand: "npx bb-app@latest",
+      upgradeGuidance:
+        "Update this primary server through Rosetta machine deployment by replacing its managed bb-app artifact. Enrolled execution machines receive this server's exact bb-app distribution automatically; manage or retry them in Settings → Machines.",
     });
     expect(calls).toEqual([]);
   });
@@ -115,7 +116,8 @@ describe("createAppVersionService", () => {
       latestVersion: null,
       source: "npm",
       updateAvailable: false,
-      upgradeCommand: "npx bb-app@latest",
+      upgradeGuidance:
+        "Update this primary server through Rosetta machine deployment by replacing its managed bb-app artifact. Enrolled execution machines receive this server's exact bb-app distribution automatically; manage or retry them in Settings → Machines.",
     });
     expect(warn).toHaveBeenCalled();
   });

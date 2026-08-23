@@ -161,12 +161,24 @@ describe("pending interactions", () => {
         decision: "allow_for_session",
         grantedPermissions: null,
       }),
+      p6rResolvedByHandle: "alice",
     });
 
     expect(resolved).toMatchObject({
       id: older.id,
+      p6rResolvedByHandle: "alice",
       status: "resolved",
     });
+    expect(
+      setPendingInteractionResolved(db, {
+        id: older.id,
+        resolution: JSON.stringify({
+          decision: "allow_for_session",
+          grantedPermissions: null,
+        }),
+        p6rResolvedByHandle: "bob",
+      }),
+    ).toBeNull();
   });
 
   it("interrupts pending interactions for matching provider threads only", () => {

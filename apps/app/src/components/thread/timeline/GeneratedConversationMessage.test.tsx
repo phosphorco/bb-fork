@@ -56,7 +56,9 @@ function renderChildCompleted(text = MARKDOWN_BODY) {
     <MemoryRouter>
       <RouteNavigationProvider>
         <ConversationMessageContent
+          p6rActorHandle={null}
           role="user"
+          p6rShowAuthor={false}
           initiator="system"
           originKind={null}
           senderThreadId={null}
@@ -89,11 +91,16 @@ afterEach(() => {
 // leading markdown heading. Both Markdown and the structured mention must
 // survive the combined renderer.
 const AGENT_BODY = "# notes\nedited path:src/app.ts here";
+
 const AGENT_PATH_TOKEN = "path:src/app.ts";
+
 const AGENT_PATH_START = AGENT_BODY.indexOf(AGENT_PATH_TOKEN);
+
 const OVERFLOWING_ONE_LINE_AGENT_BODY =
   "TEST RESULT refines the diagnosis — RULE OUT eviction. A fire-and-forget direct POST with no wait parameter and no client-held stream should still render the complete report after expansion.";
+
 const RAW_THREAD_ID = "thr_dcwivn5n8w";
+
 const RAW_THREAD_BODY = `Continue in ${RAW_THREAD_ID}; exact code reference \`${RAW_THREAD_ID}\`.\nMore details.`;
 
 function threadListEntry(
@@ -191,7 +198,9 @@ function renderAgentMessage(
           threadById={new Map([[rawMentionTarget.id, rawMentionTarget]])}
         >
           <ConversationMessageContent
+            p6rActorHandle={null}
             role="user"
+            p6rShowAuthor={false}
             initiator="agent"
             originKind={null}
             senderThreadId="thr_agent"

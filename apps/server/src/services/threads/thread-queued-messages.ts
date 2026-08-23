@@ -12,6 +12,11 @@ interface StoredQueuedThreadMessageRow {
   createdAt: number;
   id: string;
   groupWithNext: boolean;
+  p6rActorDisplayName: string | null;
+  p6rActorHandle: string | null;
+  p6rActorImageUrl: string | null;
+  p6rActorProviderId: string | null;
+  p6rActorSubject: string | null;
   model: string;
   reasoningLevel: string;
   permissionMode: PermissionMode;
@@ -59,5 +64,18 @@ export function toThreadQueuedMessage(
     groupWithNext: row.groupWithNext,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    p6rActor:
+      row.p6rActorProviderId !== null &&
+      row.p6rActorSubject !== null &&
+      row.p6rActorHandle !== null &&
+      row.p6rActorDisplayName !== null
+        ? {
+            p6rProviderId: row.p6rActorProviderId,
+            p6rSubject: row.p6rActorSubject,
+            p6rHandle: row.p6rActorHandle,
+            p6rDisplayName: row.p6rActorDisplayName,
+            p6rImageUrl: row.p6rActorImageUrl,
+          }
+        : null,
   });
 }

@@ -10,6 +10,11 @@ import {
   threadStatusSchema,
 } from "./thread.js";
 
+import {
+  p6rClaimedIdentityClaimSchema,
+  p6rPrincipalKeySchema,
+} from "./claimed-identity.js";
+
 export const THREAD_CHANGE_KINDS = [
   "thread-created",
   "thread-deleted",
@@ -28,6 +33,7 @@ export const THREAD_CHANGE_KINDS = [
   "tabs-changed",
   "terminals-changed",
 ] as const;
+
 export type ThreadChangeKind = (typeof THREAD_CHANGE_KINDS)[number];
 
 export const PROJECT_CHANGE_KINDS = [
@@ -38,6 +44,7 @@ export const PROJECT_CHANGE_KINDS = [
   "threads-changed",
   "project-order-changed",
 ] as const;
+
 export type ProjectChangeKind = (typeof PROJECT_CHANGE_KINDS)[number];
 
 export const ENVIRONMENT_CHANGE_KINDS = [
@@ -49,12 +56,14 @@ export const ENVIRONMENT_CHANGE_KINDS = [
   "git-refs-changed",
   "thread-storage-changed",
 ] as const;
+
 export type EnvironmentChangeKind = (typeof ENVIRONMENT_CHANGE_KINDS)[number];
 
 export const HOST_CHANGE_KINDS = [
   "host-connected",
   "host-disconnected",
 ] as const;
+
 export type HostChangeKind = (typeof HOST_CHANGE_KINDS)[number];
 
 export const SYSTEM_CHANGE_KINDS = [
@@ -62,12 +71,17 @@ export const SYSTEM_CHANGE_KINDS = [
   "plugins-changed",
   "provider-registrations-changed",
 ] as const;
+
 export type SystemChangeKind = (typeof SYSTEM_CHANGE_KINDS)[number];
 
 export const threadChangeKindSchema = z.enum(THREAD_CHANGE_KINDS);
+
 export const projectChangeKindSchema = z.enum(PROJECT_CHANGE_KINDS);
+
 export const environmentChangeKindSchema = z.enum(ENVIRONMENT_CHANGE_KINDS);
+
 export const hostChangeKindSchema = z.enum(HOST_CHANGE_KINDS);
+
 export const systemChangeKindSchema = z.enum(SYSTEM_CHANGE_KINDS);
 
 export const realtimeSubscriptionTargetSchema = z.discriminatedUnion("kind", [
@@ -121,6 +135,7 @@ export const realtimeSubscriptionTargetSchema = z.discriminatedUnion("kind", [
     })
     .strict(),
 ]);
+
 export type RealtimeSubscriptionTarget = z.infer<
   typeof realtimeSubscriptionTargetSchema
 >;
@@ -129,13 +144,39 @@ const subscribeMessageSchema = z.object({
   type: z.literal("subscribe"),
   target: realtimeSubscriptionTargetSchema,
 });
+
 export type SubscribeMessage = z.infer<typeof subscribeMessageSchema>;
 
 const unsubscribeMessageSchema = z.object({
   type: z.literal("unsubscribe"),
   target: realtimeSubscriptionTargetSchema,
 });
+
 export type UnsubscribeMessage = z.infer<typeof unsubscribeMessageSchema>;
+
+/**
+ * Ephemeral composer-typing signal. The server folds it into presence state
+ * with a short TTL; it is never persisted. Older servers drop the message on
+ * parse, which is an acceptable degradation for a purely cosmetic signal.
+ */
+export const p6rTypingMessageSchema = z.object({
+  type: z.literal("p6r-typing"),
+  p6rThreadId: z.string().min(1),
+  p6rTyping: z.boolean(),
+});
+
+export type P6rTypingMessage = z.infer<typeof p6rTypingMessageSchema>;
+
+export const p6rClaimedIdentityMessageSchema = z
+  .object({
+    type: z.literal("p6r-claimed-identity"),
+    p6rClaimedIdentity: p6rClaimedIdentityClaimSchema.nullable(),
+  })
+  .strict();
+
+export type P6rClaimedIdentityMessage = z.infer<
+  typeof p6rClaimedIdentityMessageSchema
+>;
 
 /**
  * Application-level liveness probe from a realtime client. Browsers expose no
@@ -146,13 +187,17 @@ export type UnsubscribeMessage = z.infer<typeof unsubscribeMessageSchema>;
 export const pingMessageSchema = z.object({
   type: z.literal("ping"),
 });
+
 export type PingMessage = z.infer<typeof pingMessageSchema>;
 
 export const clientMessageSchema = z.discriminatedUnion("type", [
   subscribeMessageSchema,
   unsubscribeMessageSchema,
   pingMessageSchema,
+  p6rTypingMessageSchema,
+  p6rClaimedIdentityMessageSchema,
 ]);
+
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
 
 /** Server answer to {@link pingMessageSchema}; strict, guards the outgoing side. */
@@ -161,6 +206,7 @@ export const pongMessageSchema = z
     type: z.literal("pong"),
   })
   .strict();
+
 export type PongMessage = z.infer<typeof pongMessageSchema>;
 
 /** Lenient inbound counterpart of {@link pongMessageSchema} for clients. */
@@ -217,6 +263,7 @@ export const threadStatusChangeMetadataSchema = z
     updatedAt: z.number(),
   })
   .strict();
+
 export type ThreadStatusChangeMetadata = z.infer<
   typeof threadStatusChangeMetadataSchema
 >;
@@ -230,6 +277,7 @@ export const threadChangeMetadataSchema = z
     statusChange: threadStatusChangeMetadataSchema.optional(),
   })
   .strict();
+
 export type ThreadChangeMetadata = z.infer<typeof threadChangeMetadataSchema>;
 
 /**
@@ -251,6 +299,7 @@ export const threadChangedMessageSchema = z
     changes: z.array(threadChangeKindSchema).readonly(),
   })
   .strict();
+
 export type ThreadChangedMessage = z.infer<typeof threadChangedMessageSchema>;
 
 export const projectChangedMessageSchema = z
@@ -261,6 +310,7 @@ export const projectChangedMessageSchema = z
     changes: z.array(projectChangeKindSchema).readonly(),
   })
   .strict();
+
 export type ProjectChangedMessage = z.infer<typeof projectChangedMessageSchema>;
 
 export const environmentChangedMessageSchema = z
@@ -271,6 +321,7 @@ export const environmentChangedMessageSchema = z
     changes: z.array(environmentChangeKindSchema).readonly(),
   })
   .strict();
+
 export type EnvironmentChangedMessage = z.infer<
   typeof environmentChangedMessageSchema
 >;
@@ -283,6 +334,7 @@ export const hostChangedMessageSchema = z
     changes: z.array(hostChangeKindSchema).readonly(),
   })
   .strict();
+
 export type HostChangedMessage = z.infer<typeof hostChangedMessageSchema>;
 
 export const systemChangedMessageSchema = z
@@ -292,7 +344,57 @@ export const systemChangedMessageSchema = z
     changes: z.array(systemChangeKindSchema).readonly(),
   })
   .strict();
+
 export type SystemChangedMessage = z.infer<typeof systemChangedMessageSchema>;
+
+/**
+ * Multiplayer presence broadcasts. Viewer sets are derived server-side from
+ * live websocket subscriptions (a socket subscribed to thread-detail:<id> with
+ * a claimed identity is "viewing"); nothing is persisted. `p6r-thread-presence`
+ * goes to that thread's detail subscribers; `p6r-presence-summary` is the compact
+ * sidebar form sent to thread-list subscribers.
+ */
+export const p6rPresenceViewerSchema = z
+  .object({
+    p6rPrincipalKey: p6rPrincipalKeySchema.optional(),
+    p6rHandle: z.string().min(1),
+    p6rDisplayName: z.string().min(1),
+    // null = no avatar; clients render initials.
+    p6rImageUrl: z.string().nullable(),
+    p6rTyping: z.boolean(),
+  })
+  .strict();
+
+export type P6rPresenceViewer = z.infer<typeof p6rPresenceViewerSchema>;
+
+export const p6rThreadPresenceMessageSchema = z
+  .object({
+    type: z.literal("p6r-thread-presence"),
+    p6rThreadId: z.string().min(1),
+    p6rViewers: z.array(p6rPresenceViewerSchema).readonly(),
+  })
+  .strict();
+
+export type P6rThreadPresenceMessage = z.infer<
+  typeof p6rThreadPresenceMessageSchema
+>;
+
+export const p6rPresenceSummaryMessageSchema = z
+  .object({
+    type: z.literal("p6r-presence-summary"),
+    // threadId -> handles currently viewing that thread.
+    p6rThreads: z.record(z.string(), z.array(z.string()).readonly()),
+    // Additive profile projection for consumers that must preserve exact
+    // PrincipalKey identity. Legacy clients continue reading p6rThreads.
+    p6rThreadViewers: z
+      .record(z.string(), z.array(p6rPresenceViewerSchema).readonly())
+      .optional(),
+  })
+  .strict();
+
+export type P6rPresenceSummaryMessage = z.infer<
+  typeof p6rPresenceSummaryMessageSchema
+>;
 
 export const changedMessageSchema = z.discriminatedUnion("entity", [
   threadChangedMessageSchema,
@@ -301,6 +403,7 @@ export const changedMessageSchema = z.discriminatedUnion("entity", [
   hostChangedMessageSchema,
   systemChangedMessageSchema,
 ]);
+
 export type ChangedMessage = z.infer<typeof changedMessageSchema>;
 
 /**
@@ -384,3 +487,42 @@ export const changedMessageLenientSchema = z.discriminatedUnion("entity", [
   hostChangedMessageLenientSchema,
   systemChangedMessageLenientSchema,
 ]);
+
+/**
+ * Lenient inbound counterparts for presence broadcasts: unknown fields are
+ * stripped and additive per-viewer fields from a newer server degrade to
+ * defaults instead of dropping the whole roster. Output remains assignable to
+ * the strict message types.
+ */
+export const p6rThreadPresenceMessageLenientSchema = z.object({
+  type: z.literal("p6r-thread-presence"),
+  p6rThreadId: z.string().min(1),
+  p6rViewers: z.array(
+    z.object({
+      p6rPrincipalKey: p6rPrincipalKeySchema.optional(),
+      p6rHandle: z.string().min(1),
+      p6rDisplayName: z.string().min(1),
+      p6rImageUrl: z.string().nullable().catch(null),
+      p6rTyping: z.boolean().catch(false),
+    }),
+  ),
+});
+
+export const p6rPresenceSummaryMessageLenientSchema = z.object({
+  type: z.literal("p6r-presence-summary"),
+  p6rThreads: z.record(z.string(), z.array(z.string())),
+  p6rThreadViewers: z
+    .record(
+      z.string(),
+      z.array(
+        z.object({
+          p6rPrincipalKey: p6rPrincipalKeySchema.optional(),
+          p6rHandle: z.string().min(1),
+          p6rDisplayName: z.string().min(1),
+          p6rImageUrl: z.string().nullable().catch(null),
+          p6rTyping: z.boolean().catch(false),
+        }),
+      ),
+    )
+    .optional(),
+});

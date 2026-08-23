@@ -4,9 +4,13 @@ import type { SystemVersionResponse } from "@bb/server-contract";
 import type { ServerLogger, ServerRuntimeConfig } from "../../types.js";
 
 const NPM_LATEST_URL = "https://registry.npmjs.org/bb-app/latest";
+
 const NPM_LATEST_TIMEOUT_MS = 5_000;
+
 const NPM_LATEST_CACHE_TTL_MS = 60 * 60 * 1000;
-const UPGRADE_COMMAND = "npx bb-app@latest";
+
+const UPGRADE_GUIDANCE =
+  "Update this primary server through Rosetta machine deployment by replacing its managed bb-app artifact. Enrolled execution machines receive this server's exact bb-app distribution automatically; manage or retry them in Settings → Machines.";
 
 const npmLatestResponseSchema = z
   .object({
@@ -137,7 +141,7 @@ export function createAppVersionService(
         source: "npm",
         updateAvailable: false,
         isDevelopment: config.isDevelopment,
-        upgradeCommand: UPGRADE_COMMAND,
+        upgradeGuidance: UPGRADE_GUIDANCE,
       };
 
       if (config.isDevelopment) {
