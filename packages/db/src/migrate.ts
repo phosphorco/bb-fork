@@ -1329,7 +1329,17 @@ function seedKeepAwakePluginConfiguration(db: DbConnection): void {
 const P6R_STAGED_MULTIPLAYER_ACTORS = "_bb_p6r_multiplayer_actors_pending";
 const P6R_STAGED_MULTIPLAYER_COLLABORATORS =
   "_bb_p6r_multiplayer_collaborators_pending";
-const p6rLegacyMigrationWhens = [1786998114856, 1787090005295] as const;
+const p6rLegacyMigrationWhens = [
+  1786998114856,
+  1787090005295,
+  // Shipped by the protocol-136 deployment before upstream claimed 0101.
+  // This timestamp sorts after upstream's new 0101, so it must be removed
+  // before Drizzle chooses the first unapplied canonical migration.
+  1787148230236,
+  // Used by the interrupted protocol-136 recovery candidate before the
+  // protocol-147 canonical 0105 migration could finish.
+  1787321061533,
+] as const;
 
 const p6rMultiplayerAttributionColumns = [
   { table: "events", legacyColumn: "actor_handle", p6rColumn: "p6r_actor_handle" },
@@ -1380,6 +1390,89 @@ interface P6rStagedMultiplayerSchema {
   columns: Array<(typeof p6rMultiplayerAttributionColumns)[number]>;
 }
 
+type P6rCollaboratorSchema = "legacy" | "p6r";
+
+function p6rCollaboratorSchema(
+  db: DbConnection,
+  table: string,
+): P6rCollaboratorSchema {
+  if (columnExists(db, table, "p6r_handle")) return "p6r";
+  if (columnExists(db, table, "handle")) return "legacy";
+  throw new Error(`Cannot recover unrecognized collaborator table ${table}`);
+}
+
+function p6rMergeInterruptedCollaborators(
+  db: DbConnection,
+  destination: string,
+  destinationSchema: P6rCollaboratorSchema,
+  source: string,
+  sourceSchema: P6rCollaboratorSchema,
+): void {
+  const destinationColumns =
+    destinationSchema === "p6r"
+      ? "p6r_handle, p6r_display_name, p6r_image_url, p6r_first_seen_at, p6r_last_seen_at"
+      : "handle, display_name, image_url, first_seen_at, last_seen_at";
+  const sourceColumns =
+    sourceSchema === "p6r"
+      ? "p6r_handle, p6r_display_name, p6r_image_url, p6r_first_seen_at, p6r_last_seen_at"
+      : "handle, display_name, image_url, first_seen_at, last_seen_at";
+  db.$client.exec(`
+    INSERT OR IGNORE INTO ${destination} (${destinationColumns})
+      SELECT ${sourceColumns} FROM ${source};
+    DROP TABLE ${source};
+  `);
+}
+
+function p6rRecoverInterruptedMultiplayerStaging(db: DbConnection): void {
+  if (tableExists(db, P6R_STAGED_MULTIPLAYER_ACTORS)) {
+    if (tableExists(db, "p6r_actors")) {
+      db.$client.exec(`
+        INSERT OR IGNORE INTO p6r_actors
+          (p6r_provider_id, p6r_subject, p6r_handle, p6r_display_name,
+           p6r_image_url, p6r_first_seen_at, p6r_last_seen_at)
+        SELECT p6r_provider_id, p6r_subject, p6r_handle, p6r_display_name,
+               p6r_image_url, p6r_first_seen_at, p6r_last_seen_at
+        FROM ${P6R_STAGED_MULTIPLAYER_ACTORS};
+        DROP TABLE ${P6R_STAGED_MULTIPLAYER_ACTORS};
+      `);
+    } else {
+      db.$client.exec(
+        `ALTER TABLE ${P6R_STAGED_MULTIPLAYER_ACTORS} RENAME TO p6r_actors`,
+      );
+    }
+  }
+
+  if (!tableExists(db, P6R_STAGED_MULTIPLAYER_COLLABORATORS)) return;
+
+  const stagedSchema = p6rCollaboratorSchema(
+    db,
+    P6R_STAGED_MULTIPLAYER_COLLABORATORS,
+  );
+  if (tableExists(db, "p6r_collaborators")) {
+    p6rMergeInterruptedCollaborators(
+      db,
+      "p6r_collaborators",
+      "p6r",
+      P6R_STAGED_MULTIPLAYER_COLLABORATORS,
+      stagedSchema,
+    );
+  } else if (tableExists(db, "collaborators")) {
+    p6rMergeInterruptedCollaborators(
+      db,
+      "collaborators",
+      "legacy",
+      P6R_STAGED_MULTIPLAYER_COLLABORATORS,
+      stagedSchema,
+    );
+  } else {
+    const restoredTable =
+      stagedSchema === "p6r" ? "p6r_collaborators" : "collaborators";
+    db.$client.exec(
+      `ALTER TABLE ${P6R_STAGED_MULTIPLAYER_COLLABORATORS} RENAME TO ${restoredTable}`,
+    );
+  }
+}
+
 function p6rAttributionStagingTable(table: string, p6rColumn: string): string {
   return `_bb_p6r_multiplayer_${table}_${p6rColumn}`;
 }
@@ -1392,7 +1485,7 @@ export function p6rStageAttributionColumn(
 ): string {
   const stagingTable = p6rAttributionStagingTable(table, p6rColumn);
   db.$client.exec(`
-    CREATE TEMP TABLE ${stagingTable} (
+    CREATE TABLE ${stagingTable} (
       id TEXT PRIMARY KEY,
       value TEXT NOT NULL
     ) WITHOUT ROWID;
@@ -1453,6 +1546,8 @@ function p6rStageExistingMultiplayerSchema(
     tableExists(db, "p6r_actors") ||
     tableExists(db, "p6r_collaborators") ||
     tableExists(db, "collaborators") ||
+    tableExists(db, P6R_STAGED_MULTIPLAYER_ACTORS) ||
+    tableExists(db, P6R_STAGED_MULTIPLAYER_COLLABORATORS) ||
     p6rMultiplayerAttributionColumns.some(
       (spec) =>
         tableExists(db, spec.table) &&
@@ -1463,6 +1558,8 @@ function p6rStageExistingMultiplayerSchema(
   if (!hasLegacyLedger && !hasForkSchema) {
     return null;
   }
+
+  p6rRecoverInterruptedMultiplayerStaging(db);
 
   for (const createdAt of p6rLegacyMigrationWhens) {
     db.$client
@@ -1497,6 +1594,11 @@ function p6rStageExistingMultiplayerSchema(
 
   for (const spec of p6rMultiplayerAttributionColumns) {
     if (!tableExists(db, spec.table)) {
+      continue;
+    }
+    const stagingTable = p6rAttributionStagingTable(spec.table, spec.p6rColumn);
+    if (tableExists(db, stagingTable)) {
+      staged.columns.push(spec);
       continue;
     }
     const sourceColumn = columnExists(db, spec.table, spec.p6rColumn)
@@ -1575,6 +1677,23 @@ function p6rRestoreStagedMultiplayerSchema(
       `${p6rAttributionRestoreSql(spec.table, spec.p6rColumn, stagingTable)};
        DROP TABLE ${stagingTable};`,
     );
+  }
+}
+
+function applyP6rIdentityMigrationBehindHighWater(
+  db: DbConnection,
+  migrationsFolder: string,
+): void {
+  const identityMigration = requireExpectedAppliedMigration(
+    readExpectedAppliedMigrations(migrationsFolder),
+    "0107_p6r_identity_authorship",
+  );
+  const appliedCreatedAts = readAppliedMigrationCreatedAts(db);
+  if (appliedCreatedAts.has(identityMigration.createdAt)) return;
+
+  const latestAppliedAt = Math.max(...appliedCreatedAts);
+  if (latestAppliedAt > identityMigration.createdAt) {
+    applyMigrationStatements(db, identityMigration);
   }
 }
 
@@ -1786,6 +1905,9 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
       migrationsFolder,
     );
     try {
+      if (stagedMultiplayerSchema) {
+        applyP6rIdentityMigrationBehindHighWater(db, migrationsFolder);
+      }
       drizzleMigrate(db, { migrationsFolder });
     } finally {
       if (stagedConnectMachineId) restoreStagedConnectMachineIdColumn(db);
