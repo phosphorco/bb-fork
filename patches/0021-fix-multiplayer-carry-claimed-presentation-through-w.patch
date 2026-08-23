@@ -1,12 +1,25 @@
-From 53465a8fe6747c13cddd78fb1c66154b10e435ea Mon Sep 17 00:00:00 2001
+From 10b5170f42f686a6045e250a599ff15390d6c9fa Mon Sep 17 00:00:00 2001
 From: Rosetta <cole@phosphor.co>
 Date: Sat, 22 Aug 2026 10:03:00 -0400
-Subject: [PATCH] fix(multiplayer): carry claimed presentation through
+Subject: [PATCH 21/32] fix(multiplayer): carry claimed presentation through
  websocket
 
 - Carry the existing untrusted claimed presentation from the browser to the public WebSocket boundary.
 - Keep server-authored provider-qualified PrincipalKeys, configured-provider precedence, stock fallback, spoof rejection, and legacy readability intact.
 - Add focused public protocol and client transport regression coverage.
+---
+ apps/app/src/lib/ws.identity-rebind.test.ts   |  86 ++++++++++++--
+ apps/app/src/lib/ws.ts                        |  38 +++++++
+ apps/server/src/server.ts                     |  74 ++++++++++--
+ apps/server/src/services/actors.ts            | 104 +++++++++++------
+ apps/server/src/services/identity.ts          |  16 ++-
+ apps/server/src/ws/client-protocol.ts         |  14 ++-
+ apps/server/src/ws/socket-actors.ts           |  35 ++++++
+ .../test/public/public-presence.test.ts       | 105 +++++++++++++++++-
+ packages/domain/src/change-kinds.ts           |  16 ++-
+ packages/domain/src/claimed-identity.ts       |  29 +++--
+ packages/server-contract/src/index.ts         |   5 +
+ 11 files changed, 446 insertions(+), 76 deletions(-)
 
 diff --git a/apps/app/src/lib/ws.identity-rebind.test.ts b/apps/app/src/lib/ws.identity-rebind.test.ts
 index fe4cabeb063676d26c6caa3966b38643837f4e81..95eaee576f66fc3ae59f4f2da0ff5bc70a34e4c9 100644
@@ -161,13 +174,13 @@ index fe4cabeb063676d26c6caa3966b38643837f4e81..95eaee576f66fc3ae59f4f2da0ff5bc7
      expect(socket.reconnectCalls).toBe(0);
    });
 diff --git a/apps/app/src/lib/ws.ts b/apps/app/src/lib/ws.ts
-index f80427afb1238f42bbed8134a9e55db33cb18117..de618c8e08641fbf12318ebbed37adc08416a224 100644
+index d320c8db38bbf951e703145a8d4381ed1b378b7e..4ee9dfc0252c103f2ad27a995c858b531c8e0fa7 100644
 --- a/apps/app/src/lib/ws.ts
 +++ b/apps/app/src/lib/ws.ts
-@@ -20,6 +20,10 @@ import type {
-   P6rThreadPresenceMessage,
- } from "@bb/server-contract";
- import { buildDevWebSocketUrl } from "./dev-websocket-url";
+@@ -25,6 +25,10 @@ import {
+   isDocumentVisible,
+   subscribeToDocumentVisibility,
+ } from "./document-visibility";
 +import {
 +  p6rGetClaimedIdentity,
 +  p6rSubscribeClaimedIdentity,
@@ -175,40 +188,32 @@ index f80427afb1238f42bbed8134a9e55db33cb18117..de618c8e08641fbf12318ebbed37adc0
  
  type ChangeCallback = (message: ChangedMessage) => void;
  type ThreadOpenCallback = (signal: ThreadOpenSignal) => void;
-@@ -56,6 +60,16 @@ export class WebSocketManager {
-   private connectionStateCallbacks = new Set<ConnectionStateCallback>();
-   private hasConnected = false;
-   private connectionState: WebSocketConnectionState = "connecting";
+@@ -116,9 +120,16 @@ export class WebSocketManager {
+   private disconnectedAt: number | null = null;
+   private pingTimer: ReturnType<typeof setInterval> | null = null;
+   private pongTimer: ReturnType<typeof setTimeout> | null = null;
 +  private lastClaimedIdentityPayload: string | undefined;
 +  private hasSentClaimedIdentity = false;
-+
-+  constructor() {
+ 
+   constructor(browserEvents?: WebSocketManagerBrowserEvents) {
+     this.browserEvents = browserEvents ?? createDefaultBrowserEvents();
 +    p6rSubscribeClaimedIdentity(() => {
 +      if (this.socket?.readyState === WebSocket.OPEN) {
 +        this.sendClaimedIdentity();
 +      }
 +    });
-+  }
+   }
  
    connect(): void {
-     if (this.socket) return;
-@@ -84,6 +98,7 @@ export class WebSocketManager {
-       const reconnected = this.hasConnected;
+@@ -153,6 +164,7 @@ export class WebSocketManager {
        this.hasConnected = true;
        this.setConnectionState("connected");
+       this.startPingLoop();
 +      this.sendClaimedIdentity(true);
        // Re-subscribe to all active subscriptions
        for (const subscription of this.subscriptions.values()) {
          this.sendMessage({ type: "subscribe", target: subscription.target });
-@@ -103,7 +118,6 @@ export class WebSocketManager {
-         this.hasConnected ? "reconnecting" : "connecting",
-       );
-     };
--
-   }
- 
-   /**
-@@ -321,6 +335,32 @@ export class WebSocketManager {
+@@ -560,6 +572,32 @@ export class WebSocketManager {
      }
    }
  
@@ -242,12 +247,12 @@ index f80427afb1238f42bbed8134a9e55db33cb18117..de618c8e08641fbf12318ebbed37adc0
      if (this.connectionState === nextState) {
        return;
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
-index f464f5377e6f484c9d95252c2a914442e7e4068d..c02766347685d5a3be76eedce5a67b75e1633e4f 100644
+index 974e4bdcacdef9c26af9f5837603e2f6e54e64e2..6bb99b544258f778dff5501cf798384ae16824a2 100644
 --- a/apps/server/src/server.ts
 +++ b/apps/server/src/server.ts
-@@ -90,16 +90,23 @@ import {
- const PLUGIN_WIRE_HTTP_PATH = /^\/api\/v1\/plugins\/[^/]+\/http(?:\/|$)/u;
+@@ -89,16 +89,23 @@ const PLUGIN_WIRE_HTTP_PATH = /^\/api\/v1\/plugins\/[^/]+\/http(?:\/|$)/u;
  import { rankAcceptedAssetEncodings } from "./asset-content-encoding.js";
+ import { apiJsonCompression } from "./api-response-compression.js";
  import {
 +  p6rCreateActorService,
    p6rCreateLocalOperatorIdentity,
@@ -268,9 +273,9 @@ index f464f5377e6f484c9d95252c2a914442e7e4068d..c02766347685d5a3be76eedce5a67b75
 +  p6rSetSocketActor,
 +} from "./ws/socket-actors.js";
  
- export type CloseWebSockets = () => Promise<void>;
+ type CloseWebSockets = () => Promise<void>;
  type NodeWebSocketServer = ReturnType<typeof createNodeWebSocket>["wss"];
-@@ -301,9 +308,15 @@ export function createApp(
+@@ -297,9 +304,15 @@ export function createApp(
        dataDir: deps.config.dataDir,
        serverEntryUrl: import.meta.url,
      });
@@ -287,7 +292,7 @@ index f464f5377e6f484c9d95252c2a914442e7e4068d..c02766347685d5a3be76eedce5a67b75
      now: Date.now,
    });
  
-@@ -386,14 +399,28 @@ export function createApp(
+@@ -384,14 +397,28 @@ export function createApp(
        );
      }
      if (resolution.kind === "authenticated") {
@@ -324,7 +329,7 @@ index f464f5377e6f484c9d95252c2a914442e7e4068d..c02766347685d5a3be76eedce5a67b75
      } else {
        p6rSetRequestPrincipal(context, null);
      }
-@@ -591,13 +618,36 @@ export function createApp(
+@@ -589,13 +616,36 @@ export function createApp(
                p6rPrincipalKey: p6rPrincipalKeyForActor(resolution.p6rActor),
              }
            : null;
@@ -509,10 +514,10 @@ index 6dcc767dd2294062e0967471b37ec4e9110af9d9..3aaefaf75c795953fc149655cfe3a726
    context: Context,
    actor: P6rClaimedIdentity,
 diff --git a/apps/server/src/services/identity.ts b/apps/server/src/services/identity.ts
-index 716c6c78b2facbcb36852117430958a8de6be939..36c34d6a3a1592b22c197eec168872bcd0506a27 100644
+index 020d6bfa1e73b03aadfa8b1662537d473ace69f4..8d21fe4119d816a0c52652e4bb73510a7ddaa1be 100644
 --- a/apps/server/src/services/identity.ts
 +++ b/apps/server/src/services/identity.ts
-@@ -31,12 +31,16 @@ export const P6R_LOCAL_OPERATOR_PROVIDER_ID = "p6r-local-operator";
+@@ -28,12 +28,16 @@ export const P6R_LOCAL_OPERATOR_PROVIDER_ID = "p6r-local-operator";
  export function p6rPrincipalKeyForActor(
    actor: P6rActorSnapshot,
  ): P6rPrincipalKey {
@@ -535,48 +540,18 @@ index 716c6c78b2facbcb36852117430958a8de6be939..36c34d6a3a1592b22c197eec168872bc
  }
  
  export interface P6rRequestResolution {
-@@ -157,7 +161,9 @@ function p6rIsLoopbackRequest(request: P6rIdentityRequestInput): boolean {
-   }
- }
- 
--function p6rLocalOperatorActor(defaultActor: P6rClaimedIdentity): P6rActorSnapshot {
-+function p6rLocalOperatorActor(
-+  defaultActor: P6rClaimedIdentity,
-+): P6rActorSnapshot {
-   return {
-     p6rProviderId: P6R_LOCAL_OPERATOR_PROVIDER_ID,
-     p6rSubject: defaultActor.p6rHandle,
-@@ -339,7 +345,9 @@ export function p6rSetRequestPrincipal(
-   context.set(P6R_REQUEST_PRINCIPAL_CONTEXT_KEY, actor);
- }
- 
--export function p6rGetRequestPrincipal(context: Context): P6rActorSnapshot | null {
-+export function p6rGetRequestPrincipal(
-+  context: Context,
-+): P6rActorSnapshot | null {
-   return context.get(P6R_REQUEST_PRINCIPAL_CONTEXT_KEY) ?? null;
- }
- 
-@@ -358,6 +366,7 @@ export function p6rRequestInputFromContext(
-     origin: url.origin,
-     headers: Object.fromEntries(context.req.raw.headers.entries()),
-     remoteAddress:
--      trustedRemoteAddress ?? getTrustedRemoteAddress(context as TrustedRemoteAddressReader),
-+      trustedRemoteAddress ??
-+      getTrustedRemoteAddress(context as TrustedRemoteAddressReader),
-   };
- }
 diff --git a/apps/server/src/ws/client-protocol.ts b/apps/server/src/ws/client-protocol.ts
-index 229356e7eca9531fe5ca22f3dc657fd485154131..5de3072c232906657e377af87b706f7a3355df2e 100644
+index bce1b21c7c8e5fe48442bc5c20627687775f85cd..d87a0a5dc270903ae7969ccabc00c4796f7833f5 100644
 --- a/apps/server/src/ws/client-protocol.ts
 +++ b/apps/server/src/ws/client-protocol.ts
 @@ -1,4 +1,5 @@
- import { clientMessageSchema } from "@bb/domain";
-+import type { P6rClaimedIdentity } from "@bb/domain";
+-import { clientMessageSchema, type PongMessage } from "@bb/domain";
++import { clientMessageSchema } from "@bb/domain";
++import type { P6rClaimedIdentity, PongMessage } from "@bb/domain";
  import { decodeSocketPayload } from "./decode-payload.js";
  import type { NotificationHub } from "./hub.js";
  import { p6rReleaseSocketActor } from "./socket-actors.js";
-@@ -23,6 +24,10 @@ export function onClientSocketMessage(
+@@ -25,6 +26,10 @@ export function onClientSocketMessage(
        WatchInterestCoordinator,
        "subscribe" | "unsubscribe" | "releaseSocket"
      >;
@@ -587,7 +562,7 @@ index 229356e7eca9531fe5ca22f3dc657fd485154131..5de3072c232906657e377af87b706f7a
    },
    socket: ClientSocket,
    raw: unknown,
-@@ -54,6 +59,13 @@ export function onClientSocketMessage(
+@@ -61,6 +66,13 @@ export function onClientSocketMessage(
      case "p6r-typing":
        deps.hub.p6rSetTyping(socket, parsed.p6rThreadId, parsed.p6rTyping);
        break;
@@ -786,7 +761,7 @@ index ddeb4cfdeb676be213a2e1c7de121035f5483b03..f4ddc3db85347a8765454de30c5e9fa7
 +  });
  });
 diff --git a/packages/domain/src/change-kinds.ts b/packages/domain/src/change-kinds.ts
-index f3d21cab1d94555ac20974b634f31c47e2801a07..5bdda1c92af2ca5da8edf0eb7ab6f7f4be22a035 100644
+index fca3a608981334f61c741510858b396f61475c74..40ee8afe939812c956722d6133c824f70541d394 100644
 --- a/packages/domain/src/change-kinds.ts
 +++ b/packages/domain/src/change-kinds.ts
 @@ -1,5 +1,8 @@
@@ -799,7 +774,7 @@ index f3d21cab1d94555ac20974b634f31c47e2801a07..5bdda1c92af2ca5da8edf0eb7ab6f7f4
  import {
    threadEventTypeSchema,
    threadEventTypeValues,
-@@ -145,10 +148,21 @@ export const p6rTypingMessageSchema = z.object({
+@@ -156,11 +159,22 @@ export const p6rTypingMessageSchema = z.object({
  });
  export type P6rTypingMessage = z.infer<typeof p6rTypingMessageSchema>;
  
@@ -816,6 +791,7 @@ index f3d21cab1d94555ac20974b634f31c47e2801a07..5bdda1c92af2ca5da8edf0eb7ab6f7f4
  export const clientMessageSchema = z.discriminatedUnion("type", [
    subscribeMessageSchema,
    unsubscribeMessageSchema,
+   pingMessageSchema,
    p6rTypingMessageSchema,
 +  p6rClaimedIdentityMessageSchema,
  ]);
@@ -869,10 +845,10 @@ index 923ca4907e27927c4d8e227cadee96ed99383531..e9f59e41919157979137fb449301697b
   * Canonical form used as the collaborator key. Case and surrounding whitespace
   * never distinguish people ("Sawyer" and "sawyer " are the same collaborator).
 diff --git a/packages/server-contract/src/index.ts b/packages/server-contract/src/index.ts
-index b69cbb3d5679bc412557922c359926cb1bba2a35..3a29fc11d7ce7e9f46c1f2d10847b3e991ef90f2 100644
+index cbbd7d525dfc03c4f5629056d117f9b632510a1e..54756a6aec7b2f9eade6bb817e17dbe3db1aae2d 100644
 --- a/packages/server-contract/src/index.ts
 +++ b/packages/server-contract/src/index.ts
-@@ -29,6 +29,8 @@ export {
+@@ -32,6 +32,8 @@ export {
    p6rPresenceSummaryMessageLenientSchema,
    p6rPresenceSummaryMessageSchema,
    p6rPresenceViewerSchema,
@@ -881,8 +857,8 @@ index b69cbb3d5679bc412557922c359926cb1bba2a35..3a29fc11d7ce7e9f46c1f2d10847b3e9
    PROJECT_CHANGE_KINDS,
    projectChangedMessageSchema,
    projectChangeKindSchema,
-@@ -54,6 +56,9 @@ export type {
-   HostChangedMessage,
+@@ -59,6 +61,9 @@ export type {
+   PongMessage,
    P6rPresenceSummaryMessage,
    P6rPresenceViewer,
 +  P6rClaimedIdentity,

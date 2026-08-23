@@ -1,0 +1,102 @@
+From a101952b2537f09579f9d98f190076523b01e53b Mon Sep 17 00:00:00 2001
+From: BB Operator <operator@invalid.local>
+Date: Fri, 21 Aug 2026 10:27:35 -0400
+Subject: [PATCH] Adopt shipped protocol 136 migration ledger
+
+---
+ packages/db/src/migrate.ts       |  9 ++++++++-
+ packages/db/test/migrate.test.ts | 29 ++++++++++++++++++++++++-----
+ 2 files changed, 32 insertions(+), 6 deletions(-)
+
+diff --git a/packages/db/src/migrate.ts b/packages/db/src/migrate.ts
+index 9148b917e..6ef289ff3 100644
+--- a/packages/db/src/migrate.ts
++++ b/packages/db/src/migrate.ts
+@@ -1329,7 +1329,14 @@ function seedKeepAwakePluginConfiguration(db: DbConnection): void {
+ const P6R_STAGED_MULTIPLAYER_ACTORS = "_bb_p6r_multiplayer_actors_pending";
+ const P6R_STAGED_MULTIPLAYER_COLLABORATORS =
+   "_bb_p6r_multiplayer_collaborators_pending";
+-const p6rLegacyMigrationWhens = [1786998114856, 1787090005295] as const;
++const p6rLegacyMigrationWhens = [
++  1786998114856,
++  1787090005295,
++  // Shipped by the protocol-136 deployment before upstream claimed 0101.
++  // This timestamp sorts after upstream's new 0101, so it must be removed
++  // before Drizzle chooses the first unapplied canonical migration.
++  1787148230236,
++] as const;
+ 
+ const p6rMultiplayerAttributionColumns = [
+   {
+diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
+index cd364c8d2..3195500a1 100644
+--- a/packages/db/test/migrate.test.ts
++++ b/packages/db/test/migrate.test.ts
+@@ -458,6 +458,7 @@ const eventParentToolCallPreJsonValidMigrationHash =
+   "79d39e7b68d1db8ba02614fe4cc227cc0c154d77c7183f2e37ed2d8475412993";
+ const branchLocalMultiplayerMigrationWhen = 1784389648607;
+ const multiplayerMigrationWhen = 1786998114856;
++const shippedIdentityMigrationWhen = 1787148230236;
+ const identityMigrationWhen = 1787321061533;
+ const eventLargeValuesPreOptimizationHash =
+   "bc111f5134183c37cf135af70231ec5a79823f9868818fdd8377e1ab3c05a23f";
+@@ -1847,13 +1848,26 @@ describe("migrate", () => {
+         );
+       }
+ 
+-      // This unrelated row is deliberately below the generated 0105 timestamp
+-      // so Drizzle must tolerate it while still applying the next migration.
++      // Reconstruct the protocol-136 deployment ledger. Its downstream 0101
++      // sorted after canonical upstream 0101, which would make Drizzle skip
++      // the canonical FTS migration unless the adoption shim removes the
++      // legacy marker before ordering the forward replay.
++      db.$client.exec(`
++        DROP TABLE IF EXISTS app_settings_values;
++        DROP INDEX IF EXISTS events_parent_tool_call_thread_parent_sequence_idx;
++        ALTER TABLE events DROP COLUMN parent_tool_call_id;
++        DROP INDEX IF EXISTS events_todo_tool_call_thread_tool_sequence_idx;
++        ALTER TABLE events DROP COLUMN tool_name;
++        DELETE FROM __drizzle_migrations WHERE created_at >= 1787108435805;
++      `);
+       db.$client
+         .prepare<InsertMigrationParameters>(
+           "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
+         )
+-        .run("unrelated-witness-row", 1787100000000);
++        .run(
++          "303073917afaade57ab1072f09d51da7f62c42df71cc4e3009906b21b6d40709",
++          shippedIdentityMigrationWhen,
++        );
+ 
+       expect(
+         db.$client
+@@ -1874,7 +1888,9 @@ describe("migrate", () => {
+       expect(readAppliedMigrationCreatedAts(db)).toEqual(
+         expect.arrayContaining([1787001047515, 1787031224925]),
+       );
+-      expect(readAppliedMigrationCreatedAts(db)).not.toContain(1787090005295);
++      expect(readAppliedMigrationCreatedAts(db)).toContain(
++        shippedIdentityMigrationWhen,
++      );
+ 
+       migrate(db);
+ 
+@@ -1882,11 +1898,14 @@ describe("migrate", () => {
+         expect.arrayContaining([
+           1787001047515,
+           1787031224925,
++          1787108435805,
+           identityMigrationWhen,
+-          1787100000000,
+         ]),
+       );
+       expect(readAppliedMigrationCreatedAts(db)).not.toContain(1787090005295);
++      expect(readAppliedMigrationCreatedAts(db)).not.toContain(
++        shippedIdentityMigrationWhen,
++      );
+       expect(
+         db.$client
+           .prepare<
+-- 
+2.43.0
+

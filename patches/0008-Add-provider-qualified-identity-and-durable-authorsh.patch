@@ -1,7 +1,7 @@
-From 99af6821e49147afa147cf5b54599d7086ae483f Mon Sep 17 00:00:00 2001
+From e20e59be7a00e983155c515f6cda310685956278 Mon Sep 17 00:00:00 2001
 From: bb-fork recut <bb-fork@invalid.local>
 Date: Wed, 19 Aug 2026 10:02:19 -0400
-Subject: [PATCH 08/16] Add provider-qualified identity and durable authorship
+Subject: [PATCH 08/13] Add provider-qualified identity and durable authorship
 
 ---
  .../promptbox/FollowUpPromptBox.stories.tsx   |   1 +
@@ -9,7 +9,6 @@ Subject: [PATCH 08/16] Add provider-qualified identity and durable authorship
  .../banner/QueuedMessagesList.test.tsx        |   1 +
  .../thread/timeline/StreamingRows.stories.tsx |   3 +
  .../timeline/rows/UnreadDivider.stories.tsx   |   1 +
- .../useThreadTimelineController.merge.test.ts |   1 +
  .../useThreadTimelineController.test.tsx      |   1 +
  .../toc/ThreadTableOfContents.stories.tsx     |   1 +
  .../thread/toc/ThreadTableOfContents.test.tsx |   1 +
@@ -24,13 +23,13 @@ Subject: [PATCH 08/16] Add provider-qualified identity and durable authorship
  .../helpers/command-output-fixtures.ts        |   1 +
  apps/server/src/internal/tool-calls.ts        |   5 +
  apps/server/src/routes/plugins.ts             |   2 +
- apps/server/src/routes/threads/actions.ts     |  42 +-
+ apps/server/src/routes/threads/actions.ts     |  43 +-
  apps/server/src/routes/threads/base.ts        |  15 +-
  .../server/src/routes/threads/interactions.ts |  27 +-
  apps/server/src/server.ts                     |  90 +++-
  apps/server/src/services/actors.ts            |   4 +
  apps/server/src/services/identity.ts          | 349 ++++++++++++++
- .../server/src/services/plugins/plugin-api.ts |  42 +-
+ .../server/src/services/plugins/plugin-api.ts |  54 ++-
  .../src/services/plugins/plugin-runtime.ts    |   6 +
  .../plugins/plugin-service-internal.ts        |   4 +
  .../src/services/plugins/plugin-service.ts    |  20 +-
@@ -61,7 +60,8 @@ Subject: [PATCH 08/16] Add provider-qualified identity and durable authorship
  .../threads/timeline-pagination.test.ts       |   1 +
  .../thread-create-seed-without-run.test.ts    |  78 ++++
  .../threads/thread-provisioning-state.test.ts |  11 +
- docs/api_to_audit.md                          |  22 +
+ docs/api_to_audit.md                          |  21 +
+ .../client-core/test/timeline-merge.test.ts   |   1 +
  packages/db/src/data/actors.ts                |  60 +++
  packages/db/src/data/events.ts                |  97 +++-
  packages/db/src/data/index.ts                 |   8 +
@@ -69,16 +69,13 @@ Subject: [PATCH 08/16] Add provider-qualified identity and durable authorship
  packages/db/src/schema.ts                     |  29 +-
  packages/db/test/data/actors.test.ts          | 123 +++++
  .../test/data/queued-thread-messages.test.ts  |  87 +++-
- packages/db/test/migrate.test.ts              |  43 ++
- packages/db/test/query-plans.test.ts          |  16 +-
+ packages/db/test/migrate.test.ts              |  42 ++
+ packages/db/test/query-plans.test.ts          |   5 +-
  packages/domain/src/index.ts                  |   1 +
  packages/domain/src/p6r-identity.ts           |  24 +
  packages/domain/src/stored-thread-event.ts    |  12 +
  packages/domain/src/thread.ts                 |   2 +
  packages/domain/test/thread.test.ts           |   1 +
- .../bundled-types/bb-plugin-sdk-app.d.ts      |  63 +++
- .../bundled-types/bb-plugin-sdk-testing.d.ts  |   1 +
- .../bundled-types/bb-plugin-sdk.d.ts          |   4 +
  .../src/__tests__/public-types.test.ts        |   6 +
  packages/plugin-sdk/src/backend-contract.ts   |  44 ++
  packages/plugin-sdk/src/rpc-contract.ts       |   1 +
@@ -94,7 +91,7 @@ Subject: [PATCH 08/16] Add provider-qualified identity and durable authorship
  .../thread-view/src/user-message-parsing.ts   |   4 +
  .../test/timeline-progression.test.ts         |   2 +
  .../fake/smoke/timeline-response.test.ts      |   1 +
- 90 files changed, 2679 insertions(+), 137 deletions(-)
+ 87 files changed, 2611 insertions(+), 137 deletions(-)
  create mode 100644 apps/server/src/services/identity.ts
  create mode 100644 apps/server/test/services/identity.test.ts
  create mode 100644 packages/db/src/data/actors.ts
@@ -102,10 +99,10 @@ Subject: [PATCH 08/16] Add provider-qualified identity and durable authorship
  create mode 100644 packages/domain/src/p6r-identity.ts
 
 diff --git a/apps/app/src/components/promptbox/FollowUpPromptBox.stories.tsx b/apps/app/src/components/promptbox/FollowUpPromptBox.stories.tsx
-index ad7b36e7d32a595caccd4074d5a95e55e2046b69..1556fa3c79fd2c056898b2e716c830321b0253f4 100644
+index c30d034bf81bdd78a2cfb9dcf864dc33e5fa71c2..45ab07fbd7bdcfecd608ae2e0f9fdbc3d92ae7ac 100644
 --- a/apps/app/src/components/promptbox/FollowUpPromptBox.stories.tsx
 +++ b/apps/app/src/components/promptbox/FollowUpPromptBox.stories.tsx
-@@ -523,6 +523,7 @@ function makeStoryQueuedMessage(id: string, text: string): ThreadQueuedMessage {
+@@ -520,6 +520,7 @@ function makeStoryQueuedMessage(id: string, text: string): ThreadQueuedMessage {
      groupWithNext: false,
      createdAt: 0,
      updatedAt: 0,
@@ -126,10 +123,10 @@ index 52c5f88c1995a915b52dc455f6ddf193bbeabf6c..0531f8941b1e98112b250d14c8200a0f
  }
  
 diff --git a/apps/app/src/components/promptbox/banner/QueuedMessagesList.test.tsx b/apps/app/src/components/promptbox/banner/QueuedMessagesList.test.tsx
-index 640ee64d119652d71d03d0b051dd97486b6f4314..26b5bacb94e07ec2296b528680db193462b6c429 100644
+index 426dd11a4b92baab0c80db782a81802f4858c90f..c67079e17c9692faf1e83f9b28115fc840bba945 100644
 --- a/apps/app/src/components/promptbox/banner/QueuedMessagesList.test.tsx
 +++ b/apps/app/src/components/promptbox/banner/QueuedMessagesList.test.tsx
-@@ -46,6 +46,7 @@ function makeQueuedMessage(id: string, text: string): ThreadQueuedMessage {
+@@ -63,6 +63,7 @@ function makeQueuedMessage(id: string, text: string): ThreadQueuedMessage {
      groupWithNext: false,
      createdAt: 0,
      updatedAt: 0,
@@ -177,23 +174,11 @@ index bfe6bdb52765a7a1af50ecd17032dc443b86bad4..6b505518a663501d878f314b2e1925cb
      id: `${THREAD_ID}:user:${args.seq}`,
      threadId: THREAD_ID,
      turnId: `${TURN_PREFIX}${args.seq}`,
-diff --git a/apps/app/src/components/thread/timeline/useThreadTimelineController.merge.test.ts b/apps/app/src/components/thread/timeline/useThreadTimelineController.merge.test.ts
-index 3c802a0f1cd1bbad2aec96d3a3ce38298e787ceb..d963e4cc948208cad566d904bf9f412e8cf3b74f 100644
---- a/apps/app/src/components/thread/timeline/useThreadTimelineController.merge.test.ts
-+++ b/apps/app/src/components/thread/timeline/useThreadTimelineController.merge.test.ts
-@@ -36,6 +36,7 @@ function timelineCursor(args: TimelineTestRowArgs): TimelinePaginationCursor {
- function userRow(args: TimelineTestRowArgs): TimelineUserConversationRow {
-   return {
-     p6rActorHandle: null,
-+    p6rActor: null,
-     id: args.id,
-     threadId: "thread-1",
-     turnId: "turn-1",
 diff --git a/apps/app/src/components/thread/timeline/useThreadTimelineController.test.tsx b/apps/app/src/components/thread/timeline/useThreadTimelineController.test.tsx
-index 3dfc1441723b91c4261bc7d9296220449dc2f8b7..f2ce9386112e34ce722bffa2121b4bb7e9c4b8da 100644
+index 9c17a1742fa68faa765dd2f303caa7bbb9e57047..d30740fd4b9b138b639afee6bb77d597ef8fa9a6 100644
 --- a/apps/app/src/components/thread/timeline/useThreadTimelineController.test.tsx
 +++ b/apps/app/src/components/thread/timeline/useThreadTimelineController.test.tsx
-@@ -72,6 +72,7 @@ function makeUserRow(
+@@ -70,6 +70,7 @@ function makeUserRow(
      startedAt: 1,
      createdAt: 1,
      p6rActorHandle: null,
@@ -214,10 +199,10 @@ index 57a414ff3a0872c15c6bfaa01e5be8d10d0ebf64..43b3296ba2c19e4fa98e0d1338e52533
        role: "user",
        initiator: "user",
 diff --git a/apps/app/src/components/thread/toc/ThreadTableOfContents.test.tsx b/apps/app/src/components/thread/toc/ThreadTableOfContents.test.tsx
-index 6a5f33476f2313f391be0e08d0d529dc3fc66eb1..92340638a90163209d6c64396c77a51171b5aac3 100644
+index 37a92ad77b8afbe4e2e1ad0bb579593cc136429c..de5b814cbf66a7e80fc1a466f02f57aa9d34ffbb 100644
 --- a/apps/app/src/components/thread/toc/ThreadTableOfContents.test.tsx
 +++ b/apps/app/src/components/thread/toc/ThreadTableOfContents.test.tsx
-@@ -52,6 +52,7 @@ class ResizeObserverMock implements ResizeObserver {
+@@ -77,6 +77,7 @@ class ResizeObserverMock implements ResizeObserver {
  function userConversationRow(index = 1): TimelineRow {
    return {
      p6rActorHandle: null,
@@ -226,10 +211,10 @@ index 6a5f33476f2313f391be0e08d0d529dc3fc66eb1..92340638a90163209d6c64396c77a511
      threadId: "thr_toc_test",
      turnId: `turn_${index}`,
 diff --git a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.test.ts b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.test.ts
-index 543b5f2e66da34efd55d6d54c7af039931861d8d..8f82a236075aa84573184e642fc011651f7990ef 100644
+index d08ddaed88d7a6dd18927af2cd85b487bbd95dab..65a0a2e79c9e85953457a2a45531a37301b73ff7 100644
 --- a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.test.ts
 +++ b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.test.ts
-@@ -152,6 +152,7 @@ function makeQueuedMessage(
+@@ -154,6 +154,7 @@ function makeQueuedMessage(
      createdAt: 1,
      updatedAt: 1,
      ...message,
@@ -238,10 +223,10 @@ index 543b5f2e66da34efd55d6d54c7af039931861d8d..8f82a236075aa84573184e642fc01165
  }
  
 diff --git a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
-index 7dcc3936a95821e713f5401a1053821eb83dacca..2a92d3867fd972fc08e17a51eb1674253953726e 100644
+index 8001b7f4ce703ee38e1a92acd8ad902050b5f588..35df598516dd529f409167883744777f91da859d 100644
 --- a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
 +++ b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
-@@ -442,6 +442,7 @@ function buildOptimisticQueuedMessage({
+@@ -407,6 +407,7 @@ function buildOptimisticQueuedMessage({
      groupWithNext: false,
      createdAt,
      updatedAt: createdAt,
@@ -249,7 +234,7 @@ index 7dcc3936a95821e713f5401a1053821eb83dacca..2a92d3867fd972fc08e17a51eb167425
    };
  }
  
-@@ -605,6 +606,7 @@ function buildOptimisticUserMessageRow({
+@@ -570,6 +571,7 @@ function buildOptimisticUserMessageRow({
      // Mirror the attribution the server will record for this send: our own
      // claimed handle, or null in the local-operator (no identity) case.
      p6rActorHandle: p6rGetClaimedIdentity()?.p6rHandle ?? null,
@@ -258,10 +243,10 @@ index 7dcc3936a95821e713f5401a1053821eb83dacca..2a92d3867fd972fc08e17a51eb167425
      kind: "conversation",
      role: "user",
 diff --git a/apps/app/src/hooks/mutations/thread-runtime-mutations.test.tsx b/apps/app/src/hooks/mutations/thread-runtime-mutations.test.tsx
-index a92f1965691c3f84a754db58cca605a3af6df25f..23cfb21fa1594fcef2ed49645e451c5994029729 100644
+index 6bccf601cd06b37d0241df83d62de444a32d9bfa..55621aa99629368190cd7a70274471fabc815b15 100644
 --- a/apps/app/src/hooks/mutations/thread-runtime-mutations.test.tsx
 +++ b/apps/app/src/hooks/mutations/thread-runtime-mutations.test.tsx
-@@ -64,6 +64,7 @@ function makeQueuedMessage(
+@@ -65,6 +65,7 @@ function makeQueuedMessage(
      createdAt: 1,
      updatedAt: 1,
      ...message,
@@ -354,13 +339,13 @@ index 82fb5bbe21e3d13da1659873a01af339ba4032d9..fe4cabeb063676d26c6caa3966b38643
      expect(
        socket.sentMessages.map((message) => JSON.parse(message) as unknown),
 diff --git a/apps/app/src/lib/ws.ts b/apps/app/src/lib/ws.ts
-index 8da72d421b8b9bb3341eee5149e8e2d2e975caa3..f80427afb1238f42bbed8134a9e55db33cb18117 100644
+index 96c3fb6484f56881ac35231afed0c5bbac9c3947..5030a05582e58618b27443f80e34f91ba3fd6935 100644
 --- a/apps/app/src/lib/ws.ts
 +++ b/apps/app/src/lib/ws.ts
-@@ -20,10 +20,6 @@ import type {
-   P6rThreadPresenceMessage,
- } from "@bb/server-contract";
- import { buildDevWebSocketUrl } from "./dev-websocket-url";
+@@ -25,10 +25,6 @@ import {
+   isDocumentVisible,
+   subscribeToDocumentVisibility,
+ } from "./document-visibility";
 -import {
 -  p6rGetClaimedIdentityHeaderValue,
 -  p6rSubscribeClaimedIdentity,
@@ -368,16 +353,16 @@ index 8da72d421b8b9bb3341eee5149e8e2d2e975caa3..f80427afb1238f42bbed8134a9e55db3
  
  type ChangeCallback = (message: ChangedMessage) => void;
  type ThreadOpenCallback = (signal: ThreadOpenSignal) => void;
-@@ -60,8 +56,6 @@ export class WebSocketManager {
-   private connectionStateCallbacks = new Set<ConnectionStateCallback>();
-   private hasConnected = false;
-   private connectionState: WebSocketConnectionState = "connecting";
+@@ -120,8 +116,6 @@ export class WebSocketManager {
+   private disconnectedAt: number | null = null;
+   private pingTimer: ReturnType<typeof setInterval> | null = null;
+   private pongTimer: ReturnType<typeof setTimeout> | null = null;
 -  private unsubscribeIdentity: (() => void) | null = null;
 -  private lastIdentityHeaderValue: string | null = null;
  
-   connect(): void {
-     if (this.socket) return;
-@@ -69,16 +63,13 @@ export class WebSocketManager {
+   constructor(browserEvents?: WebSocketManagerBrowserEvents) {
+     this.browserEvents = browserEvents ?? createDefaultBrowserEvents();
+@@ -133,16 +127,13 @@ export class WebSocketManager {
      // In dev mode, connect directly to the server to bypass Vite's WS proxy
      // which does not handle reconnection after backend restarts.
      // In production, use the same origin (server serves the app).
@@ -398,9 +383,9 @@ index 8da72d421b8b9bb3341eee5149e8e2d2e975caa3..f80427afb1238f42bbed8134a9e55db3
 +      );
      };
  
-     this.socket = new ReconnectingWebSocket(buildUrl, undefined, {
-@@ -113,19 +104,6 @@ export class WebSocketManager {
-       );
+     const socket = new ReconnectingWebSocket(buildUrl, undefined, {
+@@ -249,19 +240,6 @@ export class WebSocketManager {
+       unsubscribeOnline();
      };
  
 -    // The claimed identity is bound at upgrade time via ?p6rIdentity=, so a
@@ -418,21 +403,21 @@ index 8da72d421b8b9bb3341eee5149e8e2d2e975caa3..f80427afb1238f42bbed8134a9e55db3
 -    });
    }
  
-   /**
-@@ -212,8 +190,6 @@ export class WebSocketManager {
-   }
- 
-   disconnect(): void {
+   private handleVisibilityChange(): void {
+@@ -452,8 +430,6 @@ export class WebSocketManager {
+       this.unsubscribeBrowserEvents();
+       this.unsubscribeBrowserEvents = null;
+     }
 -    this.unsubscribeIdentity?.();
 -    this.unsubscribeIdentity = null;
      if (this.socket) {
        this.socket.close();
        this.socket = null;
 diff --git a/apps/app/src/test/fixtures/thread-timeline-rows.ts b/apps/app/src/test/fixtures/thread-timeline-rows.ts
-index b094f77c9a7d82ca918294abfb1b3df07ac9887c..16818b13f6694f57a9fbb696cf74b9024421375b 100644
+index 914add8189df3874d1b00b5dc432e01d7010be4e..326620244d7953a16aa907e5fd4dbba8a761f9cc 100644
 --- a/apps/app/src/test/fixtures/thread-timeline-rows.ts
 +++ b/apps/app/src/test/fixtures/thread-timeline-rows.ts
-@@ -433,6 +433,7 @@ export function conversationRow({
+@@ -424,6 +424,7 @@ export function conversationRow({
      const resolvedInitiator: ThreadTurnInitiator = initiator ?? "user";
      return {
        p6rActorHandle: null,
@@ -441,10 +426,10 @@ index b094f77c9a7d82ca918294abfb1b3df07ac9887c..16818b13f6694f57a9fbb696cf74b902
        kind: "conversation",
        role,
 diff --git a/apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx b/apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx
-index 2be2004cf049d715e8a9175b3154e01df6494a99..673def0b09aab54077b26e5b156762cd200f2f24 100644
+index 720b2c3ff936faa439c1f26f84abe2eedb95c7d1..538a75542f45349d0d2e0bb96098ccaef5996b98 100644
 --- a/apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx
 +++ b/apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx
-@@ -540,6 +540,7 @@ function makeQueuedMessage(
+@@ -567,6 +567,7 @@ function makeQueuedMessage(
      createdAt: 1,
      updatedAt: 1,
      ...overrides,
@@ -500,7 +485,7 @@ index 6160fa1b00acc2aa167faad4b673930aff2cef82..11f04cd783b00959885af62f4abd824f
                // round-trip is torn down while the tool runs.
                signal: context.req.raw.signal,
 diff --git a/apps/server/src/routes/plugins.ts b/apps/server/src/routes/plugins.ts
-index a673312f0c54a4a01b373f1dbfbff257e3a51a0b..a122de8ee8fdfde3bc2ed9c3169c41e025be2ab8 100644
+index 5d7897d6ef67b69fe0c0bb63b921fa3c7cbacc5d..ada56d8567aeffcd1b45b5e5dda81d028d74be8f 100644
 --- a/apps/server/src/routes/plugins.ts
 +++ b/apps/server/src/routes/plugins.ts
 @@ -26,6 +26,7 @@ import {
@@ -510,7 +495,7 @@ index a673312f0c54a4a01b373f1dbfbff257e3a51a0b..a122de8ee8fdfde3bc2ed9c3169c41e0
 +import { p6rGetRequestPrincipal } from "../services/identity.js";
  
  /** The slice of server deps the "local" auth checks need (origin allowlist). */
- export interface PluginRoutesDeps {
+ interface PluginRoutesDeps {
 @@ -663,6 +664,7 @@ export function registerPluginRoutes(
        method,
        lookup.value,
@@ -520,10 +505,10 @@ index a673312f0c54a4a01b373f1dbfbff257e3a51a0b..a122de8ee8fdfde3bc2ed9c3169c41e0
      if (!outcome.ok) {
        return context.json(
 diff --git a/apps/server/src/routes/threads/actions.ts b/apps/server/src/routes/threads/actions.ts
-index ea143ecf676c90ba99e2aaf2e15a54b350ed3903..9c6781ebf541f3a2ae2212cfc627ab5fb32dc4e6 100644
+index 7a75aaec3614b072e3836aa6b71a5f4440ca31ef..71fa82cade82106978a259da1f07c521317a0578 100644
 --- a/apps/server/src/routes/threads/actions.ts
 +++ b/apps/server/src/routes/threads/actions.ts
-@@ -27,12 +27,13 @@ import {
+@@ -29,12 +29,13 @@ import {
  import type { Context, Hono } from "hono";
  import {
    createStandaloneBuiltinCompactCommandInput,
@@ -538,7 +523,7 @@ index ea143ecf676c90ba99e2aaf2e15a54b350ed3903..9c6781ebf541f3a2ae2212cfc627ab5f
  import { toThreadQueuedMessage } from "../../services/threads/thread-queued-messages.js";
  import {
    requestEnvironmentCleanup,
-@@ -156,6 +157,18 @@ async function compactThreadContext(
+@@ -165,6 +166,18 @@ async function compactThreadContext(
    });
  }
  
@@ -557,7 +542,7 @@ index ea143ecf676c90ba99e2aaf2e15a54b350ed3903..9c6781ebf541f3a2ae2212cfc627ab5f
  function toQueuedMessageGroupBoundaryResponse(
    result: SetQueuedThreadMessageGroupBoundaryResult,
  ): ThreadQueuedMessage[] {
-@@ -225,7 +238,7 @@ function assertPinnedThreadOrderResult(
+@@ -234,7 +247,7 @@ function assertPinnedThreadOrderResult(
  }
  
  interface CreateQueuedMessageForThreadArgs {
@@ -566,16 +551,17 @@ index ea143ecf676c90ba99e2aaf2e15a54b350ed3903..9c6781ebf541f3a2ae2212cfc627ab5f
    payload: CreateQueuedMessageRequest;
    thread: Thread;
  }
-@@ -278,7 +291,7 @@ async function createQueuedMessageForThread(
-     targetThread: thread,
-   });
-   const queuedMessage = createQueuedThreadMessage(deps.db, deps.hub, {
--    p6rActorHandle: senderThreadId === null ? args.p6rActorHandle : null,
-+    p6rActor: senderThreadId === null ? args.p6rActor : null,
-     threadId: thread.id,
-     content: payload.input,
-     senderThreadId,
-@@ -317,7 +330,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
+@@ -333,8 +346,7 @@ async function createQueuedMessageForThread(
+         }
+         const { providerThreadId } = admitQueuedMessage(tx, currentThread);
+         const queuedMessage = createQueuedThreadMessageInTransaction(tx, {
+-          p6rActorHandle:
+-            senderThreadId === null ? args.p6rActorHandle : null,
++          p6rActor: senderThreadId === null ? args.p6rActor : null,
+           threadId: thread.id,
+           content: payload.input,
+           senderThreadId,
+@@ -375,7 +387,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
  
    post(routes.send, async (context, payload) => {
      const thread = requirePublicThread(deps.db, context.req.param("id"));
@@ -584,7 +570,7 @@ index ea143ecf676c90ba99e2aaf2e15a54b350ed3903..9c6781ebf541f3a2ae2212cfc627ab5f
      const shouldQueue =
        thread.status === "active" &&
        (payload.mode === "queue-if-active" ||
-@@ -325,7 +338,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
+@@ -383,7 +395,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
      if (shouldQueue) {
        ensureThreadIsNotAwaitingUserInteraction(deps, thread.id);
        await createQueuedMessageForThread(deps, {
@@ -593,7 +579,7 @@ index ea143ecf676c90ba99e2aaf2e15a54b350ed3903..9c6781ebf541f3a2ae2212cfc627ab5f
          payload: queuedMessagePayloadFromSendRequest(payload),
          thread,
        });
-@@ -335,7 +348,8 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
+@@ -393,7 +405,8 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
        thread,
      });
      await sendThreadMessage(deps, {
@@ -603,7 +589,7 @@ index ea143ecf676c90ba99e2aaf2e15a54b350ed3903..9c6781ebf541f3a2ae2212cfc627ab5f
        environment,
        payload,
        thread,
-@@ -345,6 +359,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
+@@ -403,6 +416,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
    });
  
    post(routes.editMessage, async (context, payload) => {
@@ -611,7 +597,7 @@ index ea143ecf676c90ba99e2aaf2e15a54b350ed3903..9c6781ebf541f3a2ae2212cfc627ab5f
      const thread = requirePublicThread(deps.db, context.req.param("id"));
      const environment = await requireThreadCommandEnvironment(deps, {
        thread,
-@@ -359,9 +374,9 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
+@@ -417,9 +431,9 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
  
    post(routes.createQueuedMessage, async (context, payload) => {
      const thread = requirePublicThread(deps.db, context.req.param("id"));
@@ -623,7 +609,7 @@ index ea143ecf676c90ba99e2aaf2e15a54b350ed3903..9c6781ebf541f3a2ae2212cfc627ab5f
        payload,
        thread,
      });
-@@ -369,6 +384,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
+@@ -427,6 +441,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
    });
  
    post(routes.sendQueuedMessage, async (context, payload) => {
@@ -631,7 +617,7 @@ index ea143ecf676c90ba99e2aaf2e15a54b350ed3903..9c6781ebf541f3a2ae2212cfc627ab5f
      const thread = requirePublicThread(deps.db, context.req.param("id"));
      ensureThreadIsWritable(thread);
      ensureThreadIsNotAwaitingUserInteraction(deps, thread.id);
-@@ -418,6 +434,12 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
+@@ -476,6 +491,12 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
    patch(routes.updateQueuedMessage, async (context, payload) => {
      const thread = requirePublicThread(deps.db, context.req.param("id"));
      ensureThreadIsWritable(thread);
@@ -644,7 +630,7 @@ index ea143ecf676c90ba99e2aaf2e15a54b350ed3903..9c6781ebf541f3a2ae2212cfc627ab5f
      await validatePromptAttachmentReferences({
        dataDir: deps.config.dataDir,
        input: payload.input,
-@@ -428,6 +450,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
+@@ -486,6 +507,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
        expectedUpdatedAt: payload.expectedUpdatedAt,
        id: context.req.param("queuedMessageId"),
        threadId: thread.id,
@@ -652,15 +638,15 @@ index ea143ecf676c90ba99e2aaf2e15a54b350ed3903..9c6781ebf541f3a2ae2212cfc627ab5f
      });
      if (result.kind === "not_found") {
        throw new ApiError(404, "invalid_request", "Queued message not found");
-@@ -469,6 +492,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
+@@ -527,6 +549,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
    });
  
    post(routes.stop, async (context) => {
 +    const p6rActor = requireP6rRequestPrincipal(context as unknown as Context);
      const thread = requirePublicThread(deps.db, context.req.param("id"));
-     const environment =
-       thread.environmentId === null
-@@ -481,7 +505,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
+     const environment = resolveThreadHostCommandEnvironment({
+       db: deps.db,
+@@ -536,7 +559,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
        deps,
        thread,
        environment,
@@ -670,7 +656,7 @@ index ea143ecf676c90ba99e2aaf2e15a54b350ed3903..9c6781ebf541f3a2ae2212cfc627ab5f
      return context.json({ ok: true });
    });
 diff --git a/apps/server/src/routes/threads/base.ts b/apps/server/src/routes/threads/base.ts
-index 623d29445d7e4a1d1c039386c7125f781c3545e8..a9d3c5b575e14e34cf4c933fad1b20c79eed29f2 100644
+index f5fc69be37f88831a1bed6aa3f97c6d282c2baf9..33518a175554d36cdd47962e874795766c999daa 100644
 --- a/apps/server/src/routes/threads/base.ts
 +++ b/apps/server/src/routes/threads/base.ts
 @@ -28,7 +28,7 @@ import {
@@ -770,13 +756,13 @@ index 524a434dfd55a4b88396a9d807dff5da872eb2f3..31c72e6098a77a7a2d8ddebb730fd0ff
          interactionId: parsePendingInteractionId(
            context.req.param("interactionId"),
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
-index 63fa6a9096716b11bcf8cea0d06c40db62022bab..7eafe3480affd6034ebc8e4ef4e5801ae6851cba 100644
+index 6f56f029069e5ed165c78e91ed8f532ecb5b44dc..4119e6a01370867bde82c58200d230e3c63e51fd 100644
 --- a/apps/server/src/server.ts
 +++ b/apps/server/src/server.ts
-@@ -89,12 +89,15 @@ import {
-  */
+@@ -88,12 +88,15 @@ import {
  const PLUGIN_WIRE_HTTP_PATH = /^\/api\/v1\/plugins\/[^/]+\/http(?:\/|$)/u;
  import { rankAcceptedAssetEncodings } from "./asset-content-encoding.js";
+ import { apiJsonCompression } from "./api-response-compression.js";
 -import { P6R_CLAIMED_IDENTITY_HEADER } from "@bb/domain";
  import {
 -  p6rCreateActorService,
@@ -790,8 +776,8 @@ index 63fa6a9096716b11bcf8cea0d06c40db62022bab..7eafe3480affd6034ebc8e4ef4e5801a
 +} from "./services/identity.js";
  import { p6rRegisterSocketActor } from "./ws/socket-actors.js";
  
- export type CloseWebSockets = () => Promise<void>;
-@@ -297,7 +300,7 @@ export function createApp(
+ type CloseWebSockets = () => Promise<void>;
+@@ -293,7 +296,7 @@ export function createApp(
        dataDir: deps.config.dataDir,
        serverEntryUrl: import.meta.url,
      });
@@ -800,7 +786,7 @@ index 63fa6a9096716b11bcf8cea0d06c40db62022bab..7eafe3480affd6034ebc8e4ef4e5801a
      db: deps.db,
      defaultActor: p6rCreateLocalOperatorIdentity(),
      now: Date.now,
-@@ -371,7 +374,27 @@ export function createApp(
+@@ -369,7 +372,27 @@ export function createApp(
      });
    });
    app.use("/api/v1/*", async (context, next) => {
@@ -829,7 +815,7 @@ index 63fa6a9096716b11bcf8cea0d06c40db62022bab..7eafe3480affd6034ebc8e4ef4e5801a
      const startedAt = performance.now();
      await next();
      const durationMs = performance.now() - startedAt;
-@@ -423,6 +446,7 @@ export function createApp(
+@@ -421,6 +444,7 @@ export function createApp(
      return next();
    });
    const pluginService = createPluginService({
@@ -837,7 +823,7 @@ index 63fa6a9096716b11bcf8cea0d06c40db62022bab..7eafe3480affd6034ebc8e4ef4e5801a
      db: deps.db,
      hub: deps.hub,
      logger: deps.logger,
-@@ -506,6 +530,23 @@ export function createApp(
+@@ -504,6 +528,23 @@ export function createApp(
    });
  
    const internalApi = new Hono();
@@ -861,7 +847,7 @@ index 63fa6a9096716b11bcf8cea0d06c40db62022bab..7eafe3480affd6034ebc8e4ef4e5801a
    registerInternalHostRoutes(internalApi, deps);
    registerInternalSessionRoutes(internalApi, deps, pluginService);
    registerInternalSkillRoutes(internalApi, deps);
-@@ -527,17 +568,29 @@ export function createApp(
+@@ -525,17 +566,29 @@ export function createApp(
            false,
          );
        }
@@ -900,7 +886,7 @@ index 63fa6a9096716b11bcf8cea0d06c40db62022bab..7eafe3480affd6034ebc8e4ef4e5801a
            onClientSocketOpen(deps.hub, socket);
          },
          onMessage: (event, socket) =>
-@@ -559,6 +612,17 @@ export function createApp(
+@@ -557,6 +610,17 @@ export function createApp(
            false,
          );
        }
@@ -1288,7 +1274,7 @@ index 0000000000000000000000000000000000000000..37338c8f0af9ddac0b5a4315f409fe2e
 +  };
 +}
 diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
-index 47e0a24730d1edff20dab167f1e37e76064e3752..6657520499703470c3ec8ae590933e91356dd122 100644
+index 8a7e3ef8ffd555ab47c0d0a50d54cc178ad78463..203ff27e6f33895792e8224e843f2929e23da4ea 100644
 --- a/apps/server/src/services/plugins/plugin-api.ts
 +++ b/apps/server/src/services/plugins/plugin-api.ts
 @@ -31,6 +31,9 @@ import type {
@@ -1301,17 +1287,29 @@ index 47e0a24730d1edff20dab167f1e37e76064e3752..6657520499703470c3ec8ae590933e91
    PluginHosts,
    PluginKvStorage,
    PluginLogger,
-@@ -106,6 +109,9 @@ export type {
-   PluginHttp,
-   PluginHttpAuthMode,
-   PluginHttpHandler,
+@@ -89,6 +92,21 @@ export type {
+   PluginAgentToolContext,
+   PluginCliCommandInfo,
+   PluginCliContext,
++  PluginCliRegistration,
++  PluginCliResult,
++  PluginEvents,
++  PluginHttp,
++  PluginHttpAuthMode,
++  PluginHttpHandler,
 +  P6rIdentityApi,
 +  P6rIdentityProviderRegistration,
 +  P6rPluginRequestContext,
-   PluginHosts,
-   PluginKvStorage,
-   PluginLogger,
-@@ -192,7 +198,7 @@ export interface PluginHttpRouteRecord {
++  PluginHosts,
++  PluginKvStorage,
++  PluginLogger,
++  PluginMentionItem,
++  PluginMentionProviderRegistration,
++  PluginMentionSearchContext,
+   PluginMentionTrigger,
+   PluginThreadEventName,
+   PluginThreadEventPayloads,
+@@ -145,7 +163,7 @@ export interface PluginHttpRouteRecord {
  export interface PluginRpcHandler {
    inputSchema: StandardSchemaV1;
    outputSchema: StandardSchemaV1;
@@ -1320,7 +1318,7 @@ index 47e0a24730d1edff20dab167f1e37e76064e3752..6657520499703470c3ec8ae590933e91
  }
  
  /** Runtime record of a registered native tool. */
-@@ -305,6 +311,8 @@ export interface PluginApiHandle {
+@@ -254,6 +272,8 @@ export interface PluginApiHandle {
    instructionProvider: PluginInstructionProvider | null;
    /** Mention providers recorded by `bb.ui.registerMentionProvider`. */
    mentionProviders: PluginMentionProviderRecord[];
@@ -1329,7 +1327,7 @@ index 47e0a24730d1edff20dab167f1e37e76064e3752..6657520499703470c3ec8ae590933e91
    /** Publish factory-time host declarations and status only after commit. */
    activate(): void;
    /** Poison every method on the handle. */
-@@ -371,6 +379,10 @@ function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): BbSdk {
+@@ -320,6 +340,10 @@ function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): BbSdk {
  
  export function createPluginApi(options: {
    pluginId: string;
@@ -1340,7 +1338,7 @@ index 47e0a24730d1edff20dab167f1e37e76064e3752..6657520499703470c3ec8ae590933e91
    logger: ServerLogger;
    db: DbConnection;
    dataDir: string;
-@@ -434,6 +446,7 @@ export function createPluginApi(options: {
+@@ -383,6 +407,7 @@ export function createPluginApi(options: {
  }): PluginApiHandle {
    const {
      pluginId,
@@ -1348,7 +1346,7 @@ index 47e0a24730d1edff20dab167f1e37e76064e3752..6657520499703470c3ec8ae590933e91
      logger,
      db,
      dataDir,
-@@ -456,6 +469,9 @@ export function createPluginApi(options: {
+@@ -405,6 +430,9 @@ export function createPluginApi(options: {
    let invalidated = false;
    let activated = false;
    let wrappedSdk: BbSdk | undefined;
@@ -1358,7 +1356,7 @@ index 47e0a24730d1edff20dab167f1e37e76064e3752..6657520499703470c3ec8ae590933e91
    let pendingNeedsConfiguration: string | null = null;
    const pendingAgentToolProblems: string[] = [];
    const pendingSharedPorts = new Map<string, readonly number[]>();
-@@ -699,6 +715,22 @@ export function createPluginApi(options: {
+@@ -660,6 +688,22 @@ export function createPluginApi(options: {
      },
    };
  
@@ -1381,7 +1379,7 @@ index 47e0a24730d1edff20dab167f1e37e76064e3752..6657520499703470c3ec8ae590933e91
    const rpc: PluginRpc = {
      register(contract, handlers) {
        assertLive();
-@@ -748,7 +780,7 @@ export function createPluginApi(options: {
+@@ -709,7 +753,7 @@ export function createPluginApi(options: {
            {
              inputSchema: methodContract.input,
              outputSchema: methodContract.output,
@@ -1390,7 +1388,7 @@ index 47e0a24730d1edff20dab167f1e37e76064e3752..6657520499703470c3ec8ae590933e91
            },
          ]);
        }
-@@ -1313,6 +1345,7 @@ export function createPluginApi(options: {
+@@ -1270,6 +1314,7 @@ export function createPluginApi(options: {
      settings,
      storage,
      http,
@@ -1398,7 +1396,7 @@ index 47e0a24730d1edff20dab167f1e37e76064e3752..6657520499703470c3ec8ae590933e91
      rpc,
      realtime,
      background,
-@@ -1367,6 +1400,9 @@ export function createPluginApi(options: {
+@@ -1324,6 +1369,9 @@ export function createPluginApi(options: {
        return instructionProvider;
      },
      mentionProviders,
@@ -1408,7 +1406,7 @@ index 47e0a24730d1edff20dab167f1e37e76064e3752..6657520499703470c3ec8ae590933e91
      activate() {
        if (activated) return;
        assertLive();
-@@ -1393,6 +1429,8 @@ export function createPluginApi(options: {
+@@ -1350,6 +1398,8 @@ export function createPluginApi(options: {
        }
      },
      invalidate() {
@@ -1418,10 +1416,10 @@ index 47e0a24730d1edff20dab167f1e37e76064e3752..6657520499703470c3ec8ae590933e91
      },
    };
 diff --git a/apps/server/src/services/plugins/plugin-runtime.ts b/apps/server/src/services/plugins/plugin-runtime.ts
-index 37c719add3f7df468dc631ccf2f8e33b04a3c10b..e564592174c05174d17bdd52bfd78ec6d1f199b8 100644
+index 165c0915e2ab5dc2afe465e182e0031109dde87d..0e4bd205866a37e04b5c22508057fa79cd4280e4 100644
 --- a/apps/server/src/services/plugins/plugin-runtime.ts
 +++ b/apps/server/src/services/plugins/plugin-runtime.ts
-@@ -1352,6 +1352,11 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+@@ -1412,6 +1412,11 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
      );
      const handle = createPluginApi({
        pluginId: row.id,
@@ -1433,7 +1431,7 @@ index 37c719add3f7df468dc631ccf2f8e33b04a3c10b..e564592174c05174d17bdd52bfd78ec6
        logger: deps.logger,
        db: deps.db,
        dataDir: deps.dataDir,
-@@ -1584,6 +1589,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+@@ -1641,6 +1646,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
          return;
        }
      }
@@ -1442,10 +1440,10 @@ index 37c719add3f7df468dc631ccf2f8e33b04a3c10b..e564592174c05174d17bdd52bfd78ec6
      // every dispatcher continues to resolve the complete previous handle.
      disposeUnavailableProviderRegistrations(row.id);
 diff --git a/apps/server/src/services/plugins/plugin-service-internal.ts b/apps/server/src/services/plugins/plugin-service-internal.ts
-index ff5545c360b37250ee7031bb32ce07fe6c8d4157..b13c1e66cecea4d4842c4ddfa8b35001fcf7e5ce 100644
+index 13f1a7a5929f62083b1905b047f9db7d189a405d..684886254ac5db8622f435bba02d161a356ffa9a 100644
 --- a/apps/server/src/services/plugins/plugin-service-internal.ts
 +++ b/apps/server/src/services/plugins/plugin-service-internal.ts
-@@ -77,6 +77,10 @@ export interface PluginHostArtifactSnapshot {
+@@ -64,6 +64,10 @@ export interface PluginHostArtifactSnapshot {
  }
  
  export interface PluginServiceDeps {
@@ -1457,10 +1455,10 @@ index ff5545c360b37250ee7031bb32ce07fe6c8d4157..b13c1e66cecea4d4842c4ddfa8b35001
    /** Omitted only by isolated plugin-runtime tests without a daemon plane. */
    sharedPorts?: Pick<
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index 61bc93b6e51c1c8d5ba4f7e6bcda18faa9e8d9d3..96ffe995027625da5222a88da120377e32e983e9 100644
+index 3e3d45804e085c9de26599fdccd930a3cccb0162..8995b0b87468f084c33c9dc25cf48f59515900f1 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
-@@ -89,6 +89,7 @@ import {
+@@ -86,6 +86,7 @@ import {
    type PluginHttpRouteRecord,
    type PluginMentionTrigger,
    type PluginRpcHandler,
@@ -1468,7 +1466,7 @@ index 61bc93b6e51c1c8d5ba4f7e6bcda18faa9e8d9d3..96ffe995027625da5222a88da120377e
  } from "./plugin-api.js";
  import {
    syncPluginCommandsSkill,
-@@ -327,6 +328,7 @@ export interface PluginService {
+@@ -332,6 +333,7 @@ export interface PluginService {
      method: string,
      handler: PluginRpcHandler,
      input: unknown,
@@ -1476,7 +1474,7 @@ index 61bc93b6e51c1c8d5ba4f7e6bcda18faa9e8d9d3..96ffe995027625da5222a88da120377e
    ): Promise<
      { ok: true; result: JsonValue } | { ok: false; error: PluginRpcError }
    >;
-@@ -1955,7 +1957,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1962,7 +1964,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
          id,
          `http ${route.method} ${route.path}`,
          async () => {
@@ -1488,7 +1486,7 @@ index 61bc93b6e51c1c8d5ba4f7e6bcda18faa9e8d9d3..96ffe995027625da5222a88da120377e
            return adoptHttpRouteResponse(response);
          },
        );
-@@ -1966,14 +1971,23 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1973,14 +1978,23 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
        );
      },
  
@@ -1515,10 +1513,10 @@ index 61bc93b6e51c1c8d5ba4f7e6bcda18faa9e8d9d3..96ffe995027625da5222a88da120377e
            handler.outputSchema,
            result,
 diff --git a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
-index bc4e6ad7c7720bd897aff2442d9d11615549ca6f..4bf746411f533fcfa7e33b044727411a8565313c 100644
+index a18774b5962c98b8b35b32827fd2c966cbc9da4a..ec2308a8449b695a7140091c84b02aa68d5c714d 100644
 --- a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
 +++ b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
-@@ -336,6 +336,32 @@ instruction providers or mention providers are rejected.
+@@ -337,6 +337,32 @@ instruction providers or mention providers are rejected.
  Listeners are different: `bb.events.on`, settings `onChange`, and `onDispose`
  are additive, so registering multiple listeners is supported.
  
@@ -1552,10 +1550,10 @@ index bc4e6ad7c7720bd897aff2442d9d11615549ca6f..4bf746411f533fcfa7e33b044727411a
  
  `bb.log.debug|info|warn|error(message: string)` — goes to the server log
 diff --git a/apps/server/src/services/threads/queued-messages.ts b/apps/server/src/services/threads/queued-messages.ts
-index 5e5050773d93710211ef6bbac3f5c4a4a831cc91..cc4d03583483683c6752703726a9d0680fe54993 100644
+index 00e8242c4c558f8eb655ac504a06885b82b492d6..a150e6418444d93497c8d1f543ca61b7a00ccbcd 100644
 --- a/apps/server/src/services/threads/queued-messages.ts
 +++ b/apps/server/src/services/threads/queued-messages.ts
-@@ -293,6 +293,10 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
+@@ -275,6 +275,10 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
    const senderThreadId = args.queuedMessages[0]!.senderThreadId;
    const p6rActorHandle =
      senderThreadId === null ? args.queuedMessages[0]!.p6rActorHandle : null;
@@ -1566,7 +1564,7 @@ index 5e5050773d93710211ef6bbac3f5c4a4a831cc91..cc4d03583483683c6752703726a9d068
    let inputGroups = args.queuedMessages.map((claimedQueuedMessage) =>
      formatQueuedMessageInputForSender({
        input: toThreadQueuedMessage(claimedQueuedMessage).content,
-@@ -366,7 +370,8 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
+@@ -341,7 +345,8 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
        if (!consumed) {
          throw createQueuedMessageClaimLostError();
        }
@@ -1576,7 +1574,7 @@ index 5e5050773d93710211ef6bbac3f5c4a4a831cc91..cc4d03583483683c6752703726a9d068
          p6rActorHandle,
          environmentId: thread.environmentId,
          execution,
-@@ -459,6 +464,10 @@ async function sendClaimedQueuedMessageForThread(
+@@ -429,6 +434,10 @@ async function sendClaimedQueuedMessageForThread(
      thread: args.thread,
    });
    await sendThreadMessage(deps, {
@@ -1604,12 +1602,12 @@ index efb95de8bf3ad1a78c4694d55e740110313e69cd..82a23b1365137d16fa5747d4453c844b
    /**
     * May be the server-resolved "project-default" marker; thread creation
 diff --git a/apps/server/src/services/threads/thread-create.ts b/apps/server/src/services/threads/thread-create.ts
-index 18fc67dcf23e024938e92ad91b6b8ef54dbe10e2..e64eb3b58d1f43e414cb4e608464b6b6a7252976 100644
+index 601b5fa58a1404c9fa54954ee61cc10dbac069da..2f5a1c194c7d2b4afa0e4ede7aa19d805dafa584 100644
 --- a/apps/server/src/services/threads/thread-create.ts
 +++ b/apps/server/src/services/threads/thread-create.ts
-@@ -530,6 +530,10 @@ async function createProvisioningThread(
-       "client/turn/requested",
-     );
+@@ -478,6 +478,10 @@ async function createProvisioningThread(
+       threadId: thread.id,
+     });
      context = requestThreadProvision(deps, {
 +      p6rActor:
 +        args.request.startedOnBehalfOf === null
@@ -1619,7 +1617,7 @@ index 18fc67dcf23e024938e92ad91b6b8ef54dbe10e2..e64eb3b58d1f43e414cb4e608464b6b6
          args.request.startedOnBehalfOf === null
            ? (args.request.p6rCreatedByHandle ?? null)
 diff --git a/apps/server/src/services/threads/thread-events.ts b/apps/server/src/services/threads/thread-events.ts
-index 30217986481ca22ffaf740599f84bf0ffb786e9f..95ab857ead624ebff61c7110943535fed642205a 100644
+index ca7b048d3da6e08087daa7f2f6b5a0753ded4e05..ac447039ab1a38c86e606bcc6162fa7aa615b437 100644
 --- a/apps/server/src/services/threads/thread-events.ts
 +++ b/apps/server/src/services/threads/thread-events.ts
 @@ -45,6 +45,7 @@ import type {
@@ -1638,7 +1636,7 @@ index 30217986481ca22ffaf740599f84bf0ffb786e9f..95ab857ead624ebff61c7110943535fe
    p6rActorHandle?: string | null;
    environmentId: string | null;
    execution: ResolvedThreadExecutionOptions;
-@@ -87,6 +89,7 @@ export interface PreparedClientTurnRequestedEventArgs extends ClientTurnRequeste
+@@ -87,6 +89,7 @@ interface PreparedClientTurnRequestedEventArgs extends ClientTurnRequestedEventA
  }
  
  export interface ClientTurnLifecycleEventArgs {
@@ -1646,7 +1644,7 @@ index 30217986481ca22ffaf740599f84bf0ffb786e9f..95ab857ead624ebff61c7110943535fe
    p6rActorHandle?: string | null;
    environmentId: string | null;
    initiator: ThreadTurnInitiator;
-@@ -307,7 +310,11 @@ function appendBuiltClientTurnRequestedEvent(
+@@ -301,7 +304,11 @@ function appendBuiltClientTurnRequestedEvent(
    args: PreparedClientTurnRequestedEventArgs,
  ): AppendedClientTurnRequest {
    const sequence = append({
@@ -1659,7 +1657,7 @@ index 30217986481ca22ffaf740599f84bf0ffb786e9f..95ab857ead624ebff61c7110943535fe
      threadId: args.threadId,
      environmentId: args.environmentId,
      type: args.type,
-@@ -325,7 +332,11 @@ function appendBuiltClientTurnEvent(
+@@ -319,7 +326,11 @@ function appendBuiltClientTurnEvent(
      case "client/thread/start":
      case "client/turn/start":
        return append({
@@ -1672,7 +1670,7 @@ index 30217986481ca22ffaf740599f84bf0ffb786e9f..95ab857ead624ebff61c7110943535fe
          threadId: args.threadId,
          environmentId: args.environmentId,
          type: args.type,
-@@ -613,7 +624,11 @@ export function appendPreparedClientTurnRequestedEventWithNotificationInTransact
+@@ -585,7 +596,11 @@ export function appendPreparedClientTurnRequestedEventWithNotificationInTransact
    args: PreparedClientTurnRequestedEventArgs,
  ): AppendedClientTurnRequestWithNotification {
    const eventArgs: AppendThreadEventArgs = {
@@ -1686,7 +1684,7 @@ index 30217986481ca22ffaf740599f84bf0ffb786e9f..95ab857ead624ebff61c7110943535fe
      environmentId: args.environmentId,
      type: args.type,
 diff --git a/apps/server/src/services/threads/thread-provisioning-context.ts b/apps/server/src/services/threads/thread-provisioning-context.ts
-index b599fe0bfeef2dfc479db8f8e746b5311a589a71..e94390474deb02ec2fcd64c62e6757b4bee3752c 100644
+index bed48ff2dd87ecb39d9b3a8a6ba8e87af62258c8..c7a860c6b59e8e4a33cbca247df64acd7479e34e 100644
 --- a/apps/server/src/services/threads/thread-provisioning-context.ts
 +++ b/apps/server/src/services/threads/thread-provisioning-context.ts
 @@ -4,6 +4,7 @@ import {
@@ -1697,7 +1695,7 @@ index b599fe0bfeef2dfc479db8f8e746b5311a589a71..e94390474deb02ec2fcd64c62e6757b4
    type ClientTurnRequestId,
    type PromptInput,
    type ResolvedThreadExecutionOptions,
-@@ -64,6 +65,7 @@ export const threadForkDescriptorSchema = z.object({
+@@ -61,6 +62,7 @@ const threadForkDescriptorSchema = z.object({
  });
  
  export const threadProvisionCommonPayloadSchema = z.object({
@@ -1705,7 +1703,7 @@ index b599fe0bfeef2dfc479db8f8e746b5311a589a71..e94390474deb02ec2fcd64c62e6757b4
    p6rActorHandle: z.string().nullable().default(null),
    branchSlug: z.string().nullable().default(null),
    clientRequestId: clientTurnRequestIdSchema,
-@@ -195,6 +197,7 @@ export type ThreadProvisionProvisionableContext =
+@@ -190,6 +192,7 @@ export type ThreadProvisionProvisionableContext =
    | ThreadProvisionWorkspaceReadyContext;
  
  export interface CreateMetadataPendingContextArgs {
@@ -1713,7 +1711,7 @@ index b599fe0bfeef2dfc479db8f8e746b5311a589a71..e94390474deb02ec2fcd64c62e6757b4
    p6rActorHandle?: string | null;
    clientRequestId: ClientTurnRequestId;
    environmentIntent: ThreadProvisionEnvironmentIntent;
-@@ -223,6 +226,7 @@ export interface CreateEnvironmentProvisioningContextArgs {
+@@ -218,6 +221,7 @@ interface CreateEnvironmentProvisioningContextArgs {
  }
  
  export interface CreateReprovisioningContextArgs {
@@ -1721,7 +1719,7 @@ index b599fe0bfeef2dfc479db8f8e746b5311a589a71..e94390474deb02ec2fcd64c62e6757b4
    p6rActorHandle?: string | null;
    clientRequestId: ClientTurnRequestId;
    environmentId: string;
-@@ -356,7 +360,8 @@ export function createMetadataPendingContext(
+@@ -345,7 +349,8 @@ export function createMetadataPendingContext(
  ): ThreadProvisionMetadataPendingContext {
    return {
      request: {
@@ -1731,7 +1729,7 @@ index b599fe0bfeef2dfc479db8f8e746b5311a589a71..e94390474deb02ec2fcd64c62e6757b4
        branchSlug: null,
        clientRequestId: args.clientRequestId,
        environmentIntent: args.environmentIntent,
-@@ -461,7 +466,8 @@ export function createReprovisioningContext(
+@@ -450,7 +455,8 @@ export function createReprovisioningContext(
  ): ThreadProvisionEnvironmentProvisioningContext {
    return {
      request: {
@@ -1742,10 +1740,10 @@ index b599fe0bfeef2dfc479db8f8e746b5311a589a71..e94390474deb02ec2fcd64c62e6757b4
        environmentIntent: {
          type: "reuse",
 diff --git a/apps/server/src/services/threads/thread-provisioning.ts b/apps/server/src/services/threads/thread-provisioning.ts
-index a269272fa51f064c899788bc8bfa02aa48bbb101..3ccb10b6dbcd2a92203382b6611b8ab7cb95f052 100644
+index b1f0bdafe250fca0d678d1316329e218754d0405..7717de563d977f584b8196512251c0735ae0c0da 100644
 --- a/apps/server/src/services/threads/thread-provisioning.ts
 +++ b/apps/server/src/services/threads/thread-provisioning.ts
-@@ -9,6 +9,7 @@ import {
+@@ -8,6 +8,7 @@ import {
    type Thread,
    type ThreadTurnInitiator,
    type TurnRequestTarget,
@@ -1753,7 +1751,7 @@ index a269272fa51f064c899788bc8bfa02aa48bbb101..3ccb10b6dbcd2a92203382b6611b8ab7
  } from "@bb/domain";
  import type { StartedOnBehalfOf } from "@bb/server-contract";
  import type { AppDeps } from "../../types.js";
-@@ -46,6 +47,7 @@ import { applyLoggedThreadLifecycleEvent } from "./lifecycle-outcome.js";
+@@ -43,6 +44,7 @@ import { applyLoggedThreadLifecycleEvent } from "./lifecycle-outcome.js";
  import { recordAcceptedPromptHistoryEntry } from "../prompt-history.js";
  
  interface RequestThreadProvisionArgs {
@@ -1761,7 +1759,7 @@ index a269272fa51f064c899788bc8bfa02aa48bbb101..3ccb10b6dbcd2a92203382b6611b8ab7
    p6rActorHandle?: string | null;
    environmentIntent: ThreadProvisionEnvironmentIntent;
    execution: ResolvedThreadExecutionOptions;
-@@ -65,6 +67,7 @@ interface RequestThreadProvisionArgs {
+@@ -62,6 +64,7 @@ interface RequestThreadProvisionArgs {
  }
  
  interface RequestThreadReprovisionArgs {
@@ -1769,7 +1767,7 @@ index a269272fa51f064c899788bc8bfa02aa48bbb101..3ccb10b6dbcd2a92203382b6611b8ab7
    p6rActorHandle?: string | null;
    beforeRequestAppendInTransaction?: (args: { tx: DbTransaction }) => void;
    environment: Environment;
-@@ -260,6 +263,7 @@ export function requestThreadProvision(
+@@ -243,6 +246,7 @@ export function requestThreadProvision(
    const senderThreadId = args.startedOnBehalfOf?.senderThreadId ?? null;
    const target: TurnRequestTarget = { kind: "thread-start" };
    const request = appendClientTurnEvent(deps, {
@@ -1777,7 +1775,7 @@ index a269272fa51f064c899788bc8bfa02aa48bbb101..3ccb10b6dbcd2a92203382b6611b8ab7
      p6rActorHandle: initiator === "user" ? (args.p6rActorHandle ?? null) : null,
      threadId: args.thread.id,
      environmentId: args.thread.environmentId,
-@@ -280,6 +284,7 @@ export function requestThreadProvision(
+@@ -263,6 +267,7 @@ export function requestThreadProvision(
      requestSequence: request.sequence,
    });
    appendClientTurnEvent(deps, {
@@ -1785,7 +1783,7 @@ index a269272fa51f064c899788bc8bfa02aa48bbb101..3ccb10b6dbcd2a92203382b6611b8ab7
      p6rActorHandle: initiator === "user" ? (args.p6rActorHandle ?? null) : null,
      threadId: args.thread.id,
      environmentId: args.thread.environmentId,
-@@ -315,6 +320,7 @@ export function requestThreadReprovision(
+@@ -298,6 +303,7 @@ export function requestThreadReprovision(
            tx,
            {
              threadId: args.thread.id,
@@ -1793,7 +1791,7 @@ index a269272fa51f064c899788bc8bfa02aa48bbb101..3ccb10b6dbcd2a92203382b6611b8ab7
              p6rActorHandle: args.p6rActorHandle ?? null,
              environmentId: args.environment.id,
              type: "client/turn/requested",
-@@ -354,6 +360,7 @@ export function requestThreadReprovision(
+@@ -337,6 +343,7 @@ export function requestThreadReprovision(
    );
  
    const context = createReprovisioningContext({
@@ -1837,7 +1835,7 @@ index 0515e4270163d6734db157881718de6c91a853f8..5deb7f8b0eedc26ed03680990abca5ab
    });
  }
 diff --git a/apps/server/src/services/threads/thread-runtime-display.ts b/apps/server/src/services/threads/thread-runtime-display.ts
-index 03487870c88841fe06c099899e2ec2fe12241a0b..42ac9ae68be8c4641a8518f716ffe4b4625d9087 100644
+index 3dde2d62084603511cbd4f396d16dc855ee18cc9..be0a484f0a5e9c222b6f7fc04db9570e5556d002 100644
 --- a/apps/server/src/services/threads/thread-runtime-display.ts
 +++ b/apps/server/src/services/threads/thread-runtime-display.ts
 @@ -283,6 +283,10 @@ function toThreadEventWithMeta(row: StoredEventRow): ThreadEventWithMeta {
@@ -1852,7 +1850,7 @@ index 03487870c88841fe06c099899e2ec2fe12241a0b..42ac9ae68be8c4641a8518f716ffe4b4
    };
  }
 diff --git a/apps/server/src/services/threads/thread-send.ts b/apps/server/src/services/threads/thread-send.ts
-index 79c08216e1eacb2a2075c7786ec656014970fddf..ec6b47c9d8d1a99a60937183b4f20c1b2dbf78b6 100644
+index f139f9945c7527b6cfe264dbff29df75bb0ccc7d..0820a43a87d441b47f98f881d3de96a7303e49b5 100644
 --- a/apps/server/src/services/threads/thread-send.ts
 +++ b/apps/server/src/services/threads/thread-send.ts
 @@ -12,6 +12,7 @@ import type {
@@ -1863,7 +1861,7 @@ index 79c08216e1eacb2a2075c7786ec656014970fddf..ec6b47c9d8d1a99a60937183b4f20c1b
  } from "@bb/domain";
  import type { SendMessageRequest } from "@bb/server-contract";
  import { renderTemplate } from "@bb/templates";
-@@ -70,6 +71,7 @@ type SendThreadMessagePayload = SendMessageRequest & {
+@@ -69,6 +70,7 @@ type SendThreadMessagePayload = SendMessageRequest & {
  };
  
  export interface SendThreadMessageArgs {
@@ -1871,7 +1869,7 @@ index 79c08216e1eacb2a2075c7786ec656014970fddf..ec6b47c9d8d1a99a60937183b4f20c1b
    p6rActorHandle?: string | null;
    beforeAppendInTransaction?: SendThreadMessageTransactionPreflight;
    environment: Environment;
-@@ -126,6 +128,7 @@ interface SendThreadMessageQueueRequest {
+@@ -125,6 +127,7 @@ interface SendThreadMessageQueueRequest {
  }
  
  interface AppendAndQueueSendThreadMessageArgs {
@@ -1879,7 +1877,7 @@ index 79c08216e1eacb2a2075c7786ec656014970fddf..ec6b47c9d8d1a99a60937183b4f20c1b
    p6rActorHandle: string | null;
    beforeAppendInTransaction?: SendThreadMessageTransactionPreflight;
    db: DbConnection;
-@@ -327,6 +330,7 @@ function captureUserMessageSentTelemetry(
+@@ -326,6 +329,7 @@ function captureUserMessageSentTelemetry(
  }
  
  function appendAndQueueSendThreadMessageInTransaction({
@@ -1887,7 +1885,7 @@ index 79c08216e1eacb2a2075c7786ec656014970fddf..ec6b47c9d8d1a99a60937183b4f20c1b
    p6rActorHandle,
    beforeAppendInTransaction,
    db,
-@@ -349,6 +353,7 @@ function appendAndQueueSendThreadMessageInTransaction({
+@@ -348,6 +352,7 @@ function appendAndQueueSendThreadMessageInTransaction({
          appendPreparedClientTurnRequestedEventWithNotificationInTransaction(
            tx,
            {
@@ -1895,7 +1893,7 @@ index 79c08216e1eacb2a2075c7786ec656014970fddf..ec6b47c9d8d1a99a60937183b4f20c1b
              p6rActorHandle,
              threadId: thread.id,
              environmentId,
-@@ -407,8 +412,10 @@ export async function sendThreadMessage(
+@@ -406,8 +411,10 @@ export async function sendThreadMessage(
      senderThreadId: payload.senderThreadId,
      targetThread: thread,
    });
@@ -1907,7 +1905,7 @@ index 79c08216e1eacb2a2075c7786ec656014970fddf..ec6b47c9d8d1a99a60937183b4f20c1b
    let inputGroups = payload.inputGroups
      ? payload.inputGroups.map((inputGroup) =>
          senderThreadId
-@@ -484,6 +491,7 @@ export async function sendThreadMessage(
+@@ -477,6 +484,7 @@ export async function sendThreadMessage(
  
    if (
      await dispatchTurnDuringReprovision({
@@ -1915,7 +1913,7 @@ index 79c08216e1eacb2a2075c7786ec656014970fddf..ec6b47c9d8d1a99a60937183b4f20c1b
        p6rActorHandle,
        beforeRequestAppendInTransaction: args.beforeAppendInTransaction,
        deps,
-@@ -562,6 +570,7 @@ export async function sendThreadMessage(
+@@ -554,6 +562,7 @@ export async function sendThreadMessage(
          }
        : await prepareReadyThreadTurnCommand(deps, commandArgs);
      const queuedRequest = appendAndQueueSendThreadMessageInTransaction({
@@ -1923,7 +1921,7 @@ index 79c08216e1eacb2a2075c7786ec656014970fddf..ec6b47c9d8d1a99a60937183b4f20c1b
        p6rActorHandle,
        beforeAppendInTransaction: ({ tx }) => {
          args.beforeAppendInTransaction?.({ tx });
-@@ -663,6 +672,7 @@ export async function sendThreadMessage(
+@@ -652,6 +661,7 @@ export async function sendThreadMessage(
      requestId,
    });
    const queuedRequest = appendAndQueueSendThreadMessageInTransaction({
@@ -1932,7 +1930,7 @@ index 79c08216e1eacb2a2075c7786ec656014970fddf..ec6b47c9d8d1a99a60937183b4f20c1b
      beforeAppendInTransaction: args.beforeAppendInTransaction,
      db: deps.db,
 diff --git a/apps/server/src/services/threads/thread-turn-dispatch.ts b/apps/server/src/services/threads/thread-turn-dispatch.ts
-index a054d485ec318f449c7726bc1d7a175b5a838acf..87fff0bccb0369af367b36f2ace1cbe7a422ec03 100644
+index 59ecbafe0f44e689f0ec2abdacebda571976a182..03f45374be9d600cfe39bdb4acd88a0cb1ab4341 100644
 --- a/apps/server/src/services/threads/thread-turn-dispatch.ts
 +++ b/apps/server/src/services/threads/thread-turn-dispatch.ts
 @@ -1,5 +1,6 @@
@@ -1942,7 +1940,7 @@ index a054d485ec318f449c7726bc1d7a175b5a838acf..87fff0bccb0369af367b36f2ace1cbe7
    PromptInput,
    ResolvedThreadExecutionOptions,
    SystemMessageKind,
-@@ -37,6 +38,7 @@ export interface ReadyThreadEnvironment extends Environment {
+@@ -36,6 +37,7 @@ export interface ReadyThreadEnvironment extends Environment {
  }
  
  export interface DispatchTurnDuringReprovisionArgs {
@@ -1950,7 +1948,7 @@ index a054d485ec318f449c7726bc1d7a175b5a838acf..87fff0bccb0369af367b36f2ace1cbe7
    p6rActorHandle?: string | null;
    beforeRequestAppendInTransaction?: (args: { tx: DbTransaction }) => void;
    deps: LoggedPendingInteractionWorkSessionDeps;
-@@ -172,6 +174,7 @@ export async function dispatchTurnDuringReprovision(
+@@ -165,6 +167,7 @@ export async function dispatchTurnDuringReprovision(
      {
        beforeProvisionCommandStart: () => {
          requestThreadReprovision(args.deps, {
@@ -1959,10 +1957,10 @@ index a054d485ec318f449c7726bc1d7a175b5a838acf..87fff0bccb0369af367b36f2ace1cbe7
            beforeRequestAppendInTransaction:
              args.beforeRequestAppendInTransaction,
 diff --git a/apps/server/src/services/threads/timeline.ts b/apps/server/src/services/threads/timeline.ts
-index 4911891270087f96f8c67348ff3b54e55f056977..8bca91af3c0f4382e553b0f4c49e39408e02561e 100644
+index bf792f6e98e406ba53f52db714343cd2dff65e6d..ea88ce5d68f439a13e6b6b22d2349d67cb5c14af 100644
 --- a/apps/server/src/services/threads/timeline.ts
 +++ b/apps/server/src/services/threads/timeline.ts
-@@ -306,6 +306,10 @@ export function toThreadEventWithMeta(
+@@ -286,6 +286,10 @@ export function toThreadEventWithMeta(
        seq: row.sequence,
        createdAt: row.createdAt,
        p6rActorHandle: row.p6rActorHandle,
@@ -1974,7 +1972,7 @@ index 4911891270087f96f8c67348ff3b54e55f056977..8bca91af3c0f4382e553b0f4c49e3940
    };
  }
 diff --git a/apps/server/test/helpers/seed.ts b/apps/server/test/helpers/seed.ts
-index dc9b292325ed0cb827b2a575c3a6059eb3b24c5b..1cdbfb98d0dcfca58112095ca949e66ffb3dbbfe 100644
+index 5cdb6ced448a483dc0ebaa4aa5943a79b839fa50..efdd410b54c2e9e481e2cb9f91047aa88faa1c96 100644
 --- a/apps/server/test/helpers/seed.ts
 +++ b/apps/server/test/helpers/seed.ts
 @@ -24,6 +24,7 @@ import {
@@ -1985,7 +1983,7 @@ index dc9b292325ed0cb827b2a575c3a6059eb3b24c5b..1cdbfb98d0dcfca58112095ca949e66f
    PermissionMode,
    PromptInput,
    RecordedPermissionMode,
-@@ -239,6 +240,7 @@ export function seedQueuedMessage(
+@@ -240,6 +241,7 @@ export function seedQueuedMessage(
    args: {
      content: PromptInput[];
      threadId: string;
@@ -1993,7 +1991,7 @@ index dc9b292325ed0cb827b2a575c3a6059eb3b24c5b..1cdbfb98d0dcfca58112095ca949e66f
      model?: string;
      reasoningLevel?: string;
      permissionMode?: PermissionMode;
-@@ -247,6 +249,7 @@ export function seedQueuedMessage(
+@@ -248,6 +250,7 @@ export function seedQueuedMessage(
    },
  ) {
    return createQueuedThreadMessage(deps.db, deps.hub, {
@@ -2099,7 +2097,7 @@ index 5d40792e00db8e8067fb334a2f2c076e8973c2e6..84db3eaffa6d20734cfd44db8e149da1
    });
  });
 diff --git a/apps/server/test/public/public-thread-data.test.ts b/apps/server/test/public/public-thread-data.test.ts
-index c81c3e4f3508ffa57d51f0213d7e41a582f7735c..67b45f6c4250bb4f667b08de39e7810bc1b63f94 100644
+index 7e544296c04c99496d78e1fc962bc3ff551768a4..d0bbbe58fddb53ab4bb08179e9483a4c307b5458 100644
 --- a/apps/server/test/public/public-thread-data.test.ts
 +++ b/apps/server/test/public/public-thread-data.test.ts
 @@ -8,6 +8,7 @@ import {
@@ -2118,7 +2116,7 @@ index c81c3e4f3508ffa57d51f0213d7e41a582f7735c..67b45f6c4250bb4f667b08de39e7810b
    P6R_CLAIMED_IDENTITY_HEADER,
    p6rEncodeClaimedIdentityHeader,
    encodeClientTurnRequestIdNumber,
-@@ -41,6 +43,7 @@ import { renderTemplate } from "@bb/templates";
+@@ -42,6 +44,7 @@ import { renderTemplate } from "@bb/templates";
  import { z } from "zod";
  import { describe, expect, it, vi } from "vitest";
  import type { TelemetryService } from "../../src/services/system/telemetry.js";
@@ -2126,7 +2124,7 @@ index c81c3e4f3508ffa57d51f0213d7e41a582f7735c..67b45f6c4250bb4f667b08de39e7810b
  import { loadActiveThreadProvisionContext } from "../../src/services/threads/thread-provisioning-environment.js";
  import {
    reportQueuedCommandError,
-@@ -85,6 +88,14 @@ const clientTurnRequestedDataSchema = z.object({
+@@ -86,6 +89,14 @@ const clientTurnRequestedDataSchema = z.object({
  
  type TimelineTurnRow = Extract<TimelineRow, { kind: "turn" }>;
  
@@ -2141,7 +2139,7 @@ index c81c3e4f3508ffa57d51f0213d7e41a582f7735c..67b45f6c4250bb4f667b08de39e7810b
  describe("public thread data routes", () => {
    it("attributes direct human sends to the resolved request actor", async () => {
      await withTestHarness(async (harness) => {
-@@ -125,7 +136,10 @@ describe("public thread data routes", () => {
+@@ -126,7 +137,10 @@ describe("public thread data routes", () => {
              ),
            )
            .get(),
@@ -2153,7 +2151,7 @@ index c81c3e4f3508ffa57d51f0213d7e41a582f7735c..67b45f6c4250bb4f667b08de39e7810b
      });
    });
  
-@@ -170,7 +184,9 @@ describe("public thread data routes", () => {
+@@ -171,7 +185,9 @@ describe("public thread data routes", () => {
              ),
            )
            .get(),
@@ -2164,7 +2162,7 @@ index c81c3e4f3508ffa57d51f0213d7e41a582f7735c..67b45f6c4250bb4f667b08de39e7810b
      });
    });
  
-@@ -3130,7 +3146,9 @@ describe("public thread data routes", () => {
+@@ -3349,7 +3365,9 @@ describe("public thread data routes", () => {
          .all()
          .at(-1);
        expect(requestedEvent).toBeTruthy();
@@ -2175,7 +2173,7 @@ index c81c3e4f3508ffa57d51f0213d7e41a582f7735c..67b45f6c4250bb4f667b08de39e7810b
        expect(
          Object.hasOwn(JSON.parse(requestedEvent!.data), "inputGroups"),
        ).toBe(false);
-@@ -3154,10 +3172,12 @@ describe("public thread data routes", () => {
+@@ -3373,10 +3391,12 @@ describe("public thread data routes", () => {
        const firstQueuedMessage = seedQueuedMessage(harness.deps, {
          threadId: thread.id,
          content: textInput("First grouped queued message"),
@@ -2188,7 +2186,7 @@ index c81c3e4f3508ffa57d51f0213d7e41a582f7735c..67b45f6c4250bb4f667b08de39e7810b
        });
        const thirdQueuedMessage = seedQueuedMessage(harness.deps, {
          threadId: thread.id,
-@@ -3242,19 +3262,56 @@ describe("public thread data routes", () => {
+@@ -3461,19 +3481,56 @@ describe("public thread data routes", () => {
          "Second grouped queued message",
        ]);
  
@@ -3017,10 +3015,10 @@ index cf4f9f0aace5cb593c892a9ffd9b1f670428e4c7..f9ff72473f293f4ed25cee9cf97014f7
            ],
          });
 diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-index 3458a6a33261e89ac621b7daafe89bae9221c854..68ec5d6c01631eb484d03559811ac71a54324b33 100644
+index ac39e8b4c86333441d2b41f74bb9e2bf30168316..14da43f5e292eb58fee1feaf432aea395fe52edd 100644
 --- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
 +++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-@@ -57,6 +57,7 @@ const BB_PLUGIN_API_KEYS = [
+@@ -59,6 +59,7 @@ const BB_PLUGIN_API_KEYS = [
    "settings",
    "storage",
    "http",
@@ -3029,18 +3027,18 @@ index 3458a6a33261e89ac621b7daafe89bae9221c854..68ec5d6c01631eb484d03559811ac71a
    "realtime",
    "background",
 diff --git a/apps/server/test/services/plugins/plugin-service.test.ts b/apps/server/test/services/plugins/plugin-service.test.ts
-index 87b0b18517470d64096d5a6ad2a586e2d39b1ac6..ea24646594a8c5971e6109b3a420e0bd1733a4a3 100644
+index c01a8b7ab45e2d55b265260e4f91ddd83f97dece..b7a88d10d9d62a01bf5ad3e9f2e80d50bcab8232 100644
 --- a/apps/server/test/services/plugins/plugin-service.test.ts
 +++ b/apps/server/test/services/plugins/plugin-service.test.ts
-@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
- import { dirname, join } from "node:path";
- import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
- import { createConnection, migrate, type DbConnection } from "@bb/db";
+@@ -16,6 +16,7 @@ import {
+   upsertInstalledPlugin,
+   type DbConnection,
+ } from "@bb/db";
 +import { p6rCreateIdentityBoundary } from "../../../src/services/identity.js";
  import type { SystemChangeKind } from "@bb/domain";
  import type { Logger } from "@bb/logger";
  import {
-@@ -102,14 +103,26 @@ describe("plugin service", () => {
+@@ -108,14 +109,26 @@ describe("plugin service", () => {
    let db: DbConnection;
    let workDir: string;
    let service: PluginService;
@@ -3067,7 +3065,7 @@ index 87b0b18517470d64096d5a6ad2a586e2d39b1ac6..ea24646594a8c5971e6109b3a420e0bd
        hub: {
          getDaemonSessionIdForHost: () => null,
          notifyPluginSignal: () => 0,
-@@ -279,6 +292,168 @@ describe("plugin service", () => {
+@@ -304,6 +317,168 @@ describe("plugin service", () => {
      );
    });
  
@@ -3646,13 +3644,13 @@ index 15f0c0905a10841ba10b1e3e85f15142751ee076..77d621124fbdfaec42406c1a83c2e0b4
        environmentId: environment.id,
        provisionEventSequence: 0,
 diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
-index 8178bd690f5e0ec7572b5d0f54aaa0f75bc23789..d54c49830e6bb362ddb04c5fb902c97ea884d202 100644
+index 1f80e2a219d46910fbe2b41d445761466442ccff..e42e834f7d60ed03098932daddd5ada27f07856b 100644
 --- a/docs/api_to_audit.md
 +++ b/docs/api_to_audit.md
-@@ -5,6 +5,28 @@ entry here (see [AGENTS.md](../AGENTS.md), "Plugin API"). Dropping the prefix
- is the deliberate stabilization step: audit the entry, rename project-wide,
- and delete the entry in the same change.
- 
+@@ -108,6 +108,27 @@ malformed runtime targets remain inert in both the app and SDK test runtime.
+    target variants; do not weaken live-file guarantees to accommodate them.
+ 7. Confirm `PluginFileOpenerSource.experimental_hostId` can become a stable
+    required `hostId` field without breaking older opener implementations.
 +## `BbPluginApi.p6rIdentity`
 +
 +**What it does.** Lets one installed plugin register the provider-qualified
@@ -3674,10 +3672,21 @@ index 8178bd690f5e0ec7572b5d0f54aaa0f75bc23789..d54c49830e6bb362ddb04c5fb902c97e
 +4. Keep `p6rRequestPrincipal` separate from the durable `p6rTurnAuthor`
 +   supplied to agent tools; do not widen either context by parsing transcript
 +   `[from=...]` presentation.
-+
+ 
  ## Host plugin foundation (`bb.hosts.experimental_client`, `ExperimentalHostClient.experimental_onWorkerExit`, `ExperimentalHostClient.experimental_onSignal`, `ExperimentalHostRpcContext.experimental_retainWorker`, `experimental_defineHostEntry`, and `experimental_createHostEntryHarness`)
  
- **What it does.** Lets one plugin package declare a singular `bb.host` Node
+diff --git a/packages/client-core/test/timeline-merge.test.ts b/packages/client-core/test/timeline-merge.test.ts
+index 035a9cde6138c0a56799fc86531831ddcc0db4d1..74ffba4c9ddf9368a0b2577605e0741e164b2d38 100644
+--- a/packages/client-core/test/timeline-merge.test.ts
++++ b/packages/client-core/test/timeline-merge.test.ts
+@@ -37,6 +37,7 @@ function timelineCursor(args: TimelineTestRowArgs): TimelinePaginationCursor {
+ function userRow(args: TimelineTestRowArgs): TimelineUserConversationRow {
+   return {
+     p6rActorHandle: null,
++    p6rActor: null,
+     id: args.id,
+     threadId: "thread-1",
+     turnId: "turn-1",
 diff --git a/packages/db/src/data/actors.ts b/packages/db/src/data/actors.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..c749543b85895ae31a1f0330fbeaae718469fa95
@@ -3745,7 +3754,7 @@ index 0000000000000000000000000000000000000000..c749543b85895ae31a1f0330fbeaae71
 +    : null;
 +}
 diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
-index ac3c7a9e4f7339fc49f24b400f07abdddfeabec3..b7f07ef5f13ae3d0638370b9bf047a99dee7102c 100644
+index a9b3dbce1e6d86643cf3bea743805394b12eb0c6..75e100fa7bdcd2029e83e5e8764f354f8a4722d4 100644
 --- a/packages/db/src/data/events.ts
 +++ b/packages/db/src/data/events.ts
 @@ -29,6 +29,7 @@ import type {
@@ -3764,7 +3773,7 @@ index ac3c7a9e4f7339fc49f24b400f07abdddfeabec3..b7f07ef5f13ae3d0638370b9bf047a99
  import { createEventId } from "../ids.js";
  import { truncatedEventDataColumn } from "./event-output-truncation.js";
  import { deriveStoredEventItemFieldsFromSource } from "../stored-event-item-fields.js";
-@@ -117,6 +119,10 @@ const isNotNestedTurnUsageEvent = sql`NOT EXISTS (
+@@ -149,6 +151,10 @@ const isNotSupersededBackgroundTaskProgress = sql`NOT (
  
  export interface InsertEventInput {
    p6rActorHandle?: string | null;
@@ -3775,7 +3784,7 @@ index ac3c7a9e4f7339fc49f24b400f07abdddfeabec3..b7f07ef5f13ae3d0638370b9bf047a99
    threadId: string;
    environmentId?: string | null;
    scope: ThreadEventScope;
-@@ -271,6 +277,10 @@ export type AppendStoredThreadEventArgs<
+@@ -305,6 +311,10 @@ export type AppendStoredThreadEventArgs<
  > = {
    [TEventType in TType]: {
      p6rActorHandle?: string | null;
@@ -3786,30 +3795,30 @@ index ac3c7a9e4f7339fc49f24b400f07abdddfeabec3..b7f07ef5f13ae3d0638370b9bf047a99
      data: StoredThreadEventDataForType<TEventType>;
      environmentId?: string | null;
      providerThreadId?: string | null;
-@@ -389,8 +399,8 @@ export function insertEvents(
+@@ -423,8 +433,8 @@ export function insertEvents(
      const createdAt = input.createdAt ?? Date.now();
      const turnId = getThreadEventScopeTurnId(input.scope) ?? null;
      const result = db.run(
--      sql`INSERT OR IGNORE INTO events (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, p6r_actor_handle, data, created_at)
--          VALUES (${id}, ${input.threadId}, ${input.environmentId ?? null}, ${input.scope.kind}, ${turnId}, ${input.providerThreadId ?? null}, ${input.sequence}, ${input.type}, ${input.itemId}, ${input.itemKind}, ${input.p6rActorHandle ?? null}, ${input.data}, ${createdAt})`,
-+      sql`INSERT OR IGNORE INTO events (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, p6r_actor_handle, p6r_actor_provider_id, p6r_actor_subject, p6r_actor_display_name, p6r_actor_image_url, data, created_at)
-+          VALUES (${id}, ${input.threadId}, ${input.environmentId ?? null}, ${input.scope.kind}, ${turnId}, ${input.providerThreadId ?? null}, ${input.sequence}, ${input.type}, ${input.itemId}, ${input.itemKind}, ${input.p6rActorHandle ?? null}, ${input.p6rActorProviderId ?? null}, ${input.p6rActorSubject ?? null}, ${input.p6rActorDisplayName ?? null}, ${input.p6rActorImageUrl ?? null}, ${input.data}, ${createdAt})`,
+-      sql`INSERT OR IGNORE INTO events (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, parent_tool_call_id, p6r_actor_handle, data, created_at)
+-          VALUES (${id}, ${input.threadId}, ${input.environmentId ?? null}, ${input.scope.kind}, ${turnId}, ${input.providerThreadId ?? null}, ${input.sequence}, ${input.type}, ${input.itemId}, ${input.itemKind}, ${input.parentToolCallId}, ${input.p6rActorHandle ?? null}, ${input.data}, ${createdAt})`,
++      sql`INSERT OR IGNORE INTO events (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, parent_tool_call_id, p6r_actor_handle, p6r_actor_provider_id, p6r_actor_subject, p6r_actor_display_name, p6r_actor_image_url, data, created_at)
++          VALUES (${id}, ${input.threadId}, ${input.environmentId ?? null}, ${input.scope.kind}, ${turnId}, ${input.providerThreadId ?? null}, ${input.sequence}, ${input.type}, ${input.itemId}, ${input.itemKind}, ${input.parentToolCallId}, ${input.p6rActorHandle ?? null}, ${input.p6rActorProviderId ?? null}, ${input.p6rActorSubject ?? null}, ${input.p6rActorDisplayName ?? null}, ${input.p6rActorImageUrl ?? null}, ${input.data}, ${createdAt})`,
      );
      if (result.changes > 0) {
        insertedCount++;
-@@ -717,7 +727,7 @@ export function appendDaemonEventsInTransaction(
+@@ -760,7 +770,7 @@ export function appendDaemonEventsInTransaction(
      }
      db.run(
        sql`INSERT INTO events
--        (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, data, created_at)
-+        (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, p6r_actor_provider_id, p6r_actor_subject, p6r_actor_display_name, p6r_actor_image_url, data, created_at)
+-        (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, parent_tool_call_id, data, created_at)
++        (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, parent_tool_call_id, p6r_actor_provider_id, p6r_actor_subject, p6r_actor_display_name, p6r_actor_image_url, data, created_at)
          VALUES (
            ${createEventId()},
            ${input.threadId},
-@@ -729,6 +739,10 @@ export function appendDaemonEventsInTransaction(
-           ${input.type},
+@@ -773,6 +783,10 @@ export function appendDaemonEventsInTransaction(
            ${input.itemId},
            ${input.itemKind},
+           ${input.parentToolCallId},
 +          ${null},
 +          ${null},
 +          ${null},
@@ -3817,18 +3826,18 @@ index ac3c7a9e4f7339fc49f24b400f07abdddfeabec3..b7f07ef5f13ae3d0638370b9bf047a99
            ${input.data},
            ${now}
          )`,
-@@ -816,7 +830,7 @@ export function appendStoredThreadEventsInTransaction(
+@@ -864,7 +878,7 @@ export function appendStoredThreadEventsInTransaction(
  
      db.run(
        sql`INSERT INTO events
--        (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, p6r_actor_handle, data, created_at)
-+        (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, p6r_actor_handle, p6r_actor_provider_id, p6r_actor_subject, p6r_actor_display_name, p6r_actor_image_url, data, created_at)
+-        (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, parent_tool_call_id, p6r_actor_handle, data, created_at)
++        (id, thread_id, environment_id, scope_kind, turn_id, provider_thread_id, sequence, type, item_id, item_kind, parent_tool_call_id, p6r_actor_handle, p6r_actor_provider_id, p6r_actor_subject, p6r_actor_display_name, p6r_actor_image_url, data, created_at)
          VALUES (
            ${createEventId()},
            ${args.threadId},
-@@ -829,6 +843,10 @@ export function appendStoredThreadEventsInTransaction(
-           ${itemFields.itemId},
+@@ -878,6 +892,10 @@ export function appendStoredThreadEventsInTransaction(
            ${itemFields.itemKind},
+           ${itemFields.parentToolCallId},
            ${args.p6rActorHandle ?? null},
 +          ${args.p6rActorProviderId ?? null},
 +          ${args.p6rActorSubject ?? null},
@@ -3837,7 +3846,7 @@ index ac3c7a9e4f7339fc49f24b400f07abdddfeabec3..b7f07ef5f13ae3d0638370b9bf047a99
            ${JSON.stringify(args.data)},
            ${now}
          )`,
-@@ -944,6 +962,10 @@ export interface ListEventsOptions {
+@@ -993,6 +1011,10 @@ export interface ListEventsOptions {
  
  const storedEventRowFields = {
    p6rActorHandle: events.p6rActorHandle,
@@ -3848,7 +3857,7 @@ index ac3c7a9e4f7339fc49f24b400f07abdddfeabec3..b7f07ef5f13ae3d0638370b9bf047a99
    createdAt: events.createdAt,
    data: events.data,
    id: events.id,
-@@ -962,6 +984,73 @@ export type StoredEventRow = Pick<
+@@ -1012,6 +1034,73 @@ export type StoredEventRow = Pick<
    keyof typeof storedEventRowFields
  >;
  
@@ -3923,26 +3932,26 @@ index ac3c7a9e4f7339fc49f24b400f07abdddfeabec3..b7f07ef5f13ae3d0638370b9bf047a99
   * Character cap for the inline outputs a timeline read may return, or `null` to
   * return every payload as stored. See {@link truncatedEventDataColumn}: the cap
 diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
-index 7ad00770a6543c86271d7c670818c6a54438e1dd..af00cee53d2da71c71102153e0857df7ce09b8ee 100644
+index f334200485b680b6aab1a0b71e1ad7b6b29d5102..5149ae920605396dbd51a7e7befe2a9771a9240e 100644
 --- a/packages/db/src/data/index.ts
 +++ b/packages/db/src/data/index.ts
-@@ -376,6 +376,7 @@ export {
+@@ -277,6 +277,7 @@ export {
    listStoredTurnCompletedRowsByTurnIds,
    listStoredTurnStartedKeys,
    listStoredTurnStartedRowsByTurnIdsUpToSequence,
 +  p6rGetTurnAuthorActor,
    getLatestThreadInterruptedReason,
-   getStoredTimelineWindowEventDataBytes,
    listLatestGoalEventRowsByThreadIds,
-@@ -445,6 +446,7 @@ export type {
-   ThreadTurnKey,
-   ThreadTurnInterruptionEventState,
+   listLatestBackgroundTaskStateRowsByItemIds,
+@@ -306,6 +307,7 @@ export type {
+   StandardTimelineSegmentAnchorRow,
+   ThreadClientTurnRequestKey,
    StoredTurnRequestEventRow,
 +  P6rGetTurnAuthorActorArgs,
  } from "./events.js";
  
  export {
-@@ -593,6 +595,12 @@ export type {
+@@ -415,6 +417,12 @@ export type {
    RunIncrementalVacuumArgs,
  } from "./maintenance.js";
  
@@ -3956,7 +3965,7 @@ index 7ad00770a6543c86271d7c670818c6a54438e1dd..af00cee53d2da71c71102153e0857df7
    p6rGetCollaborator,
    p6rListCollaborators,
 diff --git a/packages/db/src/data/queued-thread-messages.ts b/packages/db/src/data/queued-thread-messages.ts
-index e7f2e5a5293b4f1499c3f36b4752f67c732b2adb..8660193a4d3e19eeba6c4ea73c2a35f94c4dd7e9 100644
+index a0c1153f2f14b619f3d5220fe63d3d4e1b6e20c1..bfa50c8170879bd46b5b3c12fa001f9eb375d3b1 100644
 --- a/packages/db/src/data/queued-thread-messages.ts
 +++ b/packages/db/src/data/queued-thread-messages.ts
 @@ -11,7 +11,7 @@ import {
@@ -3984,7 +3993,7 @@ index e7f2e5a5293b4f1499c3f36b4752f67c732b2adb..8660193a4d3e19eeba6c4ea73c2a35f9
  }
  
  export type QueuedThreadMessageRow = typeof queuedThreadMessages.$inferSelect;
-@@ -215,9 +217,19 @@ function queuedMessageGroupingEnvelopeMatches(
+@@ -211,9 +213,19 @@ function queuedMessageGroupingEnvelopeMatches(
    firstQueuedMessage: QueuedThreadMessageRow | null,
    queuedMessage: QueuedThreadMessageRow,
  ): boolean {
@@ -4005,20 +4014,20 @@ index e7f2e5a5293b4f1499c3f36b4752f67c732b2adb..8660193a4d3e19eeba6c4ea73c2a35f9
      queuedMessage.senderThreadId === firstQueuedMessage.senderThreadId &&
      queuedMessage.model === firstQueuedMessage.model &&
      queuedMessage.reasoningLevel === firstQueuedMessage.reasoningLevel &&
-@@ -493,7 +505,11 @@ export function createQueuedThreadMessage(
-           threadId: input.threadId,
-           content: JSON.stringify(input.content),
-           senderThreadId: input.senderThreadId ?? null,
--          p6rActorHandle: input.p6rActorHandle ?? null,
-+          p6rActorHandle: input.p6rActor?.p6rHandle ?? input.p6rActorHandle ?? null,
-+          p6rActorProviderId: input.p6rActor?.p6rProviderId ?? null,
-+          p6rActorSubject: input.p6rActor?.p6rSubject ?? null,
-+          p6rActorDisplayName: input.p6rActor?.p6rDisplayName ?? null,
-+          p6rActorImageUrl: input.p6rActor?.p6rImageUrl ?? null,
-           model: input.model,
-           reasoningLevel: input.reasoningLevel,
-           permissionMode: input.permissionMode,
-@@ -536,6 +552,15 @@ export function updateQueuedThreadMessage(
+@@ -493,7 +505,11 @@ export function createQueuedThreadMessageInTransaction(
+       threadId: input.threadId,
+       content: JSON.stringify(input.content),
+       senderThreadId: input.senderThreadId ?? null,
+-      p6rActorHandle: input.p6rActorHandle ?? null,
++      p6rActorHandle: input.p6rActor?.p6rHandle ?? input.p6rActorHandle ?? null,
++      p6rActorProviderId: input.p6rActor?.p6rProviderId ?? null,
++      p6rActorSubject: input.p6rActor?.p6rSubject ?? null,
++      p6rActorDisplayName: input.p6rActor?.p6rDisplayName ?? null,
++      p6rActorImageUrl: input.p6rActor?.p6rImageUrl ?? null,
+       model: input.model,
+       reasoningLevel: input.reasoningLevel,
+       permissionMode: input.permissionMode,
+@@ -544,6 +560,15 @@ export function updateQueuedThreadMessage(
          .update(queuedThreadMessages)
          .set({
            content: JSON.stringify(input.content),
@@ -4035,10 +4044,10 @@ index e7f2e5a5293b4f1499c3f36b4752f67c732b2adb..8660193a4d3e19eeba6c4ea73c2a35f9
          })
          .where(eq(queuedThreadMessages.id, input.id))
 diff --git a/packages/db/src/schema.ts b/packages/db/src/schema.ts
-index 8a006eb2cd9510e56fc9ba4dca373ba608f17959..0dfbaf9300ff42b8ad2bdbde6c207e2c77a4a729 100644
+index c700c0d4eb365797bed9021d7f5c9e6b329d6a3d..2dded7915f3e0a0ce38e02d56d344cd4a04270b0 100644
 --- a/packages/db/src/schema.ts
 +++ b/packages/db/src/schema.ts
-@@ -706,7 +706,26 @@ export const threadDynamicContextFileStates = sqliteTable(
+@@ -723,7 +723,26 @@ export const threadDynamicContextFileStates = sqliteTable(
    ],
  );
  
@@ -4066,7 +4075,7 @@ index 8a006eb2cd9510e56fc9ba4dca373ba608f17959..0dfbaf9300ff42b8ad2bdbde6c207e2c
  // handshake on request/socket connect. bb never verifies these: admission is
  // enforced at the boundary (connect gate / network) and any admitted client
  // has owner parity, so attribution is honor-system by design. Keyed by
-@@ -743,6 +762,10 @@ export const events = sqliteTable(
+@@ -761,6 +780,10 @@ export const events = sqliteTable(
      // Normalized handle of the human who initiated this event. NULL = not
      // human-initiated (agent/provider/system) or pre-multiplayer history.
      p6rActorHandle: text("p6r_actor_handle"),
@@ -4075,9 +4084,9 @@ index 8a006eb2cd9510e56fc9ba4dca373ba608f17959..0dfbaf9300ff42b8ad2bdbde6c207e2c
 +    p6rActorDisplayName: text("p6r_actor_display_name"),
 +    p6rActorImageUrl: text("p6r_actor_image_url"),
      data: text("data").notNull().default("{}"),
-     createdAt: integer("created_at").notNull(),
-   },
-@@ -882,6 +905,10 @@ export const queuedThreadMessages = sqliteTable(
+     toolName: text("tool_name").generatedAlwaysAs(
+       sql`CASE WHEN json_valid(data) THEN json_extract(data, '$.item.tool') END`,
+@@ -915,6 +938,10 @@ export const queuedThreadMessages = sqliteTable(
      // so attribution survives the queue. NULL = queued by a non-human sender
      // (e.g. another thread) or pre-multiplayer history.
      p6rActorHandle: text("p6r_actor_handle"),
@@ -4218,7 +4227,7 @@ index 0000000000000000000000000000000000000000..bf50a2acda68f8550881eb400192c24e
 +  });
 +});
 diff --git a/packages/db/test/data/queued-thread-messages.test.ts b/packages/db/test/data/queued-thread-messages.test.ts
-index d8819c8335035a2b3e82b6ab9c4937801f58cad0..b36c9c48f9cd6b2155ed12a687cbeaa361c6daf8 100644
+index d1317495e1515d7aee377fd92cf879736a0146b3..b7c54ec1317b4937497a6502fec83266a26549de 100644
 --- a/packages/db/test/data/queued-thread-messages.test.ts
 +++ b/packages/db/test/data/queued-thread-messages.test.ts
 @@ -1,5 +1,5 @@
@@ -4228,7 +4237,7 @@ index d8819c8335035a2b3e82b6ab9c4937801f58cad0..b36c9c48f9cd6b2155ed12a687cbeaa3
  import { createConnection } from "../../src/connection.js";
  import { migrate } from "../../src/migrate.js";
  import { noopNotifier } from "../../src/notifier.js";
-@@ -31,6 +31,19 @@ function textInput(text: string): PromptInput[] {
+@@ -28,6 +28,19 @@ function textInput(text: string): PromptInput[] {
  
  const defaultInput = textInput("hello");
  const altInput = textInput("world");
@@ -4248,7 +4257,7 @@ index d8819c8335035a2b3e82b6ab9c4937801f58cad0..b36c9c48f9cd6b2155ed12a687cbeaa3
  
  function setup() {
    const db = createConnection(":memory:");
-@@ -88,6 +101,78 @@ describe("queued thread messages", () => {
+@@ -85,6 +98,78 @@ describe("queued thread messages", () => {
      expect(getQueuedThreadMessage(db, "qmsg_nonexistent")).toBeNull();
    });
  
@@ -4328,11 +4337,11 @@ index d8819c8335035a2b3e82b6ab9c4937801f58cad0..b36c9c48f9cd6b2155ed12a687cbeaa3
      const { db, thread } = setup();
      createQueuedThreadMessage(db, noopNotifier, {
 diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
-index 009f267a4f57e3691a8625021f4a77783de3b73c..fa0aedbb27a612a25dcb7d34145a4d968e480a22 100644
+index eab49239e2e704afc79c512bfc08d013f2d8252d..2ed49f65e6308aa12dbf55acfbea798f1f9c1564 100644
 --- a/packages/db/test/migrate.test.ts
 +++ b/packages/db/test/migrate.test.ts
-@@ -278,6 +278,36 @@ function restoreWideExperimentsTable(db: DbConnection): void {
-   `);
+@@ -292,6 +292,36 @@ function dropAppSettingsValuesTable(db: DbConnection): void {
+   db.$client.prepare("DROP TABLE IF EXISTS app_settings_values").run();
  }
  
 +function dropIdentityMigrationState(db: DbConnection): void {
@@ -4368,7 +4377,7 @@ index 009f267a4f57e3691a8625021f4a77783de3b73c..fa0aedbb27a612a25dcb7d34145a4d96
  function dropRewindAddedTables(db: DbConnection): void {
    // Several tests migrate to head, rewind the schema to a legacy state, then
    // re-apply forward. Tables added by recent migrations must be dropped as part
-@@ -299,6 +329,7 @@ function dropRewindAddedTables(db: DbConnection): void {
+@@ -315,6 +345,7 @@ function dropRewindAddedTables(db: DbConnection): void {
    db.$client.prepare("DROP TABLE IF EXISTS plugin_kv").run();
    db.$client.prepare("DROP TABLE IF EXISTS plugin_settings").run();
    db.$client.prepare("DROP TABLE IF EXISTS plugin_schedules").run();
@@ -4376,31 +4385,23 @@ index 009f267a4f57e3691a8625021f4a77783de3b73c..fa0aedbb27a612a25dcb7d34145a4d96
    db.$client
      .prepare("ALTER TABLE hosts DROP COLUMN last_rejected_protocol_version")
      .run();
-@@ -398,6 +429,7 @@ const permissionModesMigrationWhen = 1784311522462;
- const branchLocalThreadTabsMigrationWhen = 1783633750817;
+@@ -417,6 +448,7 @@ const eventParentToolCallPreJsonValidMigrationHash =
+   "79d39e7b68d1db8ba02614fe4cc227cc0c154d77c7183f2e37ed2d8475412993";
  const branchLocalMultiplayerMigrationWhen = 1784389648607;
  const multiplayerMigrationWhen = 1786998114856;
 +const identityMigrationWhen = 1787090005295;
  const eventLargeValuesPreOptimizationHash =
    "bc111f5134183c37cf135af70231ec5a79823f9868818fdd8377e1ab3c05a23f";
  const queuedMessageSortKeyMigrationPath = resolve(
-@@ -749,6 +781,7 @@ function dropQueuedMessageSenderThreadIdColumn(db: DbConnection): void {
- 
+@@ -801,6 +833,7 @@ function dropQueuedMessageSenderThreadIdColumn(db: DbConnection): void {
  /** Tables created by migrations after 0023, dropped so migrate() re-applies. */
  function dropPost0023Tables(db: DbConnection): void {
+   dropEventParentToolCallIdColumn(db);
 +  dropIdentityMigrationState(db);
    dropEnvironmentRetireRequestedAtColumn(db);
    dropPluginArtifactGitCheckoutRootColumn(db);
    dropProjectGitRemoteUrlColumn(db);
-@@ -1523,6 +1556,7 @@ describe("migrate", () => {
-     dropEnvironmentRetireRequestedAtColumn(db);
-     dropPluginArtifactGitCheckoutRootColumn(db);
-     dropMarketplaceCatalogSchema(db);
-+    dropIdentityMigrationState(db);
-     // Delete by the journal timestamp, not a hash substring: migration hashes
-     // are hex and can contain "0085" by coincidence.
-     db.$client
-@@ -1609,6 +1643,7 @@ describe("migrate", () => {
+@@ -1731,6 +1764,7 @@ describe("migrate", () => {
            "INSERT OR REPLACE INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
          )
          .run("branch-local-multiplayer", branchLocalMultiplayerMigrationWhen);
@@ -4408,15 +4409,15 @@ index 009f267a4f57e3691a8625021f4a77783de3b73c..fa0aedbb27a612a25dcb7d34145a4d96
  
        migrate(db);
  
-@@ -1872,6 +1907,7 @@ describe("migrate", () => {
-       dropEnvironmentRetireRequestedAtColumn(db);
+@@ -1996,6 +2030,7 @@ describe("migrate", () => {
        dropPluginArtifactGitCheckoutRootColumn(db);
        dropMarketplaceCatalogSchema(db);
+       dropEventParentToolCallIdColumn(db);
 +      dropIdentityMigrationState(db);
  
        restoreLegacyThreadOriginColumn(db);
        migrate(db);
-@@ -2152,6 +2188,7 @@ describe("migrate", () => {
+@@ -2276,6 +2311,7 @@ describe("migrate", () => {
            `,
          )
          .run("branch-local-thread-tabs", branchLocalThreadTabsMigrationWhen);
@@ -4424,25 +4425,25 @@ index 009f267a4f57e3691a8625021f4a77783de3b73c..fa0aedbb27a612a25dcb7d34145a4d96
  
        migrate(db);
  
-@@ -2279,6 +2316,7 @@ describe("migrate", () => {
-       dropEnvironmentRetireRequestedAtColumn(db);
+@@ -2405,6 +2441,7 @@ describe("migrate", () => {
        dropPluginArtifactGitCheckoutRootColumn(db);
        dropMarketplaceCatalogSchema(db);
+       dropEventParentToolCallIdColumn(db);
 +      dropIdentityMigrationState(db);
  
        restoreLegacyThreadOriginColumn(db);
        expect(
-@@ -2378,6 +2416,7 @@ describe("migrate", () => {
-       dropEnvironmentRetireRequestedAtColumn(db);
+@@ -2506,6 +2543,7 @@ describe("migrate", () => {
        dropPluginArtifactGitCheckoutRootColumn(db);
        dropMarketplaceCatalogSchema(db);
+       dropEventParentToolCallIdColumn(db);
 +      dropIdentityMigrationState(db);
  
        restoreLegacyThreadOriginColumn(db);
        expect(() => migrate(db)).not.toThrow();
-@@ -3909,6 +3948,10 @@ describe("migrate", () => {
-         "data",
+@@ -4038,6 +4076,10 @@ describe("migrate", () => {
          "created_at",
+         "parent_tool_call_id",
          "p6r_actor_handle",
 +        "p6r_actor_provider_id",
 +        "p6r_actor_subject",
@@ -4452,10 +4453,10 @@ index 009f267a4f57e3691a8625021f4a77783de3b73c..fa0aedbb27a612a25dcb7d34145a4d96
        const eventIndexNames = readIndexNames({
          db,
 diff --git a/packages/db/test/query-plans.test.ts b/packages/db/test/query-plans.test.ts
-index 74e156ce798c4539eb9cd5e12051a6f0fb479d00..2c3f3aafa2c7657dc41fbd7d5b20d4354f281aba 100644
+index 5e03d6da5d2fc6c5b213c8e8abeafe06fc15610b..02bbc27c98f06f74d1f965041617a515d0795e43 100644
 --- a/packages/db/test/query-plans.test.ts
 +++ b/packages/db/test/query-plans.test.ts
-@@ -91,6 +91,7 @@ interface AssertEmittedQueryPlanUsesIndexArgs {
+@@ -93,6 +93,7 @@ interface AssertEmittedQueryPlanUsesIndexArgs {
    debugLog: LoggedDebug;
    indexName: string;
    params: readonly SqliteParameter[];
@@ -4463,7 +4464,7 @@ index 74e156ce798c4539eb9cd5e12051a6f0fb479d00..2c3f3aafa2c7657dc41fbd7d5b20d435
  }
  
  class CapturingSlowQueryLogger implements SlowDbQueryLogger {
-@@ -212,7 +213,9 @@ function assertEmittedQueryPlanUsesIndex(
+@@ -214,7 +215,9 @@ function assertEmittedQueryPlanUsesIndex(
    const details = queryPlanDetails({
      db: args.db,
      params: args.params,
@@ -4474,36 +4475,8 @@ index 74e156ce798c4539eb9cd5e12051a6f0fb479d00..2c3f3aafa2c7657dc41fbd7d5b20d435
    });
    expect(
      details.includes(`USING INDEX ${args.indexName}`) ||
-@@ -382,17 +385,26 @@ describe("slow query index plans", () => {
-   it("uses selective indexes for conversation-outline events", () => {
-     const { db, logger, thread } = setup();
- 
--    listStoredConversationOutlineEventRows(db, { threadId: thread.id });
-+    const captured = captureStatements(db, () => {
-+      listStoredConversationOutlineEventRows(db, { threadId: thread.id });
-+    });
- 
-     const debugLog = findOnlyDebugLog({
-       logger,
-       predicate: (fields) =>
-         fields.operation === "all" && fields.sql.includes('from "events"'),
-     });
-+    const statement = captured.find((entry) =>
-+      entry.sql.includes('from "events"'),
-+    );
-+    if (!statement) {
-+      throw new Error("Expected the conversation-outline SQL");
-+    }
-     assertEmittedQueryPlanUsesIndex({
-       db,
-       debugLog,
-       indexName: "events_thread_type_item_kind_sequence_idx",
-+      sql: statement.sql,
-       params: [
-         thread.id,
-         "client/turn/requested",
 diff --git a/packages/domain/src/index.ts b/packages/domain/src/index.ts
-index 8d5a03ab175ebcda826a40f9fe39445f5d403802..deb38774ecba65a0dc2a08d69de521183dd341bf 100644
+index d3fce1e111fdb539079a8fec3be5b8533e32cdb6..de1f9c20e6f6a11e2825cb70edf9bb7a913cd846 100644
 --- a/packages/domain/src/index.ts
 +++ b/packages/domain/src/index.ts
 @@ -25,6 +25,7 @@ export * from "./json-value.js";
@@ -4545,7 +4518,7 @@ index 0000000000000000000000000000000000000000..b68c49576384ec776991595ec3719c36
 +  return `${actor.p6rProviderId}\0${actor.p6rSubject}`;
 +}
 diff --git a/packages/domain/src/stored-thread-event.ts b/packages/domain/src/stored-thread-event.ts
-index d2ca793eb397b4da0026c126b8fd87026f4b7bc8..3791c10813ec4797fd923fd8d05b4f9c9e1d19c5 100644
+index fb5720c694479718c92001036c4d5471ea94904d..bbd66fd794aae5fdf44eb8aa168f7c709580ace9 100644
 --- a/packages/domain/src/stored-thread-event.ts
 +++ b/packages/domain/src/stored-thread-event.ts
 @@ -34,6 +34,10 @@ interface ThreadEventRowBase {
@@ -4582,7 +4555,7 @@ index d2ca793eb397b4da0026c126b8fd87026f4b7bc8..3791c10813ec4797fd923fd8d05b4f9c
        type: row.type,
        data: row.data,
 diff --git a/packages/domain/src/thread.ts b/packages/domain/src/thread.ts
-index 555a32570efb0dab8cd55c50e9576a2a2ef78e26..f0033bb4b787fa4b1f5f4adf72f64d842eebfa19 100644
+index 7cd5af7180f9dbed16cbda7105ae01dd3b1efc90..dc26c8be1ea4104b07d2de956104c0c32292ad97 100644
 --- a/packages/domain/src/thread.ts
 +++ b/packages/domain/src/thread.ts
 @@ -10,6 +10,7 @@ import {
@@ -4593,7 +4566,7 @@ index 555a32570efb0dab8cd55c50e9576a2a2ef78e26..f0033bb4b787fa4b1f5f4adf72f64d84
  export { threadStatusSchema, threadStatusValues } from "./thread-status.js";
  export type { ThreadStatus } from "./thread-status.js";
  export {
-@@ -369,6 +370,7 @@ export const threadQueuedMessageSchema = z.object({
+@@ -359,6 +360,7 @@ export const threadQueuedMessageSchema = z.object({
    groupWithNext: z.boolean(),
    createdAt: z.number(),
    updatedAt: z.number(),
@@ -4613,107 +4586,6 @@ index 5b965582bcfd4ba9e195a106d1ad11beea122cbb..6de8c7aa44ea6e6e4d1514ebdc4ed9fa
      });
  
      expect(() =>
-diff --git a/packages/plugin-sdk/bundled-types/bb-plugin-sdk-app.d.ts b/packages/plugin-sdk/bundled-types/bb-plugin-sdk-app.d.ts
-index 3e95d3078eab298d7b8c5e6585750703b0812663..69c042ced04ca001e4a5a1692277d7ec76e65c74 100644
---- a/packages/plugin-sdk/bundled-types/bb-plugin-sdk-app.d.ts
-+++ b/packages/plugin-sdk/bundled-types/bb-plugin-sdk-app.d.ts
-@@ -237,6 +237,69 @@ type JsonValue = string | number | boolean | null | JsonValue[] | {
-     [key: string]: JsonValue;
- };
- 
-+/** Ambient request facts supplied by core after the shared identity boundary. */
-+interface P6rPluginRequestContext {
-+    /** Null means no authenticated actor was available for this request. */
-+    p6rRequestPrincipal: P6rActorSnapshot | null;
-+}
-+
-+/** A JSON-safe path segment reported by a Standard Schema validation issue. */
-+type PluginRpcIssuePathSegment = string | number;
-+/** Validator-neutral validation detail carried by an RPC error envelope. */
-+interface PluginRpcValidationIssue {
-+    message: string;
-+    path?: PluginRpcIssuePathSegment[];
-+}
-+/** Stable wire error categories for plugin RPC. */
-+type PluginRpcErrorCode = "invalid_json" | "invalid_input" | "handler_error" | "invalid_output" | "non_json_result" | "unknown_method";
-+/** Structured RPC failure returned as `{ ok: false, error }`. */
-+interface PluginRpcError {
-+    code: PluginRpcErrorCode;
-+    message: string;
-+    issues?: PluginRpcValidationIssue[];
-+}
-+/**
-+ * The validator-neutral subset of Standard Schema v1 used by plugin RPC.
-+ * Zod 4 schemas implement this interface directly; other validators can do
-+ * the same without becoming part of BB's public protocol.
-+ */
-+interface StandardSchemaV1<Input = unknown, Output = Input> {
-+    readonly "~standard": {
-+        readonly version: 1;
-+        readonly vendor: string;
-+        readonly validate: (value: unknown) => StandardSchemaV1Result<Output> | Promise<StandardSchemaV1Result<Output>>;
-+        readonly types?: {
-+            readonly input: Input;
-+            readonly output: Output;
-+        };
-+    };
-+}
-+type StandardSchemaV1Result<Output> = {
-+    readonly value: Output;
-+    readonly issues?: undefined;
-+} | {
-+    readonly issues: readonly StandardSchemaV1Issue[];
-+};
-+interface StandardSchemaV1Issue {
-+    readonly message: string;
-+    readonly path?: PropertyKey | readonly (PropertyKey | {
-+        readonly key: PropertyKey;
-+    })[];
-+}
-+type StandardSchemaV1InferInput<Schema extends StandardSchemaV1> = NonNullable<Schema["~standard"]["types"]>["input"];
-+type StandardSchemaV1InferOutput<Schema extends StandardSchemaV1> = NonNullable<Schema["~standard"]["types"]>["output"];
-+interface PluginRpcMethodContract<InputSchema extends StandardSchemaV1 = StandardSchemaV1, OutputSchema extends StandardSchemaV1 = StandardSchemaV1> {
-+    readonly input: InputSchema;
-+    readonly output: OutputSchema;
-+}
-+type PluginRpcContract = Readonly<Record<string, PluginRpcMethodContract>>;
-+type PluginRpcHandlers<Contract extends PluginRpcContract> = {
-+    [Method in keyof Contract]: (input: StandardSchemaV1InferOutput<Contract[Method]["input"]>, p6rRequestContext?: P6rPluginRequestContext) => StandardSchemaV1InferInput<Contract[Method]["output"]> | Promise<StandardSchemaV1InferInput<Contract[Method]["output"]>>;
-+};
-+type PluginRpcCallInput<Method extends PluginRpcMethodContract> = StandardSchemaV1InferInput<Method["input"]>;
-+type PluginRpcCallArgs<Method extends PluginRpcMethodContract> = null extends PluginRpcCallInput<Method> ? [input?: PluginRpcCallInput<Method>] : [input: PluginRpcCallInput<Method>];
-+type PluginRpcResult<Method extends PluginRpcMethodContract> = StandardSchemaV1InferOutput<Method["output"]>;
-+
- /**
-  * The `@get-bb/plugin-sdk/app` contract (plugin design §5.2) — pure types with no
-  * side effects. The BB app imports these to keep its real implementation in
-diff --git a/packages/plugin-sdk/bundled-types/bb-plugin-sdk-testing.d.ts b/packages/plugin-sdk/bundled-types/bb-plugin-sdk-testing.d.ts
-index e91a1a52ed80e3b5624b618b7e45932498870d05..7f463175bac4def7940bd38f5ee641ae85e000f3 100644
---- a/packages/plugin-sdk/bundled-types/bb-plugin-sdk-testing.d.ts
-+++ b/packages/plugin-sdk/bundled-types/bb-plugin-sdk-testing.d.ts
-@@ -145,6 +145,7 @@ interface ExperimentalFakeHostRpcCall {
- }
- /** Everything the plugin registered, exposed raw for assertions. */
- interface FakePluginRegistrations {
-+    p6rIdentityProvider: P6rIdentityProviderRegistration | null;
-     settingsDescriptors: PluginSettingDescriptors;
-     httpRoutes: FakeHttpRouteRecord[];
-     rpcMethods: string[];
-diff --git a/packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts b/packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts
-index 7df7f5bce4622ed659fb5ba642f4701e7cec825e..611f46036678e1eeaf4924f3e6d53a6a22056b71 100644
---- a/packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts
-+++ b/packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts
-@@ -2098,6 +2098,10 @@ interface ThreadEventRowBase {
-     seq: number;
-     createdAt: number;
-     p6rActorHandle: string | null;
-+    p6rActorProviderId?: string | null;
-+    p6rActorSubject?: string | null;
-+    p6rActorDisplayName?: string | null;
-+    p6rActorImageUrl?: string | null;
- }
- type ThreadEventRowFromEvent<TEvent extends ThreadEvent> = ThreadEventRowBase & {
-     type: TEvent["type"];
 diff --git a/packages/plugin-sdk/src/__tests__/public-types.test.ts b/packages/plugin-sdk/src/__tests__/public-types.test.ts
 index ea5eaa7bb5a6cb00e540f22b84d29f0ba5a04fac..85d84f2383647b57b73d8a3a81fd82f4cd73aa30 100644
 --- a/packages/plugin-sdk/src/__tests__/public-types.test.ts
@@ -4739,7 +4611,7 @@ index ea5eaa7bb5a6cb00e540f22b84d29f0ba5a04fac..85d84f2383647b57b73d8a3a81fd82f4
    "PluginInteractionRequest",
    "PluginInteractionResult",
 diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
-index 4ef04d6265c23f92194a2a5857cee68ee85a99d5..30ca9d06eb3ebf8ef7545708b7715c4188854d6c 100644
+index 2378d75b978f3547e184b530e228176ffb0d4a2f..5c1b6ec00642fc3a59eac7a5f0b75e38a22277fa 100644
 --- a/packages/plugin-sdk/src/backend-contract.ts
 +++ b/packages/plugin-sdk/src/backend-contract.ts
 @@ -1,6 +1,7 @@
@@ -4750,7 +4622,7 @@ index 4ef04d6265c23f92194a2a5857cee68ee85a99d5..30ca9d06eb3ebf8ef7545708b7715c41
  import type { ProviderFork } from "@bb/domain/provider-fork";
  import type { BbSdk } from "@bb/sdk";
  import type { ThreadResponse } from "@bb/server-contract";
-@@ -167,8 +168,15 @@ export type PluginThreadEventHandler<E extends PluginThreadEventName> = (
+@@ -169,8 +170,15 @@ export type PluginThreadEventHandler<E extends PluginThreadEventName> = (
  
  export type PluginHttpAuthMode = "local" | "token" | "none";
  
@@ -4766,7 +4638,7 @@ index 4ef04d6265c23f92194a2a5857cee68ee85a99d5..30ca9d06eb3ebf8ef7545708b7715c41
  ) => Response | Promise<Response>;
  
  export interface PluginHttp {
-@@ -351,6 +359,8 @@ export type PluginAgentToolResult =
+@@ -356,6 +364,8 @@ export type PluginAgentToolResult =
  export interface PluginAgentToolContext {
    threadId: string;
    projectId: string;
@@ -4775,7 +4647,7 @@ index 4ef04d6265c23f92194a2a5857cee68ee85a99d5..30ca9d06eb3ebf8ef7545708b7715c41
    /** The tool-call request's abort signal (aborts if the daemon round-trip
     * is torn down mid-call). */
    signal: AbortSignal;
-@@ -837,6 +847,8 @@ export interface BbPluginApi {
+@@ -868,6 +878,8 @@ export interface BbPluginApi {
    readonly storage: PluginStorage;
    /** HTTP routes under /api/v1/plugins/<id>/http/* (design §4.6). */
    readonly http: PluginHttp;
@@ -4784,7 +4656,7 @@ index 4ef04d6265c23f92194a2a5857cee68ee85a99d5..30ca9d06eb3ebf8ef7545708b7715c41
    /** RPC methods under /api/v1/plugins/<id>/rpc/<method> (design §4.6). */
    readonly rpc: PluginRpc;
    /** Ephemeral push to connected frontends (design §4.7). */
-@@ -873,3 +885,35 @@ export interface BbPluginApi {
+@@ -904,3 +916,35 @@ export interface BbPluginApi {
     */
    onDispose(hook: () => void | Promise<void>): void;
  }
@@ -4833,7 +4705,7 @@ index c626f3a82b171275058125d4ece3cfffcb4078d3..f0db9e592ef0ee8763f3432d3986f015
      | StandardSchemaV1InferInput<Contract[Method]["output"]>
      | Promise<StandardSchemaV1InferInput<Contract[Method]["output"]>>;
 diff --git a/packages/plugin-sdk/src/testing/fake-plugin-host.ts b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
-index fbedae9a2f843afc3d51168decacdb25b52a53a0..7f2d050411dd124a4235c8f8bfafb8b04db769d5 100644
+index fbbcb7203d36abd3f517561f5adff52c99eaf538..98e3e367d767f7dcd96e3cae7771df6ea231a7ab 100644
 --- a/packages/plugin-sdk/src/testing/fake-plugin-host.ts
 +++ b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
 @@ -52,6 +52,7 @@ import type {
@@ -4864,7 +4736,7 @@ index fbedae9a2f843afc3d51168decacdb25b52a53a0..7f2d050411dd124a4235c8f8bfafb8b0
  }
  
  type FakeHostWorkerExitSubscription = (event: {
-@@ -961,6 +966,17 @@ function createFakePluginHostInternal(
+@@ -962,6 +967,17 @@ function createFakePluginHostInternal(
      },
    };
  
@@ -4882,7 +4754,7 @@ index fbedae9a2f843afc3d51168decacdb25b52a53a0..7f2d050411dd124a4235c8f8bfafb8b0
    // --- http ---
    const httpRoutes: FakeHttpRouteRecord[] = [];
    const http: PluginHttp = {
-@@ -1051,7 +1067,10 @@ function createFakePluginHostInternal(
+@@ -1052,7 +1068,10 @@ function createFakePluginHostInternal(
            {
              inputSchema: methodContract.input,
              outputSchema: methodContract.output,
@@ -4894,7 +4766,7 @@ index fbedae9a2f843afc3d51168decacdb25b52a53a0..7f2d050411dd124a4235c8f8bfafb8b0
            },
          ]);
        }
-@@ -1722,6 +1741,7 @@ function createFakePluginHostInternal(
+@@ -1723,6 +1742,7 @@ function createFakePluginHostInternal(
      settings,
      storage,
      http,
@@ -4902,7 +4774,7 @@ index fbedae9a2f843afc3d51168decacdb25b52a53a0..7f2d050411dd124a4235c8f8bfafb8b0
      rpc,
      realtime,
      background,
-@@ -1793,6 +1813,9 @@ function createFakePluginHostInternal(
+@@ -1794,6 +1814,9 @@ function createFakePluginHostInternal(
      experimental_hostRpcCalls: hostRpcCalls,
      sdk: sdkHarness,
      registrations: {
@@ -4912,7 +4784,7 @@ index fbedae9a2f843afc3d51168decacdb25b52a53a0..7f2d050411dd124a4235c8f8bfafb8b0
        settingsDescriptors,
        httpRoutes,
        get rpcMethods() {
-@@ -1916,7 +1939,9 @@ function createFakePluginHostInternal(
+@@ -1917,7 +1940,9 @@ function createFakePluginHostInternal(
        );
        let result: unknown;
        try {
@@ -4923,7 +4795,7 @@ index fbedae9a2f843afc3d51168decacdb25b52a53a0..7f2d050411dd124a4235c8f8bfafb8b0
        } catch (error) {
          return throwRpcError({
            code: "handler_error",
-@@ -1982,7 +2007,9 @@ function createFakePluginHostInternal(
+@@ -1983,7 +2008,9 @@ function createFakePluginHostInternal(
        const app = new Hono();
        app.on(route.method, route.path, async (context) => {
          try {
@@ -4934,7 +4806,7 @@ index fbedae9a2f843afc3d51168decacdb25b52a53a0..7f2d050411dd124a4235c8f8bfafb8b0
          } catch (error) {
            const message = errorMessage(error);
            emitLog(
-@@ -2061,6 +2088,7 @@ function createFakePluginHostInternal(
+@@ -2062,6 +2089,7 @@ function createFakePluginHostInternal(
          threadId: ctx?.threadId ?? "thread-test",
          projectId: ctx?.projectId ?? "project-test",
          signal: ctx?.signal ?? new AbortController().signal,
@@ -4961,7 +4833,7 @@ index 272b67fbb15c7b97fc7a773eb1c4fb6a89c93c60..1f422db820190201b4cc3d1c07ce50de
    return resolved;
  }
 diff --git a/packages/sdk/test/sdk.test.ts b/packages/sdk/test/sdk.test.ts
-index ab50edef6059144249d2673674afdc1fff675d5e..e439325e2aafcc4d46f7c1799942a67c36cd4cab 100644
+index 9c9ff5041729fbab00122e4db5e7d2734203b747..9385be4427602fca8d9dcbcb83a450b78af6d1af 100644
 --- a/packages/sdk/test/sdk.test.ts
 +++ b/packages/sdk/test/sdk.test.ts
 @@ -183,7 +183,7 @@ describe("@bb/sdk", () => {
@@ -4985,7 +4857,7 @@ index ab50edef6059144249d2673674afdc1fff675d5e..e439325e2aafcc4d46f7c1799942a67c
  
    it("sends thread pane presentation actions through the typed transport", async () => {
 diff --git a/packages/server-contract/src/thread-timeline.ts b/packages/server-contract/src/thread-timeline.ts
-index c9778fcd32b8b10c9b9b04a68ea24cba88e8a9bf..0e3732505cf3e159bfbd619d3c87d522a4331b26 100644
+index 3ce068782b0575a8be49d7f2dff43316d0b4abac..28a2b9a965829d60908372ac58238e36b96082a4 100644
 --- a/packages/server-contract/src/thread-timeline.ts
 +++ b/packages/server-contract/src/thread-timeline.ts
 @@ -11,6 +11,7 @@ import {
@@ -5048,10 +4920,10 @@ index f20e09515d0ad8408f3f9733543cbbbb2883a4b2..04301a4964b89e194f589e00bd9790ab
      const prev = [row("a", 1), row("b", 2)];
      const current = [row("a", 1), row("b", 2, "changed"), row("c", 3)];
 diff --git a/packages/thread-view/src/build-thread-timeline.ts b/packages/thread-view/src/build-thread-timeline.ts
-index 4f7a961de9dbfb3959861b365fdda9dd839d1eb4..6139362b309e740c57ae14faa454f49998bfdd0b 100644
+index 93db1388d1d31ecf4d4f3a17a03db94b32d0c8cc..e924b9b96f39f5e3ebbb665f5627e2e42f535df6 100644
 --- a/packages/thread-view/src/build-thread-timeline.ts
 +++ b/packages/thread-view/src/build-thread-timeline.ts
-@@ -569,6 +569,19 @@ function convertMessage(
+@@ -568,6 +568,19 @@ function convertMessage(
            initiator: message.initiator,
            senderThreadId: message.senderThreadId,
            p6rActorHandle: message.p6rActorHandle,
@@ -5071,7 +4943,7 @@ index 4f7a961de9dbfb3959861b365fdda9dd839d1eb4..6139362b309e740c57ae14faa454f499
            systemMessageKind: message.systemMessageKind,
            systemMessageSubject: message.systemMessageSubject,
            turnRequest: message.turnRequest,
-@@ -831,6 +844,19 @@ function convertSteerMessage(
+@@ -819,6 +832,19 @@ function convertSteerMessage(
      initiator: message.initiator,
      senderThreadId: message.senderThreadId,
      p6rActorHandle: message.p6rActorHandle,
@@ -5118,10 +4990,10 @@ index 58a8798277fb6f8fa9edf13598b871db9ec7e208..521e5308248c57f284d452d3da1dbdb6
  }
  
 diff --git a/packages/thread-view/src/event-projection-message.ts b/packages/thread-view/src/event-projection-message.ts
-index 9da92da6ea071481130bfca325fe15fde039d067..74963cf05dc12afc9aa3b47baed84fb8b00ef558 100644
+index f4d07d0bb26bb860508e0de372f847d915e56e1c..b64517fdfc84b8539a9bef26dbfef6e665d056bf 100644
 --- a/packages/thread-view/src/event-projection-message.ts
 +++ b/packages/thread-view/src/event-projection-message.ts
-@@ -91,6 +91,10 @@ export interface EventProjectionUserMessage extends EventProjectionMessageBase {
+@@ -87,6 +87,10 @@ export interface EventProjectionUserMessage extends EventProjectionMessageBase {
    // Claimed handle of the human author; null = not human-initiated or
    // pre-multiplayer history.
    p6rActorHandle: string | null;
@@ -5133,10 +5005,10 @@ index 9da92da6ea071481130bfca325fe15fde039d067..74963cf05dc12afc9aa3b47baed84fb8
    // event. Legacy events lacking them project as `unlabeled` / `null`.
    systemMessageKind: SystemMessageKind;
 diff --git a/packages/thread-view/src/parse-error-message.ts b/packages/thread-view/src/parse-error-message.ts
-index bf53f1e4fa014a50a69132f3ec5b215641d84c5f..61bd3d66e0c2f46f6a369dc381714e77ee7bb86a 100644
+index b6cb4dcb010159a4abcb1a749ee137b768c1f57a..a7a228eb594588176201d772e326b89e704a2a9a 100644
 --- a/packages/thread-view/src/parse-error-message.ts
 +++ b/packages/thread-view/src/parse-error-message.ts
-@@ -147,6 +147,10 @@ export function appendDebugEvent(
+@@ -142,6 +142,10 @@ export function appendDebugEvent(
        seq: meta.seq,
        createdAt: meta.createdAt,
        p6rActorHandle: meta.p6rActorHandle,
@@ -5148,7 +5020,7 @@ index bf53f1e4fa014a50a69132f3ec5b215641d84c5f..61bd3d66e0c2f46f6a369dc381714e77
      }),
      reason,
 diff --git a/packages/thread-view/src/user-message-parsing.ts b/packages/thread-view/src/user-message-parsing.ts
-index aad858639bf2e004d2a1153f694c3bc4cf90aa13..d4704cdb3fc65ae514b9f91279d2bbdfb52a85ab 100644
+index 05e30522f71a16ceb0f651257bd2c590e1d1c024..bdbe8d8cfbc1f226e1d930add70e03c204f58e56 100644
 --- a/packages/thread-view/src/user-message-parsing.ts
 +++ b/packages/thread-view/src/user-message-parsing.ts
 @@ -315,6 +315,10 @@ function buildClientUserMessage({
@@ -5194,6 +5066,3 @@ index 817d81cfc0a1d443f776246e563d3a17381b5c07..cc9e73c30d433d3bc18769cb51354640
    systemMessageKind: "unlabeled",
    systemMessageSubject: null,
    turnRequest: { isGrouped: false, kind: "message", status: "accepted" },
--- 
-2.43.0
-

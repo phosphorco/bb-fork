@@ -1,7 +1,7 @@
-From 755b6740dcf8289deb63ca6ce9cd7ebd2f932cf9 Mon Sep 17 00:00:00 2001
+From 6c89bbdd875142a320918b912c4ff8148734357e Mon Sep 17 00:00:00 2001
 From: Sawyer Hood <sawyerjhood@gmail.com>
 Date: Mon, 17 Aug 2026 15:59:32 -0400
-Subject: [PATCH 01/16] Add claimed identity and attribution foundations
+Subject: [PATCH 01/13] Add claimed identity and attribution foundations
 
 ---
  apps/server/src/ws/client-protocol.ts         |   5 +
@@ -22,12 +22,12 @@ Subject: [PATCH 01/16] Add claimed identity and attribution foundations
  create mode 100644 packages/domain/src/claimed-identity.ts
 
 diff --git a/apps/server/src/ws/client-protocol.ts b/apps/server/src/ws/client-protocol.ts
-index 943b3ee4c7ed5bc10e268f8c9371024b8df5b6e9..dd110d068d9b696c2eedd64870aaf685de3c1b92 100644
+index b4a881a80be4f5f45f2b0980f5f7bf8203d7d8a3..98ea902551a7c28171ef84f5e43d4a88f18b15b1 100644
 --- a/apps/server/src/ws/client-protocol.ts
 +++ b/apps/server/src/ws/client-protocol.ts
-@@ -50,6 +50,11 @@ export function onClientSocketMessage(
-       deps.hub.unsubscribe(socket, parsed.target);
-       deps.watchInterests.unsubscribe(socket, parsed.target);
+@@ -57,6 +57,11 @@ export function onClientSocketMessage(
+       // on this socket only; nothing is broadcast and no state is touched.
+       socket.send(JSON.stringify(PONG_MESSAGE));
        break;
 +    case "typing":
 +      // Presence typing signal; folded into presence state by the hub once
@@ -38,7 +38,7 @@ index 943b3ee4c7ed5bc10e268f8c9371024b8df5b6e9..dd110d068d9b696c2eedd64870aaf685
        const _exhaustive: never = parsed;
        throw new Error(`Unhandled client message: ${_exhaustive}`);
 diff --git a/apps/server/test/services/threads/thread-runtime-display.test.ts b/apps/server/test/services/threads/thread-runtime-display.test.ts
-index 3d4e7b2b1d5aa31f596fd456d01941d2c340b059..de25544a9c598f2023f83bca6229ca8b801820b9 100644
+index 2fa77d4f0dc0ac31f76397bebc96d1a1a0b1d10d..9c594ff551d269e10309c22a5ffb84319af38c3e 100644
 --- a/apps/server/test/services/threads/thread-runtime-display.test.ts
 +++ b/apps/server/test/services/threads/thread-runtime-display.test.ts
 @@ -210,6 +210,7 @@ function createThreadListEntry(
@@ -1055,7 +1055,7 @@ index 1b9234becfa658911d699980a4245ad0e99edfcd..81f51a6a638d46074dbebe947f8c3944
  }
 \ No newline at end of file
 diff --git a/packages/connect-db/src/schema.ts b/packages/connect-db/src/schema.ts
-index 07384c11e60a6b04bf989c74422a3d81d90ea06d..fad0640a25bd3a2ad2bd073bee62c83280f52b16 100644
+index 4ef11a26b9296d11e1936879bb665ef9c8eaec75..14d3ff6141d2666297576579207c86fa1ab6ceb1 100644
 --- a/packages/connect-db/src/schema.ts
 +++ b/packages/connect-db/src/schema.ts
 @@ -14,6 +14,7 @@ import { sql } from "drizzle-orm";
@@ -1066,7 +1066,7 @@ index 07384c11e60a6b04bf989c74422a3d81d90ea06d..fad0640a25bd3a2ad2bd073bee62c832
    sqliteTable,
    text,
    uniqueIndex,
-@@ -167,6 +168,33 @@ export const server = sqliteTable(
+@@ -166,6 +167,33 @@ export const server = sqliteTable(
    (table) => [uniqueIndex("server_user_name_idx").on(table.userId, table.name)],
  );
  
@@ -1100,7 +1100,7 @@ index 07384c11e60a6b04bf989c74422a3d81d90ea06d..fad0640a25bd3a2ad2bd073bee62c832
  /**
   * One-time codes exchanged during pairing.
   *   - `server-pair`: browser-approval flow mints this; the tunnel client
-@@ -252,6 +280,7 @@ export const schema = {
+@@ -244,6 +272,7 @@ export const schema = {
    profile,
    labelClaim,
    server,
@@ -1126,10 +1126,10 @@ index c14ca55f48db96188ab834424b5609228e8ed5da..6d2532f3da7851fb35541cf973c4b785
      name: "status_reason",
      type: "text",
 diff --git a/packages/db/src/schema.ts b/packages/db/src/schema.ts
-index 5ae7265dc3613fbd2fdf46e593ddb883e4839115..f3a67769ef21aaad95e18b53f1eb8e8fc4daa1d1 100644
+index cea1666dd866ec103875dc4ba144fdfec7135326..70e30b050e37a89398c67f6b81e1e7cc5c00f383 100644
 --- a/packages/db/src/schema.ts
 +++ b/packages/db/src/schema.ts
-@@ -578,6 +578,9 @@ export const threads = sqliteTable(
+@@ -595,6 +595,9 @@ export const threads = sqliteTable(
      // Id of the plugin that spawned this thread (create origin "plugin").
      // NULL for every other origin.
      originPluginId: text("origin_plugin_id"),
@@ -1139,7 +1139,7 @@ index 5ae7265dc3613fbd2fdf46e593ddb883e4839115..f3a67769ef21aaad95e18b53f1eb8e8f
      visibility: text("visibility", { enum: threadVisibilityValues })
        .notNull()
        .default("visible"),
-@@ -703,6 +706,23 @@ export const threadDynamicContextFileStates = sqliteTable(
+@@ -720,6 +723,23 @@ export const threadDynamicContextFileStates = sqliteTable(
    ],
  );
  
@@ -1163,17 +1163,17 @@ index 5ae7265dc3613fbd2fdf46e593ddb883e4839115..f3a67769ef21aaad95e18b53f1eb8e8f
  export const events = sqliteTable(
    "events",
    {
-@@ -720,6 +740,9 @@ export const events = sqliteTable(
-     type: text("type").$type<ThreadEventType>().notNull(),
+@@ -738,6 +758,9 @@ export const events = sqliteTable(
      itemId: text("item_id"),
      itemKind: text("item_kind").$type<ThreadEventItemType>(),
+     parentToolCallId: text("parent_tool_call_id"),
 +    // Normalized handle of the human who initiated this event. NULL = not
 +    // human-initiated (agent/provider/system) or pre-multiplayer history.
 +    actorHandle: text("actor_handle"),
      data: text("data").notNull().default("{}"),
-     createdAt: integer("created_at").notNull(),
-   },
-@@ -855,6 +878,10 @@ export const queuedThreadMessages = sqliteTable(
+     toolName: text("tool_name").generatedAlwaysAs(
+       sql`CASE WHEN json_valid(data) THEN json_extract(data, '$.item.tool') END`,
+@@ -888,6 +911,10 @@ export const queuedThreadMessages = sqliteTable(
        .references(() => threads.id, { onDelete: "cascade" }),
      content: text("content").notNull(),
      senderThreadId: text("sender_thread_id"),
@@ -1184,7 +1184,7 @@ index 5ae7265dc3613fbd2fdf46e593ddb883e4839115..f3a67769ef21aaad95e18b53f1eb8e8f
      model: text("model").notNull(),
      reasoningLevel: text("reasoning_level").notNull(),
      permissionMode: text("permission_mode").$type<PermissionMode>().notNull(),
-@@ -985,6 +1012,9 @@ export const pendingInteractions = sqliteTable(
+@@ -1018,6 +1045,9 @@ export const pendingInteractions = sqliteTable(
      status: text("status").$type<PendingInteractionStatus>().notNull(),
      payload: text("payload").notNull(),
      resolution: text("resolution"),
@@ -1195,10 +1195,10 @@ index 5ae7265dc3613fbd2fdf46e593ddb883e4839115..f3a67769ef21aaad95e18b53f1eb8e8f
      createdAt: integer("created_at").notNull(),
      expiresAt: integer("expires_at"),
 diff --git a/packages/db/test/schema.test.ts b/packages/db/test/schema.test.ts
-index 66f7fa73e43755de23efcd479face2218310f92e..3c6507e4d0328ec29f806996e2aa42dda3a505d8 100644
+index 27da7785737b478190734c1011bc06803b87b8b0..b6459010ff37507f72b7ba5342511d2a4070a183 100644
 --- a/packages/db/test/schema.test.ts
 +++ b/packages/db/test/schema.test.ts
-@@ -72,7 +72,7 @@ describe("db rebuild schema", () => {
+@@ -71,7 +71,7 @@ describe("db rebuild schema", () => {
        )
        .all();
  
@@ -1207,7 +1207,7 @@ index 66f7fa73e43755de23efcd479face2218310f92e..3c6507e4d0328ec29f806996e2aa42dd
      expect(columns).toEqual(
        expect.arrayContaining([
          { name: "id", type: "text", notNull: 1, primaryKey: 1 },
-@@ -92,6 +92,12 @@ describe("db rebuild schema", () => {
+@@ -91,6 +91,12 @@ describe("db rebuild schema", () => {
          { name: "status", type: "text", notNull: 1, primaryKey: 0 },
          { name: "payload", type: "text", notNull: 1, primaryKey: 0 },
          { name: "resolution", type: "text", notNull: 0, primaryKey: 0 },
@@ -1221,15 +1221,15 @@ index 66f7fa73e43755de23efcd479face2218310f92e..3c6507e4d0328ec29f806996e2aa42dd
          { name: "created_at", type: "integer", notNull: 1, primaryKey: 0 },
          { name: "expires_at", type: "integer", notNull: 0, primaryKey: 0 },
 diff --git a/packages/domain/src/change-kinds.ts b/packages/domain/src/change-kinds.ts
-index bd21bfc9998295f5a6a157a4de6b366d9f1a4b87..c3be6bf3b4e855c02bcf0f04258e8340fbf9e32d 100644
+index 40c40a5278ef247b833aa7aabd9b7bb66807a314..41f186d6df78002b57aae97f69c63c1a8b0f434c 100644
 --- a/packages/domain/src/change-kinds.ts
 +++ b/packages/domain/src/change-kinds.ts
-@@ -132,9 +132,22 @@ export const unsubscribeMessageSchema = z.object({
+@@ -143,10 +143,23 @@ export const pingMessageSchema = z.object({
  });
- export type UnsubscribeMessage = z.infer<typeof unsubscribeMessageSchema>;
+ export type PingMessage = z.infer<typeof pingMessageSchema>;
  
 +/**
-+ * Ephemeral composer-typing signal. The server folds it into presence state
++  * Ephemeral composer-typing signal. The server folds it into presence state
 + * with a short TTL; it is never persisted. Older servers drop the message on
 + * parse, which is an acceptable degradation for a purely cosmetic signal.
 + */
@@ -1237,17 +1237,18 @@ index bd21bfc9998295f5a6a157a4de6b366d9f1a4b87..c3be6bf3b4e855c02bcf0f04258e8340
 +  type: z.literal("typing"),
 +  threadId: z.string().min(1),
 +  typing: z.boolean(),
-+});
-+export type TypingMessage = z.infer<typeof typingMessageSchema>;
++ });
++ export type TypingMessage = z.infer<typeof typingMessageSchema>;
 +
  export const clientMessageSchema = z.discriminatedUnion("type", [
    subscribeMessageSchema,
    unsubscribeMessageSchema,
+   pingMessageSchema,
 +  typingMessageSchema,
  ]);
  export type ClientMessage = z.infer<typeof clientMessageSchema>;
  
-@@ -241,6 +254,44 @@ export const systemChangedMessageSchema = z
+@@ -266,6 +279,44 @@ export const systemChangedMessageSchema = z
    .strict();
  export type SystemChangedMessage = z.infer<typeof systemChangedMessageSchema>;
  
@@ -1292,7 +1293,7 @@ index bd21bfc9998295f5a6a157a4de6b366d9f1a4b87..c3be6bf3b4e855c02bcf0f04258e8340
  export const changedMessageSchema = z.discriminatedUnion("entity", [
    threadChangedMessageSchema,
    projectChangedMessageSchema,
-@@ -327,3 +378,27 @@ export const changedMessageLenientSchema = z.discriminatedUnion("entity", [
+@@ -352,3 +403,27 @@ export const changedMessageLenientSchema = z.discriminatedUnion("entity", [
    hostChangedMessageLenientSchema,
    systemChangedMessageLenientSchema,
  ]);
@@ -1394,7 +1395,7 @@ index 0000000000000000000000000000000000000000..d14be9b11392a9855ae8a8b5a45e0dbe
 +  return { ...result.data, handle };
 +}
 diff --git a/packages/domain/src/index.ts b/packages/domain/src/index.ts
-index 2d648f184987c008cd11fdba8f7445b472ab81b9..8d5a03ab175ebcda826a40f9fe39445f5d403802 100644
+index fd32fbcf1e441e1253eebdc65e7981b6ac1861b3..d3fce1e111fdb539079a8fec3be5b8533e32cdb6 100644
 --- a/packages/domain/src/index.ts
 +++ b/packages/domain/src/index.ts
 @@ -9,6 +9,7 @@ export * from "./app-keybindings.js";
@@ -1405,6 +1406,3 @@ index 2d648f184987c008cd11fdba8f7445b472ab81b9..8d5a03ab175ebcda826a40f9fe39445f
  export * from "./code-theme.js";
  export * from "./claude-task-tools.js";
  export * from "./debounced-callback-scheduler.js";
--- 
-2.43.0
-

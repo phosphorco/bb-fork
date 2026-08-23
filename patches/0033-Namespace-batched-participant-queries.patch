@@ -1,0 +1,83 @@
+From f6d7fef75c8cf966f064f3be03b606ff2fb1577a Mon Sep 17 00:00:00 2001
+From: Rosetta <its-rosetta@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 23:31:24 -0400
+Subject: [PATCH] Namespace batched participant queries
+
+---
+ apps/server/src/services/threads/thread-runtime-display.ts | 4 ++--
+ packages/db/src/data/events.ts                             | 6 +++---
+ packages/db/src/data/index.ts                              | 4 ++--
+ 3 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/apps/server/src/services/threads/thread-runtime-display.ts b/apps/server/src/services/threads/thread-runtime-display.ts
+index 1604f0a0d3bf2d4ed54b483a4fddfb295ae0c4df..b5cc931c525f44203978b2f6e044f120db9c7490 100644
+--- a/apps/server/src/services/threads/thread-runtime-display.ts
++++ b/apps/server/src/services/threads/thread-runtime-display.ts
+@@ -7,7 +7,7 @@ import {
+   listLatestSessionsForHosts,
+   listOpenTurnInputAcceptedRowsByThreadIds,
+   listStoredClientTurnRequestRowsByKeys,
+-  listStoredEventRowsByThreadIdsAndTypes,
++  p6rListStoredEventRowsByThreadIdsAndTypes,
+   type DbConnection,
+   type HostDaemonSessionRow,
+   type StoredEventRow,
+@@ -120,7 +120,7 @@ function buildThreadParticipantsByThreadId(
+   deps: ThreadRuntimeDisplayDeps,
+   threads: readonly ThreadWithPendingInteractionState[],
+ ): Map<string, P6rThreadParticipantProfile[]> {
+-  const rows = listStoredEventRowsByThreadIdsAndTypes(deps.db, {
++  const rows = p6rListStoredEventRowsByThreadIdsAndTypes(deps.db, {
+     threadIds: threads.map((thread) => thread.id),
+     types: PARTICIPANT_EVENT_TYPES,
+   });
+diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
+index 12e24628fa0e6d1ff0504877f1b002f5920cd1a3..00250d59e8054e3edba9801ce44ee44f6c73f96e 100644
+--- a/packages/db/src/data/events.ts
++++ b/packages/db/src/data/events.ts
+@@ -1149,7 +1149,7 @@ export interface ListStoredEventRowsByParentToolCallIdsArgs {
+ export type GetStoredEventRowsByParentToolCallIdsDataBytesArgs =
+   ListStoredEventRowsByParentToolCallIdsArgs;
+ 
+-export interface ListStoredEventRowsByThreadIdsAndTypesArgs {
++export interface P6rListStoredEventRowsByThreadIdsAndTypesArgs {
+   threadIds: readonly string[];
+   types: readonly ThreadEventType[];
+ }
+@@ -1426,9 +1426,9 @@ export function listStoredEventRows(
+   return merged;
+ }
+ 
+-export function listStoredEventRowsByThreadIdsAndTypes(
++export function p6rListStoredEventRowsByThreadIdsAndTypes(
+   db: DbConnection,
+-  args: ListStoredEventRowsByThreadIdsAndTypesArgs,
++  args: P6rListStoredEventRowsByThreadIdsAndTypesArgs,
+ ): StoredEventRow[] {
+   if (args.threadIds.length === 0 || args.types.length === 0) {
+     return [];
+diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
+index 637fb87782cd66d853b4526b189569dea6f16c3c..19412f8e7769b7164446c18a64a12a9343c81fbd 100644
+--- a/packages/db/src/data/index.ts
++++ b/packages/db/src/data/index.ts
+@@ -262,7 +262,7 @@ export {
+   listStoredClientTurnRequestIdsInRange,
+   listStoredClientTurnRequestRowsByKeys,
+   listStoredEventRowsByParentToolCallIds,
+-  listStoredEventRowsByThreadIdsAndTypes,
++  p6rListStoredEventRowsByThreadIdsAndTypes,
+   listStoredEventRows,
+   isTimelineCursorSequencePresent,
+   listItemEventSpansByItems,
+@@ -302,7 +302,7 @@ export type {
+   AppendStoredThreadEventArgs,
+   OpenBackgroundTaskItemRow,
+   InlineOutputCharLimit,
+-  ListStoredEventRowsByThreadIdsAndTypesArgs,
++  P6rListStoredEventRowsByThreadIdsAndTypesArgs,
+   ScopedItemRef,
+   StoredEventRow,
+   StandardTimelineSegmentAnchorRow,
+-- 
+2.43.0
+

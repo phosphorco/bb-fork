@@ -2,7 +2,7 @@
 
 This is a thin, auditable deployment overlay for [get-bb/bb](https://github.com/get-bb/bb). It does not carry a second copy of upstream source and it does not treat a long-lived Git branch as the release definition.
 
-The current base is the exact source commit tagged `desktop-v0.39.0` at `b33abbff098ac4c857578e7350d492dcaa65d489`, matching the deployed `bb-app@0.39.0` npm release. Release tags are preferred over a moving or lagging default branch.
+The current base is exact upstream commit `c942421a454ee4157004274053eec5f36c81d7eb`, the canonical protocol-147 deployment base. The overlay retains the `bb-app@0.39.0` package contract while replaying the reviewed identity work against that shipped protocol and migration lineage.
 
 The deployable source is exactly:
 
@@ -37,4 +37,4 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The twelve patches are deliberately organized by product capability and receipt boundary, not by the chronology of the original experimental branch. The sixth patch applies the [Phosphor namespace policy](P6R_NAMESPACE.md) as an independently reviewable compatibility boundary; the seventh preserves React's required hook naming convention, the eighth adds the verified-identity/durable-authorship kernel, patches nine and ten refresh the exact-tag contracts, migration receipt, workspace gates, and canonical provider-input authorship witness, patch eleven makes compatibility staging sparse and indexed, and the final patch advances the managed daemon deployment boundary while replacing the upstream npm update recommendation with Rosetta-owned guidance. Implementation-only workflow files are excluded.
+The thirty-five patches are organized by product capability and receipt boundary. Patches one through fourteen establish the reviewed protocol-147 deployment base; patches fifteen through thirty carry the provider-qualified identity, participant, migration-recovery, and packaged-runtime work; patches thirty-one through thirty-four adapt its generated, migration, namespace, and interrupted-ledger witnesses to the canonical upstream layout; and patch thirty-five keeps provider-authenticated browsers outside the lower-assurance claimed mode. Implementation-only workflow files are excluded.

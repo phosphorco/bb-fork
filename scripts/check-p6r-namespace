@@ -104,22 +104,28 @@ for (const line of diff.split("\n")) {
   }
 }
 
-const sdkPath = resolve(
-  checkout,
-  "packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts",
-);
-const sdk = readFileSync(sdkPath, "utf8");
-for (const token of [
-  "p6rMembers: P6rMembersArea",
-  "p6rPresence: P6rPresenceArea",
-  "p6rParticipants?: readonly P6rParticipantProfile[]",
-  "interface P6rParticipantProfile",
-  "p6rActorHandle",
-  "p6rIdentity: P6rIdentityApi",
-  "p6rRequestPrincipal: P6rActorSnapshot | null",
-  "p6rTurnAuthor: P6rActorSnapshot | null",
+// Bundled declarations are a build output on current upstream. Verify the
+// tracked sources that feed them so a clean materialization needs no install or
+// generated-file side effect.
+const sdkSourcePaths = [
+  "packages/sdk/src/core.ts",
+  "packages/plugin-sdk/src/backend-contract.ts",
+  "packages/server-contract/src/thread-timeline.ts",
+];
+const sdk = sdkSourcePaths
+  .map((path) => readFileSync(resolve(checkout, path), "utf8"))
+  .join("\n");
+for (const pattern of [
+  /\bp6rMembers:\s*P6rMembersArea\b/u,
+  /\bp6rPresence:\s*P6rPresenceArea\b/u,
+  /\bp6rActorHandle\b/u,
+  /\bp6rIdentity:\s*P6rIdentityApi\b/u,
+  /\bp6rRequestPrincipal:\s*P6rActorSnapshot\s*\|\s*null\b/u,
+  /\bp6rTurnAuthor:\s*P6rActorSnapshot\s*\|\s*null\b/u,
 ]) {
-  if (!sdk.includes(token)) failures.push(`${sdkPath}: missing '${token}'`);
+  if (!pattern.test(sdk)) {
+    failures.push(`${sdkSourcePaths.join(", ")}: missing ${pattern}`);
+  }
 }
 
 const conversationMessage = readFileSync(
@@ -139,7 +145,9 @@ for (const pattern of [
   /\bshowAuthor\b/u,
   /\bshowMessageAuthors\b/u,
 ]) {
-  if (pattern.test(sdk)) failures.push(`${sdkPath}: leaked ${pattern}`);
+  if (pattern.test(sdk)) {
+    failures.push(`${sdkSourcePaths.join(", ")}: leaked ${pattern}`);
+  }
 }
 
 if (failures.length > 0) {

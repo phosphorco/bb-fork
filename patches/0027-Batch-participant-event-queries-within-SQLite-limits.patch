@@ -1,0 +1,51 @@
+From 8e972b0ecfaa080e666949795aa278f68ae323b0 Mon Sep 17 00:00:00 2001
+From: Rosetta <its-rosetta@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 15:55:58 -0400
+Subject: [PATCH 27/32] Batch participant event queries within SQLite limits
+
+---
+ packages/db/src/data/events.ts | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
+index 75e100fa7bdcd2029e83e5e8764f354f8a4722d4..fd920432ef20f430be1a4891d15c71d5d10dc88d 100644
+--- a/packages/db/src/data/events.ts
++++ b/packages/db/src/data/events.ts
+@@ -1421,6 +1421,34 @@ export function listStoredEventRows(
+   return merged;
+ }
+ 
++export function listStoredEventRowsByThreadIdsAndTypes(
++  db: DbConnection,
++  args: ListStoredEventRowsByThreadIdsAndTypesArgs,
++): StoredEventRow[] {
++  if (args.threadIds.length === 0 || args.types.length === 0) {
++    return [];
++  }
++
++  return queryInSqliteVariableBatches({
++    dedupeKey: (threadId) => threadId,
++    fixedVariableCount: new Set(args.types).size,
++    queryBatch: (threadIds) =>
++      db
++        .select(storedEventRowFields)
++        .from(events)
++        .where(
++          and(
++            inArray(events.threadId, [...threadIds]),
++            inArray(events.type, [...args.types]),
++          ),
++        )
++        .orderBy(events.threadId, events.sequence)
++        .all(),
++    values: args.threadIds,
++    variableCountPerValue: 1,
++  });
++}
++
+ export function listLatestGoalEventRowsByThreadIds(
+   db: DbQueryConnection,
+   args: ListLatestGoalEventRowsByThreadIdsArgs,
+-- 
+2.43.0
+

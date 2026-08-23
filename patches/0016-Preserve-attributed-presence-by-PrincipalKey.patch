@@ -1,7 +1,7 @@
-From 8db0a2b2e889e1ece1b732eb2517da69205a9006 Mon Sep 17 00:00:00 2001
+From 3cdc61aaf88a170a9bd8f34cf0fb547eacde8af4 Mon Sep 17 00:00:00 2001
 From: Sawyer Hood <sawyerjhood@gmail.com>
 Date: Sat, 22 Aug 2026 06:47:46 -0400
-Subject: [PATCH 14/16] Preserve attributed presence by PrincipalKey
+Subject: [PATCH 16/32] Preserve attributed presence by PrincipalKey
 
 ---
  apps/server/src/services/presence.ts  |  95 +++++++++++++-------
@@ -199,10 +199,10 @@ index 01decced035fa57a7863f68c84ac4627ab667ca5..25119743503cee3093d28d97c6444fe7
 +    : `principal:${actor.p6rPrincipalKey}`;
 +}
 diff --git a/apps/server/src/ws/hub.ts b/apps/server/src/ws/hub.ts
-index 68235af467db0c96ed7daf02aeb12dd9956ae5e0..1225c8f31f766e0c2ad1c7f30c4c286fc552d7f9 100644
+index 1d49032cffb12d023dbd25e0ec43f3b52fdbd6a0..e2eb73bcd5d58ac1f48c16ea4aede49fb92660d2 100644
 --- a/apps/server/src/ws/hub.ts
 +++ b/apps/server/src/ws/hub.ts
-@@ -35,7 +35,9 @@ import {
+@@ -36,7 +36,9 @@ import {
  import {
    P6rPresenceService,
    type P6rPresenceSnapshot,
@@ -212,7 +212,7 @@ index 68235af467db0c96ed7daf02aeb12dd9956ae5e0..1225c8f31f766e0c2ad1c7f30c4c286f
  
  const TERMINAL_SOCKET_HIGH_WATER_BYTES = 1024 * 1024;
  // A 16 MiB raw burst expands to about 21.4 MiB as base64 + JSON. Keep
-@@ -491,8 +493,10 @@ export class NotificationHub implements DbNotifier {
+@@ -545,8 +547,10 @@ export class NotificationHub implements DbNotifier {
      this.p6rPresence.p6rSetTyping(socket, threadId, typing);
    }
  
@@ -225,7 +225,7 @@ index 68235af467db0c96ed7daf02aeb12dd9956ae5e0..1225c8f31f766e0c2ad1c7f30c4c286f
    }
  
    recordDaemonSessionPlatform(sessionId: string, platform: HostPlatform): void {
-@@ -997,31 +1001,37 @@ export class NotificationHub implements DbNotifier {
+@@ -1118,31 +1122,37 @@ export class NotificationHub implements DbNotifier {
      threadId: string,
      viewers: readonly P6rPresenceViewer[],
    ): void {
@@ -276,7 +276,7 @@ index 68235af467db0c96ed7daf02aeb12dd9956ae5e0..1225c8f31f766e0c2ad1c7f30c4c286f
      this.notifyClientsByKeySet(
        this.clientSocketsByKey.get(subscriptionKey({ kind: "thread-list" })) ??
          [],
-@@ -1036,7 +1046,7 @@ export class NotificationHub implements DbNotifier {
+@@ -1157,7 +1167,7 @@ export class NotificationHub implements DbNotifier {
      const result = p6rThreadPresenceMessageSchema.safeParse({
        type: "p6r-thread-presence",
        p6rThreadId: threadId,
@@ -285,7 +285,7 @@ index 68235af467db0c96ed7daf02aeb12dd9956ae5e0..1225c8f31f766e0c2ad1c7f30c4c286f
      });
      if (!result.success) {
        console.error("Skipping invalid realtime presence sync", result.error);
-@@ -1045,6 +1055,18 @@ export class NotificationHub implements DbNotifier {
+@@ -1166,6 +1176,18 @@ export class NotificationHub implements DbNotifier {
      socket.send(JSON.stringify(result.data));
    }
  

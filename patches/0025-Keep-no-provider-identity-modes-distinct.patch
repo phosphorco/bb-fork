@@ -1,0 +1,268 @@
+From 4be7f9b1762820853f562b608a5b365b716edf6e Mon Sep 17 00:00:00 2001
+From: Rosetta <its-rosetta@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 15:17:21 -0400
+Subject: [PATCH 25/32] Keep no-provider identity modes distinct
+
+---
+ apps/server/src/server.ts                     | 40 +++++++++----------
+ apps/server/src/services/actors.ts            | 13 ++++++
+ apps/server/src/ws/socket-actors.ts           | 13 ++++--
+ apps/server/test/app/socket-actors.test.ts    | 15 +++++++
+ .../test/public/public-presence.test.ts       | 17 +++-----
+ .../test/public/public-request-actors.test.ts | 29 ++++++++++++++
+ 6 files changed, 90 insertions(+), 37 deletions(-)
+
+diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
+index 6bb99b544258f778dff5501cf798384ae16824a2..1a3785e30479eb6a9a7a46f74e35f130f99f4478 100644
+--- a/apps/server/src/server.ts
++++ b/apps/server/src/server.ts
+@@ -95,7 +95,6 @@ import {
+   p6rSetRequestActor,
+ } from "./services/actors.js";
+ import {
+-  P6R_LOCAL_OPERATOR_PROVIDER_ID,
+   p6rCreateIdentityBoundary,
+   p6rPrincipalKeyForActor,
+   p6rRequestInputFromContext,
+@@ -397,21 +396,11 @@ export function createApp(
+       );
+     }
+     if (resolution.kind === "authenticated") {
+-      const p6rClaimedIdentity =
+-        resolution.p6rActor.p6rProviderId === P6R_LOCAL_OPERATOR_PROVIDER_ID
+-          ? actorService.p6rResolveRequest({
+-              header: (name) => context.req.header(name),
+-            })
+-          : null;
+-      const p6rClaimedActor =
+-        p6rClaimedIdentity === null
+-          ? null
+-          : p6rClaimedIdentityToActorSnapshot(p6rClaimedIdentity);
+-      const requestPrincipal = p6rClaimedActor ?? resolution.p6rActor;
++      const requestPrincipal = resolution.p6rActor;
+       p6rSetRequestPrincipal(context, requestPrincipal);
+       p6rSetRequestActor(
+         context,
+-        p6rClaimedIdentity ?? {
++        {
+           p6rHandle: requestPrincipal.p6rHandle,
+           p6rDisplayName: requestPrincipal.p6rDisplayName,
+           p6rImageUrl: requestPrincipal.p6rImageUrl,
+@@ -420,7 +409,18 @@ export function createApp(
+         },
+       );
+     } else {
+-      p6rSetRequestPrincipal(context, null);
++      const p6rClaimedIdentity = actorService.p6rResolveClaimedRequest({
++        header: (name) => context.req.header(name),
++      });
++      p6rSetRequestPrincipal(
++        context,
++        p6rClaimedIdentity === null
++          ? null
++          : p6rClaimedIdentityToActorSnapshot(p6rClaimedIdentity),
++      );
++      if (p6rClaimedIdentity !== null) {
++        p6rSetRequestActor(context, p6rClaimedIdentity);
++      }
+     }
+     const startedAt = performance.now();
+     await next();
+@@ -616,16 +616,12 @@ export function createApp(
+               p6rPrincipalKey: p6rPrincipalKeyForActor(resolution.p6rActor),
+             }
+           : null;
+-      const acceptsClaimedIdentity =
+-        resolution.kind === "authenticated" &&
+-        resolution.p6rActor.p6rProviderId === P6R_LOCAL_OPERATOR_PROVIDER_ID;
++      const acceptsClaimedIdentity = resolution.kind === "not-applicable";
+       return {
+         onOpen: (_event, socket) => {
+-          if (actor !== null) {
+-            p6rRegisterSocketActor(socket, actor, {
+-              p6rAllowClaimedIdentity: acceptsClaimedIdentity,
+-            });
+-          }
++          p6rRegisterSocketActor(socket, actor, {
++            p6rAllowClaimedIdentity: acceptsClaimedIdentity,
++          });
+           onClientSocketOpen(deps.hub, socket);
+         },
+         onMessage: (event, socket) =>
+diff --git a/apps/server/src/services/actors.ts b/apps/server/src/services/actors.ts
+index 3aaefaf75c795953fc149655cfe3a7260296d64f..60d80532d84babfc8120120512d41d969394ce89 100644
+--- a/apps/server/src/services/actors.ts
++++ b/apps/server/src/services/actors.ts
+@@ -33,6 +33,9 @@ interface P6rCollaboratorWrite {
+ 
+ export interface P6rActorService {
+   p6rResolveRequest(reader: P6rClaimedIdentityHeaderReader): P6rClaimedIdentity;
++  p6rResolveClaimedRequest(
++    reader: P6rClaimedIdentityHeaderReader,
++  ): P6rClaimedIdentity | null;
+   p6rResolveClaimedIdentity(claim: P6rClaimedIdentityClaim): P6rClaimedIdentity;
+ }
+ 
+@@ -138,6 +141,16 @@ export function p6rCreateActorService(
+         ),
+       );
+     },
++    p6rResolveClaimedRequest(reader): P6rClaimedIdentity | null {
++      const identity = p6rDecodeClaimedIdentityHeader(
++        reader.header(P6R_CLAIMED_IDENTITY_HEADER),
++      );
++      return identity === null
++        ? null
++        : persistActor(
++            p6rServerAuthorClaimedIdentity(identity, principalKeysByClientId),
++          );
++    },
+     p6rResolveClaimedIdentity(claim): P6rClaimedIdentity {
+       const identity = p6rClaimedIdentitySchema.parse({
+         ...claim,
+diff --git a/apps/server/src/ws/socket-actors.ts b/apps/server/src/ws/socket-actors.ts
+index ae26420534557787b479d001d7f50e18f34688d7..f0b3f670da6d965616700d497843db8167130379 100644
+--- a/apps/server/src/ws/socket-actors.ts
++++ b/apps/server/src/ws/socket-actors.ts
+@@ -10,11 +10,16 @@ interface P6rRegisterSocketActorOptions {
+ 
+ export function p6rRegisterSocketActor(
+   socket: object,
+-  actor: P6rClaimedIdentity,
++  actor: P6rClaimedIdentity | null,
+   options: P6rRegisterSocketActorOptions = {},
+ ): void {
+-  socketActors.set(socket, actor);
+-  baseSocketActors.set(socket, actor);
++  if (actor === null) {
++    socketActors.delete(socket);
++    baseSocketActors.delete(socket);
++  } else {
++    socketActors.set(socket, actor);
++    baseSocketActors.set(socket, actor);
++  }
+   if (options.p6rAllowClaimedIdentity === true) {
+     claimedIdentitySockets.add(socket);
+   } else {
+@@ -39,6 +44,8 @@ export function p6rRestoreSocketActor(socket: object): void {
+   const actor = baseSocketActors.get(socket);
+   if (actor !== undefined && p6rCanSetSocketActor(socket)) {
+     socketActors.set(socket, actor);
++  } else if (p6rCanSetSocketActor(socket)) {
++    socketActors.delete(socket);
+   }
+ }
+ 
+diff --git a/apps/server/test/app/socket-actors.test.ts b/apps/server/test/app/socket-actors.test.ts
+index 724af705636581776e6a3d887dcc09f156df9b6b..7c4b333f55b05f95d3e6832aef96071bb7ac9e8f 100644
+--- a/apps/server/test/app/socket-actors.test.ts
++++ b/apps/server/test/app/socket-actors.test.ts
+@@ -4,6 +4,8 @@ import {
+   p6rGetSocketActor,
+   p6rRegisterSocketActor,
+   p6rReleaseSocketActor,
++  p6rRestoreSocketActor,
++  p6rSetSocketActor,
+ } from "../../src/ws/socket-actors.js";
+ 
+ const actor: P6rClaimedIdentity = {
+@@ -23,4 +25,17 @@ describe("socket actors", () => {
+     p6rReleaseSocketActor(socket);
+     expect(p6rGetSocketActor(socket)).toBeNull();
+   });
++
++  it("lets an explicitly claimable anonymous socket claim and clear a server-authored actor", () => {
++    const socket = {};
++    p6rRegisterSocketActor(socket, null, {
++      p6rAllowClaimedIdentity: true,
++    });
++
++    expect(p6rGetSocketActor(socket)).toBeNull();
++    p6rSetSocketActor(socket, actor);
++    expect(p6rGetSocketActor(socket)).toBe(actor);
++    p6rRestoreSocketActor(socket);
++    expect(p6rGetSocketActor(socket)).toBeNull();
++  });
+ });
+diff --git a/apps/server/test/public/public-presence.test.ts b/apps/server/test/public/public-presence.test.ts
+index f4ddc3db85347a8765454de30c5e9fa7dfe522c7..8ccd7c03d6ba6722234f74949128ab45a699ea3b 100644
+--- a/apps/server/test/public/public-presence.test.ts
++++ b/apps/server/test/public/public-presence.test.ts
+@@ -210,7 +210,7 @@ describe("GET /api/v1/p6r-presence", () => {
+     }
+   });
+ 
+-  it("carries two claimed identities through the public WebSocket seam", async () => {
++  it("keeps loopback WebSockets on the local operator despite client claims", async () => {
+     const server = await startTestServer();
+     try {
+       const alice = await openClaimedIdentitySocket(server);
+@@ -250,23 +250,16 @@ describe("GET /api/v1/p6r-presence", () => {
+       const viewers = p6rPresenceSnapshotResponseSchema.parse(
+         await response.json(),
+       ).p6rThreads["thread-1"];
++      const localOperator = p6rCreateLocalOperatorIdentity();
+       expect(viewers).toEqual([
+         {
+-          p6rPrincipalKey: expect.stringMatching(/^claimed:/u),
+-          p6rHandle: "alice",
+-          p6rDisplayName: "Alice",
+-          p6rImageUrl: null,
+-          p6rTyping: false,
+-        },
+-        {
+-          p6rPrincipalKey: expect.stringMatching(/^claimed:/u),
+-          p6rHandle: "bob",
+-          p6rDisplayName: "Bob",
++          p6rPrincipalKey: localOperator.p6rPrincipalKey,
++          p6rHandle: localOperator.p6rHandle,
++          p6rDisplayName: localOperator.p6rDisplayName,
+           p6rImageUrl: null,
+           p6rTyping: false,
+         },
+       ]);
+-      expect(viewers[0]?.p6rPrincipalKey).not.toBe(viewers[1]?.p6rPrincipalKey);
+       await closeIdentitySocket(alice);
+       await closeIdentitySocket(bob);
+     } finally {
+diff --git a/apps/server/test/public/public-request-actors.test.ts b/apps/server/test/public/public-request-actors.test.ts
+index 84db3eaffa6d20734cfd44db8e149da10ad4e4a7..a788edbd30010b4808ad5a22d5ede72fdc7c2117 100644
+--- a/apps/server/test/public/public-request-actors.test.ts
++++ b/apps/server/test/public/public-request-actors.test.ts
+@@ -78,4 +78,33 @@ describe("public request actors", () => {
+       );
+     });
+   });
++
++  it("accepts only the presentation claim on a remote no-provider request", async () => {
++    await withTestHarness(async (harness) => {
++      const response = await harness.app.request(
++        "http://100.64.0.10/api/v1/does-not-exist",
++        {
++          headers: {
++            [P6R_CLAIMED_IDENTITY_HEADER]: p6rEncodeClaimedIdentityHeader({
++              p6rHandle: "Sawyer",
++              p6rDisplayName: "Sawyer Hood",
++              p6rImageUrl: null,
++              p6rClientId: "browser-1",
++            }),
++          },
++        },
++      );
++
++      expect(response.status).toBe(404);
++      expect(p6rListCollaborators(harness.db)).toEqual([
++        {
++          p6rHandle: "sawyer",
++          p6rDisplayName: "Sawyer Hood",
++          p6rImageUrl: null,
++          p6rFirstSeenAt: expect.any(Number),
++          p6rLastSeenAt: expect.any(Number),
++        },
++      ]);
++    });
++  });
+ });
+-- 
+2.43.0
+

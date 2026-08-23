@@ -1,13 +1,13 @@
-From 3e4ec77e1c0d0d255383837fd0f500b3fa9eff77 Mon Sep 17 00:00:00 2001
+From 466092fc020b8e5a222d86b49ead95d94d4f418d Mon Sep 17 00:00:00 2001
 From: Sawyer Hood <sawyerjhood@gmail.com>
 Date: Mon, 17 Aug 2026 15:59:32 -0400
-Subject: [PATCH 02/16] Add membership admission and request actor plumbing
+Subject: [PATCH 02/13] Add membership admission and request actor plumbing
 
 ---
  apps/connect/src/members.test.ts              | 433 ++++++++++++++++++
  apps/connect/src/members.ts                   | 379 +++++++++++++++
  apps/connect/src/worker.test.ts               |  90 ++++
- apps/connect/src/worker.ts                    |  22 +-
+ apps/connect/src/worker.ts                    |  23 +-
  apps/server/src/server.ts                     |  18 +-
  apps/server/src/services/actors.ts            | 118 +++++
  apps/server/src/ws/client-protocol.ts         |   2 +
@@ -17,9 +17,9 @@ Subject: [PATCH 02/16] Add membership admission and request actor plumbing
  .../test/public/public-request-actors.test.ts |  78 ++++
  apps/server/test/services/actors.test.ts      |  92 ++++
  packages/db/src/data/collaborators.ts         |  54 +++
- packages/db/src/data/index.ts                 |  10 +
+ packages/db/src/data/index.ts                 |  22 +
  packages/db/test/data/collaborators.test.ts   |  74 +++
- 15 files changed, 1432 insertions(+), 6 deletions(-)
+ 15 files changed, 1445 insertions(+), 6 deletions(-)
  create mode 100644 apps/connect/src/members.test.ts
  create mode 100644 apps/connect/src/members.ts
  create mode 100644 apps/server/src/services/actors.ts
@@ -855,7 +855,7 @@ index 0000000000000000000000000000000000000000..e040c233b6f5b456656257ac591c57d1
 +  return handleServerMembersWithDb(request, env.BETTER_AUTH_SECRET, db, route);
 +}
 diff --git a/apps/connect/src/worker.test.ts b/apps/connect/src/worker.test.ts
-index e6a9bdd078b3425deceead7cf5a3f35f333c8163..b8a0da69c9c359ccea488b78b7c37d4276f367d5 100644
+index ca536b6ce011451824bbcba060a821e8321151df..c4f5b9bf465f9f9c9d05f26da40b0bd0292b39aa 100644
 --- a/apps/connect/src/worker.test.ts
 +++ b/apps/connect/src/worker.test.ts
 @@ -124,6 +124,16 @@ vi.mock("./machine-label.js", () => ({
@@ -937,7 +937,7 @@ index e6a9bdd078b3425deceead7cf5a3f35f333c8163..b8a0da69c9c359ccea488b78b7c37d42
  describe("gate tunnel authentication", () => {
    beforeEach(() => {
      vi.clearAllMocks();
-@@ -957,6 +1008,45 @@ describe("gate worker share hosts", () => {
+@@ -1069,6 +1120,45 @@ describe("gate worker share hosts", () => {
      expect(captured).toHaveLength(0);
    });
  
@@ -984,10 +984,10 @@ index e6a9bdd078b3425deceead7cf5a3f35f333c8163..b8a0da69c9c359ccea488b78b7c37d42
      mockParseCookie.mockImplementation((_header, name) =>
        name === DESKTOP_SESSION_COOKIE ? "desktop-token" : null,
 diff --git a/apps/connect/src/worker.ts b/apps/connect/src/worker.ts
-index 9935622663109f0e8c60d8f10fb0417a53350278..62f729da976d1bfa87e369680c0c7a1cf9c6e22f 100644
+index 194e12fc3bee3c4d5e1404eeda6e4b851da3341e..c1afc440c1f8738d0a9a98c213e117796c29bbe4 100644
 --- a/apps/connect/src/worker.ts
 +++ b/apps/connect/src/worker.ts
-@@ -30,6 +30,11 @@ import {
+@@ -35,6 +35,11 @@ import {
    MACHINE_CREDENTIAL_HEADER,
    TUNNEL_TARGET_HEADER,
  } from "./protocol-headers.js";
@@ -999,7 +999,7 @@ index 9935622663109f0e8c60d8f10fb0417a53350278..62f729da976d1bfa87e369680c0c7a1c
  
  export { TunnelDO };
  
-@@ -290,6 +295,10 @@ export default {
+@@ -295,6 +300,11 @@ export default {
      if (url.pathname === "/api/connect/machine-label") {
        return handleAssignMachineLabel(request, env);
      }
@@ -1007,10 +1007,11 @@ index 9935622663109f0e8c60d8f10fb0417a53350278..62f729da976d1bfa87e369680c0c7a1c
 +    if (serverMembersRoute) {
 +      return handleServerMembers(request, env, serverMembersRoute);
 +    }
- 
++
      const host = resolveConnectRequestHost(request.headers, runtime);
      const parsed = parseVisitorHost(host, env.BASE_DOMAIN);
-@@ -448,11 +457,14 @@ export default {
+     if (!parsed) return text("bb connect: unknown host\n", 404);
+@@ -467,11 +477,14 @@ export default {
      if (!sessionUserId && !desktopUserId) {
        return signInPage(label, appUrl, url.toString());
      }
@@ -1031,13 +1032,13 @@ index 9935622663109f0e8c60d8f10fb0417a53350278..62f729da976d1bfa87e369680c0c7a1c
  
      const doRequest = requestForTunnelDo(request, target, "session");
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
-index ef5e2013f5f18fe560f878542558dc8c91a63b69..04439e2e69adf42a9dcfe43676ef24df10b77356 100644
+index dcffc752b93974919858ead1164dde94cd8eae51..ff197ba0ee9f1152d537b417860071c93f90aa2b 100644
 --- a/apps/server/src/server.ts
 +++ b/apps/server/src/server.ts
-@@ -87,6 +87,12 @@ import {
-  */
+@@ -86,6 +86,12 @@ import {
  const PLUGIN_WIRE_HTTP_PATH = /^\/api\/v1\/plugins\/[^/]+\/http(?:\/|$)/u;
  import { rankAcceptedAssetEncodings } from "./asset-content-encoding.js";
+ import { apiJsonCompression } from "./api-response-compression.js";
 +import {
 +  createActorService,
 +  createLocalOperatorIdentity,
@@ -1045,9 +1046,9 @@ index ef5e2013f5f18fe560f878542558dc8c91a63b69..04439e2e69adf42a9dcfe43676ef24df
 +} from "./services/actors.js";
 +import { registerSocketActor } from "./ws/socket-actors.js";
  
- export type CloseWebSockets = () => Promise<void>;
+ type CloseWebSockets = () => Promise<void>;
  type NodeWebSocketServer = ReturnType<typeof createNodeWebSocket>["wss"];
-@@ -288,6 +294,11 @@ export function createApp(
+@@ -284,6 +290,11 @@ export function createApp(
        dataDir: deps.config.dataDir,
        serverEntryUrl: import.meta.url,
      });
@@ -1059,7 +1060,7 @@ index ef5e2013f5f18fe560f878542558dc8c91a63b69..04439e2e69adf42a9dcfe43676ef24df
  
    app.use("*", async (context, next) => {
      captureTrustedRemoteAddress(context);
-@@ -357,6 +368,7 @@ export function createApp(
+@@ -355,6 +366,7 @@ export function createApp(
      });
    });
    app.use("/api/v1/*", async (context, next) => {
@@ -1067,7 +1068,7 @@ index ef5e2013f5f18fe560f878542558dc8c91a63b69..04439e2e69adf42a9dcfe43676ef24df
      const startedAt = performance.now();
      await next();
      const durationMs = performance.now() - startedAt;
-@@ -510,8 +522,12 @@ export function createApp(
+@@ -508,8 +520,12 @@ export function createApp(
            false,
          );
        }
@@ -1206,18 +1207,18 @@ index 0000000000000000000000000000000000000000..4107ddd75cbf901d2f5283896a514d40
 +  return actor;
 +}
 diff --git a/apps/server/src/ws/client-protocol.ts b/apps/server/src/ws/client-protocol.ts
-index dd110d068d9b696c2eedd64870aaf685de3c1b92..dd7cdb6c2bea83889cbf62ea002714596f36dfef 100644
+index 98ea902551a7c28171ef84f5e43d4a88f18b15b1..ea161963dd3e42dc904aae8180ff9767815a36c3 100644
 --- a/apps/server/src/ws/client-protocol.ts
 +++ b/apps/server/src/ws/client-protocol.ts
 @@ -1,6 +1,7 @@
- import { clientMessageSchema } from "@bb/domain";
+ import { clientMessageSchema, type PongMessage } from "@bb/domain";
  import { decodeSocketPayload } from "./decode-payload.js";
  import type { NotificationHub } from "./hub.js";
 +import { releaseSocketActor } from "./socket-actors.js";
  import type { WatchInterestCoordinator } from "./watch-interests.js";
  
- interface ClientSocket {
-@@ -69,6 +70,7 @@ export function onClientSocketClose(
+ const PONG_MESSAGE: PongMessage = { type: "pong" };
+@@ -76,6 +77,7 @@ export function onClientSocketClose(
    },
    socket: ClientSocket,
  ): void {
@@ -1250,7 +1251,7 @@ index 0000000000000000000000000000000000000000..53a61306edf4068c5634f226848f92d8
 +  return socketActors.get(socket) ?? null;
 +}
 diff --git a/apps/server/test/app/client-protocol.test.ts b/apps/server/test/app/client-protocol.test.ts
-index b297d912ac139880490a334163dd887f1c813705..8a6bbb58668d354b5548f74884633acbf312efde 100644
+index 01136b7b58b773ee714bd76b4ec4baaf7d833c8d..55b84b3c3a1dceec0154d03657da022f26fc3118 100644
 --- a/apps/server/test/app/client-protocol.test.ts
 +++ b/apps/server/test/app/client-protocol.test.ts
 @@ -1,9 +1,14 @@
@@ -1268,7 +1269,7 @@ index b297d912ac139880490a334163dd887f1c813705..8a6bbb58668d354b5548f74884633acb
  import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
  
  function createProtocolDeps(hub: NotificationHub) {
-@@ -194,4 +199,23 @@ describe("client websocket protocol", () => {
+@@ -212,4 +217,23 @@ describe("client websocket protocol", () => {
      expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
      expect(deps.watchInterests.subscribe).not.toHaveBeenCalled();
    });
@@ -1567,13 +1568,25 @@ index 0000000000000000000000000000000000000000..ab5ada424566291763e7de42153da437
 +  return db.select().from(collaborators).all();
 +}
 diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
-index 6e599d718537c0b416463665b08682c2693876a6..7796e7c7c23b7abbf28852390cb6cb92ebf50040 100644
+index ca59606e15b5add03045ca55adfdbc8bcc461aed..abadb3273dccd2db68d4af001da46764ee208fe9 100644
 --- a/packages/db/src/data/index.ts
 +++ b/packages/db/src/data/index.ts
-@@ -591,3 +591,13 @@ export type {
-   DropDeferredLegacyTablesResult,
-   RunIncrementalVacuumArgs,
+@@ -400,3 +400,25 @@ export {
+   shouldCompactDatabase,
+   shouldRunIncrementalVacuum,
  } from "./maintenance.js";
++export type {
++  CompactDatabaseResult,
++  DatabaseAutoVacuumMode,
++  DatabaseCompactionDecisionArgs,
++  DatabaseCompactionStats,
++  DatabaseFreelistStats,
++  DatabaseIncrementalVacuumDecisionArgs,
++  IncrementalVacuumResult,
++  DatabaseMaintenanceActivity,
++  DropDeferredLegacyTablesResult,
++  RunIncrementalVacuumArgs,
++} from "./maintenance.js";
 +
 +export {
 +  getCollaborator,
@@ -1664,6 +1677,3 @@ index 0000000000000000000000000000000000000000..9d84de73ff0cc149d0c484a6eefe35fc
 +    expect(listCollaborators(db)).toEqual([updated]);
 +  });
 +});
--- 
-2.43.0
-

@@ -1,0 +1,133 @@
+From 8c84cbf1313e3f5dde70ddcf5666b7f98491142a Mon Sep 17 00:00:00 2001
+From: Rosetta <its-rosetta@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 22:04:20 -0400
+Subject: [PATCH 29/32] fix(bb-app): allow migrations to finish during startup
+
+Remove the launcher's fixed server health deadline while retaining bounded request attempts and child-exit failure. Cover startup beyond the former 60-second cutoff so production-sized migrations can complete under supervision.
+---
+ packages/bb-app/src/launcher.ts    | 18 ++++++++----------
+ packages/bb-app/test/index.test.ts | 30 ++++++++++++++++++++++++++++++
+ 2 files changed, 38 insertions(+), 10 deletions(-)
+
+diff --git a/packages/bb-app/src/launcher.ts b/packages/bb-app/src/launcher.ts
+index 6961fe14ea5d340faeebee9fa4b74cd0235726dd..f4a792ad6b8cf54d07aa166cdc046b6ab5424197 100644
+--- a/packages/bb-app/src/launcher.ts
++++ b/packages/bb-app/src/launcher.ts
+@@ -74,7 +74,7 @@ import { z } from "zod";
+ 
+ const HOST_AUTH_FILE_NAME = "auth.json";
+ const HOST_ID_FILE_NAME = "host-id";
+-const HEALTH_CHECK_TIMEOUT_MS = 60_000;
++const HOST_DAEMON_STATUS_TIMEOUT_MS = 60_000;
+ const HEALTH_CHECK_INTERVAL_MS = 100;
+ const HEALTH_CHECK_REQUEST_TIMEOUT_MS = 1_000;
+ const MANAGED_PROCESS_TERMINATION_TIMEOUT_MS = 5_000;
+@@ -438,7 +438,6 @@ export interface DelayMillisecondsArgs {
+ 
+ interface WaitForHealthArgs {
+   childProcess: ChildProcess | null;
+-  timeoutMs?: number;
+   url: string;
+ }
+ 
+@@ -2253,10 +2252,8 @@ async function maybeAddAutoJoinEnv(
+   };
+ }
+ 
+-async function waitForHealth(args: WaitForHealthArgs): Promise<void> {
+-  const timeoutMs = args.timeoutMs ?? HEALTH_CHECK_TIMEOUT_MS;
+-  const deadline = Date.now() + timeoutMs;
+-  while (Date.now() <= deadline) {
++export async function waitForHealth(args: WaitForHealthArgs): Promise<void> {
++  while (true) {
+     if (
+       args.childProcess &&
+       (args.childProcess.exitCode !== null ||
+@@ -2265,7 +2262,9 @@ async function waitForHealth(args: WaitForHealthArgs): Promise<void> {
+       throw new Error("Process exited before becoming healthy");
+     }
+     try {
+-      const response = await fetch(args.url);
++      const response = await fetch(args.url, {
++        signal: AbortSignal.timeout(HEALTH_CHECK_REQUEST_TIMEOUT_MS),
++      });
+       if (response.ok) {
+         return;
+       }
+@@ -2274,7 +2273,6 @@ async function waitForHealth(args: WaitForHealthArgs): Promise<void> {
+       setTimeout(resolvePromise, HEALTH_CHECK_INTERVAL_MS);
+     });
+   }
+-  throw new Error(`Timed out waiting for health at ${args.url}`);
+ }
+ 
+ function normalizeServerUrlForComparison(serverUrl: string): string {
+@@ -2286,7 +2284,7 @@ function normalizeServerUrlForComparison(serverUrl: string): string {
+ export async function waitForHostDaemonStatus(
+   args: WaitForHostDaemonStatusArgs,
+ ): Promise<void> {
+-  const timeoutMs = args.timeoutMs ?? HEALTH_CHECK_TIMEOUT_MS;
++  const timeoutMs = args.timeoutMs ?? HOST_DAEMON_STATUS_TIMEOUT_MS;
+   const deadline = Date.now() + timeoutMs;
+   const expectedServerUrl = normalizeServerUrlForComparison(
+     args.expectedServerUrl,
+@@ -3431,7 +3429,7 @@ export async function runBbApp(
+     try {
+       await startServer();
+     } catch {
+-      endStep(red("✗"), "Server failed to start (health check timed out)");
++      endStep(red("✗"), "Server failed to start");
+       logManagedProcessStartupFailureContext({
+         context,
+         processName: "server",
+diff --git a/packages/bb-app/test/index.test.ts b/packages/bb-app/test/index.test.ts
+index a3ffe16d6eaca1489c4baf9b28a418ec9d585898..33750080fd48234b8242185ca5f829ff5c78c147 100644
+--- a/packages/bb-app/test/index.test.ts
++++ b/packages/bb-app/test/index.test.ts
+@@ -30,6 +30,7 @@ import {
+   runBundledCliCommand,
+   superviseFullStackProcesses,
+   terminateManagedFullStackProcesses,
++  waitForHealth,
+   waitForHostDaemonStatus,
+   waitForProcessExit,
+ } from "../src/launcher.js";
+@@ -481,6 +482,35 @@ async function captureStdout(run: () => Promise<void>): Promise<string> {
+ }
+ 
+ describe("bb-app launcher", () => {
++  it("does not impose a wall-clock deadline while the server is still starting", async () => {
++    vi.useFakeTimers();
++    const fetchMock = vi
++      .spyOn(globalThis, "fetch")
++      .mockResolvedValue(new Response(null, { status: 503 }));
++
++    try {
++      let resolved = false;
++      const health = waitForHealth({
++        childProcess: null,
++        url: "http://127.0.0.1:38886/health",
++      });
++      void health.then(() => {
++        resolved = true;
++      });
++
++      await vi.advanceTimersByTimeAsync(60_100);
++      expect(resolved).toBe(false);
++
++      fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
++      await vi.advanceTimersByTimeAsync(100);
++      await health;
++      expect(resolved).toBe(true);
++    } finally {
++      fetchMock.mockRestore();
++      vi.useRealTimers();
++    }
++  });
++
+   it("waits for the expected host daemon identity and connection", async () => {
+     let statusRequests = 0;
+     const server = createServer((request, response) => {
+-- 
+2.43.0
+
