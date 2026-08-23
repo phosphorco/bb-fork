@@ -74,7 +74,7 @@ import { z } from "zod";
 
 const HOST_AUTH_FILE_NAME = "auth.json";
 const HOST_ID_FILE_NAME = "host-id";
-const HEALTH_CHECK_TIMEOUT_MS = 60_000;
+const HOST_DAEMON_STATUS_TIMEOUT_MS = 60_000;
 const HEALTH_CHECK_INTERVAL_MS = 100;
 const HEALTH_CHECK_REQUEST_TIMEOUT_MS = 1_000;
 const MANAGED_PROCESS_TERMINATION_TIMEOUT_MS = 5_000;
@@ -448,7 +448,6 @@ interface WaitForServerHealthArgs {
   childProcess: ChildProcess | null;
   /** Launch id handed to the server child; only a /health echoing it counts. */
   expectedLaunchId: string;
-  timeoutMs?: number;
   url: string;
 }
 
@@ -2285,14 +2284,12 @@ async function readServerHealthLaunchId(
 export async function waitForServerHealth(
   args: WaitForServerHealthArgs,
 ): Promise<void> {
-  const timeoutMs = args.timeoutMs ?? HEALTH_CHECK_TIMEOUT_MS;
-  const deadline = Date.now() + timeoutMs;
   let foreignServerAnswered = false;
   const describeFailure = (reason: string): string =>
     foreignServerAnswered
       ? `${reason}: another server is already answering at ${args.url}`
       : reason;
-  while (Date.now() <= deadline) {
+  while (true) {
     if (
       args.childProcess &&
       (args.childProcess.exitCode !== null ||
@@ -2318,9 +2315,6 @@ export async function waitForServerHealth(
       setTimeout(resolvePromise, HEALTH_CHECK_INTERVAL_MS);
     });
   }
-  throw new Error(
-    describeFailure(`Timed out waiting for health at ${args.url}`),
-  );
 }
 
 function normalizeServerUrlForComparison(serverUrl: string): string {
@@ -2332,7 +2326,7 @@ function normalizeServerUrlForComparison(serverUrl: string): string {
 export async function waitForHostDaemonStatus(
   args: WaitForHostDaemonStatusArgs,
 ): Promise<void> {
-  const timeoutMs = args.timeoutMs ?? HEALTH_CHECK_TIMEOUT_MS;
+  const timeoutMs = args.timeoutMs ?? HOST_DAEMON_STATUS_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
   const expectedServerUrl = normalizeServerUrlForComparison(
     args.expectedServerUrl,

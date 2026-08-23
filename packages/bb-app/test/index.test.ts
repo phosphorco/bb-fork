@@ -30,6 +30,7 @@ import {
   runBundledCliCommand,
   superviseFullStackProcesses,
   terminateManagedFullStackProcesses,
+  waitForServerHealth,
   waitForHostDaemonStatus,
   waitForProcessExit,
 } from "../src/launcher.js";
@@ -481,6 +482,38 @@ async function captureStdout(run: () => Promise<void>): Promise<string> {
 }
 
 describe("bb-app launcher", () => {
+  it("does not impose a wall-clock deadline while the server is still starting", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 503 }));
+
+    try {
+      let resolved = false;
+      const health = waitForServerHealth({
+        childProcess: null,
+        expectedLaunchId: "slow-migration-launch",
+        url: "http://127.0.0.1:38886/health",
+      });
+      void health.then(() => {
+        resolved = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(60_100);
+      expect(resolved).toBe(false);
+
+      fetchMock.mockResolvedValueOnce(
+        Response.json({ launchId: "slow-migration-launch" }),
+      );
+      await vi.advanceTimersByTimeAsync(100);
+      await health;
+      expect(resolved).toBe(true);
+    } finally {
+      fetchMock.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("waits for the expected host daemon identity and connection", async () => {
     let statusRequests = 0;
     const server = createServer((request, response) => {
