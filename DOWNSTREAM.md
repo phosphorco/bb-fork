@@ -36,13 +36,14 @@
 32. **Canonical identity witnesses** aligns generated, migration-ledger, and protocol witnesses with upstream protocol 147.
 33. **Namespaced participant batching** keeps the new batched query surface inside the p6r downstream namespace boundary.
 34. **Post-ledger staging recovery** idempotently merges and removes interrupted actor/collaborator staging even when canonical 0105 was already recorded.
+35. **Trusted browser identity mode** projects the request's server-authored principal/profile through system config, suppresses lower-assurance claiming for provider-authenticated browsers, and renders the provider profile read-only in Identity settings.
 
 ## Exact protocol-147 receipt
 
 - Upstream: `c942421a454ee4157004274053eec5f36c81d7eb`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: thirty-four patches in `patches/series`.
-- Result tree: `8f5d2f61584e9dbcfc7ef9051c44cf5fc2678e98`.
+- Patch queue: thirty-five patches in `patches/series`.
+- Result tree: `c96759a8617f975029bed24c86aa1e48bb68a72c`.
 
 ## Compatibility boundaries
 
