@@ -1,7 +1,8 @@
 # Phosphor downstream namespace
 
-Every reusable or externally observable identifier introduced by this overlay
-must identify itself as downstream-owned:
+Every reusable or externally observable multiplayer identity, authorship,
+presentation, or provider identifier introduced by this overlay must identify
+itself as downstream-owned:
 
 - values, functions, methods, fields, and props use `p6r...`;
 - React hooks use `useP6r...`, preserving React's required `use` prefix while
@@ -10,6 +11,17 @@ must identify itself as downstream-owned:
 - constants use `P6R_...`;
 - HTTP paths, WebSocket discriminators, headers, CLI commands, persistence
   keys, tables, and columns contain `p6r`.
+
+Thread Facets are the one bounded exception. Revision 1 establishes them as
+generic core organization/query infrastructure rather than multiplayer
+identity vocabulary. The exact facet-owned domain, DB, SDK, public API, CLI,
+route, and saved-view exports named in `scripts/check-p6r-namespace` may use
+their generic contract names, and the additive facet tables use the
+`thread_facet_*` namespace. The exception is an explicit path-and-symbol
+allowlist: neither a directory nor a spelling such as `Facet` exempts a new
+surface. Plugin-specific features built on facets remain downstream-owned and
+must use their own lawful namespace; the exception does not rename or weaken
+PrincipalKey identity, authorship, presentation, or provider boundaries.
 
 Identity kernel additions follow the same rule: the immutable principal key is
 `(p6rProviderId, p6rSubject)`, while `p6rHandle`, `p6rDisplayName`, and
@@ -39,6 +51,8 @@ code that upgrades checkouts of the earlier experimental multiplayer branch.
 All newly written storage uses the `p6r_` schema.
 
 `scripts/check-p6r-namespace` enforces the exported-symbol rule from the Git
-diff and guards the public SDK and wire-level names most likely to leak into a
-plugin. Additions to the downstream contract should extend that checker in the
-same patch.
+diff and guards the committed canonical inputs to the generated SDK plus the
+wire-level names most likely to leak into a plugin. Its adversarial witness
+proves an exact approved facet export passes while an unrelated export—even
+one containing `Facet`—still fails. Additions to either downstream contract
+must extend the checker and witness in the same patch.

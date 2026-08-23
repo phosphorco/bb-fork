@@ -2,41 +2,28 @@
 
 ## Patch queue
 
-1. **Identity and attribution foundations** adds claimed-identity contracts, collaborator storage, additive attribution columns, and Connect membership storage.
-2. **Membership admission and request actors** verifies server membership and carries the resolved actor through HTTP and WebSocket request boundaries.
-3. **Attributed messaging and presence** stamps user-originated events and interactions, projects authors into timeline data, emits presence, and supplies provider-facing speaker context.
-4. **App, CLI, and SDK surfaces** adds identity claiming, author avatars, presence indicators, member administration, and additive SDK methods.
-5. **Current-upstream hardening** folds in race fixes, generated declarations/templates, and fixtures for upstream timeline changes.
-6. **Phosphor namespace boundary** prefixes downstream contracts, UI props, wire fields, routes, persistence, CLI commands, and SDK surfaces with `p6r` while retaining migration support for the earlier unprefixed experimental schema.
-7. **React hook naming** keeps downstream hooks visibly namespaced as `useP6r...` while preserving the `use` prefix required by React tooling and the compiler.
-8. **Verified identity and durable authorship kernel** replaces client-claimed transport identity with one bounded, provider-qualified resolver; carries separate resolver request and durable turn-author facets; and preserves queued authored units through edit, grouping, reorder, delay, and dispatch into timeline rows.
-9. **Exact-tag contract and migration receipt** regenerates the overlay contracts and templates, records the current `0101_p6r_identity_authorship` migration, and pins the exact `desktop-v0.39.0` source receipt.
-10. **Exact workspace and provider-input contract receipt** carries the candidate-only fixture and generated declaration updates required by the exact `bb-app@0.39.0` workspace gate environment, plus the ready-turn authorship handoff and its canonical provider-input witnesses.
-11. **Sparse multiplayer migration staging** preserves only explicit legacy attribution values and restores them through indexed event-id lookups, leaving unknown historical authorship null.
-12. **Managed daemon deployment and update guidance** advances the host-daemon protocol to 136 so enrolled auto-update daemons fetch the server's exact distribution and restart, while Settings and `bb updates` direct primary-server replacement through Rosetta machine deployment instead of npm latest.
-13. **Provider-qualified identity foundation extension** carries an additive PrincipalKey value through p6r identity and presence contracts while retaining reader-tolerant legacy records.
-14. **Attributed presence preservation** groups sockets by exact PrincipalKey, keeps same-key coalescing, and applies exact viewer-relative suppression without presentation-field equality.
-15. **Principal-aware typing surface** projects resolved display labels into human typing copy and uses the existing browser-safe client-id constructor.
-16. **Server-authored p6r PrincipalKeys** derives local and provider-qualified keys at the identity boundary and strips client-supplied key claims before presence publication.
+1. **Current-upstream multiplayer reconciliation** ports the verified-identity, provider-qualified PrincipalKey, durable-authorship, presence, attributed messaging, and managed-deployment guarantees onto exact current upstream behavior.
+2. **Extensible Thread Facets revision 1** adds the generic namespaced Thread–Member relation, one-or-many cardinality, authoritative completeness and generation lifecycle, stable public query/CLI, attenuated plugin capability, core participant projection, and saved web/mobile My progress views.
+3. **Namespace-neutral facet quarantine fixture** keeps the forbidden principal-member-kind declaration witness within the bounded generic facet namespace exception.
 
-## Exact 0.39 receipt
+## Exact source receipt
 
-- Upstream: `desktop-v0.39.0` at `b33abbff098ac4c857578e7350d492dcaa65d489`.
+- Upstream: `5205d98a74ed5a22469e521cf1f86b00b8232827`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: twelve patches in `patches/series`.
-- Result tree: `f871fe320a0dff02462901ae10bdf7366f8510b1`.
+- Patch queue: three patches in `patches/series`.
+- Result tree: `70b4a0e67ffd7b0b1719db847ed11ae2c7b5286a`.
 
 ## Compatibility boundaries
 
 - Existing HTTP and SDK behavior remains available; new request/response fields are additive and nullable or optional where legacy data can lack attribution.
-- SQLite changes are additive: the current downstream identity migration is `0101_p6r_identity_authorship`, adding the provider-qualified actor and collaborator snapshots plus nullable actor facets on events, pending interactions, queued messages, and threads.
+- SQLite changes are additive: `0107_p6r_identity_authorship` adds provider-qualified actor and collaborator snapshots plus nullable authorship columns, and `0108_thread_facets` adds declarations, members, owner generations, reconciliation obligations, relations, exact participant profiles, and the stable cursor key.
 - Installs that ran the experimental branch's conflicting `0079_multiplayer-collaborators` migration are staged through canonical upstream migrations and restored without losing collaborator or attribution data.
 - Existing stored events remain readable with `actorHandle: null`.
-- Migration `0101_p6r_identity_authorship` adds the nullable `p6r_actors` and
-  `p6r_collaborators` snapshot tables and nullable canonical actor columns to
-  events and queued messages. Old rows and no-provider installations remain
-  readable with nullable structured actor data; historical actor reads use the
-  stored snapshot without a live provider.
+- Old rows and no-provider installations remain readable with nullable
+  structured actor data; historical actor reads use the stored snapshot
+  without a live provider. Facet declarations and last-known positive
+  relations survive owner unavailability, while absence is definite only for
+  a complete current-generation snapshot.
 - The exclusive plugin provider boundary composes `pluginId/registrationId`
   ids and fails closed on rejection, throw, malformed output, or timeout.
   No-provider and provider-not-applicable resolve to an anonymous nullable
@@ -54,9 +41,28 @@
   canonical provider/subject keys prevent cross-actor grouping. The accepted
   timeline user row carries the same nullable structured actor as the queued
   authored unit.
-- New downstream contracts follow [P6R_NAMESPACE.md](P6R_NAMESPACE.md), preventing plugins from silently depending on APIs absent from upstream bb.
+- Multiplayer identity, authorship, presentation, and provider contracts
+  follow [P6R_NAMESPACE.md](P6R_NAMESPACE.md), preventing plugins from silently
+  depending on downstream APIs. Revision 1's exact generic Thread Facet
+  surfaces and `thread_facet_*` persistence names are the bounded core
+  infrastructure exception; an explicit path-and-symbol checker allowlist
+  prevents that exception from admitting unrelated exports.
 - The server and host daemon deploy together at protocol version 136. Existing auto-update-enabled enrolled daemons on 135 fetch the server's exact `/install/bb-app.tgz` artifact and restart; the updater still refuses insecure non-loopback HTTP and never downgrades a newer daemon. The system-version ViewModel replaces `upgradeCommand` with `upgradeGuidance` alongside every in-tree app, CLI, SDK, fixture, and generated-contract consumer, so this queue intentionally does **not** claim mixed-version client or server/daemon compatibility.
-- Claimed identity is not authentication by itself. The Connect membership gate establishes admission; the claimed identity selects an admitted member for attribution.
+- Claimed identity is presentation only. HTTP claims cannot select an actor,
+  and WebSocket presentation changes retain the server-authenticated
+  PrincipalKey; admission and authorship remain server-owned.
+- Facets are namespaced Thread–Member relations. A `many` value is a finite
+  duplicate-free member set; `one` is the same relation with an at-most-one
+  law. Missing legacy, reconciling, or unavailable projection state is unknown,
+  not false. Tag assignment scope remains explicitly reserved rather than
+  inferred from marker representation.
+- Sidebar sections are saved bounded facet queries over visible active threads,
+  not alternate ownership or copied membership. Participant avatars preserve
+  canonical PrincipalKey order and cardinality even when names or images match.
+- The companion `phosphorco/bb-plugins` branch publishes Thread Progress phase
+  through the plugin facet capability while its SQLite record remains the sole
+  authority; transactional outbox and census reconciliation make reload and
+  retry behavior durable.
 - Upstream's removed native side-chat UI is not restored. Identity rendering is integrated into the current native timeline/header/sidebar components and remains compatible with plugin-owned side chat.
 
 The patch queue is the canonical downstream delta. A convenience branch may be regenerated for review, but it is not a release input.

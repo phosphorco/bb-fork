@@ -30,16 +30,194 @@ const failures = [];
 const upstreamFiles = new Map();
 let file = null;
 
+// Revision 1 names Thread Facets as generic core organization/query
+// infrastructure. Keep this list exact by path and symbol: neither a directory
+// nor a `*Facet*` spelling is authority to bypass the downstream namespace.
+const approvedGenericThreadFacetExports = new Set([
+  "apps/app/src/components/sidebar/FacetParticipantAvatarGroup.tsx#FacetParticipantAvatarGroup",
+  "apps/app/src/components/sidebar/MyProgressSidebarSection.tsx#MY_PROGRESS_LAST_KNOWN_STATUS",
+  "apps/app/src/components/sidebar/MyProgressSidebarSection.tsx#MY_PROGRESS_UNAVAILABLE_STATUS",
+  "apps/app/src/components/sidebar/MyProgressSidebarSection.tsx#myProgressCollectionStatus",
+  "apps/app/src/components/sidebar/MyProgressSidebarSection.tsx#MyProgressSidebarSection",
+  "apps/app/src/components/sidebar/sidebarCollapsedAtoms.ts#MY_PROGRESS_SIDEBAR_SECTION_ID",
+  "apps/app/src/components/sidebar/sidebarCollapsedAtoms.ts#CollapsibleSidebarSectionId",
+  "apps/app/src/components/sidebar/sidebarCollapsedAtoms.ts#SidebarTopLevelSectionId",
+  "apps/app/src/components/sidebar/sidebarTopLevelOrder.ts#reorderSidebarTopLevelOrder",
+  "apps/app/src/components/sidebar/usePersistedSidebarSectionOrder.ts#resolveSidebarTopLevelSectionOrder",
+  "apps/app/src/hooks/queries/my-progress-query.ts#MY_PROGRESS_SAVED_FACET_QUERY",
+  "apps/app/src/hooks/queries/my-progress-query.ts#MyProgressFacetPage",
+  "apps/app/src/hooks/queries/my-progress-query.ts#useMyProgressFacetQuery",
+  "apps/app/src/hooks/queries/my-progress-query.ts#useThreadFacetParticipantPages",
+  "apps/app/src/hooks/queries/query-keys.ts#MyProgressFacetQueryKey",
+  "apps/app/src/hooks/queries/query-keys.ts#ThreadFacetParticipantsQueryKey",
+  "apps/app/src/hooks/queries/query-keys.ts#myProgressFacetQueryKey",
+  "apps/app/src/hooks/queries/query-keys.ts#threadFacetParticipantsQueryKey",
+  "apps/cli/src/commands/thread/facets.ts#registerFacetCommands",
+  "apps/mobile/src/data/sidebar/facet-triage-contract.ts#THREAD_PROGRESS_PHASE_FACET_TYPE_ID",
+  "apps/mobile/src/data/sidebar/facet-triage-contract.ts#MY_PROGRESS_SAVED_FACET_QUERY",
+  "apps/mobile/src/data/sidebar/facet-triage-contract.ts#MY_PROGRESS_QUERY_POLICY",
+  "apps/mobile/src/data/sidebar/facet-triage-contract.ts#MyProgressQueryMode",
+  "apps/mobile/src/data/sidebar/facet-triage-contract.ts#MyProgressPageParam",
+  "apps/mobile/src/data/sidebar/facet-triage-contract.ts#MyProgressFacetPage",
+  "apps/mobile/src/data/sidebar/facet-triage-contract.ts#nextFacetParticipantCursor",
+  "apps/mobile/src/data/sidebar/facet-triage-model.ts#PROGRESS_LAST_KNOWN_STATUS",
+  "apps/mobile/src/data/sidebar/facet-triage-model.ts#PROGRESS_UNAVAILABLE_STATUS",
+  "apps/mobile/src/data/sidebar/facet-triage-model.ts#FacetTriageModel",
+  "apps/mobile/src/data/sidebar/facet-triage-model.ts#buildFacetTriageModel",
+  "apps/mobile/src/data/sidebar/facet-triage-model.ts#participantOverflowCount",
+  "apps/mobile/src/data/sidebar/facet-triage-model.ts#participantGroupLabel",
+  "apps/mobile/src/data/sidebar/facet-triage-model.ts#participantInitials",
+  "apps/mobile/src/data/sidebar/facet-triage-model.ts#FacetParticipantAvatarItem",
+  "apps/mobile/src/data/sidebar/facet-triage-model.ts#participantAvatarItems",
+  "apps/mobile/src/data/sidebar/facet-triage-model.ts#activateFacetRowNestedControl",
+  "apps/mobile/src/data/sidebar/facet-triage-model.ts#FacetParticipantDisclosureTarget",
+  "apps/mobile/src/data/sidebar/facet-triage-model.ts#participantDisclosureTarget",
+  "apps/mobile/src/data/sidebar/facet-triage-model.ts#FacetTriageVisibility",
+  "apps/mobile/src/data/sidebar/facet-triage-model.ts#shouldRefreshFacetTriage",
+  "apps/mobile/src/data/sidebar/facet-triage-query.ts#nextMyProgressPageParam",
+  "apps/mobile/src/data/sidebar/facet-triage-rows-model.ts#FacetTriageHeaderRow",
+  "apps/mobile/src/data/sidebar/facet-triage-rows-model.ts#FacetTriageThreadRow",
+  "apps/mobile/src/data/sidebar/facet-triage-rows-model.ts#FacetTriageMessageRow",
+  "apps/mobile/src/data/sidebar/facet-triage-rows-model.ts#FacetTriageContinuationRow",
+  "apps/mobile/src/data/sidebar/facet-triage-rows-model.ts#FacetTriageListRow",
+  "apps/mobile/src/data/sidebar/facet-triage-rows-model.ts#buildFacetTriageRows",
+  "apps/mobile/src/data/sidebar/sidebar-section-order.ts#MY_PROGRESS_SIDEBAR_SECTION_ID",
+  "apps/mobile/src/data/sidebar/sidebar-section-order.ts#MobileSidebarSectionId",
+  "apps/mobile/src/data/sidebar/use-facet-triage-query.ts#useMyProgressFacetQuery",
+  "apps/mobile/src/data/sidebar/use-facet-triage-query.ts#useFacetParticipantPages",
+  "apps/mobile/src/screens/sidebar/FacetTriageRows.tsx#FacetTriageHeaderRowView",
+  "apps/mobile/src/screens/sidebar/FacetTriageRows.tsx#FacetTriageThreadRowView",
+  "apps/mobile/src/screens/sidebar/FacetTriageRows.tsx#FacetTriageMessageRowView",
+  "apps/mobile/src/screens/sidebar/FacetTriageRows.tsx#FacetTriageContinuationRowView",
+  "apps/mobile/src/screens/sidebar/FacetTriageRows.tsx#FacetParticipantDisclosureSheet",
+  "apps/mobile/src/screens/sidebar/sidebar-list-rows.ts#buildSidebarSectionRows",
+  "apps/server/src/services/threads/thread-facet-query.ts#executeThreadFacetQuery",
+  "apps/server/src/services/threads/thread-facet-query.ts#executeThreadFacetParticipantPage",
+  "packages/db/src/data/events.ts#QueryInSqliteVariableBatchesArgs",
+  "packages/db/src/data/events.ts#queryInSqliteVariableBatches",
+  "packages/db/src/data/events.ts#ListStoredEventRowsByThreadIdsAndTypesArgs",
+  "packages/db/src/data/events.ts#listStoredEventRowsByThreadIdsAndTypes",
+  "packages/db/src/data/thread-facets.ts#THREAD_FACET_PLUGIN_REPLACEMENT_MEMBER_LIMIT",
+  "packages/db/src/data/thread-facets.ts#THREAD_FACET_DIRECTORY_MEMBER_LIMIT",
+  "packages/db/src/data/thread-facets.ts#THREAD_FACET_CENSUS_PAGE_LIMIT",
+  "packages/db/src/data/thread-facets.ts#ThreadFacetInvariantErrorCode",
+  "packages/db/src/data/thread-facets.ts#ThreadFacetInvariantError",
+  "packages/db/src/data/thread-facets.ts#ThreadFacetDeclaration",
+  "packages/db/src/data/thread-facets.ts#DeclarePluginThreadFacetArgs",
+  "packages/db/src/data/thread-facets.ts#ActivatePluginThreadFacetDeclarationsArgs",
+  "packages/db/src/data/thread-facets.ts#ActivatedPluginThreadFacetDeclaration",
+  "packages/db/src/data/thread-facets.ts#QuarantinedPluginThreadFacetDeclaration",
+  "packages/db/src/data/thread-facets.ts#ActivatePluginThreadFacetDeclarationsResult",
+  "packages/db/src/data/thread-facets.ts#ThreadFacetGeneration",
+  "packages/db/src/data/thread-facets.ts#ReplaceThreadFacetRelationsArgs",
+  "packages/db/src/data/thread-facets.ts#ListPriorThreadFacetSnapshotTargetsArgs",
+  "packages/db/src/data/thread-facets.ts#PriorThreadFacetSnapshotTargetPage",
+  "packages/db/src/data/thread-facets.ts#ThreadFacetQueryPosition",
+  "packages/db/src/data/thread-facets.ts#QueryThreadFacetIdsArgs",
+  "packages/db/src/data/thread-facets.ts#ListThreadIdsForFacetProjectionArgs",
+  "packages/db/src/data/thread-facets.ts#ThreadFacetIdPage",
+  "packages/db/src/data/thread-facets.ts#ThreadFacetOwnerProjection",
+  "packages/db/src/data/thread-facets.ts#getOrCreateThreadFacetCursorSigningKey",
+  "packages/db/src/data/thread-facets.ts#listThreadIdsForFacetProjection",
+  "packages/db/src/data/thread-facets.ts#CoreParticipantProfilePage",
+  "packages/db/src/data/thread-facets.ts#getThreadFacetDeclaration",
+  "packages/db/src/data/thread-facets.ts#declarePluginThreadFacet",
+  "packages/db/src/data/thread-facets.ts#beginThreadFacetOwnerGeneration",
+  "packages/db/src/data/thread-facets.ts#activatePluginThreadFacetDeclarations",
+  "packages/db/src/data/thread-facets.ts#markAllPluginThreadFacetOwnersUnavailable",
+  "packages/db/src/data/thread-facets.ts#replaceThreadFacetRelationsInGeneration",
+  "packages/db/src/data/thread-facets.ts#waiveThreadFacetReconciliationTargetIfIneligible",
+  "packages/db/src/data/thread-facets.ts#listPriorThreadFacetSnapshotTargets",
+  "packages/db/src/data/thread-facets.ts#recordThreadFacetCensusExhausted",
+  "packages/db/src/data/thread-facets.ts#markThreadFacetOwnerGenerationReady",
+  "packages/db/src/data/thread-facets.ts#markThreadFacetOwnerUnavailable",
+  "packages/db/src/data/thread-facets.ts#markThreadFacetOwnerGenerationUnavailable",
+  "packages/db/src/data/thread-facets.ts#ensureCoreParticipantsProjection",
+  "packages/db/src/data/thread-facets.ts#listCoreParticipantProfilesByThreadIds",
+  "packages/db/src/data/thread-facets.ts#listCoreParticipantProfilePage",
+  "packages/db/src/data/thread-facets.ts#queryThreadFacetThreadIds",
+  "packages/db/src/data/thread-facets.ts#threadFacetCompletenessSignature",
+  "packages/db/src/data/thread-facets.ts#listThreadFacetOwnerProjections",
+  "packages/db/src/data/threads.ts#listThreadsWithPendingInteractionStateByIds",
+  "packages/db/src/schema.ts#threadFacetDeclarations",
+  "packages/db/src/schema.ts#threadFacetCursorKeys",
+  "packages/db/src/schema.ts#threadFacetMembers",
+  "packages/db/src/schema.ts#threadFacetOwners",
+  "packages/db/src/schema.ts#threadFacetReconciliationTargets",
+  "packages/db/src/schema.ts#threadFacetRelations",
+  "packages/db/src/schema.ts#threadFacetSnapshots",
+  "packages/db/src/schema.ts#threadFacetPrincipalProfiles",
+  "packages/domain/src/thread-facet.ts#threadFacetLocalNameSchema",
+  "packages/domain/src/thread-facet.ts#threadFacetMemberIdSchema",
+  "packages/domain/src/thread-facet.ts#threadFacetMemberKindSchema",
+  "packages/domain/src/thread-facet.ts#threadFacetCardinalitySchema",
+  "packages/domain/src/thread-facet.ts#threadFacetAssignmentScopeSchema",
+  "packages/domain/src/thread-facet.ts#threadFacetOwnerStateSchema",
+  "packages/domain/src/thread-facet.ts#ThreadFacetLocalName",
+  "packages/domain/src/thread-facet.ts#ThreadFacetMemberId",
+  "packages/domain/src/thread-facet.ts#ThreadFacetMemberKind",
+  "packages/domain/src/thread-facet.ts#ThreadFacetCardinality",
+  "packages/domain/src/thread-facet.ts#ThreadFacetAssignmentScope",
+  "packages/domain/src/thread-facet.ts#ThreadFacetOwnerState",
+  "packages/domain/src/thread-facet.ts#ThreadFacetTypeParts",
+  "packages/domain/src/thread-facet.ts#parseThreadFacetTypeId",
+  "packages/domain/src/thread-facet.ts#threadFacetTypeIdSchema",
+  "packages/domain/src/thread-facet.ts#ThreadFacetTypeId",
+  "packages/domain/src/thread-facet.ts#serializeThreadFacetTypeId",
+  "packages/domain/src/thread-facet.ts#CORE_PARTICIPANTS_FACET_TYPE_ID",
+  "packages/domain/src/thread-facet.ts#threadFacetFilterSchema",
+  "packages/domain/src/thread-facet.ts#ThreadFacetFilter",
+  "packages/domain/src/thread-facet.ts#ResolvedThreadFacetFilter",
+  "packages/domain/src/thread-facet.ts#threadFacetOrderSchema",
+  "packages/domain/src/thread-facet.ts#ThreadFacetOrder",
+  "packages/domain/src/thread-facet.ts#threadFacetListScopeSchema",
+  "packages/domain/src/thread-facet.ts#ThreadFacetListScope",
+  "packages/domain/src/thread-facet.ts#threadFacetQueryRequestSchema",
+  "packages/domain/src/thread-facet.ts#ThreadFacetQueryRequest",
+  "packages/domain/src/thread-facet.ts#threadFacetParticipantPageRequestSchema",
+  "packages/domain/src/thread-facet.ts#ThreadFacetParticipantPageRequest",
+  "packages/plugin-sdk/src/backend-contract.ts#ExperimentalThreadFacetCardinality",
+  "packages/plugin-sdk/src/backend-contract.ts#ExperimentalThreadFacetTargetGrant",
+  "packages/plugin-sdk/src/backend-contract.ts#ExperimentalThreadFacetTarget",
+  "packages/plugin-sdk/src/backend-contract.ts#ExperimentalThreadFacetReplacement",
+  "packages/plugin-sdk/src/backend-contract.ts#ExperimentalThreadFacetTargetPage",
+  "packages/plugin-sdk/src/backend-contract.ts#ExperimentalThreadFacetHandle",
+  "packages/plugin-sdk/src/backend-contract.ts#ExperimentalThreadFacets",
+  "packages/sdk/src/areas/threads.ts#ThreadFacetQueryArgs",
+  "packages/sdk/src/areas/threads.ts#ThreadFacetParticipantsArgs",
+  "packages/sdk/src/areas/threads.ts#ThreadFacetQueryResult",
+  "packages/sdk/src/areas/threads.ts#ThreadFacetParticipantsResult",
+  "packages/server-contract/src/api/threads.ts#threadFacetParticipantSummarySchema",
+  "packages/server-contract/src/api/threads.ts#ThreadFacetParticipantSummary",
+  "packages/server-contract/src/api/threads.ts#threadFacetQueryThreadSchema",
+  "packages/server-contract/src/api/threads.ts#ThreadFacetQueryThread",
+  "packages/server-contract/src/api/threads.ts#ThreadFacetQueryRequest",
+  "packages/server-contract/src/api/threads.ts#threadFacetQueryResponseSchema",
+  "packages/server-contract/src/api/threads.ts#ThreadFacetQueryResponse",
+  "packages/server-contract/src/api/threads.ts#threadFacetParticipantsQuerySchema",
+  "packages/server-contract/src/api/threads.ts#ThreadFacetParticipantsQuery",
+  "packages/server-contract/src/api/threads.ts#threadFacetParticipantsResponseSchema",
+  "packages/server-contract/src/api/threads.ts#ThreadFacetParticipantsResponse",
+]);
+
 function upstreamSource(path) {
   if (upstreamFiles.has(path)) return upstreamFiles.get(path);
   let source = "";
   try {
-    source = git(["show", `${base}:${path}`]);
+    source = execFileSync("git", ["-C", checkout, "show", `${base}:${path}`], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
   } catch {
     // A downstream-only file has no upstream source.
   }
   upstreamFiles.set(path, source);
   return source;
+}
+
+function approvedGenericThreadFacetExport(path, name) {
+  return approvedGenericThreadFacetExports.has(`${path}#${name}`);
 }
 
 const forbiddenAddedPatterns = [
@@ -94,6 +272,7 @@ for (const line of diff.split("\n")) {
   if (!declaration) continue;
   const name = declaration[1];
   if (/^(?:p6r|P6r|P6R_|useP6r)/u.test(name)) continue;
+  if (approvedGenericThreadFacetExport(file, name)) continue;
 
   const existedUpstream = new RegExp(
     `export\\s+(?:declare\\s+)?(?:const|function|class|interface|type|enum)\\s+${name}\\b`,
@@ -104,23 +283,49 @@ for (const line of diff.split("\n")) {
   }
 }
 
-const sdkPath = resolve(
-  checkout,
-  "packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts",
-);
-const sdk = readFileSync(sdkPath, "utf8");
-for (const token of [
-  "p6rMembers: P6rMembersArea",
-  "p6rPresence: P6rPresenceArea",
-  "p6rParticipants?: readonly P6rParticipantProfile[]",
-  "interface P6rParticipantProfile",
-  "p6rActorHandle",
-  "p6rIdentity: P6rIdentityApi",
-  "p6rRequestPrincipal: P6rActorSnapshot | null",
-  "p6rTurnAuthor: P6rActorSnapshot | null",
-]) {
-  if (!sdk.includes(token)) failures.push(`${sdkPath}: missing '${token}'`);
+// The portable declarations are now generated build output and deliberately
+// absent from a clean checkout. Inspect the committed canonical inputs that
+// the declaration generator flattens instead of depending on stale output.
+const canonicalSdkContracts = [
+  {
+    path: "packages/sdk/src/core.ts",
+    tokens: ["p6rMembers: P6rMembersArea", "p6rPresence: P6rPresenceArea"],
+  },
+  {
+    path: "packages/plugin-sdk/src/app-contract.ts",
+    tokens: [
+      "p6rParticipants?: readonly P6rParticipantProfile[]",
+      "interface P6rParticipantProfile",
+    ],
+  },
+  {
+    path: "packages/plugin-sdk/src/backend-contract.ts",
+    tokens: [
+      "p6rIdentity: P6rIdentityApi",
+      "p6rRequestPrincipal: P6rActorSnapshot | null",
+      "p6rTurnAuthor: P6rActorSnapshot | null",
+    ],
+  },
+  {
+    path: "packages/server-contract/src/thread-timeline.ts",
+    tokens: ["p6rActorHandle"],
+  },
+];
+const canonicalSdkSource = [];
+for (const contract of canonicalSdkContracts) {
+  const contractPath = resolve(checkout, contract.path);
+  const source = readFileSync(contractPath, "utf8");
+  canonicalSdkSource.push(source);
+  for (const token of contract.tokens) {
+    if (!source.includes(token)) {
+      failures.push(`${contractPath}: missing '${token}'`);
+    }
+  }
 }
+const sdk = canonicalSdkSource.join("\n");
+const sdkPath = canonicalSdkContracts
+  .map(({ path }) => resolve(checkout, path))
+  .join(", ");
 
 const conversationMessage = readFileSync(
   resolve(

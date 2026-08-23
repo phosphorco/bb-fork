@@ -2,7 +2,7 @@
 
 This is a thin, auditable deployment overlay for [get-bb/bb](https://github.com/get-bb/bb). It does not carry a second copy of upstream source and it does not treat a long-lived Git branch as the release definition.
 
-The current base is the exact source commit tagged `desktop-v0.39.0` at `b33abbff098ac4c857578e7350d492dcaa65d489`, matching the deployed `bb-app@0.39.0` npm release. Release tags are preferred over a moving or lagging default branch.
+The current base is exact upstream commit `5205d98a74ed5a22469e521cf1f86b00b8232827` (`Scroll the desktop model picker as one region (#2310)`). The lock records a reviewed source receipt rather than a moving branch or inferred release tag.
 
 The deployable source is exactly:
 
@@ -37,4 +37,4 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The twelve patches are deliberately organized by product capability and receipt boundary, not by the chronology of the original experimental branch. The sixth patch applies the [Phosphor namespace policy](P6R_NAMESPACE.md) as an independently reviewable compatibility boundary; the seventh preserves React's required hook naming convention, the eighth adds the verified-identity/durable-authorship kernel, patches nine and ten refresh the exact-tag contracts, migration receipt, workspace gates, and canonical provider-input authorship witness, patch eleven makes compatibility staging sparse and indexed, and the final patch advances the managed daemon deployment boundary while replacing the upstream npm update recommendation with Rosetta-owned guidance. Implementation-only workflow files are excluded.
+The three patches are deliberately reduced onto current upstream behavior. The first reconciles the verified-identity, durable-authorship, presence, and managed-deployment guarantees from the earlier multiplayer queue. The second adds the revision 1 generic thread-facet spine, plugin capability, bounded public query/CLI, and saved web/mobile projections. The third keeps the facet quarantine fixture namespace-neutral under the bounded generic Thread Facet exception. Implementation-only workflow files are excluded.
