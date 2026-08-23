@@ -252,43 +252,74 @@ afterEach(() => {
 });
 
 describe("ThreadRow", () => {
-  it("renders the supplied participant profiles in server order", () => {
+  it("renders ordered participant avatars without visible full-name row text", async () => {
     renderThreadRow({
       thread: createThread({
         participants: [
           {
             p6rPrincipalKey: p6rPrincipalKeySchema.parse("p6r:github/alice"),
-            p6rDisplayName: "Alice Chen",
-            p6rImageUrl: "https://example.test/alice.png",
+            p6rDisplayName: "Same Name",
+            p6rImageUrl: "https://example.test/shared.png",
           },
           {
             p6rPrincipalKey: p6rPrincipalKeySchema.parse("p6r:google/bob"),
-            p6rDisplayName: "Bob Stone",
-            p6rImageUrl: "https://example.test/bob.png",
+            p6rDisplayName: "Same Name",
+            p6rImageUrl: "https://example.test/shared.png",
+          },
+          {
+            p6rPrincipalKey: p6rPrincipalKeySchema.parse("p6r:local/grace"),
+            p6rDisplayName: "Grace Cole",
+            p6rImageUrl: null,
+          },
+          {
+            p6rPrincipalKey: p6rPrincipalKeySchema.parse("p6r:local/dana"),
+            p6rDisplayName: "Dana Reed",
+            p6rImageUrl: null,
           },
         ],
       }),
     });
 
     const participants = screen.getByRole("group", {
-      name: "Thread participants: Alice Chen, Bob Stone",
+      name: "Thread participants: Same Name, Same Name, Grace Cole, Dana Reed",
     });
     const renderedText = participants.textContent ?? "";
-    expect(renderedText).toContain("Alice Chen");
-    expect(renderedText).toContain("Bob Stone");
-    expect(renderedText.indexOf("Alice Chen")).toBeLessThan(
-      renderedText.indexOf("Bob Stone"),
-    );
+    expect(renderedText).not.toContain("Same Name");
+    expect(renderedText).not.toContain("Grace Cole");
+    expect(renderedText).not.toContain("Dana Reed");
+    expect(renderedText).toBe("GC+1");
+    expect(
+      within(participants).getAllByRole("button", { name: "Same Name" }),
+    ).toHaveLength(2);
+    expect(
+      participants.querySelectorAll(
+        '[data-participant-key="p6r:github/alice"]',
+      ),
+    ).toHaveLength(1);
+    expect(
+      participants.querySelectorAll('[data-participant-key="p6r:google/bob"]'),
+    ).toHaveLength(1);
     expect(
       within(participants)
-        .getByRole("img", { name: "Alice Chen" })
+        .getAllByRole("img", { name: "Same Name" })[0]
         .getAttribute("src"),
-    ).toBe("https://example.test/alice.png");
+    ).toBe("https://example.test/shared.png");
     expect(
       within(participants)
-        .getByRole("img", { name: "Bob Stone" })
+        .getAllByRole("img", { name: "Same Name" })[1]
         .getAttribute("src"),
-    ).toBe("https://example.test/bob.png");
+    ).toBe("https://example.test/shared.png");
+
+    const grace = within(participants).getByRole("button", {
+      name: "Grace Cole",
+    });
+    fireEvent.focus(grace);
+    expect((await screen.findByRole("tooltip")).textContent).toBe("Grace Cole");
+    expect(
+      within(participants).getByRole("button", {
+        name: "1 more participant: Dana Reed",
+      }),
+    ).not.toBeNull();
   });
 
   const splitWorkingCases: Array<{

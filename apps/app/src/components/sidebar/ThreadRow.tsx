@@ -190,6 +190,80 @@ function ThreadDraftIndicator({
 
 const MAX_VISIBLE_THREAD_PARTICIPANTS = 3;
 
+function ThreadRowParticipantAvatar({
+  participant,
+}: {
+  participant: P6rThreadParticipantProfile;
+}) {
+  const [isNameDisclosed, setIsNameDisclosed] = useState(false);
+
+  return (
+    <Tooltip open={isNameDisclosed} onOpenChange={setIsNameDisclosed}>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={participant.p6rDisplayName}
+          data-participant-key={participant.p6rPrincipalKey}
+          className="relative inline-flex size-4 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-sidebar-border bg-surface-recessed text-[8px] font-medium leading-none text-muted-foreground outline-none ring-sidebar-ring hover:z-10 focus-visible:z-10 focus-visible:ring-2"
+          onClick={(event) => {
+            event.stopPropagation();
+            setIsNameDisclosed(true);
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          {participant.p6rImageUrl === null ? (
+            <span aria-hidden="true" title={participant.p6rDisplayName}>
+              {p6rPresenceInitials(participant.p6rDisplayName)}
+            </span>
+          ) : (
+            <img
+              src={participant.p6rImageUrl}
+              alt={participant.p6rDisplayName}
+              title={participant.p6rDisplayName}
+              className="size-full object-cover"
+            />
+          )}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top">{participant.p6rDisplayName}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function ThreadRowParticipantOverflow({
+  participants,
+}: {
+  participants: readonly P6rThreadParticipantProfile[];
+}) {
+  const [isNameDisclosed, setIsNameDisclosed] = useState(false);
+  const names = participants
+    .map((participant) => participant.p6rDisplayName)
+    .join(", ");
+  const count = participants.length;
+
+  return (
+    <Tooltip open={isNameDisclosed} onOpenChange={setIsNameDisclosed}>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={`${count} more participant${count === 1 ? "" : "s"}: ${names}`}
+          className="relative z-10 inline-flex h-4 min-w-4 shrink-0 cursor-pointer items-center justify-center rounded-full border border-sidebar-border bg-surface-recessed px-0.5 text-[8px] font-medium leading-none text-muted-foreground outline-none ring-sidebar-ring hover:bg-sidebar-accent focus-visible:ring-2"
+          onClick={(event) => {
+            event.stopPropagation();
+            setIsNameDisclosed(true);
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          +{count}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top">{names}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 function ThreadRowParticipants({
   participants,
 }: {
@@ -209,44 +283,18 @@ function ThreadRowParticipants({
       role="group"
       aria-label={`Thread participants: ${orderedNames}`}
       data-testid="sidebar-thread-participants"
-      className="relative z-10 inline-flex min-w-0 shrink items-center gap-1 text-xs text-muted-foreground"
+      className="relative z-10 inline-flex shrink-0 items-center -space-x-1"
     >
       {visible.map((participant) => (
-        <span
+        <ThreadRowParticipantAvatar
           key={participant.p6rPrincipalKey}
-          title={participant.p6rDisplayName}
-          className="inline-flex min-w-0 shrink items-center gap-1"
-        >
-          {participant.p6rImageUrl === null ? (
-            <span
-              role="img"
-              aria-label={participant.p6rDisplayName}
-              className="inline-flex size-4 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-surface-recessed text-[8px] font-medium leading-none"
-            >
-              {p6rPresenceInitials(participant.p6rDisplayName)}
-            </span>
-          ) : (
-            <img
-              src={participant.p6rImageUrl}
-              alt={participant.p6rDisplayName}
-              className="size-4 shrink-0 rounded-full object-cover"
-            />
-          )}
-          <span className="truncate">{participant.p6rDisplayName}</span>
-        </span>
+          participant={participant}
+        />
       ))}
       {overflow > 0 ? (
-        <span
-          role="img"
-          aria-label={`${overflow} more participants: ${participants
-            .slice(MAX_VISIBLE_THREAD_PARTICIPANTS)
-            .map((participant) => participant.p6rDisplayName)
-            .join(", ")}`}
-          title={orderedNames}
-          className="shrink-0"
-        >
-          +{overflow}
-        </span>
+        <ThreadRowParticipantOverflow
+          participants={participants.slice(MAX_VISIBLE_THREAD_PARTICIPANTS)}
+        />
       ) : null}
     </span>
   );

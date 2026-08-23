@@ -16,6 +16,7 @@ import {
 import {
   buildFacetTriageModel,
   activateFacetRowNestedControl,
+  p6rCompactParticipantAvatarGroup,
   participantAvatarItems,
   participantDisclosureTarget,
   participantGroupLabel,
@@ -145,6 +146,64 @@ describe("Facet Triage model", () => {
     expect(participantInitials("Ada Lovelace")).toBe("AL");
     expect(participantInitials("Prince")).toBe("P");
     expect(participantInitials("   ")).toBe("?");
+  });
+
+  it("projects ordinary rows to three ordered avatars plus exact overflow", () => {
+    const profiles = [
+      {
+        p6rPrincipalKey: p6rPrincipalKeySchema.parse("github:same-one"),
+        p6rDisplayName: "Same Name",
+        p6rImageUrl: "https://example.test/same.png",
+      },
+      {
+        p6rPrincipalKey: p6rPrincipalKeySchema.parse("google:same-two"),
+        p6rDisplayName: "Same Name",
+        p6rImageUrl: "https://example.test/same.png",
+      },
+      {
+        p6rPrincipalKey: p6rPrincipalKeySchema.parse("local:grace"),
+        p6rDisplayName: "Grace Cole",
+        p6rImageUrl: null,
+      },
+      {
+        p6rPrincipalKey: p6rPrincipalKeySchema.parse("local:dana"),
+        p6rDisplayName: "Dana Reed",
+        p6rImageUrl: null,
+      },
+    ];
+
+    expect(p6rCompactParticipantAvatarGroup(profiles)).toEqual({
+      accessibilityLabel:
+        "Thread participants: Same Name, Same Name, Grace Cole, Dana Reed",
+      visible: [
+        {
+          key: profiles[0]?.p6rPrincipalKey,
+          label: "Same Name",
+          imageUrl: "https://example.test/same.png",
+          initials: "SN",
+        },
+        {
+          key: profiles[1]?.p6rPrincipalKey,
+          label: "Same Name",
+          imageUrl: "https://example.test/same.png",
+          initials: "SN",
+        },
+        {
+          key: profiles[2]?.p6rPrincipalKey,
+          label: "Grace Cole",
+          imageUrl: null,
+          initials: "GC",
+        },
+      ],
+      overflow: [
+        {
+          key: profiles[3]?.p6rPrincipalKey,
+          label: "Dana Reed",
+          imageUrl: null,
+          initials: "DR",
+        },
+      ],
+    });
   });
 
   it("refreshes cached data on open and focus regain, but not while collapsed", () => {

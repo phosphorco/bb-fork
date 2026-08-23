@@ -85,6 +85,26 @@ export function participantAvatarItems(
   }));
 }
 
+const MAX_VISIBLE_SIDEBAR_PARTICIPANTS = 3;
+
+export interface P6rCompactParticipantAvatarGroup {
+  accessibilityLabel: string;
+  overflow: readonly FacetParticipantAvatarItem[];
+  visible: readonly FacetParticipantAvatarItem[];
+}
+
+/** Compact ordinary-row projection; stable PrincipalKeys retain order and cardinality. */
+export function p6rCompactParticipantAvatarGroup(
+  profiles: readonly P6rThreadParticipantProfile[],
+): P6rCompactParticipantAvatarGroup {
+  const items = participantAvatarItems(profiles);
+  return {
+    accessibilityLabel: `Thread participants: ${items.map((item) => item.label).join(", ")}`,
+    visible: items.slice(0, MAX_VISIBLE_SIDEBAR_PARTICIPANTS),
+    overflow: items.slice(MAX_VISIBLE_SIDEBAR_PARTICIPANTS),
+  };
+}
+
 export function activateFacetRowNestedControl(
   event: { stopPropagation(): void },
   activate: () => void,

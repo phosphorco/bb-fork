@@ -1,6 +1,12 @@
+import { Image } from "expo-image";
 import { isThreadRead, resolveThreadListIndicator } from "@bb/client-core";
-import { memo } from "react";
-import { Pressable, View } from "react-native";
+import type { P6rThreadParticipantProfile } from "@bb/domain";
+import { memo, useState } from "react";
+import { Pressable, View, type GestureResponderEvent } from "react-native";
+import {
+  activateFacetRowNestedControl,
+  p6rCompactParticipantAvatarGroup,
+} from "@/data/sidebar/facet-triage-model";
 import { getThreadDisplayTitle } from "@/data/threads";
 import { useTheme } from "@/theme";
 import { Icon, LONG_PRESS_DELAY_MS, Text, cn } from "@/ui";
@@ -32,6 +38,83 @@ const HEADER_MIN_HEIGHT = 36;
 const GROUP_LINE_OFFSET = 8;
 /** The single trailing column: status glyph, or the header "+" action. */
 const TRAILING_SLOT_CLASS = "h-9 w-9 items-center justify-center";
+
+function SidebarParticipantAvatarGroup({
+  participants,
+  threadId,
+}: {
+  participants: readonly P6rThreadParticipantProfile[];
+  threadId: string;
+}) {
+  const [revealedName, setRevealedName] = useState<string | null>(null);
+  const group = p6rCompactParticipantAvatarGroup(participants);
+  if (group.visible.length === 0) return null;
+
+  const disclose = (event: GestureResponderEvent, name: string) => {
+    activateFacetRowNestedControl(event, () => setRevealedName(name));
+  };
+  const overflowNames = group.overflow.map((item) => item.label).join(", ");
+
+  return (
+    <View className="items-end" testID={`thread-participants-${threadId}`}>
+      <Text
+        accessibilityRole="summary"
+        accessibilityLabel={group.accessibilityLabel}
+        className="sr-only"
+      >
+        {group.accessibilityLabel}
+      </Text>
+      <View className="flex-row items-center gap-0.5">
+        {group.visible.map((item) => (
+          <Pressable
+            key={item.key}
+            accessibilityRole="button"
+            accessibilityLabel={item.label}
+            accessibilityHint="Reveals participant name"
+            onPress={(event) => disclose(event, item.label)}
+            className="h-7 w-7 items-center justify-center rounded-full bg-surface-recessed active:opacity-70"
+            testID={`thread-participant-${threadId}-${item.key}`}
+          >
+            {item.imageUrl === null ? (
+              <Text variant="chrome" accessibilityElementsHidden>
+                {item.initials}
+              </Text>
+            ) : (
+              <Image
+                source={{ uri: item.imageUrl }}
+                accessibilityLabel={item.label}
+                style={{ width: 28, height: 28, borderRadius: 14 }}
+                contentFit="cover"
+              />
+            )}
+          </Pressable>
+        ))}
+        {group.overflow.length === 0 ? null : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`${group.overflow.length} more participant${group.overflow.length === 1 ? "" : "s"}: ${overflowNames}`}
+            accessibilityHint="Reveals participant names"
+            onPress={(event) => disclose(event, overflowNames)}
+            className="h-7 min-w-7 items-center justify-center rounded-full bg-surface-recessed px-1 active:opacity-70"
+            testID={`thread-participant-overflow-${threadId}`}
+          >
+            <Text variant="chrome">+{group.overflow.length}</Text>
+          </Pressable>
+        )}
+      </View>
+      {revealedName === null ? null : (
+        <Text
+          variant="caption"
+          numberOfLines={1}
+          accessibilityLiveRegion="polite"
+          testID={`thread-participant-name-${threadId}`}
+        >
+          {revealedName}
+        </Text>
+      )}
+    </View>
+  );
+}
 
 function rowPaddingLeft(depth: number): number {
   return ROW_BASE_PADDING + depth * ROW_DEPTH_STEP;
@@ -165,6 +248,10 @@ export const SidebarThreadRowView = memo(function SidebarThreadRowView({
           </Text>
         ) : null}
       </View>
+      <SidebarParticipantAvatarGroup
+        participants={thread.participants ?? []}
+        threadId={thread.id}
+      />
       <View className={TRAILING_SLOT_CLASS}>
         <ThreadStatusGlyph kind={row.indicator} />
       </View>
