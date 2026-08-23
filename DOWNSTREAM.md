@@ -30,13 +30,14 @@
 26. **Bounded participant queries** batches participant event reads within SQLite binding limits.
 27. **Interrupted identity staging recovery** reconciles durable actor and collaborator staging before the provider-qualified migration resumes.
 28. **Unbounded supervised server startup** lets production-sized database migrations reach health without a fixed wall-clock deadline while retaining bounded health requests and immediate child-exit failure.
+29. **Packaged runtime entrypoint identity** names the exact server and host-daemon files executed by the launcher so immutable deployment receipts bind the listener processes rather than unused command wrappers.
 
 ## Exact 0.39 receipt
 
 - Upstream: `desktop-v0.39.0` at `b33abbff098ac4c857578e7350d492dcaa65d489`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: twenty-eight patches in `patches/series`.
-- Result tree: `a982c570c9cd6f0724f7c7fb9a1b9ef3b853eba0`.
+- Patch queue: twenty-nine patches in `patches/series`.
+- Result tree: `65c56d3f1ecd9c3981afcd7864e44e851b724e4d`.
 
 ## Compatibility boundaries
 
