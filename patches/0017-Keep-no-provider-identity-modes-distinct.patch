@@ -1,0 +1,539 @@
+From 95d8f0c01208cd4c8ac8ea5335619e74517c39b6 Mon Sep 17 00:00:00 2001
+From: Rosetta <its-rosetta@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 15:17:21 -0400
+Subject: [PATCH] Keep no-provider identity modes distinct
+
+---
+ apps/server/src/server.ts                     | 55 ++++++------
+ apps/server/src/services/actors.ts            | 72 +++++++++++----
+ apps/server/src/ws/socket-actors.ts           | 13 ++-
+ apps/server/test/app/socket-actors.test.ts    | 15 ++++
+ apps/server/test/helpers/test-app.ts          | 10 ++-
+ .../test/public/public-presence.test.ts       | 87 ++++++++++++++++++-
+ .../test/public/public-request-actors.test.ts | 29 +++++++
+ 7 files changed, 232 insertions(+), 49 deletions(-)
+
+diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
+index 1883a26fb..fd8ffd121 100644
+--- a/apps/server/src/server.ts
++++ b/apps/server/src/server.ts
+@@ -92,12 +92,12 @@ import { rankAcceptedAssetEncodings } from "./asset-content-encoding.js";
+ import { apiJsonCompression } from "./api-response-compression.js";
+ 
+ import {
++  p6rClaimedIdentityToActorSnapshot,
+   p6rCreateActorService,
+   p6rCreateLocalOperatorIdentity,
+   p6rSetRequestActor,
+ } from "./services/actors.js";
+ import {
+-  P6R_LOCAL_OPERATOR_PROVIDER_ID,
+   p6rCreateIdentityBoundary,
+   p6rPrincipalKeyForActor,
+   p6rRequestInputFromContext,
+@@ -420,16 +420,31 @@ export function createApp(
+       );
+     }
+     if (resolution.kind === "authenticated") {
+-      p6rSetRequestPrincipal(context, resolution.p6rActor);
+-      p6rSetRequestActor(context, {
+-        p6rHandle: resolution.p6rActor.p6rHandle,
+-        p6rDisplayName: resolution.p6rActor.p6rDisplayName,
+-        p6rImageUrl: resolution.p6rActor.p6rImageUrl,
+-        p6rClientId: "p6r-resolved",
+-        p6rPrincipalKey: p6rPrincipalKeyForActor(resolution.p6rActor),
+-      });
++      const requestPrincipal = resolution.p6rActor;
++      p6rSetRequestPrincipal(context, requestPrincipal);
++      p6rSetRequestActor(
++        context,
++        {
++          p6rHandle: requestPrincipal.p6rHandle,
++          p6rDisplayName: requestPrincipal.p6rDisplayName,
++          p6rImageUrl: requestPrincipal.p6rImageUrl,
++          p6rClientId: "p6r-resolved",
++          p6rPrincipalKey: p6rPrincipalKeyForActor(requestPrincipal),
++        },
++      );
+     } else {
+-      p6rSetRequestPrincipal(context, null);
++      const p6rClaimedIdentity = actorService.p6rResolveClaimedRequest({
++        header: (name) => context.req.header(name),
++      });
++      p6rSetRequestPrincipal(
++        context,
++        p6rClaimedIdentity === null
++          ? null
++          : p6rClaimedIdentityToActorSnapshot(p6rClaimedIdentity),
++      );
++      if (p6rClaimedIdentity !== null) {
++        p6rSetRequestActor(context, p6rClaimedIdentity);
++      }
+     }
+     const startedAt = performance.now();
+     await next();
+@@ -625,16 +640,12 @@ export function createApp(
+               p6rPrincipalKey: p6rPrincipalKeyForActor(resolution.p6rActor),
+             }
+           : null;
+-      const acceptsClaimedIdentity =
+-        resolution.kind === "authenticated" &&
+-        resolution.p6rActor.p6rProviderId === P6R_LOCAL_OPERATOR_PROVIDER_ID;
++      const acceptsClaimedIdentity = resolution.kind === "not-applicable";
+       return {
+         onOpen: (_event, socket) => {
+-          if (actor !== null) {
+-            p6rRegisterSocketActor(socket, actor, {
+-              p6rAllowClaimedIdentity: acceptsClaimedIdentity,
+-            });
+-          }
++          p6rRegisterSocketActor(socket, actor, {
++            p6rAllowClaimedIdentity: acceptsClaimedIdentity,
++          });
+           onClientSocketOpen(deps.hub, socket);
+         },
+         onMessage: (event, socket) =>
+@@ -642,19 +653,13 @@ export function createApp(
+             {
+               ...deps,
+               p6rApplyClaimedIdentity: (targetSocket, p6rClaimedIdentity) => {
+-                if (actor === null) {
+-                  return;
+-                }
+                 if (p6rClaimedIdentity === null) {
+                   p6rRestoreSocketActor(targetSocket);
+                   return;
+                 }
+                 p6rSetSocketActor(
+                   targetSocket,
+-                  actorService.p6rResolveClaimedIdentity(
+-                    p6rClaimedIdentity,
+-                    actor,
+-                  ),
++                  actorService.p6rResolveClaimedIdentity(p6rClaimedIdentity),
+                 );
+               },
+             },
+diff --git a/apps/server/src/services/actors.ts b/apps/server/src/services/actors.ts
+index 2c7a5fb55..48055afa6 100644
+--- a/apps/server/src/services/actors.ts
++++ b/apps/server/src/services/actors.ts
+@@ -1,3 +1,4 @@
++import { randomUUID } from "node:crypto";
+ import { hostname, userInfo } from "node:os";
+ import { p6rUpsertCollaborator, type DbConnection } from "@bb/db";
+ // Claimed presentation compatibility helpers. The request/upgrade middleware
+@@ -7,10 +8,13 @@ import {
+   P6R_CLAIMED_IDENTITY_HEADER,
+   p6rClaimedIdentitySchema,
+   p6rCreateLocalPrincipalKey,
++  p6rCreateProviderPrincipalKey,
+   p6rDecodeClaimedIdentityHeader,
+   p6rNormalizeHandle,
++  type P6rActorSnapshot,
+   type P6rClaimedIdentityClaim,
+   type P6rClaimedIdentity,
++  type P6rPrincipalKey,
+ } from "@bb/domain";
+ import type { Context } from "hono";
+ 
+@@ -29,10 +33,10 @@ interface P6rCollaboratorWrite {
+ 
+ export interface P6rActorService {
+   p6rResolveRequest(reader: P6rClaimedIdentityHeaderReader): P6rClaimedIdentity;
+-  p6rResolveClaimedIdentity(
+-    claim: P6rClaimedIdentityClaim,
+-    authenticatedActor: P6rClaimedIdentity,
+-  ): P6rClaimedIdentity;
++  p6rResolveClaimedRequest(
++    reader: P6rClaimedIdentityHeaderReader,
++  ): P6rClaimedIdentity | null;
++  p6rResolveClaimedIdentity(claim: P6rClaimedIdentityClaim): P6rClaimedIdentity;
+ }
+ 
+ interface P6rCreateActorServiceArgs {
+@@ -68,33 +72,35 @@ export function p6rCreateLocalOperatorIdentity(): P6rClaimedIdentity {
+ 
+ function p6rServerAuthorClaimedIdentity(
+   identity: P6rClaimedIdentity,
+-  authenticatedActor: P6rClaimedIdentity,
++  principalKeysByClientId: Map<string, P6rPrincipalKey>,
+ ): P6rClaimedIdentity {
++  let p6rPrincipalKey = principalKeysByClientId.get(identity.p6rClientId);
++  if (p6rPrincipalKey === undefined) {
++    p6rPrincipalKey = p6rCreateProviderPrincipalKey("claimed", randomUUID());
++    principalKeysByClientId.set(identity.p6rClientId, p6rPrincipalKey);
++  }
+   const { p6rPrincipalKey: _ignored, ...presentation } = identity;
+-  return {
+-    ...presentation,
+-    ...(authenticatedActor.p6rPrincipalKey === undefined
+-      ? {}
+-      : { p6rPrincipalKey: authenticatedActor.p6rPrincipalKey }),
+-  };
++  return { ...presentation, p6rPrincipalKey };
+ }
+ 
+ export function p6rResolveRequestActor(
+   reader: P6rClaimedIdentityHeaderReader,
+   defaultActor: P6rClaimedIdentity,
++  principalKeysByClientId = new Map<string, P6rPrincipalKey>(),
+ ): P6rClaimedIdentity {
+   const identity = p6rDecodeClaimedIdentityHeader(
+     reader.header(P6R_CLAIMED_IDENTITY_HEADER),
+   );
+   return identity === null
+     ? defaultActor
+-    : p6rServerAuthorClaimedIdentity(identity, defaultActor);
++    : p6rServerAuthorClaimedIdentity(identity, principalKeysByClientId);
+ }
+ 
+ export function p6rCreateActorService(
+   args: P6rCreateActorServiceArgs,
+ ): P6rActorService {
+   const recentWrites = new Map<string, P6rCollaboratorWrite>();
++  const principalKeysByClientId = new Map<string, P6rPrincipalKey>();
+ 
+   function persistActor(actor: P6rClaimedIdentity): P6rClaimedIdentity {
+     const now = args.now();
+@@ -127,20 +133,56 @@ export function p6rCreateActorService(
+ 
+   return {
+     p6rResolveRequest(reader): P6rClaimedIdentity {
+-      return persistActor(p6rResolveRequestActor(reader, args.defaultActor));
++      return persistActor(
++        p6rResolveRequestActor(
++          reader,
++          args.defaultActor,
++          principalKeysByClientId,
++        ),
++      );
++    },
++    p6rResolveClaimedRequest(reader): P6rClaimedIdentity | null {
++      const identity = p6rDecodeClaimedIdentityHeader(
++        reader.header(P6R_CLAIMED_IDENTITY_HEADER),
++      );
++      return identity === null
++        ? null
++        : persistActor(
++            p6rServerAuthorClaimedIdentity(identity, principalKeysByClientId),
++          );
+     },
+-    p6rResolveClaimedIdentity(claim, authenticatedActor): P6rClaimedIdentity {
++    p6rResolveClaimedIdentity(claim): P6rClaimedIdentity {
+       const identity = p6rClaimedIdentitySchema.parse({
+         ...claim,
+         p6rHandle: p6rNormalizeHandle(claim.p6rHandle),
+       });
+       return persistActor(
+-        p6rServerAuthorClaimedIdentity(identity, authenticatedActor),
++        p6rServerAuthorClaimedIdentity(identity, principalKeysByClientId),
+       );
+     },
+   };
+ }
+ 
++export function p6rClaimedIdentityToActorSnapshot(
++  identity: P6rClaimedIdentity,
++): P6rActorSnapshot | null {
++  const principalKey = identity.p6rPrincipalKey;
++  if (principalKey === undefined || !principalKey.startsWith("claimed:")) {
++    return null;
++  }
++  const p6rSubject = principalKey.slice("claimed:".length);
++  if (p6rSubject.length === 0) {
++    return null;
++  }
++  return {
++    p6rProviderId: "claimed",
++    p6rSubject,
++    p6rHandle: identity.p6rHandle,
++    p6rDisplayName: identity.p6rDisplayName,
++    p6rImageUrl: identity.p6rImageUrl,
++  };
++}
++
+ export function p6rSetRequestActor(
+   context: Context,
+   actor: P6rClaimedIdentity,
+diff --git a/apps/server/src/ws/socket-actors.ts b/apps/server/src/ws/socket-actors.ts
+index ae2642053..f0b3f670d 100644
+--- a/apps/server/src/ws/socket-actors.ts
++++ b/apps/server/src/ws/socket-actors.ts
+@@ -10,11 +10,16 @@ interface P6rRegisterSocketActorOptions {
+ 
+ export function p6rRegisterSocketActor(
+   socket: object,
+-  actor: P6rClaimedIdentity,
++  actor: P6rClaimedIdentity | null,
+   options: P6rRegisterSocketActorOptions = {},
+ ): void {
+-  socketActors.set(socket, actor);
+-  baseSocketActors.set(socket, actor);
++  if (actor === null) {
++    socketActors.delete(socket);
++    baseSocketActors.delete(socket);
++  } else {
++    socketActors.set(socket, actor);
++    baseSocketActors.set(socket, actor);
++  }
+   if (options.p6rAllowClaimedIdentity === true) {
+     claimedIdentitySockets.add(socket);
+   } else {
+@@ -39,6 +44,8 @@ export function p6rRestoreSocketActor(socket: object): void {
+   const actor = baseSocketActors.get(socket);
+   if (actor !== undefined && p6rCanSetSocketActor(socket)) {
+     socketActors.set(socket, actor);
++  } else if (p6rCanSetSocketActor(socket)) {
++    socketActors.delete(socket);
+   }
+ }
+ 
+diff --git a/apps/server/test/app/socket-actors.test.ts b/apps/server/test/app/socket-actors.test.ts
+index 724af7056..7c4b333f5 100644
+--- a/apps/server/test/app/socket-actors.test.ts
++++ b/apps/server/test/app/socket-actors.test.ts
+@@ -4,6 +4,8 @@ import {
+   p6rGetSocketActor,
+   p6rRegisterSocketActor,
+   p6rReleaseSocketActor,
++  p6rRestoreSocketActor,
++  p6rSetSocketActor,
+ } from "../../src/ws/socket-actors.js";
+ 
+ const actor: P6rClaimedIdentity = {
+@@ -23,4 +25,17 @@ describe("socket actors", () => {
+     p6rReleaseSocketActor(socket);
+     expect(p6rGetSocketActor(socket)).toBeNull();
+   });
++
++  it("lets an explicitly claimable anonymous socket claim and clear a server-authored actor", () => {
++    const socket = {};
++    p6rRegisterSocketActor(socket, null, {
++      p6rAllowClaimedIdentity: true,
++    });
++
++    expect(p6rGetSocketActor(socket)).toBeNull();
++    p6rSetSocketActor(socket, actor);
++    expect(p6rGetSocketActor(socket)).toBe(actor);
++    p6rRestoreSocketActor(socket);
++    expect(p6rGetSocketActor(socket)).toBeNull();
++  });
+ });
+diff --git a/apps/server/test/helpers/test-app.ts b/apps/server/test/helpers/test-app.ts
+index 912d2b3da..ca0d926bd 100644
+--- a/apps/server/test/helpers/test-app.ts
++++ b/apps/server/test/helpers/test-app.ts
+@@ -74,6 +74,8 @@ export type TestAppHarnessConfigOverrides = Partial<ServerRuntimeConfig> & {
+    * registration collides with the pre-registered copy.
+    */
+   seedFirstPartyProviders?: boolean;
++  testServerListenHost?: string;
++  testServerConnectHost?: string;
+ };
+ 
+ export const testLogger = {
+@@ -142,6 +144,8 @@ export async function createTestAppHarness(
+     appVersionService,
+     terminalCloseTimeoutMs,
+     seedFirstPartyProviders = true,
++    testServerListenHost: _testServerListenHost,
++    testServerConnectHost: _testServerConnectHost,
+     ...configOverrides
+   } = overrides;
+   const dataDir = await mkdtemp(join(tmpdir(), "bb-server-test-"));
+@@ -306,6 +310,8 @@ export async function startTestServer(
+   overrides: TestAppHarnessConfigOverrides = {},
+ ): Promise<RunningTestServer> {
+   const harness = await createTestAppHarness(overrides);
++  const listenHost = overrides.testServerListenHost ?? TEST_SERVER_HOST;
++  const connectHost = overrides.testServerConnectHost ?? TEST_SERVER_HOST;
+   let addressInfo: AddressInfo | null = null;
+   const { app, closeWebSockets, injectWebSocket, pluginService } = createApp(
+     harness.deps,
+@@ -316,7 +322,7 @@ export async function startTestServer(
+       // 127.0.0.1 too. If we leave the host unspecified, this server can end
+       // up on ::1 while another local process owns 127.0.0.1 on the same
+       // port, and the client will hit that other process instead.
+-      hostname: TEST_SERVER_HOST,
++      hostname: listenHost,
+       port: 0,
+       fetch: app.fetch,
+     },
+@@ -336,7 +342,7 @@ export async function startTestServer(
+     ...harness,
+     app,
+     pluginService,
+-    baseUrl: `http://${TEST_SERVER_HOST}:${resolvedAddress.port}`,
++    baseUrl: `http://${connectHost}:${resolvedAddress.port}`,
+     async close(): Promise<void> {
+       const closeServer = new Promise<void>((resolve, reject) => {
+         server.close((error) => {
+diff --git a/apps/server/test/public/public-presence.test.ts b/apps/server/test/public/public-presence.test.ts
+index e27106c72..b7af217f3 100644
+--- a/apps/server/test/public/public-presence.test.ts
++++ b/apps/server/test/public/public-presence.test.ts
+@@ -1,5 +1,6 @@
+ import { mkdir, writeFile } from "node:fs/promises";
+ import { join } from "node:path";
++import { networkInterfaces } from "node:os";
+ import WebSocket from "ws";
+ import {
+   P6R_CLAIMED_IDENTITY_HEADER,
+@@ -66,6 +67,17 @@ function websocketUrl(baseUrl: string): string {
+   return url.href;
+ }
+ 
++function nonLoopbackIpv4Address(): string {
++  for (const addresses of Object.values(networkInterfaces())) {
++    for (const address of addresses ?? []) {
++      if (address.family === "IPv4" && !address.internal) {
++        return address.address;
++      }
++    }
++  }
++  throw new Error("public no-provider presence test requires a non-loopback IPv4 address");
++}
++
+ async function openIdentitySocket(
+   server: RunningTestServer,
+   p6rClientClaim = p6rEncodeClaimedIdentityHeader({
+@@ -210,7 +222,7 @@ describe("GET /api/v1/p6r-presence", () => {
+     }
+   });
+ 
+-  it("coalesces claimed presentations under the authenticated WebSocket principal", async () => {
++  it("keeps loopback WebSockets on the local operator despite client claims", async () => {
+     const server = await startTestServer();
+     try {
+       const alice = await openClaimedIdentitySocket(server);
+@@ -250,11 +262,12 @@ describe("GET /api/v1/p6r-presence", () => {
+       const viewers = p6rPresenceSnapshotResponseSchema.parse(
+         await response.json(),
+       ).p6rThreads["thread-1"];
++      const localOperator = p6rCreateLocalOperatorIdentity();
+       expect(viewers).toEqual([
+         {
+-          p6rPrincipalKey: p6rCreateLocalOperatorIdentity().p6rPrincipalKey,
+-          p6rHandle: "alice",
+-          p6rDisplayName: "Alice",
++          p6rPrincipalKey: localOperator.p6rPrincipalKey,
++          p6rHandle: localOperator.p6rHandle,
++          p6rDisplayName: localOperator.p6rDisplayName,
+           p6rImageUrl: null,
+           p6rTyping: false,
+         },
+@@ -266,6 +279,72 @@ describe("GET /api/v1/p6r-presence", () => {
+     }
+   });
+ 
++  it("keeps remote no-provider claimed identities distinct with server-authored PrincipalKeys", async () => {
++    const connectHost = nonLoopbackIpv4Address();
++    const server = await startTestServer({
++      testServerListenHost: "0.0.0.0",
++      testServerConnectHost: connectHost,
++    });
++    try {
++      const alice = await openClaimedIdentitySocket(server);
++      const bob = await openClaimedIdentitySocket(server);
++      const claim = (args: {
++        p6rHandle: string;
++        p6rDisplayName: string;
++        p6rClientId: string;
++      }) =>
++        JSON.stringify({
++          type: "p6r-claimed-identity",
++          p6rClaimedIdentity: {
++            ...args,
++            p6rImageUrl: null,
++          },
++        });
++
++      alice.send(
++        claim({
++          p6rHandle: "shared",
++          p6rDisplayName: "Shared Human",
++          p6rClientId: "alice-browser",
++        }),
++      );
++      await subscribeToThread(alice);
++      bob.send(
++        claim({
++          p6rHandle: "shared",
++          p6rDisplayName: "Shared Human",
++          p6rClientId: "bob-browser",
++        }),
++      );
++      await subscribeToThread(bob);
++
++      const response = await fetch(
++        new URL("/api/v1/p6r-presence", server.baseUrl),
++      );
++      expect(response.status).toBe(200);
++      const viewers = p6rPresenceSnapshotResponseSchema.parse(
++        await response.json(),
++      ).p6rThreads["thread-1"];
++      expect(viewers).toHaveLength(2);
++      expect(viewers.map((viewer) => viewer.p6rPrincipalKey)).toEqual([
++        expect.stringMatching(/^claimed:/u),
++        expect.stringMatching(/^claimed:/u),
++      ]);
++      expect(viewers[0]?.p6rPrincipalKey).not.toBe(
++        viewers[1]?.p6rPrincipalKey,
++      );
++      expect(viewers).toMatchObject([
++        { p6rHandle: "shared", p6rDisplayName: "Shared Human" },
++        { p6rHandle: "shared", p6rDisplayName: "Shared Human" },
++      ]);
++
++      await closeIdentitySocket(alice);
++      await closeIdentitySocket(bob);
++    } finally {
++      await server.close();
++    }
++  });
++
+   it("rejects a client-chosen PrincipalKey on the public WebSocket seam", async () => {
+     const server = await startTestServer();
+     try {
+diff --git a/apps/server/test/public/public-request-actors.test.ts b/apps/server/test/public/public-request-actors.test.ts
+index 84db3eaff..a788edbd3 100644
+--- a/apps/server/test/public/public-request-actors.test.ts
++++ b/apps/server/test/public/public-request-actors.test.ts
+@@ -78,4 +78,33 @@ describe("public request actors", () => {
+       );
+     });
+   });
++
++  it("accepts only the presentation claim on a remote no-provider request", async () => {
++    await withTestHarness(async (harness) => {
++      const response = await harness.app.request(
++        "http://100.64.0.10/api/v1/does-not-exist",
++        {
++          headers: {
++            [P6R_CLAIMED_IDENTITY_HEADER]: p6rEncodeClaimedIdentityHeader({
++              p6rHandle: "Sawyer",
++              p6rDisplayName: "Sawyer Hood",
++              p6rImageUrl: null,
++              p6rClientId: "browser-1",
++            }),
++          },
++        },
++      );
++
++      expect(response.status).toBe(404);
++      expect(p6rListCollaborators(harness.db)).toEqual([
++        {
++          p6rHandle: "sawyer",
++          p6rDisplayName: "Sawyer Hood",
++          p6rImageUrl: null,
++          p6rFirstSeenAt: expect.any(Number),
++          p6rLastSeenAt: expect.any(Number),
++        },
++      ]);
++    });
++  });
+ });
+-- 
+2.43.0
+
