@@ -483,34 +483,31 @@ async function captureStdout(run: () => Promise<void>): Promise<string> {
 
 describe("bb-app launcher", () => {
   it("does not impose a wall-clock deadline while the server is still starting", async () => {
-    vi.useFakeTimers();
+    let attempts = 0;
+    const delays: number[] = [];
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(null, { status: 503 }));
+      .mockImplementation(async () => {
+        attempts += 1;
+        return attempts > 601
+          ? Response.json({ ok: true, launchId: "slow-migration-launch" })
+          : new Response(null, { status: 503 });
+      });
 
     try {
-      let resolved = false;
-      const health = waitForServerHealth({
+      await waitForServerHealth({
         childProcess: null,
+        delayMilliseconds: ({ ms }) => {
+          delays.push(ms);
+          return Promise.resolve();
+        },
         expectedLaunchId: "slow-migration-launch",
         url: "http://127.0.0.1:38886/health",
       });
-      void health.then(() => {
-        resolved = true;
-      });
-
-      await vi.advanceTimersByTimeAsync(60_100);
-      expect(resolved).toBe(false);
-
-      fetchMock.mockResolvedValueOnce(
-        Response.json({ launchId: "slow-migration-launch" }),
-      );
-      await vi.advanceTimersByTimeAsync(100);
-      await health;
-      expect(resolved).toBe(true);
+      expect(attempts).toBe(602);
+      expect(delays).toEqual(Array.from({ length: 601 }, () => 100));
     } finally {
       fetchMock.mockRestore();
-      vi.useRealTimers();
     }
   });
 

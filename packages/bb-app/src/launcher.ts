@@ -448,6 +448,7 @@ export interface DelayMillisecondsArgs {
 
 interface WaitForServerHealthArgs {
   childProcess: ChildProcess | null;
+  delayMilliseconds?: DelayMillisecondsFn;
   /** Launch id handed to the server child; only a /health echoing it counts. */
   expectedLaunchId: string;
   url: string;
@@ -2315,8 +2316,8 @@ export async function waitForServerHealth(
         foreignServerAnswered = true;
       }
     } catch {}
-    await new Promise<void>((resolvePromise) => {
-      setTimeout(resolvePromise, HEALTH_CHECK_INTERVAL_MS);
+    await (args.delayMilliseconds ?? delayMilliseconds)({
+      ms: HEALTH_CHECK_INTERVAL_MS,
     });
   }
 }
