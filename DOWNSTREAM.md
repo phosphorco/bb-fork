@@ -22,12 +22,13 @@
 18. **Deterministic unbounded-startup witness** drives more than sixty seconds of health-check intervals through an injected delay without fake-timer deadlock, preserving executable proof that long migrations have no launcher deadline.
 19. **Validation contract alignment** records the intentional optional speaker field and gives the lifecycle-heavy plugin-update scheduler witness the same bounded timeout as its neighboring regression.
 20. **Unbounded health witness alignment** removes obsolete timeout arguments from launcher-health tests and proves foreign responders remain rejected until the supervised child exits, without restoring a product startup deadline.
+21. **Complete query-plan witness** captures the prepared background-task statement instead of executing its intentionally truncated slow-query log representation after identity columns extend the generated SQL.
 
 ## Exact source receipt
 
 - Upstream: `5205d98a74ed5a22469e521cf1f86b00b8232827`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: twenty patches in `patches/series`.
+- Patch queue: twenty-one patches in `patches/series`.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries

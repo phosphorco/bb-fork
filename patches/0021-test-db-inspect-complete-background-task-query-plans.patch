@@ -1,0 +1,80 @@
+From 6411eb704ad7e7e65f0b008866a0637a35d3aa54 Mon Sep 17 00:00:00 2001
+From: BB Multiplayer Recomposer <bb-multiplayer@invalid.local>
+Date: Mon, 24 Aug 2026 10:14:10 -0400
+Subject: [PATCH] test(db): inspect complete background-task query plans
+
+- Capture the prepared statement directly because identity columns extend the generated query past the slow-query logger's intentional 1,000-character truncation boundary.
+- Preserve the existing index and non-correlated-plan guarantees without changing production SQL or logging behavior.
+- Focused query-plan suite passes 19/19.
+---
+ packages/db/test/query-plans.test.ts | 36 ++++++++++++++++------------
+ 1 file changed, 21 insertions(+), 15 deletions(-)
+
+diff --git a/packages/db/test/query-plans.test.ts b/packages/db/test/query-plans.test.ts
+index a01740339..29d0246fa 100644
+--- a/packages/db/test/query-plans.test.ts
++++ b/packages/db/test/query-plans.test.ts
+@@ -496,18 +496,21 @@ describe("slow query index plans", () => {
+   });
+ 
+   it("resolves open background-task state without per-row subqueries", () => {
+-    const { db, logger, thread } = setup();
+-
+-    listLatestOpenBackgroundTaskStateRowsForThread(db, {
+-      threadId: thread.id,
+-    });
++    const { db, thread } = setup();
+ 
+-    const debugLog = findOnlyDebugLog({
+-      logger,
+-      predicate: (fields) =>
+-        fields.operation === "all" &&
+-        fields.sql.includes("completed_background_task_state"),
++    // The slow-query log truncates this statement past 1,000 chars; capture
++    // the prepared statement itself so the query-plan witness remains valid.
++    const captured = captureStatements(db, () => {
++      listLatestOpenBackgroundTaskStateRowsForThread(db, {
++        threadId: thread.id,
++      });
+     });
++    const query = captured.find((entry) =>
++      entry.sql.includes("completed_background_task_state"),
++    );
++    if (!query) {
++      throw new Error("Expected the open background-task state SQL");
++    }
+     const params = [
+       thread.id,
+       thread.id,
+@@ -517,12 +520,15 @@ describe("slow query index plans", () => {
+       thread.id,
+       "item/backgroundTask/completed",
+     ];
+-    assertEmittedQueryPlanUsesIndex({
++    expect(query.params).toEqual(params);
++    const details = queryPlanDetails({
+       db,
+-      debugLog,
+-      indexName: "events_background_task_thread_type_item_sequence_idx",
+-      params,
++      params: query.params,
++      sql: query.sql,
+     });
++    expect(details).toContain(
++      "events_background_task_thread_type_item_sequence_idx",
++    );
+ 
+     // This query runs on every latest-page timeline build. Written with
+     // correlated subqueries it re-scanned the thread once per candidate task
+@@ -530,7 +536,7 @@ describe("slow query index plans", () => {
+     // plan must resolve both "newest lifecycle row" and "already completed" as
+     // set membership, evaluated once.
+     expect(
+-      queryPlanDetails({ db, params, sql: debugLog.fields.sql }),
++      details,
+     ).not.toMatch(/CORRELATED/);
+ 
+     db.$client.close();
+-- 
+2.43.0
+
