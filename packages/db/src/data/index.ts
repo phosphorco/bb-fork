@@ -322,7 +322,6 @@ export {
   listStoredClientTurnRequestIdsInRange,
   listStoredClientTurnRequestRowsByKeys,
   listStoredEventRowsByParentToolCallIds,
-  listStoredEventRowsByThreadIdsAndTypes,
   listStoredEventRows,
   isTimelineCursorSequencePresent,
   listItemEventSpansByItems,
