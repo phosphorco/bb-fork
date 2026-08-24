@@ -496,18 +496,21 @@ describe("slow query index plans", () => {
   });
 
   it("resolves open background-task state without per-row subqueries", () => {
-    const { db, logger, thread } = setup();
+    const { db, thread } = setup();
 
-    listLatestOpenBackgroundTaskStateRowsForThread(db, {
-      threadId: thread.id,
+    // The slow-query log truncates this statement past 1,000 chars; capture
+    // the prepared statement itself so the query-plan witness remains valid.
+    const captured = captureStatements(db, () => {
+      listLatestOpenBackgroundTaskStateRowsForThread(db, {
+        threadId: thread.id,
+      });
     });
-
-    const debugLog = findOnlyDebugLog({
-      logger,
-      predicate: (fields) =>
-        fields.operation === "all" &&
-        fields.sql.includes("completed_background_task_state"),
-    });
+    const query = captured.find((entry) =>
+      entry.sql.includes("completed_background_task_state"),
+    );
+    if (!query) {
+      throw new Error("Expected the open background-task state SQL");
+    }
     const params = [
       thread.id,
       thread.id,
@@ -517,12 +520,15 @@ describe("slow query index plans", () => {
       thread.id,
       "item/backgroundTask/completed",
     ];
-    assertEmittedQueryPlanUsesIndex({
+    expect(query.params).toEqual(params);
+    const details = queryPlanDetails({
       db,
-      debugLog,
-      indexName: "events_background_task_thread_type_item_sequence_idx",
-      params,
+      params: query.params,
+      sql: query.sql,
     });
+    expect(details).toContain(
+      "events_background_task_thread_type_item_sequence_idx",
+    );
 
     // This query runs on every latest-page timeline build. Written with
     // correlated subqueries it re-scanned the thread once per candidate task
@@ -530,7 +536,7 @@ describe("slow query index plans", () => {
     // plan must resolve both "newest lifecycle row" and "already completed" as
     // set membership, evaluated once.
     expect(
-      queryPlanDetails({ db, params, sql: debugLog.fields.sql }),
+      details,
     ).not.toMatch(/CORRELATED/);
 
     db.$client.close();
