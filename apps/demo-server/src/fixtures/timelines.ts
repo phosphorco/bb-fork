@@ -75,6 +75,8 @@ export function conversationRow(args: {
     },
     initiator: "user",
     senderThreadId: null,
+    p6rActorHandle: null,
+    p6rActor: null,
     systemMessageKind: "unlabeled",
     systemMessageSubject: null,
     turnRequest: { isGrouped: false, kind: "message", status: "accepted" },

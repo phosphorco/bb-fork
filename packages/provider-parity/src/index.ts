@@ -77,6 +77,7 @@ export const projectParityRows: ParityRowProjector = ({ events, providerId }) =>
         id: `evt_${index + 1}`,
         seq: index + 1,
         createdAt: ROW_BASE_CREATED_AT + index,
+        p6rActorHandle: null,
       },
     }))
     .filter(({ event }) => !excludedEventTypes.has(event.type));

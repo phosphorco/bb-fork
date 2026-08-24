@@ -183,7 +183,8 @@ export const SYSTEM_VERSION: SystemVersionResponse = {
   source: "npm",
   updateAvailable: false,
   isDevelopment: false,
-  upgradeCommand: "npx bb-app@latest",
+  upgradeGuidance:
+    "Update this primary server through Rosetta machine deployment by replacing its managed bb-app artifact. Enrolled execution machines receive this server's exact bb-app distribution automatically; manage or retry them in Settings → Machines.",
 };
 
 /** `GET /plugins/contributions` has no contract type; this mirrors the server route. */
@@ -204,5 +205,6 @@ export function queuedMessage(args: {
     groupWithNext: false,
     createdAt: args.now,
     updatedAt: args.now,
+    p6rActor: null,
   };
 }
