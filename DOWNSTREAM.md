@@ -6,13 +6,14 @@
 2. **Extensible Thread Facets revision 1** adds the generic namespaced Thread–Member relation, one-or-many cardinality, authoritative completeness and generation lifecycle, stable public query/CLI, attenuated plugin capability, core participant projection, and saved web/mobile My progress views.
 3. **Namespace-neutral facet quarantine fixture** keeps the forbidden principal-member-kind declaration witness within the bounded generic facet namespace exception.
 4. **Condensed sidebar participant presentation** makes ordinary web and native rows use ordered avatar groups with lawful initials, accessible name disclosure, and `+N` overflow without visible full-name row text.
+5. **Structured compact command preservation** classifies an authenticated standalone built-in `/compact` selection before host-daemon sender presentation, retaining the existing provider compaction path without executing quoted, raw, attachment-bearing, agent-authored, plugin-origin, surrounding-text, or other slash inputs.
 
 ## Exact source receipt
 
 - Upstream: `5205d98a74ed5a22469e521cf1f86b00b8232827`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: four patches in `patches/series`.
-- Result tree: `1af16dab03b32ded0f482e3facff8a13ae60ac0c`.
+- Patch queue: five patches in `patches/series`.
+- Result tree: `eb86f654e600b24473203d5c8223e68de10559e0`.
 
 ## Compatibility boundaries
 
@@ -62,6 +63,12 @@
   rows use compact avatar groups rather than visible participant-name text;
   participant avatars preserve canonical PrincipalKey order and cardinality
   even when names or images match.
+- An authenticated human's exact structured built-in `/compact` request is
+  persisted with its actor attribution and reaches the existing provider
+  compaction control path before sender presentation can alter its mention
+  range. Raw or pasted text, quotes and code, attachments, surrounding text,
+  plugin-origin commands, agent-authored messages, and other slash commands
+  remain ordinary provider input.
 - The companion `phosphorco/bb-plugins` branch publishes Thread Progress phase
   through the plugin facet capability while its SQLite record remains the sole
   authority; transactional outbox and census reconciliation make reload and

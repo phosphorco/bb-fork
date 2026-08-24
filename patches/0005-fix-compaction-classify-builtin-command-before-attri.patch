@@ -1,0 +1,388 @@
+From 0883b58c44a07cbc18fb7a70536d81779ced2942 Mon Sep 17 00:00:00 2001
+From: Rosetta <cole@phosphor.co>
+Date: Sun, 23 Aug 2026 22:38:44 -0400
+Subject: [PATCH] fix(compaction): classify builtin command before attribution
+
+- Preserve the authenticated structured /compact intent through host-daemon speaker presentation so provider bridges invoke their existing compaction path instead of generating prose.
+- Keep persisted human attribution intact while raw, quoted, attachment-bearing, agent-authored, plugin-origin, and other slash inputs remain ordinary.
+- Prove the full public send-to-bridge path with the scripted provider and a negative input table.
+---
+ .../src/command-handlers/thread.ts            |  23 +-
+ .../fake/smoke/compaction-command.test.ts     | 245 ++++++++++++++++++
+ .../src/provider-bridge.ts                    |  55 ++++
+ 3 files changed, 313 insertions(+), 10 deletions(-)
+ create mode 100644 tests/integration/fake/smoke/compaction-command.test.ts
+
+diff --git a/apps/host-daemon/src/command-handlers/thread.ts b/apps/host-daemon/src/command-handlers/thread.ts
+index 625f65e6c5462a260928edf4b2a441822c5754f7..4340e96fa2cab50a80ce1b6f319650a5b5a88129 100644
+--- a/apps/host-daemon/src/command-handlers/thread.ts
++++ b/apps/host-daemon/src/command-handlers/thread.ts
+@@ -1,5 +1,8 @@
+ import fs from "node:fs/promises";
+-import type { PromptInput } from "@bb/domain";
++import {
++  isStandaloneBuiltinCompactCommand,
++  type PromptInput,
++} from "@bb/domain";
+ import type { HostDaemonCommandResult } from "@bb/host-daemon-contract";
+ import type { P6rTurnSpeaker } from "@bb/host-daemon-contract";
+ import { resolveContainedPath } from "@bb/process-utils";
+@@ -508,15 +511,15 @@ export async function submitTurn(
+   entry: RuntimeEntry,
+   options: CommandDispatchOptions,
+ ): Promise<HostDaemonCommandResult<"turn.submit">> {
+-  const staged = p6rAnnotateStagedSpeaker(
+-    await stageThreadCommandInput({
+-      command,
+-      fetchProjectAttachment: options.fetchProjectAttachment,
+-      projectId: command.resumeContext.projectId,
+-      threadStorageRootPath: options.threadStorageRootPath,
+-    }),
+-    command.p6rSpeaker,
+-  );
++  const original = await stageThreadCommandInput({
++    command,
++    fetchProjectAttachment: options.fetchProjectAttachment,
++    projectId: command.resumeContext.projectId,
++    threadStorageRootPath: options.threadStorageRootPath,
++  });
++  const staged = isStandaloneBuiltinCompactCommand(original.input)
++    ? original
++    : p6rAnnotateStagedSpeaker(original, command.p6rSpeaker);
+   const stagedCommand = {
+     ...command,
+     input: staged.input,
+diff --git a/tests/integration/fake/smoke/compaction-command.test.ts b/tests/integration/fake/smoke/compaction-command.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..21e2803b10c16bb0fde242689782372ed7d3e372
+--- /dev/null
++++ b/tests/integration/fake/smoke/compaction-command.test.ts
+@@ -0,0 +1,245 @@
++import {
++  createStandaloneBuiltinCompactCommandInput,
++  type PromptInput,
++  type PromptMentionCommandOrigin,
++  type ThreadEventRow,
++} from "@bb/domain";
++import type { SendMessageRequest } from "@bb/server-contract";
++import { describe, expect, it } from "vitest";
++import { getThreadEvents } from "../../helpers/api.js";
++import { waitForThreadStatus } from "../../helpers/assertions.js";
++import { withHarness } from "../../helpers/harness.js";
++import { recordScriptedEchoRequests } from "../../helpers/scripted-echo.js";
++import {
++  createProjectFixture,
++  createReadyThread,
++  TURN_TIMEOUT_MS,
++} from "./shared.js";
++
++function compactCommandInput(args?: {
++  origin?: PromptMentionCommandOrigin;
++  text?: string;
++}): PromptInput[] {
++  const text = args?.text ?? "/compact";
++  const start = text.indexOf("/compact");
++  if (start === -1) {
++    throw new Error("Expected compact command text");
++  }
++  return [
++    {
++      type: "text",
++      text,
++      mentions: [
++        {
++          start,
++          end: start + "/compact".length,
++          resource: {
++            kind: "command",
++            trigger: "/",
++            name: "compact",
++            source: "command",
++            origin: args?.origin ?? "builtin",
++            label: "compact",
++            argumentHint: null,
++          },
++        },
++      ],
++    },
++  ];
++}
++
++function textInput(text: string): PromptInput[] {
++  return [{ type: "text", text, mentions: [] }];
++}
++
++function isItemType(
++  event: ThreadEventRow,
++  type: "agentMessage" | "contextCompaction",
++): boolean {
++  return (
++    (event.type === "item/started" || event.type === "item/completed") &&
++    event.data.item.type === type
++  );
++}
++
++describe.sequential("authenticated builtin compact command integration", () => {
++  it("classifies the original structured command before speaker annotation", async () => {
++    const record = await recordScriptedEchoRequests();
++    try {
++      await withHarness(async (harness) => {
++        const project = await createProjectFixture(
++          harness,
++          "Structured Compact Command",
++        );
++        const { thread } = await createReadyThread(harness, {
++          projectId: project.id,
++          providerId: "fake",
++          workspace: { type: "unmanaged", path: harness.repoDir },
++        });
++        const baseline = await getThreadEvents(harness.api, thread.id);
++        const input = createStandaloneBuiltinCompactCommandInput();
++
++        const response = await harness.api.threads[":id"].send.$post({
++          param: { id: thread.id },
++          json: { mode: "start", input },
++        });
++        expect(response.status).toBe(200);
++        await waitForThreadStatus(
++          harness.api,
++          thread.id,
++          "idle",
++          TURN_TIMEOUT_MS,
++        );
++
++        const events = (await getThreadEvents(harness.api, thread.id)).slice(
++          baseline.length,
++        );
++        const requested = events.find(
++          (event) => event.type === "client/turn/requested",
++        );
++        expect(requested).toMatchObject({
++          p6rActorHandle: expect.any(String),
++          data: {
++            initiator: "user",
++            input,
++            senderThreadId: null,
++          },
++        });
++        expect(
++          events.some((event) => isItemType(event, "contextCompaction")),
++        ).toBe(true);
++        expect(events.some((event) => isItemType(event, "agentMessage"))).toBe(
++          false,
++        );
++
++        const turnStarts = (await record.read()).filter(
++          (request) =>
++            request.method === "turn/start" &&
++            request.params?.threadId === thread.id,
++        );
++        expect(turnStarts.at(-1)?.params?.input).toEqual(input);
++      });
++    } finally {
++      await record.dispose();
++    }
++  });
++
++  it("keeps non-exact, non-human, and non-builtin inputs ordinary", () =>
++    withHarness(async (harness) => {
++      const project = await createProjectFixture(
++        harness,
++        "Compact Command Negatives",
++      );
++      const { thread } = await createReadyThread(harness, {
++        projectId: project.id,
++        providerId: "fake",
++        workspace: { type: "unmanaged", path: harness.repoDir },
++      });
++      const { thread: senderThread } = await createReadyThread(harness, {
++        projectId: project.id,
++        providerId: "fake",
++        workspace: { type: "unmanaged", path: harness.repoDir },
++      });
++      const cases: Array<{
++        input: PromptInput[];
++        label: string;
++        senderThreadId?: string;
++      }> = [
++        { label: "raw or pasted", input: textInput("/compact") },
++        { label: "quoted", input: compactCommandInput({ text: "> /compact" }) },
++        {
++          label: "fenced",
++          input: compactCommandInput({ text: "```\n/compact\n```" }),
++        },
++        {
++          label: "inline code",
++          input: compactCommandInput({ text: "`/compact`" }),
++        },
++        {
++          label: "surrounding text",
++          input: compactCommandInput({ text: "/compact then summarize" }),
++        },
++        {
++          label: "project command",
++          input: compactCommandInput({ origin: "project" }),
++        },
++        {
++          label: "user command",
++          input: compactCommandInput({ origin: "user" }),
++        },
++        {
++          label: "other builtin slash command",
++          input: [
++            {
++              type: "text",
++              text: "/plan",
++              mentions: [
++                {
++                  start: 0,
++                  end: "/plan".length,
++                  resource: {
++                    kind: "command",
++                    trigger: "/",
++                    name: "plan",
++                    source: "command",
++                    origin: "builtin",
++                    label: "plan",
++                    argumentHint: null,
++                  },
++                },
++              ],
++            },
++          ],
++        },
++        {
++          label: "attachment bearing",
++          input: [
++            ...compactCommandInput(),
++            { type: "image", url: "https://example.test/image.png" },
++          ],
++        },
++        {
++          label: "ordinary mention",
++          input: textInput("please run /compact"),
++        },
++        {
++          label: "agent authored",
++          input: compactCommandInput(),
++          senderThreadId: senderThread.id,
++        },
++      ];
++
++      for (const testCase of cases) {
++        const before = await getThreadEvents(harness.api, thread.id);
++        const request: SendMessageRequest = {
++          mode: "start",
++          input: testCase.input,
++          ...(testCase.senderThreadId === undefined
++            ? {}
++            : { senderThreadId: testCase.senderThreadId }),
++        };
++        const response = await harness.api.threads[":id"].send.$post({
++          param: { id: thread.id },
++          json: request,
++        });
++        expect(response.status, testCase.label).toBe(200);
++        await waitForThreadStatus(
++          harness.api,
++          thread.id,
++          "idle",
++          TURN_TIMEOUT_MS,
++        );
++        const events = (await getThreadEvents(harness.api, thread.id)).slice(
++          before.length,
++        );
++        expect(
++          events.some((event) => isItemType(event, "contextCompaction")),
++          testCase.label,
++        ).toBe(false);
++        expect(
++          events.some((event) => isItemType(event, "agentMessage")),
++          testCase.label,
++        ).toBe(true);
++      }
++    }));
++});
+diff --git a/tests/scripted-echo-provider/src/provider-bridge.ts b/tests/scripted-echo-provider/src/provider-bridge.ts
+index b19ebd578a524615a8692ae8b142e8716882cb82..1f1ee2ed63cf81f8fa1dd894c68711a8077f5f99 100644
+--- a/tests/scripted-echo-provider/src/provider-bridge.ts
++++ b/tests/scripted-echo-provider/src/provider-bridge.ts
+@@ -63,6 +63,7 @@ import {
+   turnStartParamsSchema,
+   turnSteerParamsSchema,
+   experimental_defineProviderBridge,
++  isStandaloneBuiltinCompactCommand,
+ } from "@get-bb/plugin-sdk/provider-bridge";
+ import { appendFileSync } from "node:fs";
+ import { z } from "zod";
+@@ -688,6 +689,53 @@ function beginTurn(args: {
+   scheduleCompletion(session, plan.responseText, plan.delayMs);
+ }
+ 
++function beginCompactionTurn(args: {
++  session: Session;
++  clientRequestId?: ClientTurnRequestId;
++}): void {
++  const { session } = args;
++  clearActiveTurn(session);
++  session.turnCount += 1;
++  const providerTurnId = `turn-${session.turnCount}`;
++  const key = { channel: "compaction" } as const;
++  session.activeTurn = { providerTurnId, timer: null };
++
++  emitDeltas(session.threadId, [
++    ...(args.clientRequestId === undefined
++      ? []
++      : [
++          {
++            kind: "input.accepted" as const,
++            clientRequestId: args.clientRequestId,
++            providerTurnId,
++          },
++        ]),
++    { kind: "turn.open", providerTurnId },
++    {
++      kind: "item.open",
++      key,
++      item: { type: "compaction" },
++      providerTurnId,
++    },
++  ]);
++  session.activeTurn.timer = setTimeout(() => {
++    if (session.activeTurn?.providerTurnId !== providerTurnId) {
++      return;
++    }
++    clearActiveTurn(session);
++    emitDeltas(session.threadId, [
++      {
++        kind: "item.close",
++        key,
++        status: "completed",
++        item: { type: "compaction" },
++        providerTurnId,
++      },
++      { kind: "turn.boundary", status: "completed", providerTurnId },
++    ]);
++  }, 0);
++}
++
+ // ---------------------------------------------------------------------------
+ // Responses to the bridge's own requests
+ // ---------------------------------------------------------------------------
+@@ -1097,6 +1145,13 @@ const handlers: Record<string, RequestHandler> = {
+     if (session.options.swallowTurnStart === true) {
+       return;
+     }
++    if (isStandaloneBuiltinCompactCommand(parsed.data.input)) {
++      beginCompactionTurn({
++        session,
++        clientRequestId: parsed.data.clientRequestId,
++      });
++      return;
++    }
+     beginTurn({
+       session,
+       input: parsed.data.input,
+-- 
+2.43.0
+
