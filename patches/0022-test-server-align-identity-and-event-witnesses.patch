@@ -1,0 +1,100 @@
+From 8fa5ff7a551f472884f67fe039e86fddc701ddb1 Mon Sep 17 00:00:00 2001
+From: Cole Lawrence <cole@colelawrence.com>
+Date: Mon, 24 Aug 2026 11:26:20 -0300
+Subject: [PATCH] test(server): align identity and event witnesses
+
+---
+ .../internal/internal-events-tool-calls.test.ts     |  2 ++
+ apps/server/test/services/actors.test.ts            | 13 ++++++++-----
+ .../test/services/plugins/plugin-wire.test.ts       |  8 ++++----
+ 3 files changed, 14 insertions(+), 9 deletions(-)
+
+diff --git a/apps/server/test/internal/internal-events-tool-calls.test.ts b/apps/server/test/internal/internal-events-tool-calls.test.ts
+index 363eef463509f84e22bd9f9c8219198d5b8eb585..1cec65083b5f88c2d2a65a65935d201a6dc6dfd4 100644
+--- a/apps/server/test/internal/internal-events-tool-calls.test.ts
++++ b/apps/server/test/internal/internal-events-tool-calls.test.ts
+@@ -1162,6 +1162,7 @@ describe("internal event and tool-call routes", () => {
+         .select()
+         .from(events)
+         .where(eq(events.threadId, thread.id))
++        .orderBy(events.sequence)
+         .all();
+       expect(storedEvents.map((event) => event.type)).toEqual([
+         "turn/started",
+@@ -1269,6 +1270,7 @@ describe("internal event and tool-call routes", () => {
+         .select()
+         .from(events)
+         .where(eq(events.threadId, thread.id))
++        .orderBy(events.sequence)
+         .all();
+       expect(storedEvents.map((event) => event.type)).toEqual([
+         "turn/started",
+diff --git a/apps/server/test/services/actors.test.ts b/apps/server/test/services/actors.test.ts
+index 39eacd90752ff971656af0916d71401f404c8a22..b9b6f082d1c86f9e0f3364d84d2eeb7b14e174f5 100644
+--- a/apps/server/test/services/actors.test.ts
++++ b/apps/server/test/services/actors.test.ts
+@@ -53,7 +53,11 @@ describe("request actors", () => {
+       p6rPrincipalKey: p6rPrincipalKeySchema.parse("github:spoofed"),
+     });
+ 
+-    expect(p6rResolveRequestActor(headerReader(encoded), defaultActor)).toEqual(
++    const resolved = p6rResolveRequestActor(
++      headerReader(encoded),
++      defaultActor,
++    );
++    expect(resolved).toEqual(
+       expect.objectContaining({
+         p6rHandle: "sawyer",
+         p6rDisplayName: "Sawyer",
+@@ -61,10 +65,9 @@ describe("request actors", () => {
+         p6rClientId: "browser-1",
+       }),
+     );
+-    expect(
+-      p6rResolveRequestActor(headerReader(encoded), defaultActor)
+-        .p6rPrincipalKey,
+-    ).toBe(defaultActor.p6rPrincipalKey);
++    expect(resolved.p6rPrincipalKey).toMatch(/^claimed:/u);
++    expect(resolved.p6rPrincipalKey).not.toBe("github:spoofed");
++    expect(resolved.p6rPrincipalKey).not.toBe(defaultActor.p6rPrincipalKey);
+   });
+ 
+   it("falls back to the local operator for a malformed header", () => {
+diff --git a/apps/server/test/services/plugins/plugin-wire.test.ts b/apps/server/test/services/plugins/plugin-wire.test.ts
+index adb29f3c542b5755ef96ced7c729565de9007a3f..f7dc9a8f2d6f95951ef46530db41052619ddde5a 100644
+--- a/apps/server/test/services/plugins/plugin-wire.test.ts
++++ b/apps/server/test/services/plugins/plugin-wire.test.ts
+@@ -239,10 +239,10 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
+       }),
+     });
+     expect(provider.p6rPrincipalKeyForSubject("verified-subject")).toBe(
+-      "p6r:wire/fixture/verified-subject",
++      "p6r:wire%2Ffixture%2Fverified-subject",
+     );
+     expect(provider.p6rPrincipalKeyForSubject("other-subject")).toBe(
+-      "p6r:wire/fixture/other-subject",
++      "p6r:wire%2Ffixture%2Fother-subject",
+     );
+     expect(() =>
+       api.p6rIdentity.registerProvider({
+@@ -268,7 +268,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
+         p6rDisplayName: "Verified Actor",
+         p6rImageUrl: null,
+       },
+-      principalKey: "p6r:wire/fixture/verified-subject",
++      principalKey: "p6r:wire%2Ffixture%2Fverified-subject",
+     });
+ 
+     const rpcResponse = await harness.app.request(
+@@ -293,7 +293,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
+           p6rDisplayName: "Verified Actor",
+           p6rImageUrl: null,
+         },
+-        principalKey: "p6r:wire/fixture/verified-subject",
++        principalKey: "p6r:wire%2Ffixture%2Fverified-subject",
+       },
+     });
+   });
+-- 
+2.50.1 (Apple Git-155)
+
