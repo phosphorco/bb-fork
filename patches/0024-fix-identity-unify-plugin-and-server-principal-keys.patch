@@ -1,0 +1,133 @@
+From ecc50bc2a54e115850e12f5b2e115f3e435f3fad Mon Sep 17 00:00:00 2001
+From: BB Multiplayer Recomposer <bb-multiplayer@invalid.local>
+Date: Mon, 24 Aug 2026 10:30:46 -0400
+Subject: [PATCH] fix(identity): unify plugin and server principal keys
+
+- Derive plugin provider subject keys through the same actor-snapshot constructor used by HTTP and RPC request resolution.
+- Preserve provider-qualified identity while making SDK-computed keys equal the server-authored principal observed by consumers.
+- Focused public plugin-wire and identity witnesses pass with server typecheck.
+---
+ apps/server/src/services/identity.ts               |  9 ++++-----
+ .../test/services/plugins/plugin-wire.test.ts      |  8 ++++----
+ .../src/testing/__tests__/fake-plugin-host.test.ts | 14 ++++++++++++++
+ .../plugin-sdk/src/testing/fake-plugin-host.ts     | 10 +++++-----
+ 4 files changed, 27 insertions(+), 14 deletions(-)
+
+diff --git a/apps/server/src/services/identity.ts b/apps/server/src/services/identity.ts
+index 3d247866f..1e9c81480 100644
+--- a/apps/server/src/services/identity.ts
++++ b/apps/server/src/services/identity.ts
+@@ -7,7 +7,6 @@ import {
+ import type { Context } from "hono";
+ import {
+   p6rActorSnapshotSchema,
+-  p6rCreateProviderPrincipalKey,
+   p6rPrincipalKeyForActorSnapshot,
+   type P6rPrincipalKey,
+   type P6rActorSnapshot,
+@@ -246,10 +245,10 @@ export function p6rCreateIdentityBoundary(args: {
+         state = "released";
+       },
+       p6rPrincipalKeyForSubject(subject) {
+-        return p6rCreateProviderPrincipalKey(
+-          "p6r",
+-          `${registrationRecord.p6rProviderId}/${subject}`,
+-        );
++        return p6rPrincipalKeyForActorSnapshot({
++          p6rProviderId: registrationRecord.p6rProviderId,
++          p6rSubject: subject,
++        });
+       },
+     };
+   }
+diff --git a/apps/server/test/services/plugins/plugin-wire.test.ts b/apps/server/test/services/plugins/plugin-wire.test.ts
+index f7dc9a8f2..f9684c47c 100644
+--- a/apps/server/test/services/plugins/plugin-wire.test.ts
++++ b/apps/server/test/services/plugins/plugin-wire.test.ts
+@@ -239,10 +239,10 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
+       }),
+     });
+     expect(provider.p6rPrincipalKeyForSubject("verified-subject")).toBe(
+-      "p6r:wire%2Ffixture%2Fverified-subject",
++      "p6r:wire%2Ffixture/verified-subject",
+     );
+     expect(provider.p6rPrincipalKeyForSubject("other-subject")).toBe(
+-      "p6r:wire%2Ffixture%2Fother-subject",
++      "p6r:wire%2Ffixture/other-subject",
+     );
+     expect(() =>
+       api.p6rIdentity.registerProvider({
+@@ -268,7 +268,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
+         p6rDisplayName: "Verified Actor",
+         p6rImageUrl: null,
+       },
+-      principalKey: "p6r:wire%2Ffixture%2Fverified-subject",
++      principalKey: "p6r:wire%2Ffixture/verified-subject",
+     });
+ 
+     const rpcResponse = await harness.app.request(
+@@ -293,7 +293,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
+           p6rDisplayName: "Verified Actor",
+           p6rImageUrl: null,
+         },
+-        principalKey: "p6r:wire%2Ffixture%2Fverified-subject",
++        principalKey: "p6r:wire%2Ffixture/verified-subject",
+       },
+     });
+   });
+diff --git a/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts b/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
+index 05ac4bb46..a7e6f1329 100644
+--- a/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
++++ b/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
+@@ -8,6 +8,20 @@ import {
+ import { defineRpcContract } from "../../rpc-contract.js";
+ import { createFakePluginHost, makeThreadResponse } from "../index.js";
+ 
++describe("p6rIdentity", () => {
++  it("uses the production actor key for a registered provider subject", () => {
++    const { bb } = createFakePluginHost({ pluginId: "wire" });
++    const provider = bb.p6rIdentity.registerProvider({
++      id: "fixture",
++      resolve: () => ({ kind: "not-applicable" }),
++    });
++
++    expect(provider.p6rPrincipalKeyForSubject("verified-subject")).toBe(
++      "p6r:wire%2Ffixture/verified-subject",
++    );
++  });
++});
++
+ describe("ui.requestInput", () => {
+   it("settles a blocking request through the harness", async () => {
+     const { bb, harness } = createFakePluginHost();
+diff --git a/packages/plugin-sdk/src/testing/fake-plugin-host.ts b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+index 3cc096731..b10b7ec58 100644
+--- a/packages/plugin-sdk/src/testing/fake-plugin-host.ts
++++ b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+@@ -6,7 +6,7 @@ import { CronExpressionParser } from "cron-parser";
+ import { Hono } from "hono";
+ import { z } from "zod";
+ import { PLUGIN_INTERACTION_MAX_TITLE_LENGTH } from "@bb/domain/plugin-interaction-limits";
+-import { p6rCreateProviderPrincipalKey } from "@bb/domain";
++import { p6rPrincipalKeyForActorSnapshot } from "@bb/domain";
+ import {
+   AGENT_TOOL_NAME_PATTERN,
+   assertNoRecursiveJsonSchemaReferences,
+@@ -1046,10 +1046,10 @@ function createFakePluginHostInternal(
+       p6rIdentityProvider = registration;
+       return {
+         p6rPrincipalKeyForSubject: (subject: string) =>
+-          p6rCreateProviderPrincipalKey(
+-            "p6r",
+-            `${pluginId}/${registration.id}/${subject}`,
+-          ),
++          p6rPrincipalKeyForActorSnapshot({
++            p6rProviderId: `${pluginId}/${registration.id}`,
++            p6rSubject: subject,
++          }),
+       };
+     },
+   };
+-- 
+2.43.0
+

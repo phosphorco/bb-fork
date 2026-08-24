@@ -25,12 +25,13 @@
 21. **Complete query-plan witness** captures the prepared background-task statement instead of executing its intentionally truncated slow-query log representation after identity columns extend the generated SQL.
 22. **Server witness alignment** expects escaped provider subjects and server-authored claimed keys, while ordering direct event-table assertions by their declared sequence.
 23. **Principal-key boundary witness** distinguishes provider lease subject encoding from the provider/subject delimiter retained in authenticated request keys.
+24. **Canonical plugin PrincipalKeys** supersedes that differing-key interpretation: provider handles, production HTTP/RPC resolution, and the fake SDK host now derive the same actor key for one registered provider and subject.
 
 ## Exact source receipt
 
 - Upstream: `5205d98a74ed5a22469e521cf1f86b00b8232827`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: twenty-three patches in `patches/series`.
+- Patch queue: twenty-four patches in `patches/series`.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries
