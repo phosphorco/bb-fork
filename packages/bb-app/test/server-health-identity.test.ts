@@ -121,7 +121,6 @@ describe("waitForServerHealth", () => {
       const outcome = await waitForServerHealth({
         childProcess: child,
         expectedLaunchId: "launch-expected",
-        timeoutMs: 5_000,
         url: `http://127.0.0.1:${foreign.port}/health`,
       }).then(
         () => "healthy" as const,
@@ -157,7 +156,6 @@ describe("waitForServerHealth", () => {
       await waitForServerHealth({
         childProcess: null,
         expectedLaunchId: "launch-expected",
-        timeoutMs: 5_000,
         url: `http://127.0.0.1:${server.port}/health`,
       });
       expect(healthRequests).toBe(3);
@@ -166,23 +164,31 @@ describe("waitForServerHealth", () => {
     }
   });
 
-  it("times out when the responder never echoes the launch id", async () => {
+  it("keeps polling a foreign responder until the supervised child exits", async () => {
+    let healthRequests = 0;
     const server = await listen((_request, response) => {
+      healthRequests += 1;
       answerHealth(response, { ok: true, launchId: "launch-other" });
     });
+    const child = spawn(
+      process.execPath,
+      ["-e", "setTimeout(() => process.exit(1), 400)"],
+      { stdio: "ignore" },
+    );
 
     try {
       await expect(
         waitForServerHealth({
-          childProcess: null,
+          childProcess: child,
           expectedLaunchId: "launch-expected",
-          timeoutMs: 250,
           url: `http://127.0.0.1:${server.port}/health`,
         }),
       ).rejects.toThrow(
-        `Timed out waiting for health at http://127.0.0.1:${server.port}/health: another server is already answering`,
+        `Process exited before becoming healthy: another server is already answering at http://127.0.0.1:${server.port}/health`,
       );
+      expect(healthRequests).toBeGreaterThan(0);
     } finally {
+      if (child.exitCode === null) child.kill("SIGKILL");
       await server.close();
     }
   });
