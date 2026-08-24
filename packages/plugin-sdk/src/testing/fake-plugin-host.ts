@@ -6,7 +6,7 @@ import { CronExpressionParser } from "cron-parser";
 import { Hono } from "hono";
 import { z } from "zod";
 import { PLUGIN_INTERACTION_MAX_TITLE_LENGTH } from "@bb/domain/plugin-interaction-limits";
-import { p6rCreateProviderPrincipalKey } from "@bb/domain";
+import { p6rPrincipalKeyForActorSnapshot } from "@bb/domain";
 import {
   AGENT_TOOL_NAME_PATTERN,
   assertNoRecursiveJsonSchemaReferences,
@@ -1046,10 +1046,10 @@ function createFakePluginHostInternal(
       p6rIdentityProvider = registration;
       return {
         p6rPrincipalKeyForSubject: (subject: string) =>
-          p6rCreateProviderPrincipalKey(
-            "p6r",
-            `${pluginId}/${registration.id}/${subject}`,
-          ),
+          p6rPrincipalKeyForActorSnapshot({
+            p6rProviderId: `${pluginId}/${registration.id}`,
+            p6rSubject: subject,
+          }),
       };
     },
   };

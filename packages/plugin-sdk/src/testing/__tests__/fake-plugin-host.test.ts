@@ -8,6 +8,20 @@ import {
 import { defineRpcContract } from "../../rpc-contract.js";
 import { createFakePluginHost, makeThreadResponse } from "../index.js";
 
+describe("p6rIdentity", () => {
+  it("uses the production actor key for a registered provider subject", () => {
+    const { bb } = createFakePluginHost({ pluginId: "wire" });
+    const provider = bb.p6rIdentity.registerProvider({
+      id: "fixture",
+      resolve: () => ({ kind: "not-applicable" }),
+    });
+
+    expect(provider.p6rPrincipalKeyForSubject("verified-subject")).toBe(
+      "p6r:wire%2Ffixture/verified-subject",
+    );
+  });
+});
+
 describe("ui.requestInput", () => {
   it("settles a blocking request through the harness", async () => {
     const { bb, harness } = createFakePluginHost();

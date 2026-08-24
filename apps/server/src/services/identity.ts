@@ -7,7 +7,6 @@ import {
 import type { Context } from "hono";
 import {
   p6rActorSnapshotSchema,
-  p6rCreateProviderPrincipalKey,
   p6rPrincipalKeyForActorSnapshot,
   type P6rPrincipalKey,
   type P6rActorSnapshot,
@@ -246,10 +245,10 @@ export function p6rCreateIdentityBoundary(args: {
         state = "released";
       },
       p6rPrincipalKeyForSubject(subject) {
-        return p6rCreateProviderPrincipalKey(
-          "p6r",
-          `${registrationRecord.p6rProviderId}/${subject}`,
-        );
+        return p6rPrincipalKeyForActorSnapshot({
+          p6rProviderId: registrationRecord.p6rProviderId,
+          p6rSubject: subject,
+        });
       },
     };
   }

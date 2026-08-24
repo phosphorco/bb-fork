@@ -239,10 +239,10 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
       }),
     });
     expect(provider.p6rPrincipalKeyForSubject("verified-subject")).toBe(
-      "p6r:wire%2Ffixture%2Fverified-subject",
+      "p6r:wire%2Ffixture/verified-subject",
     );
     expect(provider.p6rPrincipalKeyForSubject("other-subject")).toBe(
-      "p6r:wire%2Ffixture%2Fother-subject",
+      "p6r:wire%2Ffixture/other-subject",
     );
     expect(() =>
       api.p6rIdentity.registerProvider({
