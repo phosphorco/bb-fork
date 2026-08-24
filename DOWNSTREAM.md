@@ -5,13 +5,14 @@
 1. **Current-upstream multiplayer reconciliation** ports the verified-identity, provider-qualified PrincipalKey, durable-authorship, presence, attributed messaging, and managed-deployment guarantees onto exact current upstream behavior.
 2. **Extensible Thread Facets revision 1** adds the generic namespaced Thread–Member relation, one-or-many cardinality, authoritative completeness and generation lifecycle, stable public query/CLI, attenuated plugin capability, core participant projection, and saved web/mobile My progress views.
 3. **Namespace-neutral facet quarantine fixture** keeps the forbidden principal-member-kind declaration witness within the bounded generic facet namespace exception.
+4. **Condensed sidebar participant presentation** makes ordinary web and native rows use ordered avatar groups with lawful initials, accessible name disclosure, and `+N` overflow without visible full-name row text.
 
 ## Exact source receipt
 
 - Upstream: `5205d98a74ed5a22469e521cf1f86b00b8232827`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: three patches in `patches/series`.
-- Result tree: `70b4a0e67ffd7b0b1719db847ed11ae2c7b5286a`.
+- Patch queue: four patches in `patches/series`.
+- Result tree: `1af16dab03b32ded0f482e3facff8a13ae60ac0c`.
 
 ## Compatibility boundaries
 
@@ -57,8 +58,10 @@
   not false. Tag assignment scope remains explicitly reserved rather than
   inferred from marker representation.
 - Sidebar sections are saved bounded facet queries over visible active threads,
-  not alternate ownership or copied membership. Participant avatars preserve
-  canonical PrincipalKey order and cardinality even when names or images match.
+  not alternate ownership or copied membership. Ordinary web and native thread
+  rows use compact avatar groups rather than visible participant-name text;
+  participant avatars preserve canonical PrincipalKey order and cardinality
+  even when names or images match.
 - The companion `phosphorco/bb-plugins` branch publishes Thread Progress phase
   through the plugin facet capability while its SQLite record remains the sole
   authority; transactional outbox and census reconciliation make reload and

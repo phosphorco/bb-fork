@@ -1,0 +1,469 @@
+From 7abb0b3178a092c2f187ee4fe99b5e7697a3d64f Mon Sep 17 00:00:00 2001
+From: Rosetta <cole@phosphor.co>
+Date: Sun, 23 Aug 2026 19:57:09 -0400
+Subject: [PATCH] fix(sidebar): condense participant presentation
+
+---
+ .../src/components/sidebar/ThreadRow.test.tsx |  61 +++++++---
+ apps/app/src/components/sidebar/ThreadRow.tsx | 114 +++++++++++++-----
+ .../data/sidebar/facet-triage-model.test.ts   |  59 +++++++++
+ .../src/data/sidebar/facet-triage-model.ts    |  20 +++
+ .../src/screens/sidebar/SidebarRows.tsx       |  91 +++++++++++++-
+ 5 files changed, 295 insertions(+), 50 deletions(-)
+
+diff --git a/apps/app/src/components/sidebar/ThreadRow.test.tsx b/apps/app/src/components/sidebar/ThreadRow.test.tsx
+index 882661e4318737ec4daccd2d9de07f289302ada9..21541a396ba066570fd20c5b77ec5a108e084376 100644
+--- a/apps/app/src/components/sidebar/ThreadRow.test.tsx
++++ b/apps/app/src/components/sidebar/ThreadRow.test.tsx
+@@ -252,43 +252,74 @@ afterEach(() => {
+ });
+ 
+ describe("ThreadRow", () => {
+-  it("renders the supplied participant profiles in server order", () => {
++  it("renders ordered participant avatars without visible full-name row text", async () => {
+     renderThreadRow({
+       thread: createThread({
+         participants: [
+           {
+             p6rPrincipalKey: p6rPrincipalKeySchema.parse("p6r:github/alice"),
+-            p6rDisplayName: "Alice Chen",
+-            p6rImageUrl: "https://example.test/alice.png",
++            p6rDisplayName: "Same Name",
++            p6rImageUrl: "https://example.test/shared.png",
+           },
+           {
+             p6rPrincipalKey: p6rPrincipalKeySchema.parse("p6r:google/bob"),
+-            p6rDisplayName: "Bob Stone",
+-            p6rImageUrl: "https://example.test/bob.png",
++            p6rDisplayName: "Same Name",
++            p6rImageUrl: "https://example.test/shared.png",
++          },
++          {
++            p6rPrincipalKey: p6rPrincipalKeySchema.parse("p6r:local/grace"),
++            p6rDisplayName: "Grace Cole",
++            p6rImageUrl: null,
++          },
++          {
++            p6rPrincipalKey: p6rPrincipalKeySchema.parse("p6r:local/dana"),
++            p6rDisplayName: "Dana Reed",
++            p6rImageUrl: null,
+           },
+         ],
+       }),
+     });
+ 
+     const participants = screen.getByRole("group", {
+-      name: "Thread participants: Alice Chen, Bob Stone",
++      name: "Thread participants: Same Name, Same Name, Grace Cole, Dana Reed",
+     });
+     const renderedText = participants.textContent ?? "";
+-    expect(renderedText).toContain("Alice Chen");
+-    expect(renderedText).toContain("Bob Stone");
+-    expect(renderedText.indexOf("Alice Chen")).toBeLessThan(
+-      renderedText.indexOf("Bob Stone"),
+-    );
++    expect(renderedText).not.toContain("Same Name");
++    expect(renderedText).not.toContain("Grace Cole");
++    expect(renderedText).not.toContain("Dana Reed");
++    expect(renderedText).toBe("GC+1");
++    expect(
++      within(participants).getAllByRole("button", { name: "Same Name" }),
++    ).toHaveLength(2);
++    expect(
++      participants.querySelectorAll(
++        '[data-participant-key="p6r:github/alice"]',
++      ),
++    ).toHaveLength(1);
++    expect(
++      participants.querySelectorAll('[data-participant-key="p6r:google/bob"]'),
++    ).toHaveLength(1);
+     expect(
+       within(participants)
+-        .getByRole("img", { name: "Alice Chen" })
++        .getAllByRole("img", { name: "Same Name" })[0]
+         .getAttribute("src"),
+-    ).toBe("https://example.test/alice.png");
++    ).toBe("https://example.test/shared.png");
+     expect(
+       within(participants)
+-        .getByRole("img", { name: "Bob Stone" })
++        .getAllByRole("img", { name: "Same Name" })[1]
+         .getAttribute("src"),
+-    ).toBe("https://example.test/bob.png");
++    ).toBe("https://example.test/shared.png");
++
++    const grace = within(participants).getByRole("button", {
++      name: "Grace Cole",
++    });
++    fireEvent.focus(grace);
++    expect((await screen.findByRole("tooltip")).textContent).toBe("Grace Cole");
++    expect(
++      within(participants).getByRole("button", {
++        name: "1 more participant: Dana Reed",
++      }),
++    ).not.toBeNull();
+   });
+ 
+   const splitWorkingCases: Array<{
+diff --git a/apps/app/src/components/sidebar/ThreadRow.tsx b/apps/app/src/components/sidebar/ThreadRow.tsx
+index cbe542d32739d3e6b5d30703512fc7b76d0beb98..fa66ee9a6c3d8f86271e9e33a356648df4c9d59e 100644
+--- a/apps/app/src/components/sidebar/ThreadRow.tsx
++++ b/apps/app/src/components/sidebar/ThreadRow.tsx
+@@ -190,6 +190,80 @@ function ThreadDraftIndicator({
+ 
+ const MAX_VISIBLE_THREAD_PARTICIPANTS = 3;
+ 
++function ThreadRowParticipantAvatar({
++  participant,
++}: {
++  participant: P6rThreadParticipantProfile;
++}) {
++  const [isNameDisclosed, setIsNameDisclosed] = useState(false);
++
++  return (
++    <Tooltip open={isNameDisclosed} onOpenChange={setIsNameDisclosed}>
++      <TooltipTrigger asChild>
++        <button
++          type="button"
++          aria-label={participant.p6rDisplayName}
++          data-participant-key={participant.p6rPrincipalKey}
++          className="relative inline-flex size-4 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-sidebar-border bg-surface-recessed text-[8px] font-medium leading-none text-muted-foreground outline-none ring-sidebar-ring hover:z-10 focus-visible:z-10 focus-visible:ring-2"
++          onClick={(event) => {
++            event.stopPropagation();
++            setIsNameDisclosed(true);
++          }}
++          onPointerDown={(event) => event.stopPropagation()}
++          onKeyDown={(event) => event.stopPropagation()}
++        >
++          {participant.p6rImageUrl === null ? (
++            <span aria-hidden="true" title={participant.p6rDisplayName}>
++              {p6rPresenceInitials(participant.p6rDisplayName)}
++            </span>
++          ) : (
++            <img
++              src={participant.p6rImageUrl}
++              alt={participant.p6rDisplayName}
++              title={participant.p6rDisplayName}
++              className="size-full object-cover"
++            />
++          )}
++        </button>
++      </TooltipTrigger>
++      <TooltipContent side="top">{participant.p6rDisplayName}</TooltipContent>
++    </Tooltip>
++  );
++}
++
++function ThreadRowParticipantOverflow({
++  participants,
++}: {
++  participants: readonly P6rThreadParticipantProfile[];
++}) {
++  const [isNameDisclosed, setIsNameDisclosed] = useState(false);
++  const names = participants
++    .map((participant) => participant.p6rDisplayName)
++    .join(", ");
++  const count = participants.length;
++
++  return (
++    <Tooltip open={isNameDisclosed} onOpenChange={setIsNameDisclosed}>
++      <TooltipTrigger asChild>
++        <button
++          type="button"
++          aria-label={`${count} more participant${count === 1 ? "" : "s"}: ${names}`}
++          className="relative z-10 inline-flex h-4 min-w-4 shrink-0 cursor-pointer items-center justify-center rounded-full border border-sidebar-border bg-surface-recessed px-0.5 text-[8px] font-medium leading-none text-muted-foreground outline-none ring-sidebar-ring hover:bg-sidebar-accent focus-visible:ring-2"
++          onClick={(event) => {
++            event.stopPropagation();
++            setIsNameDisclosed(true);
++          }}
++          onPointerDown={(event) => event.stopPropagation()}
++          onKeyDown={(event) => event.stopPropagation()}
++        >
++          +{count}
++        </button>
++      </TooltipTrigger>
++      <TooltipContent side="top">{names}</TooltipContent>
++    </Tooltip>
++  );
++}
++
+ function ThreadRowParticipants({
+   participants,
+ }: {
+@@ -209,44 +283,18 @@ function ThreadRowParticipants({
+       role="group"
+       aria-label={`Thread participants: ${orderedNames}`}
+       data-testid="sidebar-thread-participants"
+-      className="relative z-10 inline-flex min-w-0 shrink items-center gap-1 text-xs text-muted-foreground"
++      className="relative z-10 inline-flex shrink-0 items-center -space-x-1"
+     >
+       {visible.map((participant) => (
+-        <span
++        <ThreadRowParticipantAvatar
+           key={participant.p6rPrincipalKey}
+-          title={participant.p6rDisplayName}
+-          className="inline-flex min-w-0 shrink items-center gap-1"
+-        >
+-          {participant.p6rImageUrl === null ? (
+-            <span
+-              role="img"
+-              aria-label={participant.p6rDisplayName}
+-              className="inline-flex size-4 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-surface-recessed text-[8px] font-medium leading-none"
+-            >
+-              {p6rPresenceInitials(participant.p6rDisplayName)}
+-            </span>
+-          ) : (
+-            <img
+-              src={participant.p6rImageUrl}
+-              alt={participant.p6rDisplayName}
+-              className="size-4 shrink-0 rounded-full object-cover"
+-            />
+-          )}
+-          <span className="truncate">{participant.p6rDisplayName}</span>
+-        </span>
++          participant={participant}
++        />
+       ))}
+       {overflow > 0 ? (
+-        <span
+-          role="img"
+-          aria-label={`${overflow} more participants: ${participants
+-            .slice(MAX_VISIBLE_THREAD_PARTICIPANTS)
+-            .map((participant) => participant.p6rDisplayName)
+-            .join(", ")}`}
+-          title={orderedNames}
+-          className="shrink-0"
+-        >
+-          +{overflow}
+-        </span>
++        <ThreadRowParticipantOverflow
++          participants={participants.slice(MAX_VISIBLE_THREAD_PARTICIPANTS)}
++        />
+       ) : null}
+     </span>
+   );
+diff --git a/apps/mobile/src/data/sidebar/facet-triage-model.test.ts b/apps/mobile/src/data/sidebar/facet-triage-model.test.ts
+index 4deae9b28a8ab785fbe99dad1d0b42a9b89366ff..eeb36e7570e18677b4cda301ad01459c0cd3395d 100644
+--- a/apps/mobile/src/data/sidebar/facet-triage-model.test.ts
++++ b/apps/mobile/src/data/sidebar/facet-triage-model.test.ts
+@@ -16,6 +16,7 @@ import {
+ import {
+   buildFacetTriageModel,
+   activateFacetRowNestedControl,
++  p6rCompactParticipantAvatarGroup,
+   participantAvatarItems,
+   participantDisclosureTarget,
+   participantGroupLabel,
+@@ -147,6 +148,64 @@ describe("Facet Triage model", () => {
+     expect(participantInitials("   ")).toBe("?");
+   });
+ 
++  it("projects ordinary rows to three ordered avatars plus exact overflow", () => {
++    const profiles = [
++      {
++        p6rPrincipalKey: p6rPrincipalKeySchema.parse("github:same-one"),
++        p6rDisplayName: "Same Name",
++        p6rImageUrl: "https://example.test/same.png",
++      },
++      {
++        p6rPrincipalKey: p6rPrincipalKeySchema.parse("google:same-two"),
++        p6rDisplayName: "Same Name",
++        p6rImageUrl: "https://example.test/same.png",
++      },
++      {
++        p6rPrincipalKey: p6rPrincipalKeySchema.parse("local:grace"),
++        p6rDisplayName: "Grace Cole",
++        p6rImageUrl: null,
++      },
++      {
++        p6rPrincipalKey: p6rPrincipalKeySchema.parse("local:dana"),
++        p6rDisplayName: "Dana Reed",
++        p6rImageUrl: null,
++      },
++    ];
++
++    expect(p6rCompactParticipantAvatarGroup(profiles)).toEqual({
++      accessibilityLabel:
++        "Thread participants: Same Name, Same Name, Grace Cole, Dana Reed",
++      visible: [
++        {
++          key: profiles[0]?.p6rPrincipalKey,
++          label: "Same Name",
++          imageUrl: "https://example.test/same.png",
++          initials: "SN",
++        },
++        {
++          key: profiles[1]?.p6rPrincipalKey,
++          label: "Same Name",
++          imageUrl: "https://example.test/same.png",
++          initials: "SN",
++        },
++        {
++          key: profiles[2]?.p6rPrincipalKey,
++          label: "Grace Cole",
++          imageUrl: null,
++          initials: "GC",
++        },
++      ],
++      overflow: [
++        {
++          key: profiles[3]?.p6rPrincipalKey,
++          label: "Dana Reed",
++          imageUrl: null,
++          initials: "DR",
++        },
++      ],
++    });
++  });
++
+   it("refreshes cached data on open and focus regain, but not while collapsed", () => {
+     expect(
+       shouldRefreshFacetTriage({
+diff --git a/apps/mobile/src/data/sidebar/facet-triage-model.ts b/apps/mobile/src/data/sidebar/facet-triage-model.ts
+index 09d7197aeec8147447fa354ec1719bed03190cfb..2414f38df52edcd7d15ecc20ea39c30f27a5b9ae 100644
+--- a/apps/mobile/src/data/sidebar/facet-triage-model.ts
++++ b/apps/mobile/src/data/sidebar/facet-triage-model.ts
+@@ -85,6 +85,26 @@ export function participantAvatarItems(
+   }));
+ }
+ 
++const MAX_VISIBLE_SIDEBAR_PARTICIPANTS = 3;
++
++export interface P6rCompactParticipantAvatarGroup {
++  accessibilityLabel: string;
++  overflow: readonly FacetParticipantAvatarItem[];
++  visible: readonly FacetParticipantAvatarItem[];
++}
++
++/** Compact ordinary-row projection; stable PrincipalKeys retain order and cardinality. */
++export function p6rCompactParticipantAvatarGroup(
++  profiles: readonly P6rThreadParticipantProfile[],
++): P6rCompactParticipantAvatarGroup {
++  const items = participantAvatarItems(profiles);
++  return {
++    accessibilityLabel: `Thread participants: ${items.map((item) => item.label).join(", ")}`,
++    visible: items.slice(0, MAX_VISIBLE_SIDEBAR_PARTICIPANTS),
++    overflow: items.slice(MAX_VISIBLE_SIDEBAR_PARTICIPANTS),
++  };
++}
++
+ export function activateFacetRowNestedControl(
+   event: { stopPropagation(): void },
+   activate: () => void,
+diff --git a/apps/mobile/src/screens/sidebar/SidebarRows.tsx b/apps/mobile/src/screens/sidebar/SidebarRows.tsx
+index 47405341133163c66da7a93dca1a193edd4c208d..da2da501fb0173b9e76586de7992c8ba3b4cde99 100644
+--- a/apps/mobile/src/screens/sidebar/SidebarRows.tsx
++++ b/apps/mobile/src/screens/sidebar/SidebarRows.tsx
+@@ -1,6 +1,12 @@
++import { Image } from "expo-image";
+ import { isThreadRead, resolveThreadListIndicator } from "@bb/client-core";
+-import { memo } from "react";
+-import { Pressable, View } from "react-native";
++import type { P6rThreadParticipantProfile } from "@bb/domain";
++import { memo, useState } from "react";
++import { Pressable, View, type GestureResponderEvent } from "react-native";
++import {
++  activateFacetRowNestedControl,
++  p6rCompactParticipantAvatarGroup,
++} from "@/data/sidebar/facet-triage-model";
+ import { getThreadDisplayTitle } from "@/data/threads";
+ import { useTheme } from "@/theme";
+ import { Icon, LONG_PRESS_DELAY_MS, Text, cn } from "@/ui";
+@@ -33,6 +39,83 @@ const GROUP_LINE_OFFSET = 8;
+ /** The single trailing column: status glyph, or the header "+" action. */
+ const TRAILING_SLOT_CLASS = "h-9 w-9 items-center justify-center";
+ 
++function SidebarParticipantAvatarGroup({
++  participants,
++  threadId,
++}: {
++  participants: readonly P6rThreadParticipantProfile[];
++  threadId: string;
++}) {
++  const [revealedName, setRevealedName] = useState<string | null>(null);
++  const group = p6rCompactParticipantAvatarGroup(participants);
++  if (group.visible.length === 0) return null;
++
++  const disclose = (event: GestureResponderEvent, name: string) => {
++    activateFacetRowNestedControl(event, () => setRevealedName(name));
++  };
++  const overflowNames = group.overflow.map((item) => item.label).join(", ");
++
++  return (
++    <View className="items-end" testID={`thread-participants-${threadId}`}>
++      <Text
++        accessibilityRole="summary"
++        accessibilityLabel={group.accessibilityLabel}
++        className="sr-only"
++      >
++        {group.accessibilityLabel}
++      </Text>
++      <View className="flex-row items-center gap-0.5">
++        {group.visible.map((item) => (
++          <Pressable
++            key={item.key}
++            accessibilityRole="button"
++            accessibilityLabel={item.label}
++            accessibilityHint="Reveals participant name"
++            onPress={(event) => disclose(event, item.label)}
++            className="h-7 w-7 items-center justify-center rounded-full bg-surface-recessed active:opacity-70"
++            testID={`thread-participant-${threadId}-${item.key}`}
++          >
++            {item.imageUrl === null ? (
++              <Text variant="chrome" accessibilityElementsHidden>
++                {item.initials}
++              </Text>
++            ) : (
++              <Image
++                source={{ uri: item.imageUrl }}
++                accessibilityLabel={item.label}
++                style={{ width: 28, height: 28, borderRadius: 14 }}
++                contentFit="cover"
++              />
++            )}
++          </Pressable>
++        ))}
++        {group.overflow.length === 0 ? null : (
++          <Pressable
++            accessibilityRole="button"
++            accessibilityLabel={`${group.overflow.length} more participant${group.overflow.length === 1 ? "" : "s"}: ${overflowNames}`}
++            accessibilityHint="Reveals participant names"
++            onPress={(event) => disclose(event, overflowNames)}
++            className="h-7 min-w-7 items-center justify-center rounded-full bg-surface-recessed px-1 active:opacity-70"
++            testID={`thread-participant-overflow-${threadId}`}
++          >
++            <Text variant="chrome">+{group.overflow.length}</Text>
++          </Pressable>
++        )}
++      </View>
++      {revealedName === null ? null : (
++        <Text
++          variant="caption"
++          numberOfLines={1}
++          accessibilityLiveRegion="polite"
++          testID={`thread-participant-name-${threadId}`}
++        >
++          {revealedName}
++        </Text>
++      )}
++    </View>
++  );
++}
++
+ function rowPaddingLeft(depth: number): number {
+   return ROW_BASE_PADDING + depth * ROW_DEPTH_STEP;
+ }
+@@ -165,6 +248,10 @@ export const SidebarThreadRowView = memo(function SidebarThreadRowView({
+           </Text>
+         ) : null}
+       </View>
++      <SidebarParticipantAvatarGroup
++        participants={thread.participants ?? []}
++        threadId={thread.id}
++      />
+       <View className={TRAILING_SLOT_CLASS}>
+         <ThreadStatusGlyph kind={row.indicator} />
+       </View>
+-- 
+2.43.0
+
