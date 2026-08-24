@@ -1,5 +1,8 @@
 import fs from "node:fs/promises";
-import type { PromptInput } from "@bb/domain";
+import {
+  isStandaloneBuiltinCompactCommand,
+  type PromptInput,
+} from "@bb/domain";
 import type { HostDaemonCommandResult } from "@bb/host-daemon-contract";
 import type { P6rTurnSpeaker } from "@bb/host-daemon-contract";
 import { resolveContainedPath } from "@bb/process-utils";
@@ -508,15 +511,15 @@ export async function submitTurn(
   entry: RuntimeEntry,
   options: CommandDispatchOptions,
 ): Promise<HostDaemonCommandResult<"turn.submit">> {
-  const staged = p6rAnnotateStagedSpeaker(
-    await stageThreadCommandInput({
-      command,
-      fetchProjectAttachment: options.fetchProjectAttachment,
-      projectId: command.resumeContext.projectId,
-      threadStorageRootPath: options.threadStorageRootPath,
-    }),
-    command.p6rSpeaker,
-  );
+  const original = await stageThreadCommandInput({
+    command,
+    fetchProjectAttachment: options.fetchProjectAttachment,
+    projectId: command.resumeContext.projectId,
+    threadStorageRootPath: options.threadStorageRootPath,
+  });
+  const staged = isStandaloneBuiltinCompactCommand(original.input)
+    ? original
+    : p6rAnnotateStagedSpeaker(original, command.p6rSpeaker);
   const stagedCommand = {
     ...command,
     input: staged.input,

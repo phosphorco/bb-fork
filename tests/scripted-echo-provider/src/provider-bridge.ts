@@ -63,6 +63,7 @@ import {
   turnStartParamsSchema,
   turnSteerParamsSchema,
   experimental_defineProviderBridge,
+  isStandaloneBuiltinCompactCommand,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { appendFileSync } from "node:fs";
 import { z } from "zod";
@@ -688,6 +689,53 @@ function beginTurn(args: {
   scheduleCompletion(session, plan.responseText, plan.delayMs);
 }
 
+function beginCompactionTurn(args: {
+  session: Session;
+  clientRequestId?: ClientTurnRequestId;
+}): void {
+  const { session } = args;
+  clearActiveTurn(session);
+  session.turnCount += 1;
+  const providerTurnId = `turn-${session.turnCount}`;
+  const key = { channel: "compaction" } as const;
+  session.activeTurn = { providerTurnId, timer: null };
+
+  emitDeltas(session.threadId, [
+    ...(args.clientRequestId === undefined
+      ? []
+      : [
+          {
+            kind: "input.accepted" as const,
+            clientRequestId: args.clientRequestId,
+            providerTurnId,
+          },
+        ]),
+    { kind: "turn.open", providerTurnId },
+    {
+      kind: "item.open",
+      key,
+      item: { type: "compaction" },
+      providerTurnId,
+    },
+  ]);
+  session.activeTurn.timer = setTimeout(() => {
+    if (session.activeTurn?.providerTurnId !== providerTurnId) {
+      return;
+    }
+    clearActiveTurn(session);
+    emitDeltas(session.threadId, [
+      {
+        kind: "item.close",
+        key,
+        status: "completed",
+        item: { type: "compaction" },
+        providerTurnId,
+      },
+      { kind: "turn.boundary", status: "completed", providerTurnId },
+    ]);
+  }, 0);
+}
+
 // ---------------------------------------------------------------------------
 // Responses to the bridge's own requests
 // ---------------------------------------------------------------------------
@@ -1095,6 +1143,13 @@ const handlers: Record<string, RequestHandler> = {
     );
     respondResult(id, {});
     if (session.options.swallowTurnStart === true) {
+      return;
+    }
+    if (isStandaloneBuiltinCompactCommand(parsed.data.input)) {
+      beginCompactionTurn({
+        session,
+        clientRequestId: parsed.data.clientRequestId,
+      });
       return;
     }
     beginTurn({
