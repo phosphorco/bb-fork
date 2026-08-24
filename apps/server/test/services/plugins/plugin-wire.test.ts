@@ -268,7 +268,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
         p6rDisplayName: "Verified Actor",
         p6rImageUrl: null,
       },
-      principalKey: "p6r:wire%2Ffixture%2Fverified-subject",
+      principalKey: "p6r:wire%2Ffixture/verified-subject",
     });
 
     const rpcResponse = await harness.app.request(
@@ -293,7 +293,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
           p6rDisplayName: "Verified Actor",
           p6rImageUrl: null,
         },
-        principalKey: "p6r:wire%2Ffixture%2Fverified-subject",
+        principalKey: "p6r:wire%2Ffixture/verified-subject",
       },
     });
   });
