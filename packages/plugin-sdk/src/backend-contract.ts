@@ -16,8 +16,6 @@ import type {
   ExperimentalHostSignals,
 } from "./host-contract.js";
 
-import type { P6rActorSnapshot } from "@bb/domain";
-
 /**
  * The backend plugin API contract — the `bb` object handed to a plugin's
  * `server.ts` factory (`export default function plugin(bb: BbPluginApi)`).
