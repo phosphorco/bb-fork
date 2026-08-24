@@ -1162,6 +1162,7 @@ describe("internal event and tool-call routes", () => {
         .select()
         .from(events)
         .where(eq(events.threadId, thread.id))
+        .orderBy(events.sequence)
         .all();
       expect(storedEvents.map((event) => event.type)).toEqual([
         "turn/started",
@@ -1269,6 +1270,7 @@ describe("internal event and tool-call routes", () => {
         .select()
         .from(events)
         .where(eq(events.threadId, thread.id))
+        .orderBy(events.sequence)
         .all();
       expect(storedEvents.map((event) => event.type)).toEqual([
         "turn/started",

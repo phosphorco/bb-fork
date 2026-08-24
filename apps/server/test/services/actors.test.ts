@@ -53,7 +53,11 @@ describe("request actors", () => {
       p6rPrincipalKey: p6rPrincipalKeySchema.parse("github:spoofed"),
     });
 
-    expect(p6rResolveRequestActor(headerReader(encoded), defaultActor)).toEqual(
+    const resolved = p6rResolveRequestActor(
+      headerReader(encoded),
+      defaultActor,
+    );
+    expect(resolved).toEqual(
       expect.objectContaining({
         p6rHandle: "sawyer",
         p6rDisplayName: "Sawyer",
@@ -61,10 +65,9 @@ describe("request actors", () => {
         p6rClientId: "browser-1",
       }),
     );
-    expect(
-      p6rResolveRequestActor(headerReader(encoded), defaultActor)
-        .p6rPrincipalKey,
-    ).toBe(defaultActor.p6rPrincipalKey);
+    expect(resolved.p6rPrincipalKey).toMatch(/^claimed:/u);
+    expect(resolved.p6rPrincipalKey).not.toBe("github:spoofed");
+    expect(resolved.p6rPrincipalKey).not.toBe(defaultActor.p6rPrincipalKey);
   });
 
   it("falls back to the local operator for a malformed header", () => {

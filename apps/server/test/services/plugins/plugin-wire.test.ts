@@ -239,10 +239,10 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
       }),
     });
     expect(provider.p6rPrincipalKeyForSubject("verified-subject")).toBe(
-      "p6r:wire/fixture/verified-subject",
+      "p6r:wire%2Ffixture%2Fverified-subject",
     );
     expect(provider.p6rPrincipalKeyForSubject("other-subject")).toBe(
-      "p6r:wire/fixture/other-subject",
+      "p6r:wire%2Ffixture%2Fother-subject",
     );
     expect(() =>
       api.p6rIdentity.registerProvider({
@@ -268,7 +268,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
         p6rDisplayName: "Verified Actor",
         p6rImageUrl: null,
       },
-      principalKey: "p6r:wire/fixture/verified-subject",
+      principalKey: "p6r:wire%2Ffixture%2Fverified-subject",
     });
 
     const rpcResponse = await harness.app.request(
@@ -293,7 +293,7 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
           p6rDisplayName: "Verified Actor",
           p6rImageUrl: null,
         },
-        principalKey: "p6r:wire/fixture/verified-subject",
+        principalKey: "p6r:wire%2Ffixture%2Fverified-subject",
       },
     });
   });
