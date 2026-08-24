@@ -1,0 +1,299 @@
+From cb3784d2a3c6606ec144858b2a9fbd514f0aa04f Mon Sep 17 00:00:00 2001
+From: Rosetta <its-rosetta@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 20:03:25 -0400
+Subject: [PATCH 09/14] Recover interrupted multiplayer identity staging
+
+- Reconcile persistent actor and collaborator staging with current canonical profile tables before replaying the identity migration.\n- Persist sparse attribution staging so a killed process can resume without losing durable authorship snapshots.\n- Apply the frozen identity migration explicitly when later ledger rows would make Drizzle skip its timestamp.\n- Prove the production-shaped interrupted state fails before this change and preserves both profile sets after recovery.
+---
+ packages/db/src/migrate.ts       | 126 ++++++++++++++++++++++++++++++-
+ packages/db/test/migrate.test.ts |  89 ++++++++++++++++++++++
+ 2 files changed, 213 insertions(+), 2 deletions(-)
+
+diff --git a/packages/db/src/migrate.ts b/packages/db/src/migrate.ts
+index b5c48d149..e75d68d8d 100644
+--- a/packages/db/src/migrate.ts
++++ b/packages/db/src/migrate.ts
+@@ -1329,7 +1329,17 @@ function seedKeepAwakePluginConfiguration(db: DbConnection): void {
+ const P6R_STAGED_MULTIPLAYER_ACTORS = "_bb_p6r_multiplayer_actors_pending";
+ const P6R_STAGED_MULTIPLAYER_COLLABORATORS =
+   "_bb_p6r_multiplayer_collaborators_pending";
+-const p6rLegacyMigrationWhens = [1786998114856, 1787090005295] as const;
++const p6rLegacyMigrationWhens = [
++  1786998114856,
++  1787090005295,
++  // Shipped by the protocol-136 deployment before upstream claimed 0101.
++  // This timestamp sorts after upstream's new 0101, so it must be removed
++  // before Drizzle chooses the first unapplied canonical migration.
++  1787148230236,
++  // Used by the interrupted protocol-136 recovery candidate before the
++  // protocol-147 canonical 0105 migration could finish.
++  1787321061533,
++] as const;
+ 
+ const p6rMultiplayerAttributionColumns = [
+   { table: "events", legacyColumn: "actor_handle", p6rColumn: "p6r_actor_handle" },
+@@ -1380,6 +1390,89 @@ interface P6rStagedMultiplayerSchema {
+   columns: Array<(typeof p6rMultiplayerAttributionColumns)[number]>;
+ }
+ 
++type P6rCollaboratorSchema = "legacy" | "p6r";
++
++function p6rCollaboratorSchema(
++  db: DbConnection,
++  table: string,
++): P6rCollaboratorSchema {
++  if (columnExists(db, table, "p6r_handle")) return "p6r";
++  if (columnExists(db, table, "handle")) return "legacy";
++  throw new Error(`Cannot recover unrecognized collaborator table ${table}`);
++}
++
++function p6rMergeInterruptedCollaborators(
++  db: DbConnection,
++  destination: string,
++  destinationSchema: P6rCollaboratorSchema,
++  source: string,
++  sourceSchema: P6rCollaboratorSchema,
++): void {
++  const destinationColumns =
++    destinationSchema === "p6r"
++      ? "p6r_handle, p6r_display_name, p6r_image_url, p6r_first_seen_at, p6r_last_seen_at"
++      : "handle, display_name, image_url, first_seen_at, last_seen_at";
++  const sourceColumns =
++    sourceSchema === "p6r"
++      ? "p6r_handle, p6r_display_name, p6r_image_url, p6r_first_seen_at, p6r_last_seen_at"
++      : "handle, display_name, image_url, first_seen_at, last_seen_at";
++  db.$client.exec(`
++    INSERT OR IGNORE INTO ${destination} (${destinationColumns})
++      SELECT ${sourceColumns} FROM ${source};
++    DROP TABLE ${source};
++  `);
++}
++
++function p6rRecoverInterruptedMultiplayerStaging(db: DbConnection): void {
++  if (tableExists(db, P6R_STAGED_MULTIPLAYER_ACTORS)) {
++    if (tableExists(db, "p6r_actors")) {
++      db.$client.exec(`
++        INSERT OR IGNORE INTO p6r_actors
++          (p6r_provider_id, p6r_subject, p6r_handle, p6r_display_name,
++           p6r_image_url, p6r_first_seen_at, p6r_last_seen_at)
++        SELECT p6r_provider_id, p6r_subject, p6r_handle, p6r_display_name,
++               p6r_image_url, p6r_first_seen_at, p6r_last_seen_at
++        FROM ${P6R_STAGED_MULTIPLAYER_ACTORS};
++        DROP TABLE ${P6R_STAGED_MULTIPLAYER_ACTORS};
++      `);
++    } else {
++      db.$client.exec(
++        `ALTER TABLE ${P6R_STAGED_MULTIPLAYER_ACTORS} RENAME TO p6r_actors`,
++      );
++    }
++  }
++
++  if (!tableExists(db, P6R_STAGED_MULTIPLAYER_COLLABORATORS)) return;
++
++  const stagedSchema = p6rCollaboratorSchema(
++    db,
++    P6R_STAGED_MULTIPLAYER_COLLABORATORS,
++  );
++  if (tableExists(db, "p6r_collaborators")) {
++    p6rMergeInterruptedCollaborators(
++      db,
++      "p6r_collaborators",
++      "p6r",
++      P6R_STAGED_MULTIPLAYER_COLLABORATORS,
++      stagedSchema,
++    );
++  } else if (tableExists(db, "collaborators")) {
++    p6rMergeInterruptedCollaborators(
++      db,
++      "collaborators",
++      "legacy",
++      P6R_STAGED_MULTIPLAYER_COLLABORATORS,
++      stagedSchema,
++    );
++  } else {
++    const restoredTable =
++      stagedSchema === "p6r" ? "p6r_collaborators" : "collaborators";
++    db.$client.exec(
++      `ALTER TABLE ${P6R_STAGED_MULTIPLAYER_COLLABORATORS} RENAME TO ${restoredTable}`,
++    );
++  }
++}
++
+ function p6rAttributionStagingTable(table: string, p6rColumn: string): string {
+   return `_bb_p6r_multiplayer_${table}_${p6rColumn}`;
+ }
+@@ -1392,7 +1485,7 @@ export function p6rStageAttributionColumn(
+ ): string {
+   const stagingTable = p6rAttributionStagingTable(table, p6rColumn);
+   db.$client.exec(`
+-    CREATE TEMP TABLE ${stagingTable} (
++    CREATE TABLE ${stagingTable} (
+       id TEXT PRIMARY KEY,
+       value TEXT NOT NULL
+     ) WITHOUT ROWID;
+@@ -1453,6 +1546,8 @@ function p6rStageExistingMultiplayerSchema(
+     tableExists(db, "p6r_actors") ||
+     tableExists(db, "p6r_collaborators") ||
+     tableExists(db, "collaborators") ||
++    tableExists(db, P6R_STAGED_MULTIPLAYER_ACTORS) ||
++    tableExists(db, P6R_STAGED_MULTIPLAYER_COLLABORATORS) ||
+     p6rMultiplayerAttributionColumns.some(
+       (spec) =>
+         tableExists(db, spec.table) &&
+@@ -1464,6 +1559,8 @@ function p6rStageExistingMultiplayerSchema(
+     return null;
+   }
+ 
++  p6rRecoverInterruptedMultiplayerStaging(db);
++
+   for (const createdAt of p6rLegacyMigrationWhens) {
+     db.$client
+       .prepare<[number]>(
+@@ -1499,6 +1596,11 @@ function p6rStageExistingMultiplayerSchema(
+     if (!tableExists(db, spec.table)) {
+       continue;
+     }
++    const stagingTable = p6rAttributionStagingTable(spec.table, spec.p6rColumn);
++    if (tableExists(db, stagingTable)) {
++      staged.columns.push(spec);
++      continue;
++    }
+     const sourceColumn = columnExists(db, spec.table, spec.p6rColumn)
+       ? spec.p6rColumn
+       : spec.legacyColumn !== null &&
+@@ -1578,6 +1680,23 @@ function p6rRestoreStagedMultiplayerSchema(
+   }
+ }
+ 
++function applyP6rIdentityMigrationBehindHighWater(
++  db: DbConnection,
++  migrationsFolder: string,
++): void {
++  const identityMigration = requireExpectedAppliedMigration(
++    readExpectedAppliedMigrations(migrationsFolder),
++    "0107_p6r_identity_authorship",
++  );
++  const appliedCreatedAts = readAppliedMigrationCreatedAts(db);
++  if (appliedCreatedAts.has(identityMigration.createdAt)) return;
++
++  const latestAppliedAt = Math.max(...appliedCreatedAts);
++  if (latestAppliedAt > identityMigration.createdAt) {
++    applyMigrationStatements(db, identityMigration);
++  }
++}
++
+ function repairBranchLocalThreadSearchMigrations(db: DbConnection): void {
+   if (!tableExists(db, "__drizzle_migrations")) {
+     return;
+@@ -1786,6 +1905,9 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
+       migrationsFolder,
+     );
+     try {
++      if (stagedMultiplayerSchema) {
++        applyP6rIdentityMigrationBehindHighWater(db, migrationsFolder);
++      }
+       drizzleMigrate(db, { migrationsFolder });
+     } finally {
+       if (stagedConnectMachineId) restoreStagedConnectMachineIdColumn(db);
+diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
+index 47afab519..f7bcbf4a1 100644
+--- a/packages/db/test/migrate.test.ts
++++ b/packages/db/test/migrate.test.ts
+@@ -1980,6 +1980,95 @@ describe("migrate", () => {
+     }
+   });
+ 
++  it("resumes an interrupted provider-qualified multiplayer staging pass", () => {
++    const db = createConnection(":memory:");
++
++    try {
++      migrate(db);
++      db.$client.exec(`
++        INSERT INTO p6r_actors
++          (p6r_provider_id, p6r_subject, p6r_handle, p6r_display_name,
++           p6r_image_url, p6r_first_seen_at, p6r_last_seen_at)
++        VALUES
++          ('tailnet', 'pending-actor', 'pending', 'Pending Actor', NULL, 1, 2);
++        INSERT INTO p6r_collaborators
++          (p6r_handle, p6r_display_name, p6r_image_url,
++           p6r_first_seen_at, p6r_last_seen_at)
++        VALUES ('pending', 'Pending Collaborator', NULL, 1, 2);
++
++        ALTER TABLE p6r_actors RENAME TO _bb_p6r_multiplayer_actors_pending;
++        ALTER TABLE p6r_collaborators RENAME TO _bb_p6r_multiplayer_collaborators_pending;
++
++        CREATE TABLE p6r_actors (
++          p6r_provider_id text NOT NULL,
++          p6r_subject text NOT NULL,
++          p6r_handle text NOT NULL,
++          p6r_display_name text NOT NULL,
++          p6r_image_url text,
++          p6r_first_seen_at integer NOT NULL,
++          p6r_last_seen_at integer NOT NULL,
++          PRIMARY KEY (p6r_provider_id, p6r_subject)
++        );
++        CREATE TABLE p6r_collaborators (
++          p6r_handle text PRIMARY KEY NOT NULL,
++          p6r_display_name text NOT NULL,
++          p6r_image_url text,
++          p6r_first_seen_at integer NOT NULL,
++          p6r_last_seen_at integer NOT NULL
++        );
++        INSERT INTO p6r_actors
++          (p6r_provider_id, p6r_subject, p6r_handle, p6r_display_name,
++           p6r_image_url, p6r_first_seen_at, p6r_last_seen_at)
++        VALUES
++          ('tailnet', 'current-actor', 'current', 'Current Actor', NULL, 3, 4);
++        INSERT INTO p6r_collaborators
++          (p6r_handle, p6r_display_name, p6r_image_url,
++           p6r_first_seen_at, p6r_last_seen_at)
++        VALUES ('current', 'Current Collaborator', NULL, 3, 4);
++      `);
++      db.$client
++        .prepare("DELETE FROM __drizzle_migrations WHERE created_at = ?")
++        .run(identityMigrationWhen);
++      db.$client
++        .prepare(
++          "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
++        )
++        .run("interrupted-staging-high-water", identityMigrationWhen + 1);
++
++      migrate(db);
++
++      expect(
++        db.$client
++          .prepare<
++            [],
++            MigrationCountRow
++          >("SELECT COUNT(*) AS count FROM p6r_actors")
++          .get()?.count,
++      ).toBe(2);
++      expect(
++        db.$client
++          .prepare<
++            [],
++            MigrationCountRow
++          >("SELECT COUNT(*) AS count FROM p6r_collaborators")
++          .get()?.count,
++      ).toBe(2);
++      expect(
++        db.$client
++          .prepare<
++            [],
++            MigrationCountRow
++          >("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name LIKE '_bb_p6r_multiplayer_%_pending'")
++          .get()?.count,
++      ).toBe(0);
++      expect(readAppliedMigrationCreatedAts(db)).toContain(
++        identityMigrationWhen,
++      );
++    } finally {
++      closeConnection(db);
++    }
++  });
++
+   it("replays the frozen identity migration from a disposable snapshot", () => {
+     const db = createConnection(":memory:");
+ 
+-- 
+2.43.0

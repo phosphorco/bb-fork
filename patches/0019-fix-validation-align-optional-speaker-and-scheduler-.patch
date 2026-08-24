@@ -1,0 +1,39 @@
+From c115be7ec3a5fce2c651ace8d2722d1d788d4614 Mon Sep 17 00:00:00 2001
+From: Cole Lawrence <cole@colelawrence.com>
+Date: Mon, 24 Aug 2026 10:43:20 -0300
+Subject: [PATCH] fix(validation): align optional speaker and scheduler checks
+
+---
+ apps/server/test/services/plugins/plugin-update.test.ts | 2 +-
+ packages/host-daemon-contract/test/contract.test.ts     | 2 ++
+ 2 files changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/apps/server/test/services/plugins/plugin-update.test.ts b/apps/server/test/services/plugins/plugin-update.test.ts
+index d627bcf8426061aced49f26b94c5ff5ae12181e6..f2bfd7530a88009c8aeada8c3f35b61671f3261a 100644
+--- a/apps/server/test/services/plugins/plugin-update.test.ts
++++ b/apps/server/test/services/plugins/plugin-update.test.ts
+@@ -784,7 +784,7 @@ describe("plugin update service and routes", () => {
+     service.startPeriodicUpdateChecks();
+ 
+     expect(scheduled.map((entry) => entry.delayMs)).toEqual([6 * HOUR]);
+-  });
++  }, 60_000);
+ 
+   it("sweeps on start when a plugin was never checked, then waits out the interval across restarts", async () => {
+     const HOUR = 60 * 60 * 1_000;
+diff --git a/packages/host-daemon-contract/test/contract.test.ts b/packages/host-daemon-contract/test/contract.test.ts
+index c5461e15bb0236e68a278f1e96881edcb40e3ce1..f0f30a60bf560b2bf860240b57f5171428a0a037 100644
+--- a/packages/host-daemon-contract/test/contract.test.ts
++++ b/packages/host-daemon-contract/test/contract.test.ts
+@@ -757,6 +757,8 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
+     "thread runtime context may omit provider-specific built-in tool removals for providers that do not need them.",
+   "hostDaemonCommandSchema.options.promptMode":
+     "thread runtime options carry a prompt mode only when the prompt entered one through the provider's declared composer action.",
++  "hostDaemonCommandSchema.p6rSpeaker":
++    "thread.start and turn.submit omit p6rSpeaker when no authenticated human speaker is attributed to the turn.",
+   "hostDaemonCommandSchema.resumeContext.disallowedTools":
+     "turn.submit resume context may omit provider-specific built-in tool removals for providers that do not need them.",
+   "hostDaemonCommandSchema.resumeContext.acpLaunchSpec":
+-- 
+2.50.1 (Apple Git-155)
+

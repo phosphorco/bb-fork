@@ -1,0 +1,340 @@
+From 1deaadcfa90f457fc5b0833d1f0dec2b6a22887c Mon Sep 17 00:00:00 2001
+From: Rosetta <its-rosetta@users.noreply.github.com>
+Date: Sun, 23 Aug 2026 08:55:59 -0400
+Subject: [PATCH 14/14] Keep trusted Tailnet identity out of claimed mode
+
+---
+ .../dialogs/ClaimIdentityDialog.tsx           | 16 ++++++++-
+ .../settings/IdentitySettingsSection.tsx      | 33 ++++++++++++++++++
+ .../src/lib/claimed-identity-store.test.ts    | 33 ++++++++++++++++++
+ apps/app/src/lib/claimed-identity-store.ts    | 16 +++++++++
+ apps/app/src/lib/system-config-atoms.ts       |  1 +
+ apps/server/src/routes/system.ts              | 34 +++++++++++++++++--
+ .../test/system/general-settings.test.ts      |  8 +++++
+ packages/server-contract/src/api/system.ts    | 19 +++++++++++
+ 8 files changed, 157 insertions(+), 3 deletions(-)
+
+diff --git a/apps/app/src/components/dialogs/ClaimIdentityDialog.tsx b/apps/app/src/components/dialogs/ClaimIdentityDialog.tsx
+index 496bf19af..b41ebad93 100644
+--- a/apps/app/src/components/dialogs/ClaimIdentityDialog.tsx
++++ b/apps/app/src/components/dialogs/ClaimIdentityDialog.tsx
+@@ -12,9 +12,11 @@ import {
+ import { Input } from "@bb/shared-ui/input";
+ import {
+   p6rIsRemoteAppContext,
++  p6rShouldOfferClaimedIdentity,
+   p6rSetClaimedDisplayName,
+   useP6rClaimedIdentity,
+ } from "@/lib/claimed-identity-store";
++import { useSystemConfig } from "@/hooks/queries/system-queries";
+ 
+ // Session-scoped so "Not now" doesn't nag again until the next visit, while a
+ // fresh session still offers the prompt to an unidentified remote viewer.
+@@ -44,9 +46,21 @@ function p6rMarkPromptDismissed(): void {
+  */
+ export function P6rClaimIdentityDialog() {
+   const identity = useP6rClaimedIdentity();
++  const systemConfig = useSystemConfig();
+   const [dismissed, setDismissed] = useState(p6rWasPromptDismissedThisSession);
+   const [p6rDisplayName, setDisplayName] = useState("");
+-  const open = p6rIsRemoteAppContext() && identity === null && !dismissed;
++  // Wait for the server boundary before offering the lower-assurance claim.
++  // A provider-authenticated browser must never be asked to identify itself
++  // again or be allowed to form a parallel claimed identity.
++  const open = p6rShouldOfferClaimedIdentity({
++    remote: p6rIsRemoteAppContext(),
++    serverBoundaryResolved:
++      systemConfig.isSuccess &&
++      systemConfig.data.p6rCurrentPrincipalProfile !== undefined,
++    assurance: systemConfig.data?.p6rCurrentPrincipalProfile?.assurance ?? null,
++    hasClaimedIdentity: identity !== null,
++    dismissed,
++  });
+   if (!open) {
+     return null;
+   }
+diff --git a/apps/app/src/components/settings/IdentitySettingsSection.tsx b/apps/app/src/components/settings/IdentitySettingsSection.tsx
+index 523723a57..1f52c205a 100644
+--- a/apps/app/src/components/settings/IdentitySettingsSection.tsx
++++ b/apps/app/src/components/settings/IdentitySettingsSection.tsx
+@@ -3,6 +3,8 @@ import { p6rNormalizeHandle } from "@bb/domain";
+ import { Button } from "@bb/shared-ui/button";
+ import { Input } from "@bb/shared-ui/input";
+ import { SettingsSection } from "@/components/ui/settings-section";
++import { P6rAvatar } from "@/components/identity/P6rAvatar";
++import { useSystemConfig } from "@/hooks/queries/system-queries";
+ import {
+   p6rClearClaimedIdentity,
+   p6rSetClaimedDisplayName,
+@@ -17,6 +19,12 @@ import {
+  */
+ export function P6rIdentitySettingsSection() {
+   const identity = useP6rClaimedIdentity();
++  const systemConfig = useSystemConfig();
++  const trustedProfile =
++    systemConfig.data?.p6rCurrentPrincipalProfile?.assurance ===
++    "trusted-provider"
++      ? systemConfig.data.p6rCurrentPrincipalProfile
++      : null;
+   const [p6rDisplayName, setDisplayName] = useState(
+     identity?.p6rDisplayName ?? "",
+   );
+@@ -33,6 +41,31 @@ export function P6rIdentitySettingsSection() {
+     p6rSetClaimedDisplayName(p6rDisplayName);
+   };
+ 
++  if (trustedProfile !== null) {
++    return (
++      <SettingsSection
++        title="Identity"
++        description="Your trusted Tailnet identity is supplied by the configured provider. BB uses its provider-qualified principal for attribution, presence, and directed attention."
++      >
++        <div className="flex items-center gap-3">
++          <P6rAvatar
++            p6rDisplayName={trustedProfile.p6rDisplayName}
++            p6rImageUrl={trustedProfile.p6rImageUrl}
++            className="size-10 shrink-0 rounded-full bg-muted text-sm font-medium"
++          />
++          <div className="min-w-0">
++            <p className="truncate text-sm font-medium text-foreground">
++              {trustedProfile.p6rDisplayName}
++            </p>
++            <p className="truncate text-xs text-subtle-foreground/75">
++              @{trustedProfile.p6rHandle} · Trusted Tailnet identity
++            </p>
++          </div>
++        </div>
++      </SettingsSection>
++    );
++  }
++
+   return (
+     <SettingsSection
+       title="Identity"
+diff --git a/apps/app/src/lib/claimed-identity-store.test.ts b/apps/app/src/lib/claimed-identity-store.test.ts
+index 3facfce29..ea5ea6219 100644
+--- a/apps/app/src/lib/claimed-identity-store.test.ts
++++ b/apps/app/src/lib/claimed-identity-store.test.ts
+@@ -6,6 +6,7 @@ import {
+   p6rIsRemoteAppContext,
+   p6rResetClaimedIdentityStoreForTest,
+   p6rSetClaimedDisplayName,
++  p6rShouldOfferClaimedIdentity,
+ } from "./claimed-identity-store";
+ 
+ afterEach(() => {
+@@ -78,4 +79,36 @@ describe("claimed identity store", () => {
+     p6rClearClaimedIdentity();
+     expect(localStorage.getItem("bb.p6rClaimedIdentity")).toBeNull();
+   });
++
++  it.each([
++    ["trusted provider", "trusted-provider", false],
++    ["unclaimed no-provider", null, true],
++    ["claimed mode before a local claim", "claimed", true],
++    ["local operator", "local-operator", true],
++  ] as const)(
++    "keeps the claim prompt assurance-aware for %s",
++    (_label, assurance, expected) => {
++      expect(
++        p6rShouldOfferClaimedIdentity({
++          remote: true,
++          serverBoundaryResolved: true,
++          assurance,
++          hasClaimedIdentity: false,
++          dismissed: false,
++        }),
++      ).toBe(expected);
++    },
++  );
++
++  it("does not offer a claim before the server boundary resolves", () => {
++    expect(
++      p6rShouldOfferClaimedIdentity({
++        remote: true,
++        serverBoundaryResolved: false,
++        assurance: null,
++        hasClaimedIdentity: false,
++        dismissed: false,
++      }),
++    ).toBe(false);
++  });
+ });
+diff --git a/apps/app/src/lib/claimed-identity-store.ts b/apps/app/src/lib/claimed-identity-store.ts
+index a1a24931e..4b28eb9d4 100644
+--- a/apps/app/src/lib/claimed-identity-store.ts
++++ b/apps/app/src/lib/claimed-identity-store.ts
+@@ -35,6 +35,22 @@ export function p6rIsRemoteAppContext(): boolean {
+   );
+ }
+ 
++export function p6rShouldOfferClaimedIdentity(args: {
++  remote: boolean;
++  serverBoundaryResolved: boolean;
++  assurance: "trusted-provider" | "claimed" | "local-operator" | null;
++  hasClaimedIdentity: boolean;
++  dismissed: boolean;
++}): boolean {
++  return (
++    args.remote &&
++    args.serverBoundaryResolved &&
++    args.assurance !== "trusted-provider" &&
++    !args.hasClaimedIdentity &&
++    !args.dismissed
++  );
++}
++
+ function readStorage(key: string): string | null {
+   try {
+     return localStorage.getItem(key);
+diff --git a/apps/app/src/lib/system-config-atoms.ts b/apps/app/src/lib/system-config-atoms.ts
+index 80efa1e4c..fc77ddec8 100644
+--- a/apps/app/src/lib/system-config-atoms.ts
++++ b/apps/app/src/lib/system-config-atoms.ts
+@@ -16,6 +16,7 @@ import { wsManager } from "./ws";
+ 
+ // Offline/unavailable app behavior should fail closed independently of server defaults.
+ const unavailableSystemConfig: SystemConfigResponse = {
++  p6rCurrentPrincipalProfile: null,
+   generalSettings: defaultAppSettings,
+   keybindings: [],
+   defaultKeybindings: [],
+diff --git a/apps/server/src/routes/system.ts b/apps/server/src/routes/system.ts
+index 355fe6294..6142263c9 100644
+--- a/apps/server/src/routes/system.ts
++++ b/apps/server/src/routes/system.ts
+@@ -20,6 +20,7 @@ import {
+   resolveCodeTheme,
+   type AppKeybindingOverrides,
+   type AppTheme,
++  type P6rActorSnapshot,
+ } from "@bb/domain";
+ import {
+   publicApiRoutes,
+@@ -29,6 +30,10 @@ import {
+ import type { Hono } from "hono";
+ import type { ServerAppDeps, ServerRuntimeConfig } from "../types.js";
+ import type { PluginService } from "../services/plugins/plugin-service.js";
++import {
++  P6R_LOCAL_OPERATOR_PROVIDER_ID,
++  p6rPrincipalKeyForActor,
++} from "../services/identity.js";
+ import { ApiError } from "../errors.js";
+ import {
+   resolveVoiceTranscriptionEnabled,
+@@ -151,7 +156,10 @@ export function registerSystemRoutes(
+     return resolveAppTheme(themeRoot, themeId, faviconColor);
+   }
+ 
+-  async function buildSystemConfigResponse(serverUrl: string) {
++  async function buildSystemConfigResponse(
++    serverUrl: string,
++    p6rCurrentPrincipal: P6rActorSnapshot | null,
++  ) {
+     const keybindingOverrides = readAppKeybindingOverrides();
+     const primaryHostId = resolvePrimaryHostId(deps);
+     const localHelperPorts = [
+@@ -161,6 +169,20 @@ export function registerSystemRoutes(
+       ]),
+     ];
+     return {
++      p6rCurrentPrincipalProfile:
++        p6rCurrentPrincipal === null
++          ? null
++          : {
++              p6rPrincipalKey: p6rPrincipalKeyForActor(p6rCurrentPrincipal),
++              ...p6rCurrentPrincipal,
++              assurance:
++                p6rCurrentPrincipal.p6rProviderId === "claimed"
++                  ? ("claimed" as const)
++                  : p6rCurrentPrincipal.p6rProviderId ===
++                      P6R_LOCAL_OPERATOR_PROVIDER_ID
++                    ? ("local-operator" as const)
++                    : ("trusted-provider" as const),
++            },
+       generalSettings: getAppSettings(deps.db),
+       keybindings: applyAppKeybindingOverrides(
+         DEFAULT_APP_KEYBINDINGS,
+@@ -191,7 +213,15 @@ export function registerSystemRoutes(
+ 
+   get(routes.config, async (context) => {
+     const serverUrl = resolveSystemServerUrl(context.req, deps.config);
+-    return context.json(await buildSystemConfigResponse(serverUrl));
++    return context.json(
++      await buildSystemConfigResponse(
++        serverUrl,
++        (context.get("p6rRequestPrincipal") as
++          | P6rActorSnapshot
++          | null
++          | undefined) ?? null,
++      ),
++    );
+   });
+ 
+   put(routes.generalSettings, (context, payload) => {
+diff --git a/apps/server/test/system/general-settings.test.ts b/apps/server/test/system/general-settings.test.ts
+index 361a44ab1..45b205f48 100644
+--- a/apps/server/test/system/general-settings.test.ts
++++ b/apps/server/test/system/general-settings.test.ts
+@@ -4,6 +4,7 @@ import { appSettingsSchema, defaultAppSettings } from "@bb/domain";
+ import { systemConfigResponseSchema } from "@bb/server-contract";
+ import { readJson } from "../helpers/json.js";
+ import { withTestHarness } from "../helpers/test-app.js";
++import { p6rCreateLocalOperatorIdentity } from "../../src/services/actors.js";
+ 
+ describe("general settings", () => {
+   it("defaults general settings in /system/config", async () => {
+@@ -12,6 +13,13 @@ describe("general settings", () => {
+       expect(response.status).toBe(200);
+       const body = systemConfigResponseSchema.parse(await readJson(response));
+       expect(body.generalSettings).toEqual(defaultAppSettings);
++      const localOperator = p6rCreateLocalOperatorIdentity();
++      expect(body.p6rCurrentPrincipalProfile).toMatchObject({
++        p6rPrincipalKey: `local:${localOperator.p6rHandle}`,
++        p6rProviderId: "p6r-local-operator",
++        p6rHandle: localOperator.p6rHandle,
++        assurance: "local-operator",
++      });
+       // A fresh server with no enrolled host is the only null-primary case.
+       expect(body.primaryHostId).toBeNull();
+     });
+diff --git a/packages/server-contract/src/api/system.ts b/packages/server-contract/src/api/system.ts
+index 902c82892..ee462df21 100644
+--- a/packages/server-contract/src/api/system.ts
++++ b/packages/server-contract/src/api/system.ts
+@@ -9,6 +9,7 @@ import {
+   experimentsSchema,
+   featureFlagsSchema,
+   permissionModeSchema,
++  p6rPrincipalKeySchema,
+   pluginThemeMetaSchema,
+   providerInfoSchema,
+ } from "@bb/domain";
+@@ -157,6 +158,24 @@ export type SystemProviderStatesResponse = z.infer<
+ >;
+ 
+ export const systemConfigResponseSchema = z.object({
++  /**
++   * The server-resolved human for this request. Presentation is descriptive;
++   * `p6rPrincipalKey` alone denotes identity. Null means an unclaimed remote
++   * no-provider request, never an authentication fallback.
++   */
++  p6rCurrentPrincipalProfile: z
++    .object({
++      p6rPrincipalKey: p6rPrincipalKeySchema,
++      p6rProviderId: z.string().min(1).max(256),
++      p6rSubject: z.string().min(1).max(512),
++      p6rHandle: z.string().min(1).max(512),
++      p6rDisplayName: z.string().min(1).max(512),
++      p6rImageUrl: z.string().max(2_048).nullable(),
++      assurance: z.enum(["trusted-provider", "claimed", "local-operator"]),
++    })
++    .strict()
++    .nullable()
++    .optional(),
+   /** App-wide Settings → General preferences, persisted server-side. */
+   generalSettings: appSettingsSchema,
+   /** Server-resolved keyboard bindings shared by every connected app window. */
+-- 
+2.43.0
+
