@@ -7,13 +7,14 @@
 3. **Namespace-neutral facet quarantine fixture** keeps the forbidden principal-member-kind declaration witness within the bounded generic facet namespace exception.
 4. **Condensed sidebar participant presentation** makes ordinary web and native rows use ordered avatar groups with lawful initials, accessible name disclosure, and `+N` overflow without visible full-name row text.
 5. **Structured compact command preservation** classifies an authenticated standalone built-in `/compact` selection before host-daemon sender presentation, retaining the existing provider compaction path without executing quoted, raw, attachment-bearing, agent-authored, plugin-origin, surrounding-text, or other slash inputs.
+6. **Deployment fixture contract alignment** updates the demo and provider-parity fixtures to carry the merged nullable authorship fields and managed Rosetta upgrade guidance required by the production TypeScript gate.
 
 ## Exact source receipt
 
 - Upstream: `5205d98a74ed5a22469e521cf1f86b00b8232827`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: five patches in `patches/series`.
-- Result tree: `eb86f654e600b24473203d5c8223e68de10559e0`.
+- Patch queue: six patches in `patches/series`.
+- Result tree: `c3def2a75e53fe161b13bd0cd36e6c7cb8a6ca32`.
 
 ## Compatibility boundaries
 
