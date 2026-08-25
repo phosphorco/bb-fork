@@ -20,11 +20,14 @@ function isThreadListEntryArray(value: unknown): value is ThreadListEntry[] {
 function isInfiniteThreadListData(
   value: unknown,
 ): value is InfiniteData<ThreadListEntry[]> {
+  const pages =
+    typeof value === "object" && value !== null && "pages" in value
+      ? (value as { pages: unknown }).pages
+      : undefined;
   return (
-    typeof value === "object" &&
-    value !== null &&
-    "pages" in value &&
-    Array.isArray((value as { pages: unknown }).pages)
+    Array.isArray(pages) &&
+    pages.length > 0 &&
+    pages.every(isThreadListEntryArray)
   );
 }
 
