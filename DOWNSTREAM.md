@@ -26,12 +26,13 @@
 22. **Server witness alignment** expects escaped provider subjects and server-authored claimed keys, while ordering direct event-table assertions by their declared sequence.
 23. **Principal-key boundary witness** distinguishes provider lease subject encoding from the provider/subject delimiter retained in authenticated request keys.
 24. **Canonical plugin PrincipalKeys** supersedes that differing-key interpretation: provider handles, production HTTP/RPC resolution, and the fake SDK host now derive the same actor key for one registered provider and subject.
+25. **Thread-list cache shape validation** rejects generalized `threads` query entries whose pages are facet response objects or empty participant pages before sidebar cache iteration can treat them as thread arrays.
 
 ## Exact source receipt
 
 - Upstream: `5205d98a74ed5a22469e521cf1f86b00b8232827`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: twenty-four patches in `patches/series`.
+- Patch queue: twenty-five patches in `patches/series`.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries
