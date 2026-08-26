@@ -1,6 +1,10 @@
+import { useLayoutEffect, useRef, useState } from "react";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { PluginSlotMount } from "./PluginSlotMount";
 import { usePluginSlots } from "@/lib/plugin-slots";
+import { usePaneContext } from "@/views/thread-detail/PaneContext";
+
+const COMPACT_THREAD_HEADER_MAX_WIDTH = 880;
 
 /**
  * Plugin `experimental_threadHeaderAction` slots: components rendered in the
@@ -19,11 +23,33 @@ export function PluginThreadHeaderActions({
 }) {
   const { threadHeaderActions } = usePluginSlots();
   const isCompactViewport = useIsCompactViewport();
+  const { isSplitPane } = usePaneContext();
+  const actionsRef = useRef<HTMLSpanElement>(null);
+  const [isCompactPane, setIsCompactPane] = useState(false);
+
+  useLayoutEffect(() => {
+    if (!isSplitPane) {
+      setIsCompactPane(false);
+      return;
+    }
+    const actions = actionsRef.current;
+    const pane = actions?.closest<HTMLElement>("[data-split-pane-id]");
+    if (!pane) return;
+    const measure = () => {
+      setIsCompactPane(
+        pane.getBoundingClientRect().width < COMPACT_THREAD_HEADER_MAX_WIDTH,
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(pane);
+    return () => observer.disconnect();
+  }, [isSplitPane]);
 
   if (threadHeaderActions.length === 0) return null;
 
   return (
-    <>
+    <span ref={actionsRef} className="contents">
       {threadHeaderActions.map((slot) => {
         const Component = slot.component;
         return (
@@ -57,12 +83,12 @@ export function PluginThreadHeaderActions({
               <Component
                 threadId={threadId}
                 projectId={projectId}
-                isCompactViewport={isCompactViewport}
+                isCompactViewport={isCompactViewport || isCompactPane}
               />
             </span>
           </PluginSlotMount>
         );
       })}
-    </>
+    </span>
   );
 }

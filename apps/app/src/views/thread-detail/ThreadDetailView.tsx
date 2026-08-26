@@ -2495,10 +2495,6 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
         gitActions.threadGitActionDialog.onOpen(action.target);
       },
     }));
-  const responsiveHeaderActions = [
-    ...responsiveWorkspaceActions,
-    ...responsiveGitActions,
-  ];
   const workspaceOpenButton =
     workspaceOpenPath && preferredDirectoryTarget ? (
       <ThreadWorkspaceOpenButton
@@ -2526,9 +2522,10 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
         <ThreadActionsMenu
           thread={thread}
           triggerClassName={HEADER_ICON_BUTTON_CLASS}
-          responsiveActions={
-            includeResponsiveActions ? responsiveHeaderActions : undefined
-          }
+          responsiveActions={[
+            ...(includeResponsiveActions ? responsiveWorkspaceActions : []),
+            ...responsiveGitActions,
+          ]}
         />
       )}
       childPillLabel={
@@ -2536,7 +2533,6 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
       }
       isSecondaryPanelOpen={isSecondaryPanelOpen}
       onClosePane={onRequestClose ?? undefined}
-      onOpenThreadGitAction={gitActions.threadGitActionDialog.onOpen}
       onToggleSecondaryPanel={toggleSecondaryPanel}
       pluginActions={
         <PluginThreadHeaderActions
@@ -2547,7 +2543,6 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
       p6rPresenceIndicator={
         <P6rThreadPresenceHeaderAvatars threadId={thread.id} />
       }
-      threadHeaderGitActions={gitActions.threadHeaderGitActions}
       threadId={thread.id}
       threadTitle={threadTitle}
       workspaceOpenButton={workspaceOpenButton}

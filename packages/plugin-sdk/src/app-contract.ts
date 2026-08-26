@@ -152,8 +152,9 @@ export interface PluginThreadHeaderActionProps {
   threadId: string;
   projectId: string;
   /**
-   * True on phone-width viewports and coarse pointers. Collapse to an
-   * icon-sized control when it is true — the row is short.
+   * True when the viewport or containing split pane leaves limited header
+   * space. Collapse to an icon-sized control when it is true — the row is
+   * short and the thread title keeps priority.
    */
   isCompactViewport: boolean;
 }
