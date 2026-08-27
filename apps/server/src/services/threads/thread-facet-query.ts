@@ -3,13 +3,18 @@ import {
   ensureCoreParticipantsProjection,
   getOrCreateThreadFacetCursorSigningKey,
   getThreadSectionById,
+  listLastStoredTurnRequestEventsByThreadIds,
   listCoreParticipantProfilePage,
+  listProjectExecutionDefaultsByProjectIds,
   listThreadFacetOwnerProjections,
+  listThreadExecutionOverridesByThreadIds,
+  listThreadExecutionProjectionRowsByIds,
   listThreadIdsForFacetProjection,
   listThreadsWithPendingInteractionStateByIds,
   queryThreadFacetThreadIds,
   ThreadFacetInvariantError,
   type DbConnection,
+  type DbQueryConnection,
   type ThreadFacetQueryPosition,
 } from "@bb/db";
 import {
@@ -19,8 +24,10 @@ import {
   type ThreadFacetFilter,
   type ThreadFacetQueryRequest,
   type ThreadFacetTypeId,
+  type ReasoningLevel,
 } from "@bb/domain";
 import type {
+  ExperimentalThreadExecutionSummary,
   ThreadFacetParticipantsResponse,
   ThreadFacetQueryResponse,
 } from "@bb/server-contract";
@@ -32,6 +39,8 @@ import {
 } from "../lib/entity-lookup.js";
 import type { AppDeps } from "../../types.js";
 import { toThreadListEntryResponses } from "./thread-runtime-display.js";
+import { DEFAULT_REASONING_LEVEL } from "./thread-default-policy.js";
+import { parseStoredTurnRequestEvent } from "./thread-events.js";
 
 const THREAD_FACET_QUERY_REQUEST_MAX_BYTES = 16 * 1024;
 const THREAD_FACET_CURSOR_MAX_BYTES = 4 * 1024;
@@ -172,6 +181,7 @@ function queryDigest(args: {
   pageSize: number;
   principalKey: string;
   scope: ThreadFacetQueryRequest["scope"];
+  includeExecution: boolean;
 }): string {
   return digest(
     JSON.stringify({
@@ -181,8 +191,138 @@ function queryDigest(args: {
       order: args.order ?? null,
       pageSize: args.pageSize,
       completeness: args.completeness,
+      includeExecution: args.includeExecution,
     }),
   );
+}
+
+interface ThreadExecutionProjectionInput {
+  environmentId: string | null;
+  environmentUpdatedAt: number | null;
+  executionRevision: number;
+  hostId: string | null;
+  id: string;
+  path: string | null;
+  projectId: string;
+  providerId: string;
+}
+
+export function buildThreadExecutionProjection(
+  deps: { db: DbQueryConnection },
+  threads: readonly ThreadExecutionProjectionInput[],
+): Map<string, ExperimentalThreadExecutionSummary> {
+  const summaries = new Map<string, ExperimentalThreadExecutionSummary>();
+  const threadIds = threads.map(({ id }) => id);
+  const overrides = listThreadExecutionOverridesByThreadIds(deps.db, threadIds);
+  const projectDefaults = listProjectExecutionDefaultsByProjectIds(deps.db, {
+    projectIds: threads.map(({ projectId }) => projectId),
+  });
+  const lastRows = new Map(
+    listLastStoredTurnRequestEventsByThreadIds(deps.db, { threadIds }).map(
+      (row) => [row.threadId, row],
+    ),
+  );
+
+  for (const thread of threads) {
+    const override = overrides.get(thread.id) ?? {
+      executionRevision: thread.executionRevision,
+      modelOverride: null,
+      reasoningLevelOverride: null,
+    };
+    const projectDefault = projectDefaults.get(thread.projectId);
+    const matchingProjectDefault =
+      projectDefault?.providerId === thread.providerId ? projectDefault : null;
+    const lastRow = lastRows.get(thread.id);
+    let malformedHistory = false;
+    let lastExecution:
+      | ReturnType<typeof parseStoredTurnRequestEvent>["execution"]
+      | null = null;
+    if (lastRow !== undefined) {
+      try {
+        lastExecution = parseStoredTurnRequestEvent(lastRow).execution;
+      } catch {
+        malformedHistory = true;
+      }
+    }
+
+    const modelResolution = override.modelOverride
+      ? { model: override.modelOverride, source: "thread-override" as const }
+      : lastExecution?.model
+        ? { model: lastExecution.model, source: "last-turn" as const }
+        : matchingProjectDefault?.model
+          ? {
+              model: matchingProjectDefault.model,
+              source: "project-default" as const,
+            }
+          : null;
+    const effectiveReasoningLevel: ReasoningLevel =
+      override.reasoningLevelOverride ??
+      lastExecution?.reasoningLevel ??
+      matchingProjectDefault?.reasoningLevel ??
+      DEFAULT_REASONING_LEVEL;
+    const reasoningSource =
+      override.reasoningLevelOverride !== null
+        ? "thread-override"
+        : lastExecution?.reasoningLevel
+          ? "last-turn"
+          : matchingProjectDefault?.reasoningLevel
+            ? "project-default"
+            : "builtin-default";
+    const witness = digest(
+      JSON.stringify({
+        executionRevision: override.executionRevision,
+        environmentId: thread.environmentId,
+        environmentUpdatedAt: thread.environmentUpdatedAt,
+        hostId: thread.hostId,
+        workspacePath: thread.path,
+        providerId: thread.providerId,
+        modelOverride: override.modelOverride,
+        reasoningLevelOverride: override.reasoningLevelOverride,
+        latestRequestSequence: lastRow?.sequence ?? null,
+        lastExecution: malformedHistory ? "malformed" : lastExecution,
+        projectDefault: matchingProjectDefault,
+      }),
+    );
+    const base = {
+      providerId: thread.providerId,
+      projectId: thread.projectId,
+      environmentId: thread.environmentId,
+      hostId: thread.hostId,
+      workspacePath: thread.path,
+      effectiveReasoningLevel,
+      modelOverride: override.modelOverride,
+      reasoningLevelOverride: override.reasoningLevelOverride,
+      reasoningSource,
+      latestRequestSequence: lastRow?.sequence ?? null,
+      witness,
+    } as const;
+    summaries.set(
+      thread.id,
+      malformedHistory
+        ? {
+            ...base,
+            state: "unresolved",
+            effectiveModel: null,
+            modelSource: "unresolved",
+            issue: "malformed-history",
+          }
+        : modelResolution === null
+          ? {
+              ...base,
+              state: "unresolved",
+              effectiveModel: null,
+              modelSource: "unresolved",
+              issue: "missing-model",
+            }
+          : {
+              ...base,
+              state: "resolved",
+              effectiveModel: modelResolution.model,
+              modelSource: modelResolution.source,
+            },
+    );
+  }
+  return summaries;
 }
 
 function decodeQueryCursor(
@@ -316,6 +456,7 @@ export function executeThreadFacetQuery(
       order: args.request.order,
       pageSize: args.request.pageSize,
       completeness,
+      includeExecution: args.request.experimental_includeExecution ?? false,
     });
     const after = decodeQueryCursor(
       args.request.cursor,
@@ -343,6 +484,15 @@ export function executeThreadFacetQuery(
       threads: orderedThreads,
       includeParticipants: false,
     });
+    const executionByThreadId = args.request.experimental_includeExecution
+      ? buildThreadExecutionProjection(
+          deps,
+          listThreadExecutionProjectionRowsByIds(
+            deps.db,
+            orderedThreads.map(({ id }) => id),
+          ).map((row) => ({ ...row, id: row.threadId })),
+        )
+      : null;
     const principal = requestPrincipalKey(args.actor);
     const threads = entries.map((thread) => {
       const participantPage = listCoreParticipantProfilePage(deps.db, {
@@ -355,6 +505,11 @@ export function executeThreadFacetQuery(
       });
       return {
         ...thread,
+        ...(executionByThreadId === null
+          ? {}
+          : {
+              experimental_execution: executionByThreadId.get(thread.id),
+            }),
         participantSummary: {
           totalCount: participantPage.totalCount,
           profiles: [...participantPage.profiles],

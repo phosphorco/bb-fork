@@ -5,7 +5,7 @@ import type {
   ReasoningLevel,
   ServiceTier,
 } from "@bb/domain";
-import type { DbConnection } from "../connection.js";
+import type { DbConnection, DbQueryConnection } from "../connection.js";
 import { projectExecutionDefaults } from "../schema.js";
 
 export interface GetProjectExecutionDefaultsArgs {
@@ -14,6 +14,10 @@ export interface GetProjectExecutionDefaultsArgs {
 
 export interface ListProjectExecutionDefaultsByProjectIdsArgs {
   projectIds: readonly string[];
+}
+
+export interface ProjectExecutionDefaultsProjection extends ProjectExecutionDefaults {
+  updatedAt: number;
 }
 
 export interface UpsertProjectExecutionDefaultsArgs extends GetProjectExecutionDefaultsArgs {
@@ -45,10 +49,10 @@ export function getProjectExecutionDefaults(
 }
 
 export function listProjectExecutionDefaultsByProjectIds(
-  db: DbConnection,
+  db: DbQueryConnection,
   args: ListProjectExecutionDefaultsByProjectIdsArgs,
-): Map<string, ProjectExecutionDefaults> {
-  const byProjectId = new Map<string, ProjectExecutionDefaults>();
+): Map<string, ProjectExecutionDefaultsProjection> {
+  const byProjectId = new Map<string, ProjectExecutionDefaultsProjection>();
   if (args.projectIds.length === 0) {
     return byProjectId;
   }
@@ -61,6 +65,7 @@ export function listProjectExecutionDefaultsByProjectIds(
       reasoningLevel: projectExecutionDefaults.reasoningLevel,
       permissionMode: projectExecutionDefaults.permissionMode,
       serviceTier: projectExecutionDefaults.serviceTier,
+      updatedAt: projectExecutionDefaults.updatedAt,
     })
     .from(projectExecutionDefaults)
     .where(inArray(projectExecutionDefaults.projectId, [...args.projectIds]))

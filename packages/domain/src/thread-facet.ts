@@ -173,6 +173,16 @@ export const threadFacetListScopeSchema = z
     hasParent: z.boolean().optional(),
     originKind: threadOriginKindSchema.optional(),
     originPluginId: z.string().min(1).optional(),
+    /**
+     * Server-side lower bound for attention surfaces. Keeping this in the
+     * signed facet scope prevents clients from fetching an unbounded history
+     * and filtering it after hydration.
+     */
+    experimental_latestAttentionAtOrAfter: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional(),
   })
   .strict();
 export type ThreadFacetListScope = z.infer<typeof threadFacetListScopeSchema>;
@@ -184,6 +194,8 @@ export const threadFacetQueryRequestSchema = z
     order: threadFacetOrderSchema.optional(),
     pageSize: z.number().int().min(1).max(100).default(50),
     cursor: z.string().max(4096).optional(),
+    /** Include the batch-resolved next-turn model state on each thread row. */
+    experimental_includeExecution: z.boolean().optional(),
   })
   .strict();
 export type ThreadFacetQueryRequest = z.infer<

@@ -1393,6 +1393,48 @@ describe("createRealtimeCacheEffects", () => {
     effects.dispose();
   });
 
+  it("invalidates every affected execution query from one aggregate batch change", async () => {
+    vi.useFakeTimers();
+    const { effects, queryClient } = createRealtimeEffectsTestContext();
+    const firstKey = threadDefaultExecutionOptionsQueryKey("thr_1");
+    const secondKey = threadDefaultExecutionOptionsQueryKey("thr_2");
+    queryClient.setQueryData(firstKey, { model: "fable" });
+    queryClient.setQueryData(secondKey, { model: "luna" });
+    const firstQueryFn = vi.fn(async () => ({ model: "opus" }));
+    const secondQueryFn = vi.fn(async () => ({ model: "opus" }));
+    const firstObserver = new QueryObserver(queryClient, {
+      queryKey: firstKey,
+      queryFn: firstQueryFn,
+      staleTime: Infinity,
+    });
+    const secondObserver = new QueryObserver(queryClient, {
+      queryKey: secondKey,
+      queryFn: secondQueryFn,
+      staleTime: Infinity,
+    });
+    const unsubscribeFirst = firstObserver.subscribe(() => {});
+    const unsubscribeSecond = secondObserver.subscribe(() => {});
+    firstQueryFn.mockClear();
+    secondQueryFn.mockClear();
+
+    effects.handleChanged({
+      type: "changed",
+      entity: "thread",
+      metadata: {
+        projectId: "project-1",
+        threadIds: ["thr_1", "thr_2"],
+      },
+      changes: ["execution-options-changed"],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(firstQueryFn).toHaveBeenCalledTimes(1);
+    expect(secondQueryFn).toHaveBeenCalledTimes(1);
+    unsubscribeFirst();
+    unsubscribeSecond();
+    effects.dispose();
+  });
+
   it("does not invalidate timeline queries for status-only thread changes", () => {
     const { effects, queryClient } = createRealtimeEffectsTestContext();
     const timelineKey = threadTimelineQueryKey("thr_1");

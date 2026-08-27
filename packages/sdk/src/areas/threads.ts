@@ -27,6 +27,10 @@ import type {
   ThreadFacetParticipantsResponse,
   ThreadFacetQueryRequest,
   ThreadFacetQueryResponse,
+  ExperimentalThreadExecutionPreflightRequest,
+  ExperimentalThreadExecutionPreflightResponse as ExperimentalThreadExecutionPreflightWireResponse,
+  ExperimentalThreadExecutionApplyRequest,
+  ExperimentalThreadExecutionApplyResponse as ExperimentalThreadExecutionApplyWireResponse,
   ThreadOpenResponse,
   ThreadPaneAction,
   ThreadPaneActionResponse,
@@ -91,6 +95,7 @@ export interface ThreadFacetQueryArgs {
   order?: ThreadFacetQueryRequest["order"];
   pageSize?: number;
   scope?: ThreadFacetQueryRequest["scope"];
+  experimental_includeExecution?: boolean;
   signal?: AbortSignal;
 }
 
@@ -119,6 +124,14 @@ export type ThreadGetResult = ThreadResponse | ThreadWithIncludesResponse;
 export type ThreadListResult = ThreadListResponse;
 export type ThreadFacetQueryResult = ThreadFacetQueryResponse;
 export type ThreadFacetParticipantsResult = ThreadFacetParticipantsResponse;
+export type ExperimentalThreadExecutionPreflightArgs =
+  ExperimentalThreadExecutionPreflightRequest & { signal?: AbortSignal };
+export type ExperimentalThreadExecutionApplyArgs =
+  ExperimentalThreadExecutionApplyRequest & { signal?: AbortSignal };
+export type ExperimentalThreadExecutionPreflightResponse =
+  ExperimentalThreadExecutionPreflightWireResponse;
+export type ExperimentalThreadExecutionApplyResponse =
+  ExperimentalThreadExecutionApplyWireResponse;
 export type ThreadSearchResult = ThreadSearchResponse;
 export type ThreadResolveMentionsResult = ResolveThreadMentionsResponse;
 export interface ThreadOutputResponse {
@@ -470,6 +483,12 @@ export interface ThreadsArea {
   interactions: ThreadInteractionsArea;
   list(args?: ThreadListArgs): Promise<ThreadListResult>;
   queryFacets(args?: ThreadFacetQueryArgs): Promise<ThreadFacetQueryResult>;
+  experimental_preflightExecutionOverrides(
+    args: ExperimentalThreadExecutionPreflightArgs,
+  ): Promise<ExperimentalThreadExecutionPreflightResponse>;
+  experimental_applyExecutionOverrides(
+    args: ExperimentalThreadExecutionApplyArgs,
+  ): Promise<ExperimentalThreadExecutionApplyResponse>;
   facetParticipants(
     args: ThreadFacetParticipantsArgs,
   ): Promise<ThreadFacetParticipantsResult>;
@@ -1000,11 +1019,35 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
               scope: input?.scope ?? {},
               filters: input?.filters ?? [],
               pageSize: input?.pageSize ?? 50,
+              ...(input?.experimental_includeExecution === undefined
+                ? {}
+                : {
+                    experimental_includeExecution:
+                      input.experimental_includeExecution,
+                  }),
               ...(input?.order === undefined ? {} : { order: input.order }),
               ...(input?.cursor === undefined ? {} : { cursor: input.cursor }),
             },
           },
           ...signalRequestArgs(input?.signal),
+        ),
+      );
+    },
+    async experimental_preflightExecutionOverrides(input) {
+      const { signal, ...request } = input;
+      return transport.readJson(
+        transport.api.v1.threads["execution-overrides"].preflight.$post(
+          { json: request },
+          ...signalRequestArgs(signal),
+        ),
+      );
+    },
+    async experimental_applyExecutionOverrides(input) {
+      const { signal, ...request } = input;
+      return transport.readJson(
+        transport.api.v1.threads["execution-overrides"].apply.$post(
+          { json: request },
+          ...signalRequestArgs(signal),
         ),
       );
     },

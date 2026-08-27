@@ -135,6 +135,9 @@ function mergeThreadChangeMetadata({
   const hasPendingInteraction =
     next.hasPendingInteraction ?? current?.hasPendingInteraction;
   const projectId = next.projectId ?? current?.projectId;
+  const threadIds = Array.from(
+    new Set([...(current?.threadIds ?? []), ...(next.threadIds ?? [])]),
+  );
   const statusChange = statusChanged
     ? next.statusChange
     : (next.statusChange ?? current?.statusChange);
@@ -150,6 +153,9 @@ function mergeThreadChangeMetadata({
   }
   if (projectId !== undefined) {
     metadata.projectId = projectId;
+  }
+  if (threadIds.length > 0) {
+    metadata.threadIds = threadIds;
   }
   if (statusChange !== undefined) {
     metadata.statusChange = statusChange;
@@ -202,6 +208,7 @@ function flushThreadInvalidations(
         queryClient,
         statusChange: undefined,
         threadId: undefined,
+        threadIds: undefined,
       },
       handlers: REALTIME_THREAD_CHANGE_REGISTRY[changeKind].dirty,
     });
@@ -220,6 +227,7 @@ function flushThreadInvalidations(
           queryClient,
           statusChange: metadata?.statusChange,
           threadId,
+          threadIds: undefined,
         },
         handlers: REALTIME_THREAD_CHANGE_REGISTRY[changeKind].dirty,
       });
@@ -270,6 +278,7 @@ function applyImmediateThreadChanges({
         queryClient,
         statusChange: merged?.statusChange,
         threadId: id,
+        threadIds: metadata?.threadIds,
       },
       handlers: REALTIME_THREAD_CHANGE_REGISTRY[changeKind].dirty,
     });
@@ -298,6 +307,21 @@ function recordThreadChange(
           current: state.metadataByThreadId.get(message.id),
           next: message.metadata ?? {},
           statusChanged,
+        }),
+      );
+    }
+    return;
+  }
+
+  if (message.metadata?.threadIds) {
+    for (const threadId of message.metadata.threadIds) {
+      mergeThreadChanges({ changes: message.changes, state, threadId });
+      state.metadataByThreadId.set(
+        threadId,
+        mergeThreadChangeMetadata({
+          current: state.metadataByThreadId.get(threadId),
+          next: message.metadata,
+          statusChanged: message.changes.includes("status-changed"),
         }),
       );
     }
@@ -530,7 +554,10 @@ export function createRealtimeCacheEffects({
               // An id-less message dirties globally; its handlers must see
               // undefined metadata exactly like the flush's global path, so
               // a stray projectId cannot narrow the invalidation.
-              metadata: message.id ? message.metadata : undefined,
+              metadata:
+                message.id || message.metadata?.threadIds
+                  ? message.metadata
+                  : undefined,
               queryClient,
             });
           }

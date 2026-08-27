@@ -1739,6 +1739,77 @@ export interface ThreadExecutionOverride {
   reasoningLevelOverride: ReasoningLevel | null;
 }
 
+export interface ThreadExecutionOverrideRow extends ThreadExecutionOverride {
+  executionRevision: number;
+  threadId: string;
+}
+
+export interface ThreadExecutionProjectionRow extends ThreadExecutionOverrideRow {
+  environmentId: string | null;
+  environmentUpdatedAt: number | null;
+  hostId: string | null;
+  path: string | null;
+  projectId: string;
+  providerId: string;
+}
+
+export function listThreadExecutionProjectionRowsByIds(
+  db: DbQueryConnection,
+  threadIds: readonly string[],
+): ThreadExecutionProjectionRow[] {
+  if (threadIds.length === 0) {
+    return [];
+  }
+  return db
+    .select({
+      threadId: threads.id,
+      environmentId: threads.environmentId,
+      environmentUpdatedAt: environments.updatedAt,
+      hostId: environments.hostId,
+      path: environments.path,
+      projectId: threads.projectId,
+      providerId: threads.providerId,
+      executionRevision: threads.executionRevision,
+      modelOverride: threads.modelOverride,
+      reasoningLevelOverride: threads.reasoningLevelOverride,
+    })
+    .from(threads)
+    .innerJoin(projects, eq(projects.id, threads.projectId))
+    .leftJoin(environments, eq(environments.id, threads.environmentId))
+    .where(
+      and(
+        inArray(threads.id, [...new Set(threadIds)]),
+        isNull(threads.deletedAt),
+        isNull(projects.deletedAt),
+      ),
+    )
+    .all();
+}
+
+export function listThreadExecutionOverridesByThreadIds(
+  db: DbQueryConnection,
+  threadIds: readonly string[],
+): Map<string, ThreadExecutionOverrideRow> {
+  const byThreadId = new Map<string, ThreadExecutionOverrideRow>();
+  if (threadIds.length === 0) {
+    return byThreadId;
+  }
+  const rows = db
+    .select({
+      threadId: threads.id,
+      executionRevision: threads.executionRevision,
+      modelOverride: threads.modelOverride,
+      reasoningLevelOverride: threads.reasoningLevelOverride,
+    })
+    .from(threads)
+    .where(inArray(threads.id, [...new Set(threadIds)]))
+    .all();
+  for (const row of rows) {
+    byThreadId.set(row.threadId, row);
+  }
+  return byThreadId;
+}
+
 export function getThreadExecutionOverride(
   db: ThreadWriteConnection,
   id: string,
@@ -1760,28 +1831,102 @@ export interface SetThreadExecutionOverrideInput {
   reasoningLevelOverride?: ReasoningLevel | null;
 }
 
+export interface SetThreadExecutionOverrideBatchInput {
+  expectedExecutionRevision: number;
+  expectedModelOverride: string | null;
+  expectedReasoningLevelOverride: ReasoningLevel | null;
+  modelOverride: string | null;
+  reasoningLevelOverride: ReasoningLevel | null;
+  threadId: string;
+}
+
+const THREAD_EXECUTION_OVERRIDE_BATCH_SIZE = 200;
+
+/**
+ * Applies final override values with a bounded set-based CAS. SQLite's
+ * variable ceiling prevents one 5,000-row VALUES clause, so a maximum-size
+ * request uses 25 UPDATE statements instead of one UPDATE per thread.
+ */
+export function setThreadExecutionOverridesBatch(
+  db: ThreadWriteConnection,
+  inputs: readonly SetThreadExecutionOverrideBatchInput[],
+): Set<string> {
+  const changedThreadIds = new Set<string>();
+  const now = Date.now();
+  for (
+    let offset = 0;
+    offset < inputs.length;
+    offset += THREAD_EXECUTION_OVERRIDE_BATCH_SIZE
+  ) {
+    const batch = inputs.slice(
+      offset,
+      offset + THREAD_EXECUTION_OVERRIDE_BATCH_SIZE,
+    );
+    const values = batch.map(
+      (input) => sql`(
+        ${input.threadId},
+        ${input.expectedExecutionRevision},
+        ${input.expectedModelOverride},
+        ${input.expectedReasoningLevelOverride},
+        ${input.modelOverride},
+        ${input.reasoningLevelOverride}
+      )`,
+    );
+    const rows = db.all<{ id: string }>(sql`
+      WITH requested(
+        thread_id,
+        expected_execution_revision,
+        expected_model_override,
+        expected_reasoning_level_override,
+        next_model_override,
+        next_reasoning_level_override
+      ) AS (VALUES ${sql.join(values, sql`, `)})
+      UPDATE threads
+      SET
+        model_override = requested.next_model_override,
+        reasoning_level_override = requested.next_reasoning_level_override,
+        execution_revision = threads.execution_revision + 1,
+        updated_at = CASE
+          WHEN threads.updated_at >= ${now} THEN threads.updated_at + 1
+          ELSE ${now}
+        END
+      FROM requested
+      WHERE threads.id = requested.thread_id
+        AND threads.deleted_at IS NULL
+        AND threads.execution_revision = requested.expected_execution_revision
+        AND threads.model_override IS requested.expected_model_override
+        AND threads.reasoning_level_override IS requested.expected_reasoning_level_override
+      RETURNING threads.id AS id
+    `);
+    for (const row of rows) changedThreadIds.add(row.id);
+  }
+  return changedThreadIds;
+}
+
 /**
  * Persists the sticky, thread-level execution override. Presence-sensitive:
  * an omitted field is left unchanged, an explicit `null` clears it. Kept off
  * the generic `updateThread` helper because execution config must not flow
- * through generic metadata updates. No realtime notification is emitted: the
- * override is consumed by the next turn's `resolveExecutionOptions`, and no
- * client surface renders it yet (UI surfacing is a follow-up).
+ * through generic metadata updates. Notification belongs to the service so a
+ * transaction can publish only after commit.
  */
 export function setThreadExecutionOverride(
   db: ThreadWriteConnection,
   input: SetThreadExecutionOverrideInput,
 ) {
-  const set: Partial<typeof threads.$inferInsert> = { updatedAt: Date.now() };
-  if ("modelOverride" in input) {
-    set.modelOverride = input.modelOverride;
-  }
-  if ("reasoningLevelOverride" in input) {
-    set.reasoningLevelOverride = input.reasoningLevelOverride;
-  }
+  const now = Date.now();
   const updated = db
     .update(threads)
-    .set(set)
+    .set({
+      updatedAt: sql`CASE WHEN ${threads.updatedAt} >= ${now} THEN ${threads.updatedAt} + 1 ELSE ${now} END`,
+      executionRevision: sql`${threads.executionRevision} + 1`,
+      ...(input.modelOverride === undefined
+        ? {}
+        : { modelOverride: input.modelOverride }),
+      ...(input.reasoningLevelOverride === undefined
+        ? {}
+        : { reasoningLevelOverride: input.reasoningLevelOverride }),
+    })
     .where(eq(threads.id, input.threadId))
     .returning()
     .get();

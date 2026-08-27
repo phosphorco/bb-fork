@@ -321,6 +321,24 @@ function dropThreadFacetMigrationState(db: DbConnection): void {
     .run(threadFacetMigrationWhen);
 }
 
+function dropThreadExecutionMigrationState(db: DbConnection): void {
+  db.$client.exec(`
+    DROP INDEX IF EXISTS threads_project_attention_idx;
+    DROP INDEX IF EXISTS threads_attention_idx;
+  `);
+  const columns = new Set(
+    db.$client
+      .prepare<[], TableInfoRow>("PRAGMA table_info(threads)")
+      .all()
+      .map((column) => column.name),
+  );
+  for (const column of ["execution_revision"]) {
+    if (columns.has(column)) {
+      db.$client.prepare(`ALTER TABLE threads DROP COLUMN ${column}`).run();
+    }
+  }
+}
+
 function dropIdentityMigrationState(db: DbConnection): void {
   dropThreadFacetMigrationState(db);
   // 0107 adds the provider-qualified actor table and canonical snapshot
@@ -381,6 +399,7 @@ function dropRewindAddedTables(db: DbConnection): void {
   db.$client.prepare("DROP TABLE IF EXISTS plugin_kv").run();
   db.$client.prepare("DROP TABLE IF EXISTS plugin_settings").run();
   db.$client.prepare("DROP TABLE IF EXISTS plugin_schedules").run();
+  dropThreadExecutionMigrationState(db);
   dropIdentityMigrationState(db);
   db.$client
     .prepare("ALTER TABLE hosts DROP COLUMN last_rejected_protocol_version")
@@ -928,6 +947,7 @@ function dropQueuedMessageSenderThreadIdColumn(db: DbConnection): void {
 /** Tables created by migrations after 0023, dropped so migrate() re-applies. */
 function dropPost0023Tables(db: DbConnection): void {
   dropEventParentToolCallIdColumn(db);
+  dropThreadExecutionMigrationState(db);
   dropIdentityMigrationState(db);
   dropEnvironmentRetireRequestedAtColumn(db);
   dropPluginArtifactGitCheckoutRootColumn(db);
@@ -2555,6 +2575,7 @@ describe("migrate", () => {
       dropPluginArtifactGitCheckoutRootColumn(db);
       dropMarketplaceCatalogSchema(db);
       dropEventParentToolCallIdColumn(db);
+      dropThreadExecutionMigrationState(db);
       dropIdentityMigrationState(db);
 
       restoreLegacyThreadOriginColumn(db);
@@ -2966,6 +2987,7 @@ describe("migrate", () => {
       dropPluginArtifactGitCheckoutRootColumn(db);
       dropMarketplaceCatalogSchema(db);
       dropEventParentToolCallIdColumn(db);
+      dropThreadExecutionMigrationState(db);
       dropIdentityMigrationState(db);
 
       restoreLegacyThreadOriginColumn(db);
@@ -3068,6 +3090,7 @@ describe("migrate", () => {
       dropPluginArtifactGitCheckoutRootColumn(db);
       dropMarketplaceCatalogSchema(db);
       dropEventParentToolCallIdColumn(db);
+      dropThreadExecutionMigrationState(db);
       dropIdentityMigrationState(db);
 
       restoreLegacyThreadOriginColumn(db);
@@ -5663,6 +5686,7 @@ describe("migrate", () => {
       });
 
       dropEventParentToolCallIdColumn(db);
+      dropThreadExecutionMigrationState(db);
       dropThreadFacetMigrationState(db);
       db.$client
         .prepare<DeleteMigrationParameters>(

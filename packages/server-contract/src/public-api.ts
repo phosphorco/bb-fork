@@ -182,6 +182,10 @@ import type {
   ThreadFacetParticipantsResponse,
   ThreadFacetQueryRequest,
   ThreadFacetQueryResponse,
+  ExperimentalThreadExecutionPreflightRequest,
+  ExperimentalThreadExecutionPreflightResponse,
+  ExperimentalThreadExecutionApplyRequest,
+  ExperimentalThreadExecutionApplyResponse,
   ThreadConversationOutlineResponse,
   ThreadOpenRequest,
   ThreadOpenResponse,
@@ -299,6 +303,8 @@ import {
   threadListQuerySchema,
   threadFacetParticipantsQuerySchema,
   threadFacetQueryRequestSchema,
+  experimentalThreadExecutionPreflightRequestSchema,
+  experimentalThreadExecutionApplyRequestSchema,
   threadOpenRequestSchema,
   threadPaneActionRequestSchema,
   threadSearchQuerySchema,
@@ -944,6 +950,23 @@ export const publicApiRoutes = {
         threadFacetQueryRequestSchema,
       ),
       response: jsonResponse<ThreadFacetQueryResponse>(),
+    }),
+    experimentalExecutionPreflight: defineRoute({
+      path: "/threads/execution-overrides/preflight",
+      method: "post",
+      request: jsonRequest<
+        EmptyInput,
+        ExperimentalThreadExecutionPreflightRequest
+      >(experimentalThreadExecutionPreflightRequestSchema),
+      response: jsonResponse<ExperimentalThreadExecutionPreflightResponse>(),
+    }),
+    experimentalExecutionApply: defineRoute({
+      path: "/threads/execution-overrides/apply",
+      method: "post",
+      request: jsonRequest<EmptyInput, ExperimentalThreadExecutionApplyRequest>(
+        experimentalThreadExecutionApplyRequestSchema,
+      ),
+      response: jsonResponse<ExperimentalThreadExecutionApplyResponse>(),
     }),
     facetParticipants: defineRoute({
       path: "/threads/:id/facet-participants",

@@ -1304,3 +1304,46 @@ other pane's copy (or release its owned state). The thread-list slot omits it
 deliberately: it mounts once, and a crash there should disable it everywhere.
 Confirm that split before stabilizing, and decide whether other multi-mount
 slots need the same treatment.
+
+## Experimental thread execution facets and override batches (`@bb/sdk`)
+
+**What they do.** `threads.queryFacets({ experimental_includeExecution: true })`
+adds a bounded effective provider/model/reasoning projection with provenance,
+route identity, stored overrides, and an opaque witness. The experimental
+`preflightExecutionOverrides` and `applyExecutionOverrides` methods turn those
+witnesses into short-lived, signed, catalog-bound apply tokens and atomically
+persist up to 5,000 sticky next-turn overrides. Both methods accept
+`AbortSignal`; apply returns one structured terminal outcome per requested
+thread. The facet scope's `experimental_latestAttentionAtOrAfter` bounds the
+candidate set before hydration.
+
+**Audit before stabilizing.**
+
+1. **Names and shape.** Confirm effective values, override values, route fields,
+   provenance (`thread-override`, `last-turn`, `project-default`,
+   `builtin-default`, `unresolved`), and the unresolved union are the minimum
+   projection consumers need.
+2. **Witness/token lifetime.** Confirm a five-minute apply window is right and
+   that provider registration revision plus host/workspace catalog fingerprint
+   are sufficient to invalidate a reviewed target.
+3. **Atomic semantics.** Apply uses a dedicated monotonic execution revision
+   and bounded set-based CAS inside one immediate SQLite transaction. Generic
+   thread metadata changes do not invalidate preflight. Confirm whole-request
+   rollback plus per-thread `applied`, `unchanged`, `stale`, `rejected`, and
+   `failed` outcomes is preferable to independent partial commits.
+4. **Limits.** Confirm 5,000 unique thread ids, 100 facet rows per page, 4 KiB
+   tokens, an 8 MiB route-level request ceiling, and targeted catalog
+   concurrency of four.
+5. **Realtime.** Successful writes publish one aggregate payload per affected
+   project with bounded `threadIds`, reaching the list once and every open
+   detail subscription. Confirm this metadata remains appropriate for other
+   batch thread mutations before generalizing it.
+6. **Catalog policy.** Validation is same-provider and route-specific. A target
+   must exist in the selected route's live or selected-only catalog; provider
+   changes still require new threads. Confirm retired/selected-only models
+   should remain valid targets or be restricted to retaining an existing
+   selection.
+7. **CLI exposure.** `bb thread facets query --include-execution` surfaces the
+   projection, `bb thread update` can set or clear each sticky override, and
+   `bb thread execution preflight|apply` exposes the two-phase batch protocol
+   for JSON composition. Confirm that this remains the right operator surface.

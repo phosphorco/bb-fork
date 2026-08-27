@@ -6,6 +6,8 @@ import {
   markThreadDeleted,
   markThreadFacetOwnerUnavailable,
   replaceThreadFacetRelationsInGeneration,
+  setThreadExecutionOverride,
+  upsertProjectExecutionDefaults,
   updateThread,
 } from "@bb/db";
 import {
@@ -96,6 +98,74 @@ async function postFacetQuery(
 }
 
 describe("public thread facet queries", () => {
+  it("projects next-turn execution state in one opt-in facet page", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/public-thread-facet-execution",
+      });
+      const inherited = seedThread(harness.deps, { projectId: project.id });
+      const overridden = seedThread(harness.deps, { projectId: project.id });
+      upsertProjectExecutionDefaults(harness.db, {
+        projectId: project.id,
+        providerId: inherited.providerId,
+        model: "project-model",
+        reasoningLevel: "medium",
+        permissionMode: "full",
+        serviceTier: "default",
+      });
+      setThreadExecutionOverride(harness.db, {
+        threadId: overridden.id,
+        modelOverride: "override-model",
+        reasoningLevelOverride: "high",
+      });
+
+      const response = await postFacetQuery(harness.app, {
+        scope: { projectId: project.id },
+        filters: [],
+        pageSize: 10,
+        experimental_includeExecution: true,
+      });
+      expect(response.status, await response.clone().text()).toBe(200);
+      const entries = threadFacetQueryResponseSchema.parse(
+        await readJson(response),
+      ).threads;
+      expect(
+        entries.find(({ id }) => id === inherited.id)?.experimental_execution,
+      ).toMatchObject({
+        state: "resolved",
+        effectiveModel: "project-model",
+        effectiveReasoningLevel: "medium",
+        modelSource: "project-default",
+        reasoningSource: "project-default",
+        latestRequestSequence: null,
+      });
+      expect(
+        entries.find(({ id }) => id === overridden.id)?.experimental_execution,
+      ).toMatchObject({
+        state: "resolved",
+        effectiveModel: "override-model",
+        effectiveReasoningLevel: "high",
+        modelSource: "thread-override",
+        reasoningSource: "thread-override",
+      });
+
+      const withoutProjection = await postFacetQuery(harness.app, {
+        scope: { projectId: project.id },
+        filters: [],
+        pageSize: 10,
+      });
+      expect(
+        threadFacetQueryResponseSchema
+          .parse(await readJson(withoutProjection))
+          .threads.every(
+            (thread) => thread.experimental_execution === undefined,
+          ),
+      ).toBe(true);
+    });
+  });
+
   it("seals stable restart cursors and binds principal, perspective, projection, and canonical filters", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);

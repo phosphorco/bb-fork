@@ -63,11 +63,13 @@ const mocks = vi.hoisted(() => ({
   reorderQueuedMessageMutateAsync: vi.fn(),
   sendQueuedMessageMutateAsync: vi.fn(),
   setQueuedMessageGroupBoundaryMutateAsync: vi.fn(),
+  setSelectedModel: vi.fn(),
   stopThreadMutate: vi.fn(),
   toastError: vi.fn(),
   unarchiveThreadMutate: vi.fn(),
   uploadPromptAttachmentMutateAsync: vi.fn(),
   updateQueuedMessageMutateAsync: vi.fn(),
+  updateThreadMutate: vi.fn(),
   useThreadDefaultExecutionOptions: vi.fn(),
   useThreadCreationOptions: vi.fn(),
   useThreadPromptHistory: vi.fn(),
@@ -120,6 +122,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
         };
         model: {
           active?: { model: string } | null;
+          onChange?: (model: string) => void;
         };
         reasoning: { value: string };
         serviceTier?: { value?: string };
@@ -170,6 +173,14 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
           {suppressPluginComposerCustomizations ? "true" : "false"}
         </div>
         <div data-testid="selected-model">{execution.model.active?.model}</div>
+        {execution.model.onChange && (
+          <button
+            type="button"
+            onClick={() => execution.model.onChange?.("claude-opus-5")}
+          >
+            Select Opus 5
+          </button>
+        )}
         <div data-testid="selected-reasoning">{execution.reasoning.value}</div>
         <div data-testid="selected-service-tier">
           {execution.serviceTier?.value}
@@ -470,7 +481,7 @@ vi.mock("@/hooks/useThreadCreationOptions", () => ({
       serviceTierSupportByProvider: {},
       setPermissionMode: vi.fn(),
       setReasoningLevel: vi.fn(),
-      setSelectedModel: vi.fn(),
+      setSelectedModel: mocks.setSelectedModel,
       setServiceTier: vi.fn(),
       supportsPermissionModeSelection: true,
       supportsServiceTier: false,
@@ -530,6 +541,10 @@ vi.mock("@/hooks/mutations/thread-state-mutations", () => ({
     isPending: false,
     mutate: mocks.unarchiveThreadMutate,
     variables: null,
+  }),
+  useUpdateThread: () => ({
+    isPending: false,
+    mutate: mocks.updateThreadMutate,
   }),
 }));
 
@@ -1660,6 +1675,18 @@ describe("ThreadDetailPromptArea", () => {
       "claude-opus-4-8",
     );
     expect(screen.getByText("Model fallback")).toBeTruthy();
+  });
+
+  it("persists a model picker change as the thread's sticky override", () => {
+    renderPromptArea();
+
+    fireEvent.click(screen.getByRole("button", { name: "Select Opus 5" }));
+
+    expect(mocks.setSelectedModel).toHaveBeenCalledWith("claude-opus-5");
+    expect(mocks.updateThreadMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "claude-opus-5" }),
+      expect.objectContaining({ onError: expect.any(Function) }),
+    );
   });
 
   it("opens root compose with a handoff seed for the current thread", () => {

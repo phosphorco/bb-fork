@@ -62,6 +62,47 @@ describe("NotificationHub", () => {
     });
   });
 
+  it("delivers one aggregate batch payload to list and affected detail subscribers", () => {
+    const hub = new NotificationHub();
+    const listSocket = createMockHubSocket();
+    const firstDetailSocket = createMockHubSocket();
+    const secondDetailSocket = createMockHubSocket();
+    const unrelatedSocket = createMockHubSocket();
+    hub.subscribe(listSocket, { kind: "thread-list" });
+    hub.subscribe(firstDetailSocket, {
+      kind: "thread-detail",
+      threadId: "thread-1",
+    });
+    hub.subscribe(secondDetailSocket, {
+      kind: "thread-detail",
+      threadId: "thread-2",
+    });
+    hub.subscribe(unrelatedSocket, {
+      kind: "thread-detail",
+      threadId: "thread-3",
+    });
+
+    hub.notifyThreadBatch(
+      ["thread-1", "thread-2"],
+      ["execution-options-changed"],
+      { projectId: "project-1" },
+    );
+
+    for (const socket of [listSocket, firstDetailSocket, secondDetailSocket]) {
+      expect(socket.messages).toHaveLength(1);
+      expect(JSON.parse(socket.messages[0]!)).toMatchObject({
+        type: "changed",
+        entity: "thread",
+        changes: ["execution-options-changed"],
+        metadata: {
+          projectId: "project-1",
+          threadIds: ["thread-1", "thread-2"],
+        },
+      });
+    }
+    expect(unrelatedSocket.messages).toHaveLength(0);
+  });
+
   it("subscribes clients and delivers environment notifications", () => {
     const hub = new NotificationHub();
     const socket = createMockHubSocket();
@@ -610,7 +651,10 @@ describe("NotificationHub events-appended thread-list coalescing", () => {
     const detailSocket = createMockHubSocket();
     const listSocket = createMockHubSocket();
     const listAndDetailSocket = createMockHubSocket();
-    hub.subscribe(detailSocket, { kind: "thread-detail", threadId: "thread-1" });
+    hub.subscribe(detailSocket, {
+      kind: "thread-detail",
+      threadId: "thread-1",
+    });
     hub.subscribe(listSocket, { kind: "thread-list" });
     hub.subscribe(listAndDetailSocket, { kind: "thread-list" });
     hub.subscribe(listAndDetailSocket, {
@@ -618,7 +662,11 @@ describe("NotificationHub events-appended thread-list coalescing", () => {
       threadId: "thread-1",
     });
 
-    for (const eventType of ["item/agentMessage/delta", "item/agentMessage/delta", "item/started"] as const) {
+    for (const eventType of [
+      "item/agentMessage/delta",
+      "item/agentMessage/delta",
+      "item/started",
+    ] as const) {
       hub.notifyThread("thread-1", ["events-appended"], {
         eventTypes: [eventType],
       });

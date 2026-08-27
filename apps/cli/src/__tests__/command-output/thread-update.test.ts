@@ -229,6 +229,38 @@ describe("bb thread update command output", () => {
     });
   });
 
+  it("bb thread update clears sticky model and reasoning overrides", async () => {
+    const thread = fixtures.makeThread({
+      id: "thread-update-clear",
+      projectId: "proj-1",
+      providerId: "claude-code",
+      status: "idle",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const patch = vi.fn(async () => thread);
+    stubServerApi({ "v1.threads.:id.$patch": patch });
+
+    await runCommand(
+      [
+        "thread",
+        "update",
+        thread.id,
+        "--clear-model",
+        "--clear-reasoning-level",
+      ],
+      register,
+    );
+
+    expect(patch).toHaveBeenCalledWith({
+      param: { id: thread.id },
+      json: { model: null, reasoningLevel: null },
+    });
+    const lines = collectLogLines(vi.mocked(console.log));
+    expect(lines).toContain("Model override cleared");
+    expect(lines).toContain("Reasoning level override cleared");
+  });
+
   it("bb thread update rejects an invalid reasoning level before calling the API", async () => {
     const patch = vi.fn();
     stubServerApi({ "v1.threads.:id.$patch": patch });

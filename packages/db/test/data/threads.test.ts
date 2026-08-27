@@ -11,6 +11,8 @@ import {
   getThreadExecutionOverride,
   hasActiveThreadAttention,
   setThreadExecutionOverride,
+  setThreadExecutionOverridesBatch,
+  listThreadExecutionProjectionRowsByIds,
   hasPendingThreadShutdownInEnvironment,
   listHostThreadIds,
   listActiveVisiblePinnedThreadRoots,
@@ -38,10 +40,7 @@ import {
   listThreadSections,
   renameThreadSection,
 } from "../../src/data/thread-sections.js";
-import {
-  createProject,
-  markProjectDeleted,
-} from "../../src/data/projects.js";
+import { createProject, markProjectDeleted } from "../../src/data/projects.js";
 import { upsertHost } from "../../src/data/hosts.js";
 import { createEnvironment } from "../../src/data/environments.js";
 import { createMigratedConnection } from "../helpers/migrated-connection.js";
@@ -314,6 +313,151 @@ describe("threads", () => {
     });
   });
 
+  it("advances the execution revision independently within one millisecond", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(10_000);
+      const { db, project } = setup();
+      const thread = createThread(db, noopNotifier, {
+        projectId: project.id,
+        providerId: "claude-code",
+      });
+      const before = listThreadExecutionProjectionRowsByIds(db, [
+        thread.id,
+      ])[0]!;
+      const first = setThreadExecutionOverride(db, {
+        threadId: thread.id,
+        modelOverride: "fable",
+      })!;
+      const second = setThreadExecutionOverride(db, {
+        threadId: thread.id,
+        modelOverride: "opus",
+      })!;
+      const after = listThreadExecutionProjectionRowsByIds(db, [thread.id])[0]!;
+      expect(first.executionRevision).toBe(before.executionRevision + 1);
+      expect(second.executionRevision).toBe(first.executionRevision + 1);
+      expect(after.executionRevision).toBe(second.executionRevision);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("applies execution overrides in bounded set-based batches", () => {
+    const { db, project } = setup();
+    const created = Array.from({ length: 401 }, () =>
+      createThread(db, noopNotifier, {
+        projectId: project.id,
+        providerId: "claude-code",
+      }),
+    );
+    const rows = listThreadExecutionProjectionRowsByIds(
+      db,
+      created.map(({ id }) => id),
+    );
+    const changed = setThreadExecutionOverridesBatch(
+      db,
+      rows.map((row) => ({
+        expectedModelOverride: row.modelOverride,
+        expectedReasoningLevelOverride: row.reasoningLevelOverride,
+        expectedExecutionRevision: row.executionRevision,
+        modelOverride: "opus",
+        reasoningLevelOverride: "high",
+        threadId: row.threadId,
+      })),
+    );
+    expect(changed.size).toBe(401);
+    expect(
+      listThreadExecutionProjectionRowsByIds(
+        db,
+        created.map(({ id }) => id),
+      ).every(
+        (row) =>
+          row.modelOverride === "opus" && row.reasoningLevelOverride === "high",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not invalidate execution CAS after unrelated thread metadata changes", () => {
+    const { db, project } = setup();
+    const thread = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "claude-code",
+    });
+    const before = listThreadExecutionProjectionRowsByIds(db, [thread.id])[0]!;
+
+    updateThread(db, noopNotifier, thread.id, { lastReadAt: Date.now() });
+
+    const afterRead = listThreadExecutionProjectionRowsByIds(db, [
+      thread.id,
+    ])[0]!;
+    expect(afterRead.executionRevision).toBe(before.executionRevision);
+    const changed = setThreadExecutionOverridesBatch(db, [
+      {
+        expectedExecutionRevision: before.executionRevision,
+        expectedModelOverride: before.modelOverride,
+        expectedReasoningLevelOverride: before.reasoningLevelOverride,
+        modelOverride: "opus",
+        reasoningLevelOverride: "high",
+        threadId: thread.id,
+      },
+    ]);
+    expect([...changed]).toEqual([thread.id]);
+    expect(
+      listThreadExecutionProjectionRowsByIds(db, [thread.id])[0],
+    ).toMatchObject({
+      executionRevision: before.executionRevision + 1,
+      modelOverride: "opus",
+      reasoningLevelOverride: "high",
+    });
+  });
+
+  it("rolls back set-based execution writes when a CAS row misses", () => {
+    const { db, project } = setup();
+    const created = Array.from({ length: 2 }, () =>
+      createThread(db, noopNotifier, {
+        projectId: project.id,
+        providerId: "claude-code",
+      }),
+    );
+    const rows = listThreadExecutionProjectionRowsByIds(
+      db,
+      created.map(({ id }) => id),
+    );
+    expect(() =>
+      db.transaction((tx) => {
+        const changed = setThreadExecutionOverridesBatch(
+          tx,
+          rows.map((row, index) => ({
+            expectedModelOverride: row.modelOverride,
+            expectedReasoningLevelOverride: row.reasoningLevelOverride,
+            expectedExecutionRevision:
+              row.executionRevision + (index === 1 ? 1 : 0),
+            modelOverride: "opus",
+            reasoningLevelOverride: "high",
+            threadId: row.threadId,
+          })),
+        );
+        if (changed.size !== rows.length) throw new Error("write-conflict");
+      }),
+    ).toThrow("write-conflict");
+    expect(
+      listThreadExecutionProjectionRowsByIds(
+        db,
+        created.map(({ id }) => id),
+      ).every(({ modelOverride }) => modelOverride === null),
+    ).toBe(true);
+  });
+
+  it("excludes threads whose project was deleted from execution mutation projection", () => {
+    const { db, project } = setup();
+    const thread = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "claude-code",
+    });
+    markProjectDeleted(db, noopNotifier, { projectId: project.id });
+    expect(listThreadExecutionProjectionRowsByIds(db, [thread.id])).toEqual([]);
+  });
+
   it("pins and unpins threads with durable pin order keys", () => {
     vi.useFakeTimers();
     try {
@@ -423,8 +567,9 @@ describe("threads", () => {
     pinThread(db, noopNotifier, { threadId: third.id });
     pinThread(db, noopNotifier, { threadId: otherProjectThread.id });
 
-    expect(listActiveVisiblePinnedThreadRoots(db).map((thread) => thread.id))
-      .toEqual([otherProjectThread.id, third.id, second.id, first.id]);
+    expect(
+      listActiveVisiblePinnedThreadRoots(db).map((thread) => thread.id),
+    ).toEqual([otherProjectThread.id, third.id, second.id, first.id]);
 
     const result = reorderPinnedThread({
       db,
@@ -435,8 +580,9 @@ describe("threads", () => {
     });
 
     expect(result.kind).toBe("reordered");
-    expect(listActiveVisiblePinnedThreadRoots(db).map((thread) => thread.id))
-      .toEqual([first.id, otherProjectThread.id, third.id, second.id]);
+    expect(
+      listActiveVisiblePinnedThreadRoots(db).map((thread) => thread.id),
+    ).toEqual([first.id, otherProjectThread.id, third.id, second.id]);
   });
 
   it("rejects pinned reorder for unpinned threads, stale neighbors, and hidden child pins", () => {

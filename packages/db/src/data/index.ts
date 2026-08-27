@@ -55,8 +55,11 @@ export {
   countNonDeletedAssignedChildThreads,
   getThread,
   getThreadExecutionOverride,
+  listThreadExecutionOverridesByThreadIds,
+  listThreadExecutionProjectionRowsByIds,
   hasActiveThreadAttention,
   setThreadExecutionOverride,
+  setThreadExecutionOverridesBatch,
   hasLiveThreadAtHostPath,
   hasPendingThreadShutdownInEnvironment,
   hasRevivableArchivedThreadInEnvironment,
@@ -97,6 +100,8 @@ export type {
   ThreadSearchResultGroup,
   ThreadWithPendingInteractionState,
   ThreadExecutionOverride,
+  ThreadExecutionOverrideRow,
+  ThreadExecutionProjectionRow,
   UpdateThreadInput,
 } from "./threads.js";
 
@@ -295,6 +300,7 @@ export {
   hasStoredTurnStarted,
   getLastStoredProviderThreadId,
   getLastStoredTurnRequestEvent,
+  listLastStoredTurnRequestEventsByThreadIds,
   getStoredTurnRequestEventForTurn,
   getLatestThreadOutputEventRow,
   getLatestStoredConversationOutlineSequence,

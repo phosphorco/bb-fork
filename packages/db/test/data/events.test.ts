@@ -30,6 +30,7 @@ import {
   listCompletedTurnsByThreadIds,
   listEvents,
   listLatestThreadStateEventRowsByThreadIds,
+  listLastStoredTurnRequestEventsByThreadIds,
   listRecentStoredEventRows,
   listStoredConversationOutlineEventRows,
   listTimelineSegmentAnchorsDescending,
@@ -62,6 +63,7 @@ import { createEnvironment } from "../../src/data/environments.js";
 import { createProject } from "../../src/data/projects.js";
 import { createThread } from "../../src/data/threads.js";
 import { upsertHost } from "../../src/data/hosts.js";
+import { events } from "../../src/schema.js";
 import { createMigratedConnection } from "../helpers/migrated-connection.js";
 
 function setup() {
@@ -80,6 +82,36 @@ function setup() {
   });
   return { db, project, thread };
 }
+
+it("skips malformed legacy start payloads in latest execution lookups", () => {
+  const { db, thread } = setup();
+  try {
+    db.insert(events)
+      .values({
+        id: "evt_malformed_execution_lookup",
+        threadId: thread.id,
+        environmentId: null,
+        scopeKind: "thread",
+        turnId: null,
+        providerThreadId: null,
+        sequence: 1,
+        type: "client/thread/start",
+        itemId: null,
+        itemKind: null,
+        parentToolCallId: null,
+        data: "not-json",
+        createdAt: 1,
+      })
+      .run();
+    expect(
+      listLastStoredTurnRequestEventsByThreadIds(db, {
+        threadIds: [thread.id],
+      }),
+    ).toEqual([]);
+  } finally {
+    db.$client.close();
+  }
+});
 
 const emptyItemFields = {
   itemId: null,
@@ -240,9 +272,9 @@ describe("events", () => {
       { p6rActorHandle: "alice" },
       { p6rActorHandle: "bob" },
     ]);
-    expect(
-      p6rCountDistinctThreadEventActors(db, { threadId: thread.id }),
-    ).toBe(1);
+    expect(p6rCountDistinctThreadEventActors(db, { threadId: thread.id })).toBe(
+      1,
+    );
     expect(
       p6rCountDistinctThreadEventActors(db, {
         p6rExcludedHandle: "alice",
@@ -260,9 +292,9 @@ describe("events", () => {
         data: clientTurnRequestData("request-bob", "bob message"),
       },
     ]);
-    expect(
-      p6rCountDistinctThreadEventActors(db, { threadId: thread.id }),
-    ).toBe(2);
+    expect(p6rCountDistinctThreadEventActors(db, { threadId: thread.id })).toBe(
+      2,
+    );
   });
 
   it("stores derived item columns when provided", () => {
@@ -1061,8 +1093,9 @@ describe("events", () => {
       { behavior: "immediate" },
     );
 
-    expect(listEvents(db, { threadId: thread.id }).map((event) => event.type))
-      .toEqual(["turn/started", "turn/input/accepted", "system/error"]);
+    expect(
+      listEvents(db, { threadId: thread.id }).map((event) => event.type),
+    ).toEqual(["turn/started", "turn/input/accepted", "system/error"]);
   });
 
   it("stores the provided createdAt timestamp", () => {
@@ -4794,13 +4827,15 @@ describe("timeline read-boundary output truncation", () => {
         ...args,
         maxDataBytes: (rowBytes.get(3) ?? 0) - 1,
       }),
-    ).toEqual(expect.objectContaining({
-      eventDataBytes: rowBytes.get(3),
-      hasOlderRows: true,
-      kind: "single-event-too-large",
-      sequenceStart: 3,
-      turnId: null,
-    }));
+    ).toEqual(
+      expect.objectContaining({
+        eventDataBytes: rowBytes.get(3),
+        hasOlderRows: true,
+        kind: "single-event-too-large",
+        sequenceStart: 3,
+        turnId: null,
+      }),
+    );
   });
 
   it("bounds the byte-total preflight before using the early-stopping iterator", () => {
@@ -4821,7 +4856,9 @@ describe("timeline read-boundary output truncation", () => {
       ),
     );
     db.$client
-      .prepare("UPDATE events SET data = ? WHERE thread_id = ? AND sequence = 1")
+      .prepare(
+        "UPDATE events SET data = ? WHERE thread_id = ? AND sequence = 1",
+      )
       .run(`{"item":{"resultText":"${"x".repeat(1_100)}`, thread.id);
 
     expect(

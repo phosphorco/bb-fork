@@ -10,6 +10,7 @@ import { registerSpawnCommand } from "./spawn.js";
 import { registerForkCommand } from "./fork.js";
 import { registerFacetCommands } from "./facets.js";
 import { registerWaitCommand } from "./wait.js";
+import { p6rRegisterExecutionCommands } from "./execution.js";
 
 export function registerThreadCommands(
   program: Command,
@@ -20,6 +21,7 @@ export function registerThreadCommands(
   registerSpawnCommand(thread, getUrl);
   registerForkCommand(thread, getUrl);
   registerFacetCommands(thread, getUrl);
+  p6rRegisterExecutionCommands(thread, getUrl);
   registerListCommand(thread, getUrl);
   registerShowCommand(thread, getUrl);
   registerOpenCommand(thread, getUrl);

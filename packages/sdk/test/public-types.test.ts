@@ -368,6 +368,8 @@ type ExpectedThreadsKey =
   | "delete"
   | "editMessage"
   | "events"
+  | "experimental_applyExecutionOverrides"
+  | "experimental_preflightExecutionOverrides"
   | "facetParticipants"
   | "fork"
   | "get"

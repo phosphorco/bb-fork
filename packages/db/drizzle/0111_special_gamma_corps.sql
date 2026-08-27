@@ -1,0 +1,1 @@
+ALTER TABLE `threads` ADD `execution_revision` integer DEFAULT 0 NOT NULL;

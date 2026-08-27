@@ -1341,7 +1341,11 @@ const p6rLegacyMigrationWhens = [
 ] as const;
 
 const p6rMultiplayerAttributionColumns = [
-  { table: "events", legacyColumn: "actor_handle", p6rColumn: "p6r_actor_handle" },
+  {
+    table: "events",
+    legacyColumn: "actor_handle",
+    p6rColumn: "p6r_actor_handle",
+  },
   {
     table: "pending_interactions",
     legacyColumn: "resolved_by_handle",
@@ -1561,9 +1565,9 @@ function p6rStageExistingMultiplayerSchema(
 
   for (const createdAt of p6rLegacyMigrationWhens) {
     db.$client
-      .prepare<[number]>(
-        "DELETE FROM __drizzle_migrations WHERE created_at = ?",
-      )
+      .prepare<
+        [number]
+      >("DELETE FROM __drizzle_migrations WHERE created_at = ?")
       .run(createdAt);
   }
 
@@ -1692,6 +1696,23 @@ function applyP6rIdentityMigrationBehindHighWater(
   const latestAppliedAt = Math.max(...appliedCreatedAts);
   if (latestAppliedAt > identityMigration.createdAt) {
     applyMigrationStatements(db, identityMigration);
+  }
+}
+
+function applyThreadFacetMigrationBehindHighWater(
+  db: DbConnection,
+  migrationsFolder: string,
+): void {
+  const facetMigration = requireExpectedAppliedMigration(
+    readExpectedAppliedMigrations(migrationsFolder),
+    "0108_thread_facets",
+  );
+  const appliedCreatedAts = readAppliedMigrationCreatedAts(db);
+  if (appliedCreatedAts.has(facetMigration.createdAt)) return;
+
+  const latestAppliedAt = Math.max(...appliedCreatedAts);
+  if (latestAppliedAt > facetMigration.createdAt) {
+    applyMigrationStatements(db, facetMigration);
   }
 }
 
@@ -1906,6 +1927,7 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
       if (stagedMultiplayerSchema) {
         applyP6rIdentityMigrationBehindHighWater(db, migrationsFolder);
       }
+      applyThreadFacetMigrationBehindHighWater(db, migrationsFolder);
       drizzleMigrate(db, { migrationsFolder });
     } finally {
       if (stagedConnectMachineId) restoreStagedConnectMachineIdColumn(db);

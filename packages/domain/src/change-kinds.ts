@@ -28,6 +28,7 @@ export const THREAD_CHANGE_KINDS = [
   "pin-state-changed",
   "parent-changed",
   "environment-changed",
+  "execution-options-changed",
   "read-state-changed",
   "order-changed",
   "tabs-changed",
@@ -274,6 +275,7 @@ export const threadChangeMetadataSchema = z
     eventTypes: z.array(threadEventTypeSchema).readonly().optional(),
     hasPendingInteraction: z.boolean().optional(),
     projectId: z.string().optional(),
+    threadIds: z.array(z.string().min(1)).max(5_000).readonly().optional(),
     statusChange: threadStatusChangeMetadataSchema.optional(),
   })
   .strict();
@@ -439,6 +441,7 @@ const threadChangeMetadataLenientSchema = z.object({
     .optional(),
   hasPendingInteraction: z.boolean().optional(),
   projectId: z.string().optional(),
+  threadIds: z.array(z.string().min(1)).max(5_000).readonly().optional(),
   // A newer server may emit a status or runtime display value this client
   // does not know. Dropping just this field keeps the message and makes the
   // client fall back to a refetch for the row.

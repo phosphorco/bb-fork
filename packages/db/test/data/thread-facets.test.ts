@@ -20,6 +20,7 @@ import {
   listCoreParticipantProfilePage,
   listCoreParticipantProfilesByThreadIds,
   listPriorThreadFacetSnapshotTargets,
+  listThreadIdsForFacetProjection,
   listThreadFacetOwnerProjections,
   markAllPluginThreadFacetOwnersUnavailable,
   markThreadFacetOwnerGenerationReady,
@@ -89,6 +90,39 @@ function finishEmptyCensus(
 }
 
 describe("thread facet persistence and queries", () => {
+  it("bounds both projection census and facet pages by latest attention", () => {
+    const { db, createVisibleThread } = setup();
+    try {
+      const oldThread = createVisibleThread();
+      const recentThread = createVisibleThread();
+      db.update(threads)
+        .set({ latestAttentionAt: 1_000, updatedAt: 1_000 })
+        .where(eq(threads.id, oldThread.id))
+        .run();
+      db.update(threads)
+        .set({ latestAttentionAt: 3_000, updatedAt: 3_000 })
+        .where(eq(threads.id, recentThread.id))
+        .run();
+
+      const scope = {
+        experimental_latestAttentionAtOrAfter: 2_000,
+        includeHidden: false,
+      } as const;
+      expect(listThreadIdsForFacetProjection(db, scope)).toEqual([
+        recentThread.id,
+      ]);
+      expect(
+        queryThreadFacetThreadIds(db, {
+          ...scope,
+          filters: [],
+          pageSize: 10,
+        }).threadIds,
+      ).toEqual([recentThread.id]);
+    } finally {
+      db.$client.close();
+    }
+  });
+
   it("evolves declarations only by identical-or-append and activates atomically", () => {
     const { db } = setup();
     try {

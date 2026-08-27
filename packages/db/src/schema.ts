@@ -577,6 +577,10 @@ export const threads = sqliteTable(
     reasoningLevelOverride: text(
       "reasoning_level_override",
     ).$type<ReasoningLevel>(),
+    // Monotonic CAS clock for sticky execution configuration. Generic thread
+    // metadata (for example lastReadAt) must not make an execution preflight
+    // stale, so execution writers advance this independently of updatedAt.
+    executionRevision: integer("execution_revision").notNull().default(0),
     title: text("title"),
     titleFallback: text("title_fallback"),
     sectionId: text("section_id").references(() => threadSections.id, {
@@ -616,6 +620,11 @@ export const threads = sqliteTable(
   },
   (table) => [
     index("threads_project_updated_idx").on(table.projectId, table.updatedAt),
+    index("threads_project_attention_idx").on(
+      table.projectId,
+      table.latestAttentionAt,
+    ),
+    index("threads_attention_idx").on(table.latestAttentionAt),
     index("threads_project_archived_deleted_idx").on(
       table.projectId,
       table.archivedAt,

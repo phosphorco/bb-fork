@@ -213,6 +213,7 @@ function createThreadListEntry(
     p6rCreatedByHandle: null,
     modelOverride: null,
     reasoningLevelOverride: null,
+    executionRevision: 0,
     environmentBranchName: null,
     environmentHostId: args.environmentHostId,
     environmentName: null,

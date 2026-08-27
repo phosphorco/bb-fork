@@ -38,6 +38,7 @@ const maximalThreadMetadata: ThreadChangeMetadata = {
   eventTypes: [...threadEventTypeValues],
   hasPendingInteraction: true,
   projectId: "proj_1",
+  threadIds: ["thr_1", "thr_2"],
   statusChange: {
     status: "active",
     runtime: { displayStatus: "active", hostReconnectGraceExpiresAt: null },

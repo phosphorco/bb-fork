@@ -83,6 +83,36 @@ describe("bb thread facets command output", () => {
     ]);
   });
 
+  it("exposes the bounded execution projection and attention cutoff", async () => {
+    const query = vi.fn(async () => ({
+      threads: [],
+      nextCursor: null,
+      facetStates: [],
+    }));
+    stubServerApi({ "v1.threads.facet-query.$post": query });
+
+    await runCommand(
+      [
+        "thread",
+        "facets",
+        "query",
+        "--include-execution",
+        "--latest-attention-after",
+        "1700000000000",
+      ],
+      register,
+    );
+
+    expect(query).toHaveBeenCalledWith({
+      json: {
+        scope: { experimental_latestAttentionAtOrAfter: 1700000000000 },
+        filters: [],
+        pageSize: 50,
+        experimental_includeExecution: true,
+      },
+    });
+  });
+
   it("rejects predicates outside the canonical facet algebra", async () => {
     const query = vi.fn(async () => ({
       threads: [],

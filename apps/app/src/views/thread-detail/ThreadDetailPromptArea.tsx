@@ -85,7 +85,10 @@ import {
   useClearThreadGoal,
   useStopThread,
 } from "@/hooks/mutations/thread-runtime-mutations";
-import { useUnarchiveThread } from "@/hooks/mutations/thread-state-mutations";
+import {
+  useUnarchiveThread,
+  useUpdateThread,
+} from "@/hooks/mutations/thread-state-mutations";
 import {
   getLatestPendingInteraction,
   useThreadQueuedMessages,
@@ -518,6 +521,9 @@ export function ThreadDetailPromptArea({
   const cancelThreadPlan = useCancelThreadPlan();
   const clearThreadGoal = useClearThreadGoal();
   const unarchiveThread = useUnarchiveThread();
+  const updateThreadExecution = useUpdateThread({
+    errorMessage: "Failed to save the thread model.",
+  });
   // The personal project isn't a meaningful label in the footer, so skip it.
   const projectName = useProjectDisplayName(
     thread.projectId === PERSONAL_PROJECT_ID ? undefined : thread.projectId,
@@ -722,14 +728,37 @@ export function ThreadDetailPromptArea({
   const effectiveSelectedModel = isFallbackModelActive
     ? modelFallback.fallbackModel
     : (activeModel?.model ?? selectedModel);
+  const modelMutationRevisionRef = useRef(0);
   const handleModelChange = useCallback(
     (model: string) => {
+      const revision = ++modelMutationRevisionRef.current;
+      const previousModel = effectiveSelectedModel;
+      const previousFallbackWasActive = isFallbackModelActive;
       if (fallbackIdentity !== null) {
         setOverriddenFallbackIdentity(fallbackIdentity);
       }
       setSelectedModel(model);
+      updateThreadExecution.mutate(
+        { id: thread.id, model },
+        {
+          onError: () => {
+            if (modelMutationRevisionRef.current !== revision) return;
+            setSelectedModel(previousModel);
+            if (previousFallbackWasActive) {
+              setOverriddenFallbackIdentity(null);
+            }
+          },
+        },
+      );
     },
-    [fallbackIdentity, setSelectedModel],
+    [
+      effectiveSelectedModel,
+      fallbackIdentity,
+      isFallbackModelActive,
+      setSelectedModel,
+      thread.id,
+      updateThreadExecution,
+    ],
   );
   const { typeaheadConfig, promptActions } = useComposerTypeahead({
     projectId: thread.projectId,

@@ -1230,6 +1230,10 @@ export interface ListStoredEventRowsByThreadIdsAndTypesArgs {
   types: readonly ThreadEventType[];
 }
 
+export interface ListLastStoredTurnRequestEventsByThreadIdsArgs {
+  threadIds: readonly string[];
+}
+
 export interface ListLatestThreadStateEventRowsByThreadIdsArgs {
   threadIds: readonly string[];
   /** The plugin thread-state kind (`"<pluginId>/<name>"`) to read. */
@@ -1553,6 +1557,54 @@ export function listStoredEventRowsByThreadIdsAndTypes(
       left.sequence - right.sequence ||
       left.id.localeCompare(right.id),
   );
+}
+
+/**
+ * Reads at most one execution-bearing request row per thread. The grouped
+ * maximum stays on events_thread_type_sequence_idx and avoids loading a
+ * thread's complete turn history just to resolve its next-turn defaults.
+ */
+export function listLastStoredTurnRequestEventsByThreadIds(
+  db: DbQueryConnection,
+  args: ListLastStoredTurnRequestEventsByThreadIdsArgs,
+): StoredTurnRequestEventRow[] {
+  return queryInSqliteVariableBatches({
+    dedupeKey: (threadId) => threadId,
+    fixedVariableCount: 0,
+    queryBatch: (threadIds) =>
+      db
+        .select({
+          data: events.data,
+          sequence: events.sequence,
+          threadId: events.threadId,
+          type: events.type,
+        })
+        .from(events)
+        .where(
+          and(
+            inArray(events.threadId, [...threadIds]),
+            sql`${events.sequence} = (
+              SELECT MAX(latest_turn_request.sequence)
+              FROM events AS latest_turn_request
+              WHERE latest_turn_request.thread_id = ${events.threadId}
+                AND (
+                  latest_turn_request.type = 'client/turn/requested'
+                  OR (
+                    latest_turn_request.type IN ('client/thread/start', 'client/turn/start')
+                    AND CASE
+                      WHEN json_valid(latest_turn_request.data)
+                        THEN json_type(latest_turn_request.data, '$.input') IS NOT NULL
+                      ELSE FALSE
+                    END
+                  )
+                )
+            )`,
+          ),
+        )
+        .all(),
+    values: args.threadIds,
+    variableCountPerValue: 1,
+  });
 }
 
 export function listLatestThreadStateEventRowsByThreadIds(

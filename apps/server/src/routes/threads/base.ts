@@ -26,6 +26,7 @@ import {
   type ResolveThreadMentionsResponse,
 } from "@bb/server-contract";
 import type { Context, Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import type { AppDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
 import { p6rGetRequestPrincipal } from "../../services/identity.js";
@@ -59,6 +60,10 @@ import {
 import { assertValidParentThread } from "../../services/threads/thread-parent.js";
 import { handleThreadOwnershipChange } from "../../services/threads/thread-ownership.js";
 import { applyThreadExecutionOverride } from "../../services/threads/thread-execution-override.js";
+import {
+  applyPreflightedThreadExecutionOverrides,
+  preflightThreadExecutionOverrides,
+} from "../../services/threads/thread-execution-batch.js";
 import { emitPluginThreadDeleted } from "../../services/plugins/plugin-thread-events.js";
 
 function parseThreadIncludes(query: ThreadGetQuery): Set<ThreadIncludeOption> {
@@ -211,6 +216,19 @@ function buildThreadSearchResponse(
 }
 
 export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
+  app.use(
+    "/threads/execution-overrides/*",
+    bodyLimit({
+      maxSize: 8 * 1024 * 1024,
+      onError: () => {
+        throw new ApiError(
+          413,
+          "request_too_large",
+          "Execution override batch exceeds the 8 MiB request limit",
+        );
+      },
+    }),
+  );
   const { get, post, patch, del } = typedRoutes<PublicApiSchema>(app, {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
   });
@@ -265,6 +283,16 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
         actor: p6rGetRequestPrincipal(context as unknown as Context),
         request: payload,
       }),
+    );
+  });
+
+  post(routes.experimentalExecutionPreflight, async (context, payload) => {
+    return context.json(await preflightThreadExecutionOverrides(deps, payload));
+  });
+
+  post(routes.experimentalExecutionApply, async (context, payload) => {
+    return context.json(
+      await applyPreflightedThreadExecutionOverrides(deps, payload),
     );
   });
 

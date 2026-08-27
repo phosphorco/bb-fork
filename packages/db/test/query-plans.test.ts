@@ -39,6 +39,7 @@ import {
   createThread,
   listThreadsWithPendingInteractionState,
 } from "../src/data/threads.js";
+import { listThreadIdsForFacetProjection } from "../src/data/thread-facets.js";
 
 type SqliteParameter = string | number | bigint | Buffer | null;
 type LoggedSqlPredicate = (fields: SlowDbQueryLogFields) => boolean;
@@ -74,6 +75,7 @@ interface TestDb {
   db: DbConnection;
   host: IdentifiedRow;
   logger: CapturingSlowQueryLogger;
+  project: IdentifiedRow;
   thread: IdentifiedRow;
 }
 
@@ -127,7 +129,7 @@ function setup(): TestDb {
     providerId: "codex",
   });
   logger.clear();
-  return { db, host, logger, thread };
+  return { db, host, logger, project, thread };
 }
 
 function closeSessionAt(args: CloseSessionAtArgs): void {
@@ -223,6 +225,34 @@ function assertEmittedQueryPlanUsesIndex(
 }
 
 describe("slow query index plans", () => {
+  it("bounds facet projection census through attention indexes", () => {
+    const { db, project } = setup();
+    for (const scope of [
+      { includeHidden: false },
+      { includeHidden: false, projectId: project.id },
+    ]) {
+      const captured = captureStatements(db, () => {
+        listThreadIdsForFacetProjection(db, {
+          ...scope,
+          experimental_latestAttentionAtOrAfter: 1,
+        });
+      });
+      expect(captured).toHaveLength(1);
+      const query = captured[0]!;
+      const details = queryPlanDetails({
+        db,
+        params: query.params,
+        sql: query.sql,
+      });
+      expect(details).toMatch(
+        scope.projectId === undefined
+          ? /USING INDEX threads_attention_idx/u
+          : /USING INDEX threads_project_attention_idx/u,
+      );
+    }
+    db.$client.close();
+  });
+
   it("uses the thread/type/sequence index for filtered event pages", () => {
     const { db, thread } = setup();
 

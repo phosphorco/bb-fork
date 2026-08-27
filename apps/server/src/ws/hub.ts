@@ -120,7 +120,12 @@ function subscriptionKeysForMessage(message: ChangedMessage): string[] {
             subscriptionKey({ kind: "thread-list" }),
             subscriptionKey({ kind: "thread-detail", threadId: message.id }),
           ]
-        : [subscriptionKey({ kind: "thread-list" })];
+        : [
+            subscriptionKey({ kind: "thread-list" }),
+            ...(message.metadata?.threadIds ?? []).map((threadId) =>
+              subscriptionKey({ kind: "thread-detail", threadId }),
+            ),
+          ];
     case "project":
       return message.id
         ? [
@@ -839,6 +844,26 @@ export class NotificationHub implements DbNotifier {
       }
       this.threadEventWaiters.delete(threadId);
     }
+  }
+
+  /**
+   * Publishes one aggregate list message while also reaching the detail
+   * subscriptions for every changed thread. This keeps a 5,000-row bulk edit
+   * to one payload per project instead of 5,000 list broadcasts.
+   */
+  notifyThreadBatch(
+    threadIds: readonly string[],
+    changes: ThreadChangeKind[],
+    metadata: Omit<ThreadChangeMetadata, "threadIds"> = {},
+  ): void {
+    if (threadIds.length === 0) return;
+    const message: ThreadChangedMessage = {
+      type: "changed",
+      entity: "thread",
+      metadata: { ...metadata, threadIds: [...new Set(threadIds)] },
+      changes,
+    };
+    this.notifyClients(message);
   }
 
   /**

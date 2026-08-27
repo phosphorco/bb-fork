@@ -26,6 +26,7 @@ import {
   asc,
   desc,
   eq,
+  gte,
   gt,
   inArray,
   isNotNull,
@@ -173,6 +174,7 @@ export interface QueryThreadFacetIdsArgs {
   hasParent?: boolean;
   originKind?: ThreadOriginKind;
   originPluginId?: string;
+  experimental_latestAttentionAtOrAfter?: number;
 }
 
 export interface ListThreadIdsForFacetProjectionArgs {
@@ -186,6 +188,7 @@ export interface ListThreadIdsForFacetProjectionArgs {
   hasParent?: boolean;
   originKind?: ThreadOriginKind;
   originPluginId?: string;
+  experimental_latestAttentionAtOrAfter?: number;
 }
 
 export interface ThreadFacetIdPage {
@@ -257,6 +260,12 @@ export function listThreadIdsForFacetProjection(
         args.originPluginId
           ? eq(threads.originPluginId, args.originPluginId)
           : undefined,
+        args.experimental_latestAttentionAtOrAfter === undefined
+          ? undefined
+          : gte(
+              threads.latestAttentionAt,
+              args.experimental_latestAttentionAtOrAfter,
+            ),
         args.archived === true
           ? isNotNull(threads.archivedAt)
           : args.archived === false
@@ -264,7 +273,11 @@ export function listThreadIdsForFacetProjection(
             : undefined,
       ),
     )
-    .orderBy(asc(threads.id))
+    .orderBy(
+      ...(args.experimental_latestAttentionAtOrAfter === undefined
+        ? [asc(threads.id)]
+        : [asc(threads.latestAttentionAt), asc(threads.id)]),
+    )
     .all()
     .map(({ id }) => id);
 }
@@ -1755,6 +1768,12 @@ export function queryThreadFacetThreadIds(
         args.originPluginId
           ? eq(threads.originPluginId, args.originPluginId)
           : undefined,
+        args.experimental_latestAttentionAtOrAfter === undefined
+          ? undefined
+          : gte(
+              threads.latestAttentionAt,
+              args.experimental_latestAttentionAtOrAfter,
+            ),
         args.archived === true
           ? isNotNull(threads.archivedAt)
           : args.archived === false

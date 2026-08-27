@@ -481,6 +481,12 @@ export const REALTIME_THREAD_CHANGE_REGISTRY = {
       dirtyThreadStorageQueriesForThread, // Thread storage is resolved through the attached environment.
     ],
   },
+  "execution-options-changed": {
+    flush: "immediate",
+    dirty: [
+      dirtyThreadDefaultExecutionOptionsQueries, // Sticky model/reasoning overrides change the next-turn composer defaults.
+    ],
+  },
   "read-state-changed": {
     flush: "debounced",
     dirty: [
@@ -654,6 +660,7 @@ interface ThreadRealtimeDirtyContext extends RealtimeDirtyContext {
   projectId: string | undefined;
   statusChange: ThreadStatusChangeMetadata | undefined;
   threadId: string | undefined;
+  threadIds?: readonly string[];
 }
 
 export function createFlushOncePredicate(): (key: string) => boolean {
@@ -877,8 +884,10 @@ function dirtyThreadDetailQueries({
 
 function dirtyThreadDefaultExecutionOptionsQueries({
   threadId,
+  threadIds,
 }: ThreadRealtimeDirtyContext): QueryKey[] {
-  return threadId ? [threadDefaultExecutionOptionsQueryKey(threadId)] : [];
+  const ids = threadId ? [threadId] : (threadIds ?? []);
+  return ids.map(threadDefaultExecutionOptionsQueryKey);
 }
 
 function dirtyThreadTabsQueries({

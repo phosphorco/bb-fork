@@ -1,11 +1,13 @@
 import {
   getProjectExecutionDefaults,
+  getEnvironment,
   getThreadExecutionOverride,
   setThreadExecutionOverride,
   type ThreadExecutionOverride,
 } from "@bb/db";
 import {
   reconcileReasoningLevel,
+  providerModelCatalogDependsOnWorkspace,
   type AvailableModel,
   type CallerExecutionInputSource,
   type ReasoningLevel,
@@ -14,7 +16,8 @@ import {
 import { ApiError } from "../../errors.js";
 import type { LoggedWorkSessionDeps } from "../../types.js";
 import type { ProviderRegistryService } from "../providers/provider-registry.js";
-import { resolveSystemExecutionOptions } from "../system/execution-options.js";
+import { resolveSystemProviderModels } from "../system/execution-options.js";
+import { resolveSystemLookupHostId } from "../system/host-lookup.js";
 import { getLastExecutionOptions } from "./thread-events.js";
 import { getSupportedReasoningLevelsForProvider } from "./thread-reasoning-policy.js";
 
@@ -162,10 +165,22 @@ export async function applyThreadExecutionOverride(
     fallbackModel: resolveFallbackModel(deps, thread),
   });
 
-  setThreadExecutionOverride(deps.db, {
+  if (
+    existing.modelOverride === next.modelOverride &&
+    existing.reasoningLevelOverride === next.reasoningLevelOverride
+  ) {
+    return;
+  }
+  const updated = setThreadExecutionOverride(deps.db, {
     threadId: thread.id,
     modelOverride: next.modelOverride,
     reasoningLevelOverride: next.reasoningLevelOverride,
+  });
+  if (!updated) {
+    throw new ApiError(404, "thread_not_found", "Thread not found");
+  }
+  deps.hub.notifyThread(thread.id, ["execution-options-changed"], {
+    projectId: thread.projectId,
   });
 }
 
@@ -200,10 +215,21 @@ async function loadThreadProviderModels(
   deps: LoggedWorkSessionDeps,
   thread: Thread,
 ): Promise<readonly AvailableModel[]> {
-  const result = await resolveSystemExecutionOptions(deps, {
+  const environment =
+    thread.environmentId === null
+      ? null
+      : getEnvironment(deps.db, thread.environmentId);
+  const hostId = resolveSystemLookupHostId(deps, {
+    ...(thread.environmentId === null
+      ? {}
+      : { environmentId: thread.environmentId }),
+  });
+  const result = await resolveSystemProviderModels(deps, {
     providerId: thread.providerId,
-    ...(thread.environmentId !== null
-      ? { environmentId: thread.environmentId }
+    hostId,
+    ...(providerModelCatalogDependsOnWorkspace(thread.providerId) &&
+    environment?.path
+      ? { cwd: environment.path }
       : {}),
   });
   if (result.modelLoadError !== null) {

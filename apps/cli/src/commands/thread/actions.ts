@@ -38,7 +38,9 @@ interface ThreadUpdateCommandOptions {
   section?: string;
   clearSection?: boolean;
   model?: string;
+  clearModel?: boolean;
   reasoningLevel?: string;
+  clearReasoningLevel?: boolean;
   visibility?: string;
 }
 
@@ -113,8 +115,8 @@ interface ThreadUpdateBody {
   title?: string;
   sectionId?: string | null;
   parentThreadId?: string | null;
-  model?: string;
-  reasoningLevel?: ReasoningLevel;
+  model?: string | null;
+  reasoningLevel?: ReasoningLevel | null;
   visibility?: ThreadVisibility;
 }
 
@@ -136,9 +138,14 @@ export function registerActionsCommands(
       "--model <model>",
       "Set the sticky model applied on the thread's next turn",
     )
+    .option("--clear-model", "Clear the sticky model override")
     .option(
       "--reasoning-level <level>",
       "Set the sticky reasoning level applied on the thread's next turn: low, medium, high, xhigh, max (provider-dependent)",
+    )
+    .option(
+      "--clear-reasoning-level",
+      "Clear the sticky reasoning-level override",
     )
     .option("--visibility <visibility>", "Thread visibility: visible or hidden")
     .action(
@@ -152,6 +159,14 @@ export function registerActionsCommands(
           if (opts.section && opts.clearSection) {
             throw new Error("Cannot combine --section with --clear-section.");
           }
+          if (opts.model && opts.clearModel) {
+            throw new Error("Cannot combine --model with --clear-model.");
+          }
+          if (opts.reasoningLevel && opts.clearReasoningLevel) {
+            throw new Error(
+              "Cannot combine --reasoning-level with --clear-reasoning-level.",
+            );
+          }
           const reasoningLevel = parseReasoningLevel(opts.reasoningLevel);
           const visibility =
             opts.visibility === undefined
@@ -164,11 +179,13 @@ export function registerActionsCommands(
             !opts.clearSection &&
             !opts.title &&
             !opts.model &&
+            !opts.clearModel &&
             !reasoningLevel &&
+            !opts.clearReasoningLevel &&
             !visibility
           ) {
             throw new Error(
-              "No changes requested. Provide --title, --parent-thread, --clear-parent-thread, --section, --clear-section, --model, --reasoning-level, or --visibility.",
+              "No changes requested. Provide --title, --parent-thread, --clear-parent-thread, --section, --clear-section, --model, --clear-model, --reasoning-level, --clear-reasoning-level, or --visibility.",
             );
           }
 
@@ -196,9 +213,13 @@ export function registerActionsCommands(
           }
           if (opts.model) {
             body.model = opts.model;
+          } else if (opts.clearModel) {
+            body.model = null;
           }
           if (reasoningLevel) {
             body.reasoningLevel = reasoningLevel;
+          } else if (opts.clearReasoningLevel) {
+            body.reasoningLevel = null;
           }
           if (visibility) {
             body.visibility = visibility;
@@ -225,9 +246,13 @@ export function registerActionsCommands(
           }
           if (opts.model) {
             console.log(`Model: ${opts.model}`);
+          } else if (opts.clearModel) {
+            console.log("Model override cleared");
           }
           if (reasoningLevel) {
             console.log(`Reasoning level: ${reasoningLevel}`);
+          } else if (opts.clearReasoningLevel) {
+            console.log("Reasoning level override cleared");
           }
           if (visibility) {
             console.log(`Visibility: ${visibility}`);

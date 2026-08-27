@@ -255,6 +255,10 @@ vi.mock("@/hooks/mutations/thread-state-mutations", () => ({
     mutate: vi.fn(),
     variables: null,
   }),
+  useUpdateThread: () => ({
+    isPending: false,
+    mutate: vi.fn(),
+  }),
 }));
 
 vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({

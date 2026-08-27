@@ -1,0 +1,1 @@
+CREATE INDEX `threads_attention_idx` ON `threads` (`latest_attention_at`);
