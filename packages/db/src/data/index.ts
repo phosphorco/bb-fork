@@ -246,6 +246,15 @@ export {
 } from "./app-theme.js";
 
 export {
+  p6rClearStoredAppearanceForPrincipalKey,
+  p6rGetStoredAppearanceForPrincipalKey,
+  p6rListRecentActorSnapshots,
+  p6rListStoredPrincipalAppearance,
+  p6rSetStoredAppearanceForPrincipalKey,
+  type P6rStoredPrincipalAppearance,
+} from "./p6r-principal-appearance.js";
+
+export {
   createEnvironment,
   getEnvironment,
   findProjectEnvironmentByHostPath,

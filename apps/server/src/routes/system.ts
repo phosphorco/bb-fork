@@ -12,7 +12,14 @@ import {
   setAppKeybindingOverrides,
   setExperiments,
   setStoredAppearance,
+  p6rClearStoredAppearanceForPrincipalKey,
+  p6rSetStoredAppearanceForPrincipalKey,
 } from "@bb/db";
+import {
+  p6rBuildPaletteRoster,
+  p6rPersonalAppearanceKey,
+  p6rResolveAppearanceSelection,
+} from "../services/system/p6r-principal-appearance.js";
 import {
   applyAppKeybindingOverrides,
   customThemeNameSchema,
@@ -21,6 +28,7 @@ import {
   type AppKeybindingOverrides,
   type AppTheme,
   type P6rActorSnapshot,
+  type P6rPrincipalKey,
 } from "@bb/domain";
 import {
   publicApiRoutes,
@@ -114,7 +122,7 @@ export function registerSystemRoutes(
   deps: ServerAppDeps,
   pluginService: PluginService,
 ): void {
-  const { get, post, put } = typedRoutes<PublicApiSchema>(app, {
+  const { del, get, post, put } = typedRoutes<PublicApiSchema>(app, {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
   });
   const routes = publicApiRoutes.system;
@@ -191,10 +199,17 @@ export function registerSystemRoutes(
       defaultKeybindings: DEFAULT_APP_KEYBINDINGS,
       keybindingOverrides,
       experiments: getExperiments(deps.db),
-      appearance: await resolveSelectedTheme(
-        getStoredThemeId(deps.db),
-        getStoredFaviconColor(deps.db),
-      ),
+      appearance: await (async () => {
+        const p6rSelection = p6rResolveAppearanceSelection(
+          deps.db,
+          p6rCurrentPrincipal,
+        );
+        return resolveSelectedTheme(
+          p6rSelection.themeId,
+          p6rSelection.faviconColor,
+        );
+      })(),
+      p6rPaletteRoster: p6rBuildPaletteRoster(deps.db),
       customThemes: listCustomThemeNames(themeRoot),
       pluginThemes: pluginService.listThemes(),
       featureFlags: deps.config.featureFlags,
@@ -269,6 +284,72 @@ export function registerSystemRoutes(
     // re-applies the active palette.
     deps.hub.notifySystem(["config-changed"]);
     return context.json(await resolveSelectedTheme(themeId, faviconColor));
+  });
+
+  // Downstream (p6r): a personal palette override for the requesting
+  // principal. The plain appearance route above stays the shared default for
+  // everybody; the local operator and unclaimed requests have no personal row
+  // (their palette *is* the shared one), so they are rejected here.
+  function p6rRequirePersonalAppearanceKey(context: {
+    get(key: string): unknown;
+  }): P6rPrincipalKey {
+    const p6rKey = p6rPersonalAppearanceKey(
+      (context.get("p6rRequestPrincipal") as
+        | P6rActorSnapshot
+        | null
+        | undefined) ?? null,
+    );
+    if (p6rKey === null) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        "A personal palette needs an authenticated principal; this session already follows the shared appearance.",
+      );
+    }
+    return p6rKey;
+  }
+
+  async function p6rAssertSelectableThemeId(themeId: string): Promise<void> {
+    if (isBuiltInThemeId(themeId)) return;
+    if ((await pluginService.readThemeCss(themeId)) !== null) return;
+    if (!customThemeNameSchema.safeParse(themeId).success) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        `Invalid theme id '${themeId}'.`,
+      );
+    }
+    if (readCustomThemeCss(themeRoot, themeId) === null) {
+      throw new ApiError(
+        404,
+        "theme_not_found",
+        `Custom theme '${themeId}' not found. Create ${resolveCustomThemeCssPath(themeRoot, themeId)} first.`,
+      );
+    }
+  }
+
+  put(routes.p6rPersonalAppearance, async (context, payload) => {
+    const p6rKey = p6rRequirePersonalAppearanceKey(context);
+    const { themeId, faviconColor } = payload;
+    await p6rAssertSelectableThemeId(themeId);
+    p6rSetStoredAppearanceForPrincipalKey(deps.db, p6rKey, {
+      themeId,
+      faviconColor,
+    });
+    deps.hub.notifySystem(["config-changed"]);
+    return context.json(await resolveSelectedTheme(themeId, faviconColor));
+  });
+
+  del(routes.p6rPersonalAppearanceClear, async (context) => {
+    const p6rKey = p6rRequirePersonalAppearanceKey(context);
+    p6rClearStoredAppearanceForPrincipalKey(deps.db, p6rKey);
+    deps.hub.notifySystem(["config-changed"]);
+    return context.json(
+      await resolveSelectedTheme(
+        getStoredThemeId(deps.db),
+        getStoredFaviconColor(deps.db),
+      ),
+    );
   });
 
   get(routes.themes, async (context) =>

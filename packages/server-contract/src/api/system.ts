@@ -189,6 +189,25 @@ export const systemConfigResponseSchema = z.object({
   /** Active app-wide palette (built-in id or custom theme), resolved server-side. */
   appearance: appThemeSchema,
   /**
+   * Downstream (p6r): each recently seen person's palette choice, so Settings
+   * can show what everyone on this bb is using. A null `themeId` means the
+   * person follows the shared default; the local operator's entry reflects
+   * the global row, which is where their palette writes land.
+   */
+  p6rPaletteRoster: z
+    .array(
+      z
+        .object({
+          p6rPrincipalKey: p6rPrincipalKeySchema,
+          p6rHandle: z.string().min(1).max(512),
+          p6rDisplayName: z.string().min(1).max(512),
+          p6rImageUrl: z.string().max(2_048).nullable(),
+          themeId: z.string().nullable(),
+        })
+        .strict(),
+    )
+    .optional(),
+  /**
    * Names of custom themes discovered under `<data-dir>/theme/<name>/theme.css`,
    * so the Settings picker can offer them alongside the built-ins.
    */
@@ -215,6 +234,11 @@ export const systemConfigResponseSchema = z.object({
 });
 
 export type SystemConfigResponse = z.infer<typeof systemConfigResponseSchema>;
+
+/** Downstream (p6r): one person's row in the Settings palette roster. */
+export type P6rPaletteRosterEntry = NonNullable<
+  SystemConfigResponse["p6rPaletteRoster"]
+>[number];
 
 export const systemAttentionResponseSchema = z.object({
   hasAttention: z.boolean(),

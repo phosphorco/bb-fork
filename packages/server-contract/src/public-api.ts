@@ -1420,6 +1420,23 @@ export const publicApiRoutes = {
       ),
       response: jsonResponse<AppTheme>(),
     }),
+    // Downstream (p6r): a personal palette override for the requesting
+    // principal, stored beside the shared appearance row (which the plain
+    // appearance route above keeps as the default for everybody).
+    p6rPersonalAppearance: defineRoute({
+      path: "/settings/p6r-personal-appearance",
+      method: "put",
+      request: jsonRequest<EmptyInput, AppThemeSelection>(
+        appThemeSelectionSchema,
+      ),
+      response: jsonResponse<AppTheme>(),
+    }),
+    p6rPersonalAppearanceClear: defineRoute({
+      path: "/settings/p6r-personal-appearance",
+      method: "delete",
+      request: noRequest(),
+      response: jsonResponse<AppTheme>(),
+    }),
     themes: defineRoute({
       path: "/settings/themes",
       method: "get",
