@@ -6,7 +6,7 @@ import {
   type ProviderCommandSection,
   type ProviderCommandSource,
 } from "@bb/server-contract";
-import type { PromptMentionCommandTrigger } from "@bb/domain";
+import type { P6rPromptStack, PromptMentionCommandTrigger } from "@bb/domain";
 import type { PluginMentionTrigger } from "./plugin-mention-triggers.js";
 
 type PromptPathMentionSource = "workspace" | "thread-storage";
@@ -87,6 +87,7 @@ export interface ProviderCommandSuggestion {
   description: string | null;
   argumentHint: string | null;
   pluginId?: string;
+  promptStack?: P6rPromptStack;
 }
 
 /**
@@ -105,6 +106,9 @@ export function toProviderCommandSuggestion(
     description: command.description,
     argumentHint: command.argumentHint,
     ...(command.pluginId !== undefined ? { pluginId: command.pluginId } : {}),
+    ...(command.promptStack !== undefined
+      ? { promptStack: command.promptStack }
+      : {}),
   };
 }
 

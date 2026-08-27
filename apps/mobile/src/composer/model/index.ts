@@ -1,6 +1,7 @@
 export {
   applyTextChange,
   createComposerValue,
+  deleteRange,
   emptyComposerValue,
   hasComposerText,
   hasWhitespaceAt,

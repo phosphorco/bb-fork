@@ -4,6 +4,7 @@ import type {
   ProjectBranchesResponse,
   ProjectWithThreadsResponse,
   PromptHistoryResponse,
+  P6rProjectPromptStacksResponse,
   WorkspacePathListResponse,
 } from "@bb/server-contract";
 import {
@@ -20,6 +21,7 @@ import {
   projectFilePreviewQueryKey,
   projectPathsQueryKey,
   projectPromptHistoryQueryKey,
+  p6rProjectPromptStacksQueryKey,
   projectSourceBranchesQueryKey,
 } from "./query-keys";
 import { resolveProjectSourceBranchesPlaceholder } from "./query-placeholders";
@@ -149,6 +151,25 @@ export function useProjectPromptHistory(
       }),
     enabled,
     staleTime: PROMPT_HISTORY_STALE_TIME_MS,
+  });
+}
+
+export function useP6rProjectPromptStacks(
+  projectId: string | undefined,
+  options?: QueryOptions,
+) {
+  const enabled = (options?.enabled ?? true) && Boolean(projectId);
+  useProjectDetailRealtimeSubscription(projectId, { enabled });
+
+  return useQuery<P6rProjectPromptStacksResponse>({
+    queryKey: p6rProjectPromptStacksQueryKey(projectId ?? ""),
+    queryFn: ({ signal }) =>
+      sdk.projects.promptStacks({
+        projectId: requireProjectId(projectId, "useP6rProjectPromptStacks"),
+        signal,
+      }),
+    enabled,
+    ...REALTIME_OWNED_NO_FOCUS_QUERY_POLICY,
   });
 }
 

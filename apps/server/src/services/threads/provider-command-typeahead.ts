@@ -7,6 +7,7 @@ import {
   type CommandListResponse,
   type ProviderCommand,
 } from "@bb/server-contract";
+import type { P6rPromptStack } from "@bb/domain";
 import type { HostProviderCommand } from "@bb/host-daemon-contract";
 import type { ProviderRegistryService } from "../providers/provider-registry.js";
 import type { ResolvedSkillCatalogEntry } from "../skills/injected-skills.js";
@@ -39,9 +40,7 @@ export function providerHasCommandSurface(
 ): boolean {
   const registration = registry.get(providerId);
   if (registration) {
-    return providerComposerHasSkillsAction(
-      registration.info.composerActions,
-    );
+    return providerComposerHasSkillsAction(registration.info.composerActions);
   }
   if (isAcpProviderId(providerId)) {
     return providerComposerHasSkillsAction(
@@ -74,6 +73,17 @@ function toSkillCommand(entry: ResolvedSkillCatalogEntry): ProviderCommand {
     description: runtimeSource.description,
     argumentHint: null,
     ...(provenance.kind === "plugin" ? { pluginId: provenance.pluginId } : {}),
+  };
+}
+
+function toPromptStackCommand(stack: P6rPromptStack): ProviderCommand {
+  return {
+    name: stack.id,
+    source: "prompt-stack",
+    origin: "user",
+    description: stack.name,
+    argumentHint: `${stack.steps.length} steps`,
+    promptStack: stack,
   };
 }
 
@@ -129,6 +139,7 @@ interface BuildCommandListResponseArgs {
   commands: HostProviderCommand[];
   includeBuiltinCompact: boolean;
   skillCatalog: readonly ResolvedSkillCatalogEntry[];
+  promptStacks?: readonly P6rPromptStack[];
 }
 
 /**
@@ -145,6 +156,7 @@ export function buildCommandListResponse(
     commands: dedupeBySourceAndName([
       ...(args.includeBuiltinCompact ? BUILT_IN_PROVIDER_COMMANDS : []),
       ...args.skillCatalog.map(toSkillCommand),
+      ...(args.promptStacks ?? []).map(toPromptStackCommand),
       ...args.commands.map(toProviderCommand),
     ]).sort(compareCommands),
   };

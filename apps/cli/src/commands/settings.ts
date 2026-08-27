@@ -5,6 +5,7 @@ import {
   appSettingsSchema,
   experimentKeySchema,
   experimentsSchema,
+  p6rPromptStackCatalogSchema,
   type AppSettings,
   type AppShortcut,
   type Experiments,
@@ -150,6 +151,33 @@ export function registerSettingsCommands(
         );
         if (outputJson(opts, result)) return;
         console.log(`${key} updated`);
+      }),
+    );
+
+  settings
+    .command("prompt-stacks [catalog]")
+    .description("Show or replace the global prompt stack catalog")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (catalog: string | undefined, opts: JsonOptions) => {
+        const sdk = createCliBbSdk(getUrl());
+        if (catalog === undefined) {
+          const result = await sdk.system.promptStacks();
+          if (outputJson(opts, result)) return;
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(catalog);
+        } catch {
+          throw new Error("catalog must be valid JSON.");
+        }
+        const result = await sdk.system.updatePromptStacks(
+          p6rPromptStackCatalogSchema.parse(parsed),
+        );
+        if (outputJson(opts, result)) return;
+        console.log("Global prompt stacks updated");
       }),
     );
 

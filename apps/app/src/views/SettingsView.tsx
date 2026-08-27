@@ -56,6 +56,7 @@ import { MachinesSettingsSection } from "@/components/settings/MachinesSettingsS
 import { ArchivedThreadsSettingsSection } from "@/components/settings/ArchivedThreadsSettingsSection";
 import { CliSkillsSettingsSection } from "@/components/settings/CliSkillsSettingsSection";
 import { MarketplacesSettingsSection } from "@/components/settings/MarketplacesSettingsSection";
+import { P6rPromptStacksSettingsSection } from "@/components/settings/PromptStacksSettingsSection";
 import {
   useUpdateGeneralSettings,
   useUpdateAppearance,
@@ -1118,6 +1119,7 @@ export function SettingsView() {
           }
         />
         <CliSkillsSettingsSection />
+        <P6rPromptStacksSettingsSection />
         <VoiceInputSettingsSection />
         <DebugSettingsSection
           enabled={generalSettings.showUnhandledProviderEvents}

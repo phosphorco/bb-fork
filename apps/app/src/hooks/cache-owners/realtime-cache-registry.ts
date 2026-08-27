@@ -69,6 +69,7 @@ import {
   allHostQueryKeyPrefix,
   allPluginCatalogSearchQueryKeyPrefix,
   allPluginContributionsQueryKeyPrefix,
+  p6rAllProjectPromptStacksQueryKeyPrefix,
   allPluginListQueryKeyPrefix,
   allPluginSettingsQueryKeyPrefix,
   allPluginSettingsViewQueryKeyPrefix,
@@ -1246,7 +1247,11 @@ function dirtyHostAvailabilityQueries(): QueryKey[] {
 }
 
 function dirtySystemConfigQueries(): QueryKey[] {
-  return [systemConfigQueryKey()];
+  return [
+    systemConfigQueryKey(),
+    p6rAllProjectPromptStacksQueryKeyPrefix(),
+    allProjectCommandsQueryKeyPrefix(),
+  ];
 }
 
 function dirtyAllThreadTimelineQueries(): QueryKey[] {

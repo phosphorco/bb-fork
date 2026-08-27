@@ -32,6 +32,7 @@ import {
   SettingsSection,
 } from "@/components/ui/settings-section.js";
 import { ProjectSourceRow } from "@/views/project-settings/ProjectSourceRow";
+import { P6rProjectPromptStacksSettingsSection } from "@/components/settings/ProjectPromptStacksSettingsSection";
 import {
   useAddLocalProjectSource,
   useDeleteLocalProjectSource,
@@ -277,6 +278,9 @@ export function ProjectSettingsView() {
             </div>
           )}
         </SettingsSection>
+        {projectId ? (
+          <P6rProjectPromptStacksSettingsSection projectId={projectId} />
+        ) : null}
       </div>
 
       <ProjectPathDialog

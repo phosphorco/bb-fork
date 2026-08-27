@@ -116,13 +116,14 @@ export function useComposerTypeahead({
     () => buildPluginMentionTriggers(mentionProviders ?? []),
     [mentionProviders],
   );
+  const commandTrigger = skillsTrigger ?? (scope.threadId ? "/" : null);
   const triggers = useMemo(
     () =>
       buildTypeaheadTriggers({
         mentionTriggers,
-        commandTrigger: skillsTrigger,
+        commandTrigger,
       }),
-    [mentionTriggers, skillsTrigger],
+    [commandTrigger, mentionTriggers],
   );
 
   const activeTrigger = useMemo(
@@ -221,11 +222,11 @@ export function useComposerTypeahead({
 
   const menu = useMemo((): TypeaheadMenuModel | null => {
     if (command !== null) {
-      if (!commandActive || skillsTrigger === null) return null;
+      if (!commandActive || commandTrigger === null) return null;
       const suggestions = buildCommandSuggestions({
         commands: commandsQuery.data?.commands ?? [],
         promptActions,
-        trigger: skillsTrigger,
+        trigger: commandTrigger,
         scope: threadId ? "thread" : "new-thread",
         query: command.query,
       });
@@ -353,7 +354,7 @@ export function useComposerTypeahead({
     projectId,
     promptActions,
     sidebar.data,
-    skillsTrigger,
+    commandTrigger,
     storagePaths.data?.paths,
     threadId,
     threads.data,

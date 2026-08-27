@@ -12,11 +12,13 @@ import type {
   ProjectWithThreadsResponse,
   ProjectListQuery,
   ProjectPathsQuery,
+  P6rProjectPromptStacksResponse,
   PromptHistoryResponse,
   PromptHistoryQuery,
   ReorderProjectRequest,
   SidebarBootstrapResponse,
   UpdateProjectRequest,
+  P6rUpdateProjectPromptStacksRequest,
   UpdateProjectSourceRequest,
   UploadedPromptAttachment,
   WorkspacePathListResponse,
@@ -55,6 +57,16 @@ export interface ProjectReorderArgs extends ReorderProjectRequest {
 export interface ProjectPromptHistoryArgs extends PromptHistoryQuery {
   projectId: string;
   signal?: AbortSignal;
+}
+
+export interface P6rProjectPromptStacksArgs {
+  projectId: string;
+  signal?: AbortSignal;
+}
+
+export interface P6rProjectPromptStacksUpdateArgs {
+  projectId: string;
+  overrides: P6rUpdateProjectPromptStacksRequest["overrides"];
 }
 
 /** Select one project workspace source, or omit both for the primary host. */
@@ -167,9 +179,9 @@ export interface ProjectAttachmentReadResult {
 }
 export type ProjectAttachmentUploadResult = UploadedPromptAttachment;
 export type ProjectCommandsResult = CommandListResponse;
+export type P6rProjectPromptStacksResult = P6rProjectPromptStacksResponse;
 export type ProjectCreateResult = ProjectResponse;
-export type ProjectDefaultExecutionOptionsResult =
-  ProjectExecutionDefaults | null;
+export type ProjectDefaultExecutionOptionsResult = ProjectExecutionDefaults | null;
 export type ProjectDeleteResult = { ok: true };
 export interface ProjectFileContentResult {
   /** UTF-8 text or base64, as selected by `contentEncoding`. */
@@ -223,6 +235,9 @@ export interface ProjectsArea {
   promptHistory(
     args: ProjectPromptHistoryArgs,
   ): Promise<ProjectPromptHistoryResult>;
+  promptStacks(
+    args: P6rProjectPromptStacksArgs,
+  ): Promise<P6rProjectPromptStacksResult>;
   reorder(args: ProjectReorderArgs): Promise<ProjectReorderResult>;
   /**
    * One round-trip navigation snapshot: thread sections, every project with
@@ -234,6 +249,9 @@ export interface ProjectsArea {
   ): Promise<ProjectSidebarBootstrapResult>;
   sources: ProjectSourcesArea;
   update(args: ProjectUpdateArgs): Promise<ProjectUpdateResult>;
+  updatePromptStacks(
+    args: P6rProjectPromptStacksUpdateArgs,
+  ): Promise<P6rProjectPromptStacksResult>;
 }
 
 function projectUpdateJson(args: ProjectUpdateArgs): UpdateProjectRequest {
@@ -562,6 +580,14 @@ export function createProjectsArea(args: CreateSdkAreaArgs): ProjectsArea {
         ),
       );
     },
+    async promptStacks(input) {
+      return transport.readJson(
+        transport.api.v1.projects[":id"]["prompt-stacks"].$get(
+          { param: { id: input.projectId } },
+          ...signalRequestArgs(input.signal),
+        ),
+      );
+    },
     async reorder(input) {
       return transport.readJson(
         transport.api.v1.projects[":id"].order.$patch({
@@ -587,6 +613,14 @@ export function createProjectsArea(args: CreateSdkAreaArgs): ProjectsArea {
         transport.api.v1.projects[":id"].$patch({
           param: { id: input.projectId },
           json: projectUpdateJson(input),
+        }),
+      );
+    },
+    async updatePromptStacks(input) {
+      return transport.readJson(
+        transport.api.v1.projects[":id"]["prompt-stacks"].$put({
+          param: { id: input.projectId },
+          json: { overrides: input.overrides },
         }),
       );
     },

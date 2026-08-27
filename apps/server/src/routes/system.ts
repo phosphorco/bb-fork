@@ -5,12 +5,14 @@ import {
   getAppSettings,
   getAppKeybindingOverrides,
   getExperiments,
+  p6rGetPromptStackSettings,
   getStoredFaviconColor,
   getStoredThemeId,
   hasActiveThreadAttention,
   setAppSettings,
   setAppKeybindingOverrides,
   setExperiments,
+  p6rSetPromptStackSettings,
   setStoredAppearance,
   p6rClearStoredAppearanceForPrincipalKey,
   p6rSetStoredAppearanceForPrincipalKey,
@@ -30,6 +32,7 @@ import {
   type P6rActorSnapshot,
   type P6rPrincipalKey,
 } from "@bb/domain";
+import { p6rPromptStackCatalogSchema } from "@bb/domain";
 import {
   publicApiRoutes,
   typedRoutes,
@@ -237,6 +240,21 @@ export function registerSystemRoutes(
           | undefined) ?? null,
       ),
     );
+  });
+
+  get(routes.promptStacks, (context) =>
+    context.json({ stacks: p6rGetPromptStackSettings(deps.db).stacks }),
+  );
+
+  put(routes.updatePromptStacks, (context, payload) => {
+    const catalog = p6rPromptStackCatalogSchema.parse(payload);
+    const current = p6rGetPromptStackSettings(deps.db);
+    p6rSetPromptStackSettings(deps.db, {
+      ...current,
+      stacks: catalog.stacks,
+    });
+    deps.hub.notifySystem(["config-changed"]);
+    return context.json(catalog);
   });
 
   put(routes.generalSettings, (context, payload) => {

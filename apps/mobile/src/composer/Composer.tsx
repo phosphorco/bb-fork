@@ -3,6 +3,7 @@ import type {
   PromptMentionSuggestion,
   ProviderCommandSuggestion,
 } from "@bb/client-core";
+import type { P6rPromptStack } from "@bb/domain";
 import {
   forwardRef,
   useCallback,
@@ -40,6 +41,7 @@ import {
 import {
   buildComposerPromptActions,
   commandInsertionFromSuggestion,
+  deleteRange,
   hasComposerText,
   hasWhitespaceAt,
   insertMention,
@@ -82,6 +84,8 @@ export interface ComposerProps {
   submitMode: ComposerSubmitMode;
   /** `send` (ready), `queue` (runtime active), `steer` (long-press while active). */
   onSubmit: (kind: ComposerSubmitKind) => void | Promise<void>;
+  /** Dispatches a standalone configurable prompt stack into the follow-up queue. */
+  onPromptStack?: (stack: P6rPromptStack) => void;
   /** Label for the ready-state submit button ("Send", "Create"). */
   submitLabel?: string;
   isSubmitting?: boolean;
@@ -141,6 +145,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       scope,
       submitMode,
       onSubmit,
+      onPromptStack,
       submitLabel = "Send",
       isSubmitting = false,
       disabled = false,
@@ -267,11 +272,27 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       (suggestion: ProviderCommandSuggestion) => {
         const trigger = activeTrigger;
         if (!trigger || trigger.kind !== "command") return;
+        const current = valueRef.current;
+        const standalone =
+          current.text.slice(0, trigger.from).trim().length === 0 &&
+          current.text.slice(trigger.to).trim().length === 0;
+        if (
+          standalone &&
+          suggestion.source === "prompt-stack" &&
+          suggestion.promptStack !== undefined &&
+          onPromptStack !== undefined
+        ) {
+          commit(
+            deleteRange(current, trigger.from, trigger.to).value,
+            trigger.from,
+          );
+          onPromptStack(suggestion.promptStack);
+          return;
+        }
         const insertion = commandInsertionFromSuggestion(
           suggestion,
           trigger.char,
         );
-        const current = valueRef.current;
         const result = insertMention(current, {
           from: trigger.from,
           to: trigger.to,
@@ -280,7 +301,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         });
         commit(result.value, result.caret);
       },
-      [activeTrigger, commit],
+      [activeTrigger, commit, onPromptStack],
     );
 
     const insertAtCaret = useCallback(

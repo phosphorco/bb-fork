@@ -15,6 +15,8 @@ A project maps to a code repository. All threads belong to a project.
   bb project reorder <id>                 Reorder in the sidebar
     --after <id>                          Previous project, or omit for start
     --before <id>                         Next project, or omit for end
+  bb project prompt-stacks <id>           Inspect effective prompt stacks
+    <overrides-json>                      Replace this project's step overrides
   bb project create --name "..." [options]
     --root <path>                         Project source path
     --machine <id-or-name>                Bind the path to a connected machine

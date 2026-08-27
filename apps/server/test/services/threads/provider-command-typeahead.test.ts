@@ -1,4 +1,5 @@
 import type { HostProviderCommand } from "@bb/host-daemon-contract";
+import type { P6rPromptStack } from "@bb/domain";
 import { describe, expect, it } from "vitest";
 import { buildCommandListResponse } from "../../../src/services/threads/provider-command-typeahead.js";
 
@@ -16,6 +17,38 @@ function skill(
 }
 
 describe("buildCommandListResponse", () => {
+  it("adds configured prompt stacks as slash commands", () => {
+    const stack: P6rPromptStack = {
+      id: "finish-work",
+      name: "Finish work",
+      description: "Review and publish",
+      steps: [
+        {
+          id: "review",
+          agentPrompt: "Review the work",
+          operatorComment: "",
+        },
+      ],
+    };
+    const response = buildCommandListResponse({
+      commands: [],
+      includeBuiltinCompact: false,
+      skillCatalog: [],
+      promptStacks: [stack],
+    });
+
+    expect(response.commands).toEqual([
+      {
+        name: "finish-work",
+        source: "prompt-stack",
+        origin: "user",
+        description: "Finish work",
+        argumentHint: "1 steps",
+        promptStack: stack,
+      },
+    ]);
+  });
+
   it("keeps the built-in compact row when project commands collide", () => {
     const response = buildCommandListResponse({
       commands: [

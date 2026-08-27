@@ -1,5 +1,6 @@
 import type {
   PromptMentionCommandTrigger,
+  P6rPromptStack,
   PromptTextMention,
 } from "@bb/domain";
 import type { ComposerView } from "@get-bb/plugin-sdk";
@@ -449,6 +450,8 @@ interface PromptBoxInternalProps {
   mentionMenuPlacement: MentionMenuPlacement;
   attachments?: AttachmentsConfig;
   promptActions?: readonly PromptBoxAction[];
+  /** Dispatches a standalone configurable prompt stack into the follow-up queue. */
+  onPromptStack?: (stack: P6rPromptStack) => void;
   /** Suppress plugin composer regions without unmounting the editor. */
   suppressPluginComposerCustomizations?: boolean;
   /** Selects the normal editor's viewport-relative height cap. */
@@ -1206,6 +1209,7 @@ export function PromptBoxInternal({
   mentionMenuPlacement,
   attachments: attachmentConfig = {},
   promptActions,
+  onPromptStack,
   suppressPluginComposerCustomizations = false,
   editorLayout = "thread",
   onCollapse,
@@ -2375,6 +2379,44 @@ export function PromptBoxInternal({
       if (!currentEditor || activeTrigger === null) return;
       if (activeTrigger.char !== "/") return;
 
+      const textBeforeTrigger = currentEditor.state.doc
+        .textBetween(0, activeTrigger.from, "\n")
+        .trim();
+      const textAfterTrigger = currentEditor.state.doc
+        .textBetween(
+          activeTrigger.to,
+          currentEditor.state.doc.content.size,
+          "\n",
+        )
+        .trim();
+      const promptStack = item.promptStack;
+      const shouldDispatchPromptStack =
+        item.source === "prompt-stack" &&
+        promptStack !== undefined &&
+        onPromptStack !== undefined &&
+        textBeforeTrigger.length === 0 &&
+        textAfterTrigger.length === 0;
+      if (shouldDispatchPromptStack) {
+        triggerKeyRef.current = "";
+        isRestoringAppliedMentionRef.current = true;
+        setActiveTrigger(null);
+        setSelectedIndex(0);
+        onCommandQueryChange(null);
+        try {
+          skipEditorChangeRef.current = true;
+          currentEditor
+            .chain()
+            .focus()
+            .deleteRange({ from: activeTrigger.from, to: activeTrigger.to })
+            .run();
+        } finally {
+          skipEditorChangeRef.current = false;
+        }
+        finishApply(currentEditor);
+        onPromptStack(promptStack);
+        return;
+      }
+
       const serializedText = `${activeTrigger.char}${item.name}`;
       const resource = promptCommandResourceFromSuggestion({
         suggestion: item,
@@ -2423,7 +2465,7 @@ export function PromptBoxInternal({
       }
       finishApply(currentEditor);
     },
-    [activeTrigger, finishApply, onCommandQueryChange],
+    [activeTrigger, finishApply, onCommandQueryChange, onPromptStack],
   );
 
   const applyTrigger = useCallback(

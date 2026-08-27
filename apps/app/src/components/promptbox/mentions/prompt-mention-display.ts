@@ -30,7 +30,8 @@ export function promptMentionIconLabel(
     return "Section";
   }
   if (resource.kind === "command") {
-    return resource.source === "skill" ? "Skill" : "Command";
+    if (resource.source === "skill") return "Skill";
+    return resource.source === "prompt-stack" ? "Prompt stack" : "Command";
   }
   if (resource.kind === "plugin") {
     return "Plugin";
@@ -69,6 +70,9 @@ export function promptMentionIconName(
 }
 
 export function promptCommandIconName(command: PromptCommandLike): IconName {
+  if (command.source === "prompt-stack") {
+    return "ListTodo";
+  }
   if (command.source === "skill") {
     return "Zap";
   }

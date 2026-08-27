@@ -23,6 +23,7 @@ export interface TypeaheadMenuProps {
 
 const COMMAND_SECTION_LABELS: Record<ProviderCommandSection, string> = {
   "agent-command": "Commands",
+  "prompt-stack": "Prompt stacks",
   skill: "Skills",
   "project-command": "Project commands",
   "user-command": "User commands",
@@ -159,7 +160,12 @@ export function TypeaheadMenu({
     if (menu.kind === "command") {
       return menu.suggestions.map((suggestion, index) => ({
         key: `${suggestion.source}:${suggestion.name}`,
-        icon: suggestion.source === "skill" ? "Zap" : "Terminal",
+        icon:
+          suggestion.source === "skill"
+            ? "Zap"
+            : suggestion.source === "prompt-stack"
+              ? "ListTodo"
+              : "Terminal",
         title: `/${suggestion.name}`,
         subtitle: suggestion.description ?? suggestion.argumentHint,
         section: COMMAND_SECTION_LABELS[providerCommandSection(suggestion)],

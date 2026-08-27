@@ -21,6 +21,7 @@ export const PROJECT_SOURCE_BRANCHES_QUERY_KEY = "projectSourceBranches";
 const PROJECT_DEFAULT_EXECUTION_OPTIONS_QUERY_KEY =
   "projectDefaultExecutionOptions";
 const PROJECT_PROMPT_HISTORY_QUERY_KEY = "projectPromptHistory";
+const PROJECT_PROMPT_STACKS_QUERY_KEY = "projectPromptStacks";
 export const SIDEBAR_NAVIGATION_QUERY_KEY = "sidebarNavigation";
 export const THREADS_QUERY_KEY = "threads";
 const MY_PROGRESS_FACET_QUERY_KIND = "facet-my-progress";
@@ -59,6 +60,7 @@ const THREAD_TIMELINE_TURN_SUMMARY_DETAILS_QUERY_KEY =
   "threadTimelineTurnSummaryDetails";
 const SYSTEM_PROVIDERS_QUERY_KEY = "systemProviders";
 const SYSTEM_CONFIG_QUERY_KEY = "systemConfig";
+const SYSTEM_PROMPT_STACKS_QUERY_KEY = "systemPromptStacks";
 export const SYSTEM_EXECUTION_OPTIONS_QUERY_KEY = "systemExecutionOptions";
 const SYSTEM_CLI_SKILLS_QUERY_KEY = "systemCliSkills";
 const SYSTEM_VERSION_QUERY_KEY = "systemVersion";
@@ -134,6 +136,13 @@ type ProjectPromptHistoryQueryKeyPrefix = readonly [
 type ProjectPromptHistoryQueryKey = readonly [
   typeof PROJECT_PROMPT_HISTORY_QUERY_KEY,
   string | null | undefined,
+];
+type P6rProjectPromptStacksQueryKey = readonly [
+  typeof PROJECT_PROMPT_STACKS_QUERY_KEY,
+  string,
+];
+type AllP6rProjectPromptStacksQueryKeyPrefix = readonly [
+  typeof PROJECT_PROMPT_STACKS_QUERY_KEY,
 ];
 type ProjectPathsQueryKey = readonly [
   typeof PROJECT_PATHS_QUERY_KEY,
@@ -457,6 +466,9 @@ type AllSystemProvidersQueryKeyPrefix = readonly [
   typeof SYSTEM_PROVIDERS_QUERY_KEY,
 ];
 type SystemConfigQueryKey = readonly [typeof SYSTEM_CONFIG_QUERY_KEY];
+type SystemPromptStacksQueryKey = readonly [
+  typeof SYSTEM_PROMPT_STACKS_QUERY_KEY,
+];
 type SystemCliSkillsQueryKey = readonly [typeof SYSTEM_CLI_SKILLS_QUERY_KEY];
 type SystemVersionQueryKey = readonly [typeof SYSTEM_VERSION_QUERY_KEY];
 type HostProviderCliStatusQueryKey = readonly [
@@ -779,6 +791,16 @@ export function projectCommandsQueryKey(
     environmentId,
     hostId,
   ];
+}
+
+export function p6rProjectPromptStacksQueryKey(
+  projectId: string,
+): P6rProjectPromptStacksQueryKey {
+  return [PROJECT_PROMPT_STACKS_QUERY_KEY, projectId];
+}
+
+export function p6rAllProjectPromptStacksQueryKeyPrefix(): AllP6rProjectPromptStacksQueryKeyPrefix {
+  return [PROJECT_PROMPT_STACKS_QUERY_KEY];
 }
 
 export function allProjectCommandsQueryKeyPrefix(): AllProjectCommandsQueryKeyPrefix {
@@ -1110,6 +1132,10 @@ export function systemCliSkillsQueryKey(): SystemCliSkillsQueryKey {
 
 export function systemConfigQueryKey(): SystemConfigQueryKey {
   return [SYSTEM_CONFIG_QUERY_KEY];
+}
+
+export function p6rSystemPromptStacksQueryKey(): SystemPromptStacksQueryKey {
+  return [SYSTEM_PROMPT_STACKS_QUERY_KEY];
 }
 
 export function systemVersionQueryKey(): SystemVersionQueryKey {

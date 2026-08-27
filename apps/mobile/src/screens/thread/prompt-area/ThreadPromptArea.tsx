@@ -206,6 +206,7 @@ export function ThreadPromptArea({
               submitMode={composer.submitMode}
               submitLabel={composer.submitLabel}
               onSubmit={composer.submit}
+              onPromptStack={composer.onPromptStack}
               isSubmitting={composer.isSubmitting}
               placeholder={composer.placeholder}
               actions={composerActions}

@@ -4,8 +4,10 @@ import { Command } from "commander";
 import type {
   CreateProjectSourceRequest,
   ProjectResponse,
+  P6rUpdateProjectPromptStacksRequest,
   UpdateProjectSourceRequest,
 } from "@bb/server-contract";
+import { p6rUpdateProjectPromptStacksRequestSchema } from "@bb/server-contract";
 import mimeTypes from "mime-types";
 import { action } from "../action.js";
 import { createCliBbSdk } from "../client.js";
@@ -38,6 +40,10 @@ interface ProjectShowCommandOptions {
 interface ProjectHistoryCommandOptions {
   json?: boolean;
   limit?: string;
+}
+
+interface ProjectPromptStacksCommandOptions {
+  json?: boolean;
 }
 
 interface ProjectReorderCommandOptions {
@@ -364,6 +370,42 @@ export function registerProjectCommands(
         if (outputJson(opts, result)) return;
         console.log(JSON.stringify(result, null, 2));
       }),
+    );
+
+  project
+    .command("prompt-stacks <id> [overrides]")
+    .description("Show or replace prompt stack overrides for a project")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(
+        async (
+          id: string,
+          overrides: string | undefined,
+          opts: ProjectPromptStacksCommandOptions,
+        ) => {
+          const sdk = createCliBbSdk(getUrl());
+          if (overrides === undefined) {
+            const result = await sdk.projects.promptStacks({ projectId: id });
+            if (outputJson(opts, result)) return;
+            console.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(overrides);
+          } catch {
+            throw new Error("overrides must be valid JSON.");
+          }
+          const request: P6rUpdateProjectPromptStacksRequest =
+            p6rUpdateProjectPromptStacksRequestSchema.parse(parsed);
+          const result = await sdk.projects.updatePromptStacks({
+            projectId: id,
+            overrides: request.overrides,
+          });
+          if (outputJson(opts, result)) return;
+          console.log(`Prompt stack overrides for ${id} updated`);
+        },
+      ),
     );
 
   project

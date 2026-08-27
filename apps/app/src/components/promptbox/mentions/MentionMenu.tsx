@@ -224,6 +224,9 @@ function getCommandSectionLabel(kind: CommandSectionKind): string {
   if (kind === "agent-command") {
     return "Commands";
   }
+  if (kind === "prompt-stack") {
+    return "Prompt stacks";
+  }
   if (kind === "skill") {
     return "Skills";
   }

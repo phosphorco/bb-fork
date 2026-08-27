@@ -14,6 +14,7 @@ import {
 } from "react";
 import type {
   PromptTextMention,
+  P6rPromptStack,
   ThreadRuntimeDisplayStatus,
   ThreadTimelineActivePromptMode,
 } from "@bb/domain";
@@ -145,6 +146,7 @@ export interface FollowUpComposerProps {
   onChangeMessage: (value: string, mentionRanges: PromptTextMention[]) => void;
   onModifierSubmit: () => void;
   onSubmit: () => void;
+  onPromptStack?: (stack: P6rPromptStack) => void;
   /**
    * Escape pressed in the editor with no higher-priority consumer open.
    * The sent-message editor passes its cancel action; when omitted, Escape
@@ -732,6 +734,7 @@ function FollowUpPromptBoxWithComposer({
         value={composer.message}
         mentionRanges={composer.mentionRanges}
         onChange={composer.onChangeMessage}
+        onPromptStack={composer.onPromptStack}
         onSubmit={onPrimarySubmit}
         onEscape={composer.onEscape}
         blurOnPointerSubmit={isCompactViewport && isPointerCoarse}

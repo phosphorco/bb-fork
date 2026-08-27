@@ -95,6 +95,7 @@ entries stay in the config file.
 
   bb settings show
   bb settings general <key> <value>
+  bb settings prompt-stacks [<catalog-json>]
   bb settings experiment <key> <value>
   bb settings usage [--machine <id-or-name>]
   bb settings version [--force]
@@ -103,6 +104,13 @@ entries stay in the config file.
 `bb settings general` accepts any key from `generalSettings` in
 `bb settings show`. Boolean preferences take `true`, `false`, `on`, or `off`,
 and `null` clears a preference that can be unset.
+
+Prompt stacks are reusable ordered follow-up workflows. The catalog is a JSON
+object with a `stacks` array; each stack has an id, name, description, and
+steps with `agentPrompt` plus an operator-only `operatorComment`. Type `/` in
+a follow-up composer and select a stack to queue all its steps in order. Use
+`bb project prompt-stacks <project-id>` to inspect effective stacks and pass
+`{ "overrides": { ... } }` to replace individual step overrides for a project.
 
 The default-off `changelogPreview` experiment shows the latest release notes
 as a compact, dismissible card on Settings → Updates.

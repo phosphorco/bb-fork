@@ -8,6 +8,9 @@ import {
   projectSchema,
   projectSourceCheckoutSchema,
   projectSourceSchema,
+  p6rPromptStackIdSchema,
+  p6rPromptStackProjectOverrideSchema,
+  p6rPromptStackSchema,
   promptHistoryEntrySchema,
   threadListEntrySchema,
 } from "@bb/domain";
@@ -251,6 +254,41 @@ export type PromptHistoryQuery = z.infer<typeof promptHistoryQuerySchema>;
 export const promptHistoryResponseSchema = z.array(promptHistoryEntrySchema);
 export type PromptHistoryResponse = z.infer<typeof promptHistoryResponseSchema>;
 
+export const p6rPromptStackCatalogResponseSchema = z
+  .object({
+    stacks: z.array(p6rPromptStackSchema),
+  })
+  .strict();
+export type P6rPromptStackCatalogResponse = z.infer<
+  typeof p6rPromptStackCatalogResponseSchema
+>;
+
+export const p6rUpdateProjectPromptStacksRequestSchema = z
+  .object({
+    overrides: z.record(
+      p6rPromptStackIdSchema,
+      p6rPromptStackProjectOverrideSchema,
+    ),
+  })
+  .strict();
+export type P6rUpdateProjectPromptStacksRequest = z.infer<
+  typeof p6rUpdateProjectPromptStacksRequestSchema
+>;
+
+export const p6rProjectPromptStacksResponseSchema = z
+  .object({
+    globalStacks: z.array(p6rPromptStackSchema),
+    effectiveStacks: z.array(p6rPromptStackSchema),
+    overrides: z.record(
+      p6rPromptStackIdSchema,
+      p6rPromptStackProjectOverrideSchema,
+    ),
+  })
+  .strict();
+export type P6rProjectPromptStacksResponse = z.infer<
+  typeof p6rProjectPromptStacksResponseSchema
+>;
+
 export type ProjectAttachmentUploadForm = Record<"file", Blob>;
 
 export const updateProjectRequestSchema = z
@@ -280,7 +318,11 @@ export type UpdateProjectSourceRequest = z.infer<
 >;
 
 /** `command` = Claude Code legacy slash command (`.claude/commands/*.md`). */
-export const providerCommandSourceSchema = z.enum(["skill", "command"]);
+export const providerCommandSourceSchema = z.enum([
+  "skill",
+  "command",
+  "prompt-stack",
+]);
 export type ProviderCommandSource = z.infer<typeof providerCommandSourceSchema>;
 
 export const providerCommandOriginSchema = z.enum([
@@ -301,6 +343,8 @@ export const providerCommandSchema = z.object({
   argumentHint: z.string().nullable(),
   /** Present when this skill is contributed by a running bb plugin. */
   pluginId: z.string().min(1).optional(),
+  /** Present for a configurable stack inserted by the composer. */
+  promptStack: p6rPromptStackSchema.optional(),
 });
 export type ProviderCommand = z.infer<typeof providerCommandSchema>;
 
@@ -314,6 +358,7 @@ export type ProviderCommand = z.infer<typeof providerCommandSchema>;
  */
 export const PROVIDER_COMMAND_SECTIONS = [
   "agent-command",
+  "prompt-stack",
   "skill",
   "project-command",
   "user-command",
@@ -327,6 +372,9 @@ export function providerCommandSection(cmd: {
   source: ProviderCommandSource;
   origin: ProviderCommandOrigin;
 }): ProviderCommandSection {
+  if (cmd.source === "prompt-stack") {
+    return "prompt-stack";
+  }
   if (cmd.origin === "builtin") {
     return "agent-command";
   }

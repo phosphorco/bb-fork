@@ -112,6 +112,13 @@ message agents, or inspect projects, providers, and environments.
   every `customModels` entry from `~/.bb/config.json` in all model lists
   (pickers, `bb provider models`, and the SDK) during a screen share. Update it
   with `bb settings general streamerMode <true|false>`.
+- Prompt stacks are reusable ordered follow-up workflows. Use
+  `bb settings prompt-stacks` to inspect the global `{ "stacks": [...] }`
+  catalog or pass a replacement JSON catalog. Use
+  `bb project prompt-stacks <project-id>` to inspect effective stacks and pass
+  `{ "overrides": { ... } }` to replace per-project individual step
+  overrides. In a follow-up composer, type `/` and choose a stack to queue its
+  steps in order.
 - Settings → Keyboard records server-backed per-command shortcut overrides.
   The `showKeyboardHints` preference controls the delayed badges shown while
   holding Command or Control and defaults to true; update it with

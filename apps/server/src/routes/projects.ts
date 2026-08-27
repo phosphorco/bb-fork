@@ -4,6 +4,7 @@ import {
   findOrCreateProjectByLocalPathSource,
   getPersonalProject,
   getProjectExecutionDefaults,
+  p6rGetPromptStackSettings,
   getPublicProjectByLocalPathSource,
   createProjectSource,
   deleteProjectSource,
@@ -17,6 +18,7 @@ import {
   reorderProject,
   updateProject,
   updateProjectSource,
+  p6rSetPromptStackSettings,
   setProjectGitRemoteUrlIfMissing,
   isSqliteUniqueConstraintOnColumns,
   type ReorderProjectResult,
@@ -46,7 +48,11 @@ import {
   requirePublicProject,
   requirePublicStandardProject,
 } from "../services/lib/entity-lookup.js";
-import { PROMPT_HISTORY_ENTRY_LIMIT } from "@bb/domain";
+import {
+  PROMPT_HISTORY_ENTRY_LIMIT,
+  p6rResolvePromptStacks,
+  type P6rPromptStack,
+} from "@bb/domain";
 import { resolveCreateThreadExecutionDefaults } from "../services/threads/thread-default-policy.js";
 import { toThreadListEntryResponses } from "../services/threads/thread-runtime-display.js";
 import { callHostRetryableOnlineRpc } from "../services/hosts/online-rpc.js";
@@ -331,7 +337,7 @@ async function inspectProjectGitRemoteBestEffort(
 }
 
 export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
-  const { get, post, patch, del } = typedRoutes<PublicApiSchema>(app, {
+  const { get, post, patch, put, del } = typedRoutes<PublicApiSchema>(app, {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
   });
   const routes = publicApiRoutes.projects;
@@ -422,6 +428,64 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
         limit,
       }),
     );
+  });
+
+  function promptStackResponse(projectId: string) {
+    const settings = p6rGetPromptStackSettings(deps.db);
+    return {
+      globalStacks: settings.stacks,
+      effectiveStacks: p6rResolvePromptStacks(settings, projectId),
+      overrides: settings.projectOverrides[projectId] ?? {},
+    };
+  }
+
+  function validatePromptStackOverrides(
+    stacks: readonly P6rPromptStack[],
+    overrides: Record<string, { steps: Record<string, unknown> }>,
+  ): void {
+    const stacksById = new Map(stacks.map((stack) => [stack.id, stack]));
+    for (const [stackId, stackOverride] of Object.entries(overrides)) {
+      const stack = stacksById.get(stackId);
+      if (!stack) {
+        throw new ApiError(
+          400,
+          "invalid_request",
+          `Unknown prompt stack '${stackId}'.`,
+        );
+      }
+      const stepIds = new Set(stack.steps.map((step) => step.id));
+      for (const stepId of Object.keys(stackOverride.steps)) {
+        if (!stepIds.has(stepId)) {
+          throw new ApiError(
+            400,
+            "invalid_request",
+            `Unknown step '${stepId}' in prompt stack '${stackId}'.`,
+          );
+        }
+      }
+    }
+  }
+
+  get(routes.promptStacks, (context) => {
+    const projectId = context.req.param("id");
+    requirePublicProject(deps.db, projectId);
+    return context.json(promptStackResponse(projectId));
+  });
+
+  put(routes.updatePromptStacks, (context, payload) => {
+    const projectId = context.req.param("id");
+    requirePublicStandardProject(deps.db, projectId);
+    const settings = p6rGetPromptStackSettings(deps.db);
+    validatePromptStackOverrides(settings.stacks, payload.overrides);
+    p6rSetPromptStackSettings(deps.db, {
+      ...settings,
+      projectOverrides: {
+        ...settings.projectOverrides,
+        [projectId]: payload.overrides,
+      },
+    });
+    deps.hub.notifySystem(["config-changed"]);
+    return context.json(promptStackResponse(projectId));
   });
 
   patch(routes.update, async (context, payload) => {
@@ -693,10 +757,23 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
     const projectId = context.req.param("id");
     requirePublicProject(deps.db, projectId);
 
+    const promptStacks = p6rResolvePromptStacks(
+      p6rGetPromptStackSettings(deps.db),
+      projectId,
+    );
+
     // Providers without a skills composer action have no typeahead entries,
-    // so skip the daemon roundtrip entirely.
+    // so skip the daemon roundtrip entirely. Prompt stacks are provider
+    // agnostic and still need to be available for those providers.
     if (!providerHasCommandSurface(deps.providerRegistry, query.provider)) {
-      return context.json({ commands: [] });
+      return context.json(
+        buildCommandListResponse({
+          commands: [],
+          includeBuiltinCompact: false,
+          skillCatalog: [],
+          promptStacks,
+        }),
+      );
     }
 
     const workspace = resolveProjectCommandWorkspace(deps, {
@@ -745,6 +822,7 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
           query.provider,
         ),
         skillCatalog,
+        promptStacks,
       }),
     );
   });

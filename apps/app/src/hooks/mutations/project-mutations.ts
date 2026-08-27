@@ -6,6 +6,7 @@ import type {
   UploadedPromptAttachment,
 } from "@bb/server-contract";
 import { sdk } from "@/lib/sdk";
+import { p6rProjectPromptStacksQueryKey } from "../queries/query-keys";
 import { registerLocalAttachmentPreview } from "@/lib/attachment-local-previews";
 import {
   applyProjectCreateResult,
@@ -69,6 +70,31 @@ export function useUpdateProject() {
       sdk.projects.update({ projectId: id, ...request }),
     onSuccess: (_data, variables) => {
       invalidateProjectUpdateQueries({ projectId: variables.id, queryClient });
+    },
+  });
+}
+
+export function useP6rUpdateProjectPromptStacks() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    meta: {
+      errorMessage: "Failed to update project prompt stacks.",
+    },
+    mutationFn: ({
+      projectId,
+      overrides,
+    }: {
+      projectId: string;
+      overrides: Parameters<
+        typeof sdk.projects.updatePromptStacks
+      >[0]["overrides"];
+    }) => sdk.projects.updatePromptStacks({ projectId, overrides }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: p6rProjectPromptStacksQueryKey(variables.projectId),
+      });
+      queryClient.invalidateQueries({ queryKey: ["projectCommands"] });
     },
   });
 }

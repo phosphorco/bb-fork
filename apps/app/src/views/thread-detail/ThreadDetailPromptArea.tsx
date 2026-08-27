@@ -19,6 +19,7 @@ import type {
   EnvironmentStatus,
   PendingInteraction,
   PromptInput,
+  P6rPromptStack,
   ThreadQueuedMessage,
   ThreadPullRequest,
   ThreadTimelineActivePromptMode,
@@ -928,6 +929,53 @@ export function ThreadDetailPromptArea({
     thread.id,
     runtimeDisplayStatus,
   ]);
+
+  const handlePromptStack = useCallback(
+    (stack: P6rPromptStack) => {
+      if (
+        stack.steps.length === 0 ||
+        shouldHideComposer ||
+        isDefaultExecutionOptionsLoading ||
+        isFollowUpSubmitting
+      ) {
+        return;
+      }
+
+      void runWhileFollowUpShortcutSending(
+        setIsFollowUpShortcutSending,
+        async () => {
+          try {
+            for (const step of stack.steps) {
+              const request = buildCreateQueuedFollowUpRequest({
+                threadId: thread.id,
+                input: [{ type: "text", text: step.agentPrompt, mentions: [] }],
+                execution: followUpExecutionSelection,
+              });
+              if (request) {
+                await createQueuedMessage.mutateAsync(request);
+              }
+            }
+          } catch (nextError) {
+            appToast.error(
+              getMutationErrorMessage({
+                error: nextError,
+                fallbackMessage: "Failed to queue prompt stack",
+                lifecycleOperation: "queue_message",
+              }),
+            );
+          }
+        },
+      );
+    },
+    [
+      createQueuedMessage,
+      followUpExecutionSelection,
+      isDefaultExecutionOptionsLoading,
+      isFollowUpSubmitting,
+      shouldHideComposer,
+      thread.id,
+    ],
+  );
   const handleModifierSubmit = useCallback(async () => {
     if (!canSubmitModifierShortcut) {
       return;
@@ -1084,6 +1132,7 @@ export function ThreadDetailPromptArea({
       onChangeMessage: promptDraft.setTextAndMentions,
       onModifierSubmit: handleBottomComposerModifierSubmit,
       onSubmit: handleBottomComposerSubmit,
+      onPromptStack: handlePromptStack,
       compactPromptPlaceholder,
       promptPlaceholder,
       canModifierSubmit: canSubmitModifierShortcut,
@@ -1097,6 +1146,7 @@ export function ThreadDetailPromptArea({
       currentPromptDraft,
       handleBottomComposerModifierSubmit,
       handleBottomComposerSubmit,
+      handlePromptStack,
       isFollowUpSubmitting,
       promptHistoryDrafts,
       promptPlaceholder,

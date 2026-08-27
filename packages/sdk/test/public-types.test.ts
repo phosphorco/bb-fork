@@ -320,10 +320,12 @@ type ExpectedProjectsKey =
   | "list"
   | "paths"
   | "promptHistory"
+  | "promptStacks"
   | "reorder"
   | "sidebarBootstrap"
   | "sources"
-  | "update";
+  | "update"
+  | "updatePromptStacks";
 
 type ExpectedProjectSourcesKey = "add" | "delete" | "update";
 
@@ -344,6 +346,8 @@ type ExpectedSystemKey =
   | "updateExperiments"
   | "updateGeneralSettings"
   | "updateKeyboardSettings"
+  | "promptStacks"
+  | "updatePromptStacks"
   | "providerStates"
   | "usageLimits"
   | "version";

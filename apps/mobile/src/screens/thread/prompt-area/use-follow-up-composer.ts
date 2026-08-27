@@ -1,11 +1,13 @@
 import {
   buildFollowUpSubmitMode,
+  buildCreateQueuedFollowUpRequest,
   queuedInputToDraft,
   type FollowUpSubmitMode,
   type PromptDraftAttachment,
 } from "@bb/client-core";
 import type {
   ThreadQueuedMessage,
+  P6rPromptStack,
   ThreadTimelineModelFallback,
 } from "@bb/domain";
 import type { ThreadResponse, TimelineRow } from "@bb/server-contract";
@@ -104,6 +106,8 @@ export interface FollowUpComposerController {
   editSentMessage: ((request: EditMessageRequest) => void) | undefined;
   /** "Add to chat" / "Quote paragraph": append a `> ` block to the draft. */
   quoteIntoComposer: (text: string) => void;
+  /** Dispatch a standalone slash-selected prompt stack into the queue. */
+  onPromptStack: (stack: P6rPromptStack) => void;
   /** The queued message whose edit is being saved (list shows a spinner). */
   savingQueuedMessageId: string | null;
   /** Queue list affordances while something is in flight. */
@@ -473,6 +477,48 @@ export function useFollowUpComposer({
     ],
   );
 
+  const onPromptStack = useCallback(
+    async (stack: P6rPromptStack) => {
+      if (
+        edit !== null ||
+        hidden ||
+        isDefaultExecutionOptionsLoading ||
+        isFollowUpSubmitting ||
+        stack.steps.length === 0
+      ) {
+        return;
+      }
+      try {
+        for (const step of stack.steps) {
+          const request = buildCreateQueuedFollowUpRequest({
+            execution: execution.selection,
+            input: [{ type: "text", text: step.agentPrompt, mentions: [] }],
+            threadId,
+          });
+          if (request) await createQueued.mutateAsync(request);
+        }
+        onSubmitted?.();
+      } catch (error) {
+        toast.error(
+          getMutationErrorMessage({
+            error,
+            fallbackMessage: "Failed to queue prompt stack",
+          }),
+        );
+      }
+    },
+    [
+      createQueued,
+      edit,
+      execution.selection,
+      hidden,
+      isDefaultExecutionOptionsLoading,
+      isFollowUpSubmitting,
+      onSubmitted,
+      threadId,
+    ],
+  );
+
   const submit = useCallback(
     (kind: ComposerSubmitKind) => (edit ? submitEdit() : submitFollowUp(kind)),
     [edit, submitEdit, submitFollowUp],
@@ -522,6 +568,7 @@ export function useFollowUpComposer({
     beginQueuedMessageEdit,
     editSentMessage: canEditSent ? beginSentMessageEdit : undefined,
     quoteIntoComposer,
+    onPromptStack,
     savingQueuedMessageId: updateQueued.isPending
       ? (updateQueued.variables?.queuedMessageId ?? null)
       : null,

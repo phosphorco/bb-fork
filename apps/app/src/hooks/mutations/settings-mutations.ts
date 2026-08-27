@@ -4,6 +4,7 @@ import {
   type AppSettings,
   type AppThemeSelection,
   type Experiments,
+  type P6rPromptStackCatalog,
 } from "@bb/domain";
 import type { SystemInstallCliSkillsRequest } from "@bb/server-contract";
 import { sdk } from "@/lib/sdk";
@@ -34,6 +35,23 @@ export function useUpdateExperiments() {
       sdk.system.updateExperiments(experiments),
     onSuccess: () => {
       invalidateSystemConfig({ queryClient });
+    },
+  });
+}
+
+export function useP6rUpdatePromptStackCatalog() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    meta: {
+      errorMessage: "Failed to update prompt stacks.",
+    },
+    mutationFn: (catalog: P6rPromptStackCatalog) =>
+      sdk.system.updatePromptStacks(catalog),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["systemPromptStacks"] });
+      queryClient.invalidateQueries({ queryKey: ["projectPromptStacks"] });
+      queryClient.invalidateQueries({ queryKey: ["projectCommands"] });
     },
   });
 }

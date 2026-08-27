@@ -11,6 +11,20 @@ every window and client sees the same value.
 - Unknown keys and values of the wrong shape are rejected; the error names the
   keys bb knows.
 
+## Prompt stacks
+
+- `bb settings prompt-stacks` prints the global reusable follow-up stack
+  catalog. Pass a JSON catalog to replace it.
+- A catalog has `{ "stacks": [...] }`. Each stack has an `id`, `name`,
+  `description`, and ordered `steps`; each step has an `id`, `agentPrompt`,
+  and operator-only `operatorComment`.
+- Use `bb project prompt-stacks <project-id>` to inspect effective stacks and
+  current overrides. Pass `{ "overrides": { ... } }` to replace that
+  project's individual step overrides.
+- In a follow-up composer, type `/` and choose a prompt stack to queue its
+  steps in order. Stacks are only dispatched from an otherwise standalone
+  slash command.
+
 ## Keyboard shortcuts
 
 - `showKeyboardHints` defaults to true. Set it with

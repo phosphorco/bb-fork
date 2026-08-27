@@ -156,14 +156,17 @@ function mergeCommandSuggestions(
  * skills/commands for the project (debounced like path suggestions). Serves
  * both the existing-thread follow-up composer and the new-thread composer. The
  * hook is inert — never fetches, returns an empty list — when there is no
- * project, no provider, no command trigger for the provider, or no active
- * command query. Unlike mentions, it is enabled even when `query` is empty —
- * the provider-owned trigger shows the full available list.
+ * project, no provider, or no active command query. Unlike mentions, it is
+ * enabled even when `query` is empty — the slash trigger shows the full list.
  */
 export function useCommandSuggestions(
   args: UseCommandSuggestionsArgs,
 ): UseCommandSuggestionsResult {
-  const trigger = args.skillsTrigger;
+  // Prompt stacks are bb-owned and provider agnostic, so the slash menu must
+  // remain available even when the selected provider does not advertise its
+  // own skills action.
+  const trigger: PromptMentionCommandTrigger | null =
+    args.skillsTrigger ?? (args.commandScope === "thread" ? "/" : null);
   const isActive =
     args.projectId !== undefined &&
     args.providerId !== undefined &&
@@ -198,8 +201,7 @@ export function useCommandSuggestions(
     args.composerFocused === true &&
     isPointerCoarse &&
     args.projectId !== undefined &&
-    args.providerId !== undefined &&
-    trigger !== null;
+    args.providerId !== undefined;
   const prefetchProjectId = args.projectId;
   const prefetchProviderId = args.providerId;
   const prefetchEnvironmentId = args.environmentId;
@@ -239,9 +241,10 @@ export function useCommandSuggestions(
         .filter(
           (suggestion) =>
             args.commandScope === "thread" ||
-            suggestion.source !== "command" ||
-            suggestion.origin !== "builtin" ||
-            suggestion.name !== "compact",
+            (suggestion.source !== "prompt-stack" &&
+              (suggestion.source !== "command" ||
+                suggestion.origin !== "builtin" ||
+                suggestion.name !== "compact")),
         ),
       trimmedQuery,
     );

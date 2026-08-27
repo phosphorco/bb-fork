@@ -430,9 +430,10 @@ export function buildCommandSuggestions(args: {
     .filter(
       (suggestion) =>
         args.scope === "thread" ||
-        suggestion.source !== "command" ||
-        suggestion.origin !== "builtin" ||
-        suggestion.name !== "compact",
+        (suggestion.source !== "prompt-stack" &&
+          (suggestion.source !== "command" ||
+            suggestion.origin !== "builtin" ||
+            suggestion.name !== "compact")),
     );
   const merged: ProviderCommandSuggestion[] = [];
   const seen = new Set<string>();

@@ -108,6 +108,10 @@ export {
 } from "./app-settings.js";
 export { getStoredThreadTabs, replaceStoredThreadTabs } from "./thread-tabs.js";
 export {
+  p6rGetPromptStackSettings,
+  p6rSetPromptStackSettings,
+} from "./prompt-stacks.js";
+export {
   THREAD_FACET_CENSUS_PAGE_LIMIT,
   THREAD_FACET_DIRECTORY_MEMBER_LIMIT,
   THREAD_FACET_PLUGIN_REPLACEMENT_MEMBER_LIMIT,

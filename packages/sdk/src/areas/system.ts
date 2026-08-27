@@ -2,6 +2,7 @@ import type {
   AppKeybindingOverrides,
   AppSettings,
   Experiments,
+  P6rPromptStackCatalog,
 } from "@bb/domain";
 import type { ProviderUsageResponse } from "@bb/host-daemon-contract";
 import type {
@@ -19,6 +20,7 @@ import type {
   SystemVersionQuery,
   SystemVersionResponse,
   SystemVoiceTranscriptionResponse,
+  P6rPromptStackCatalogResponse,
 } from "@bb/server-contract";
 import { systemVoiceTranscriptionResponseSchema } from "@bb/server-contract";
 import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
@@ -28,6 +30,10 @@ export interface SystemAttentionArgs {
 }
 
 export interface SystemConfigArgs {
+  signal?: AbortSignal;
+}
+
+export interface P6rSystemPromptStacksArgs {
   signal?: AbortSignal;
 }
 
@@ -52,6 +58,7 @@ export interface SystemVoiceTranscriptionArgs {
 
 export type SystemAttentionResult = SystemAttentionResponse;
 export type SystemConfigResult = SystemConfigResponse;
+export type P6rSystemPromptStacksResult = P6rPromptStackCatalogResponse;
 export type SystemExecutionOptionsResult = SystemExecutionOptionsResponse;
 export type SystemReloadConfigResult = SystemConfigReloadResponse;
 export type SystemInstallCliSkillsArgs = SystemInstallCliSkillsRequest;
@@ -76,6 +83,9 @@ export type SystemVersionResult = SystemVersionResponse;
 export interface SystemArea {
   attention(args?: SystemAttentionArgs): Promise<SystemAttentionResult>;
   config(args?: SystemConfigArgs): Promise<SystemConfigResult>;
+  promptStacks(
+    args?: P6rSystemPromptStacksArgs,
+  ): Promise<P6rSystemPromptStacksResult>;
   executionOptions(
     args?: SystemExecutionOptionsArgs,
   ): Promise<SystemExecutionOptionsResult>;
@@ -102,6 +112,9 @@ export interface SystemArea {
   updateKeyboardSettings(
     args: AppKeybindingOverrides,
   ): Promise<SystemUpdateKeyboardSettingsResult>;
+  updatePromptStacks(
+    args: P6rPromptStackCatalog,
+  ): Promise<P6rSystemPromptStacksResult>;
   /** Live host-local install and authentication state for every provider. */
   providerStates(
     args?: SystemProviderStatesArgs,
@@ -132,6 +145,14 @@ export function createSystemArea(args: CreateSdkAreaArgs): SystemArea {
         transport.api.v1.system.config.$get(
           {},
           ...signalRequestArgs(input?.signal),
+        ),
+      );
+    },
+    async promptStacks(input = {}) {
+      return transport.readJson(
+        transport.api.v1.system["prompt-stacks"].$get(
+          {},
+          ...signalRequestArgs(input.signal),
         ),
       );
     },
@@ -202,6 +223,11 @@ export function createSystemArea(args: CreateSdkAreaArgs): SystemArea {
     async updateKeyboardSettings(input) {
       return transport.readJson(
         transport.api.v1.settings.keyboard.$put({ json: input }),
+      );
+    },
+    async updatePromptStacks(input) {
+      return transport.readJson(
+        transport.api.v1.system["prompt-stacks"].$put({ json: input }),
       );
     },
     async providerStates(input = {}) {

@@ -10,6 +10,7 @@ import type {
   SystemExecutionOptionsResponse,
   SystemProvidersQuery,
   SystemProviderStatesResponse,
+  P6rPromptStackCatalogResponse,
   SystemVersionResponse,
 } from "@bb/server-contract";
 import type {
@@ -36,6 +37,7 @@ import {
   systemExecutionOptionsQueryKey,
   systemProvidersQueryKey,
   systemProviderStatesQueryKey,
+  p6rSystemPromptStacksQueryKey,
   systemUsageLimitsQueryKey,
   systemVersionQueryKey,
 } from "./query-keys";
@@ -350,6 +352,18 @@ export function useSystemConfig(options?: QueryOptions) {
   return useQuery<SystemConfigResponse>({
     queryKey: systemConfigQueryKey(),
     queryFn: ({ signal }) => sdk.system.config({ signal }),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+export function useP6rSystemPromptStacks(options?: QueryOptions) {
+  const enabled = options?.enabled ?? true;
+  useSystemRealtimeSubscription({ enabled });
+
+  return useQuery<P6rPromptStackCatalogResponse>({
+    queryKey: p6rSystemPromptStacksQueryKey(),
+    queryFn: ({ signal }) => sdk.system.promptStacks({ signal }),
     enabled,
     staleTime: 60_000,
   });

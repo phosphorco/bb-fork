@@ -212,6 +212,16 @@ subagents and the Workflow tool under the Claude Code provider plugin. Read
 and set them like any plugin setting, for example
 `bb plugin config provider-claude-code set workflowsDisabled true`.
 
+Settings → General → Prompt stacks stores reusable multi-step follow-up
+workflows. Each stack step has an `agentPrompt` and an operator-only
+`operatorComment`. Configure the global catalog in the UI or with
+`bb settings prompt-stacks '<catalog-json>'`; inspect it with
+`bb settings prompt-stacks`. In a follow-up composer, type `/` and select a
+stack to queue every step in order. Project settings can override individual
+steps; inspect or replace those overrides with
+`bb project prompt-stacks <project-id>` and
+`bb project prompt-stacks <project-id> '<overrides-json>'`.
+
 Outside an open typeahead menu, Shift+Enter inserts a newline. On
 coarse-pointer touch devices, the software-keyboard Return path inserts a
 newline and the submit button sends.
