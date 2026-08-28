@@ -1,0 +1,519 @@
+From b82eb9bc9da802f55bf9dece0857f40961acb9a5 Mon Sep 17 00:00:00 2001
+From: Rosetta <its-rosetta@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 12:24:17 -0400
+Subject: [PATCH] fix(app): compact thread headers by pane width
+
+---
+ .../plugin/PluginThreadHeaderActions.test.tsx | 113 ++++++++++++++++++
+ .../plugin/PluginThreadHeaderActions.tsx      |  32 ++++-
+ .../thread-detail/ThreadDetailHeader.test.tsx |  34 +-----
+ .../thread-detail/ThreadDetailHeader.tsx      |  41 -------
+ .../views/thread-detail/ThreadDetailView.tsx  |  13 +-
+ packages/plugin-sdk/src/app-contract.ts       |   5 +-
+ 6 files changed, 151 insertions(+), 87 deletions(-)
+ create mode 100644 apps/app/src/components/plugin/PluginThreadHeaderActions.test.tsx
+
+diff --git a/apps/app/src/components/plugin/PluginThreadHeaderActions.test.tsx b/apps/app/src/components/plugin/PluginThreadHeaderActions.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..3ac01085d69e6437eda0f4f76c2dc511ed419227
+--- /dev/null
++++ b/apps/app/src/components/plugin/PluginThreadHeaderActions.test.tsx
+@@ -0,0 +1,113 @@
++// @vitest-environment jsdom
++
++import { cleanup, render, screen, waitFor } from "@testing-library/react";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import {
++  resetPluginSlotStoreForTest,
++  setPluginSlotRegistrations,
++} from "@/lib/plugin-slots";
++import {
++  PaneContext,
++  type PaneContextValue,
++} from "@/views/thread-detail/PaneContext";
++import { PluginThreadHeaderActions } from "./PluginThreadHeaderActions";
++
++const resize = vi.hoisted(() => ({
++  callback: null as ResizeObserverCallback | null,
++  paneWidth: 700,
++}));
++
++vi.mock("@bb/shared-ui/hooks/use-compact-viewport", () => ({
++  useIsCompactViewport: () => false,
++}));
++
++vi.mock("@/lib/plugin-css", () => ({ usePluginCss: () => undefined }));
++
++const PANE_CONTEXT: PaneContextValue = {
++  paneId: "left",
++  isFocused: true,
++  isSplitPane: true,
++  secondaryPanelHost: null,
++  reservesWindowPanelToggle: false,
++  onRequestClose: null,
++  isMaximized: false,
++  onToggleMaximize: null,
++  isBoundedPane: true,
++  isTopRow: true,
++  ownsWindowTopLeft: true,
++  navigateInPane: vi.fn(),
++};
++
++beforeEach(() => {
++  resize.paneWidth = 700;
++  resize.callback = null;
++  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
++    () =>
++      ({
++        bottom: 40,
++        height: 40,
++        left: 0,
++        right: resize.paneWidth,
++        top: 0,
++        width: resize.paneWidth,
++        x: 0,
++        y: 0,
++        toJSON: () => ({}),
++      }) as DOMRect,
++  );
++  vi.stubGlobal(
++    "ResizeObserver",
++    class {
++      constructor(callback: ResizeObserverCallback) {
++        resize.callback = callback;
++      }
++      observe() {}
++      disconnect() {}
++      unobserve() {}
++    },
++  );
++  setPluginSlotRegistrations("responsive-header", {
++    homepageSections: [],
++    settingsSections: [],
++    navPanels: [],
++    threadPanelActions: [],
++    sidebarFooterActions: [],
++    fileOpeners: [],
++    messageDirectives: [],
++    threadHeaderActions: [
++      {
++        id: "status",
++        title: "Status",
++        component: ({ isCompactViewport }) => (
++          <span>{isCompactViewport ? "compact" : "full"}</span>
++        ),
++      },
++    ],
++  });
++});
++
++afterEach(() => {
++  cleanup();
++  resetPluginSlotStoreForTest();
++  vi.restoreAllMocks();
++  vi.unstubAllGlobals();
++});
++
++describe("PluginThreadHeaderActions", () => {
++  it("compacts plugin controls from split-pane width and updates on resize", async () => {
++    render(
++      <PaneContext.Provider value={PANE_CONTEXT}>
++        <div data-split-pane-id="left">
++          <PluginThreadHeaderActions threadId="thr_left" projectId="proj" />
++        </div>
++      </PaneContext.Provider>,
++    );
++
++    expect(screen.getByText("compact")).not.toBeNull();
++
++    resize.paneWidth = 1000;
++    resize.callback?.([], {} as ResizeObserver);
++
++    await waitFor(() => expect(screen.getByText("full")).not.toBeNull());
++  });
++});
+diff --git a/apps/app/src/components/plugin/PluginThreadHeaderActions.tsx b/apps/app/src/components/plugin/PluginThreadHeaderActions.tsx
+index ef502907010fde96e8711b3bbb81352510b4e38a..142defa8b9c2fd99d8330e57c8bfa3570977bbb6 100644
+--- a/apps/app/src/components/plugin/PluginThreadHeaderActions.tsx
++++ b/apps/app/src/components/plugin/PluginThreadHeaderActions.tsx
+@@ -1,6 +1,10 @@
++import { useLayoutEffect, useRef, useState } from "react";
+ import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
+ import { PluginSlotMount } from "./PluginSlotMount";
+ import { usePluginSlots } from "@/lib/plugin-slots";
++import { usePaneContext } from "@/views/thread-detail/PaneContext";
++
++const COMPACT_THREAD_HEADER_MAX_WIDTH = 880;
+ 
+ /**
+  * Plugin `experimental_threadHeaderAction` slots: components rendered in the
+@@ -19,11 +23,33 @@ export function PluginThreadHeaderActions({
+ }) {
+   const { threadHeaderActions } = usePluginSlots();
+   const isCompactViewport = useIsCompactViewport();
++  const { isSplitPane } = usePaneContext();
++  const actionsRef = useRef<HTMLSpanElement>(null);
++  const [isCompactPane, setIsCompactPane] = useState(false);
++
++  useLayoutEffect(() => {
++    if (!isSplitPane) {
++      setIsCompactPane(false);
++      return;
++    }
++    const actions = actionsRef.current;
++    const pane = actions?.closest<HTMLElement>("[data-split-pane-id]");
++    if (!pane) return;
++    const measure = () => {
++      setIsCompactPane(
++        pane.getBoundingClientRect().width < COMPACT_THREAD_HEADER_MAX_WIDTH,
++      );
++    };
++    measure();
++    const observer = new ResizeObserver(measure);
++    observer.observe(pane);
++    return () => observer.disconnect();
++  }, [isSplitPane]);
+ 
+   if (threadHeaderActions.length === 0) return null;
+ 
+   return (
+-    <>
++    <span ref={actionsRef} className="contents">
+       {threadHeaderActions.map((slot) => {
+         const Component = slot.component;
+         return (
+@@ -57,12 +83,12 @@ export function PluginThreadHeaderActions({
+               <Component
+                 threadId={threadId}
+                 projectId={projectId}
+-                isCompactViewport={isCompactViewport}
++                isCompactViewport={isCompactViewport || isCompactPane}
+               />
+             </span>
+           </PluginSlotMount>
+         );
+       })}
+-    </>
++    </span>
+   );
+ }
+diff --git a/apps/app/src/views/thread-detail/ThreadDetailHeader.test.tsx b/apps/app/src/views/thread-detail/ThreadDetailHeader.test.tsx
+index b9b5f6867a13f64730403c946af921b9f5dcb8b7..09c9c1f592dfab183fe098e4ad71789b9eaf4a7b 100644
+--- a/apps/app/src/views/thread-detail/ThreadDetailHeader.test.tsx
++++ b/apps/app/src/views/thread-detail/ThreadDetailHeader.test.tsx
+@@ -88,9 +88,7 @@ describe("ThreadDetailHeader", () => {
+           actionsMenu={null}
+           childPillLabel={null}
+           isSecondaryPanelOpen
+-          onOpenThreadGitAction={vi.fn()}
+           onToggleSecondaryPanel={vi.fn()}
+-          threadHeaderGitActions={[]}
+           threadId={THREAD_ID}
+           threadTitle="Panel state"
+         />
+@@ -118,9 +116,7 @@ describe("ThreadDetailHeader", () => {
+             actionsMenu={null}
+             childPillLabel={null}
+             isSecondaryPanelOpen={false}
+-            onOpenThreadGitAction={vi.fn()}
+             onToggleSecondaryPanel={vi.fn()}
+-            threadHeaderGitActions={[]}
+             threadId={THREAD_ID}
+             threadTitle="Panel state"
+           />
+@@ -150,9 +146,7 @@ describe("ThreadDetailHeader", () => {
+           actionsMenu={null}
+           childPillLabel={null}
+           isSecondaryPanelOpen
+-          onOpenThreadGitAction={vi.fn()}
+           onToggleSecondaryPanel={vi.fn()}
+-          threadHeaderGitActions={[]}
+           threadId={THREAD_ID}
+           threadTitle="Split panel state"
+         />
+@@ -198,11 +192,7 @@ describe("ThreadDetailHeader", () => {
+           childPillLabel={null}
+           isSecondaryPanelOpen={false}
+           onClosePane={vi.fn()}
+-          onOpenThreadGitAction={vi.fn()}
+           onToggleSecondaryPanel={vi.fn()}
+-          threadHeaderGitActions={[
+-            { label: "Commit", target: { kind: "commit" } },
+-          ]}
+           threadId={THREAD_ID}
+           threadTitle="Narrow split"
+           workspaceOpenButton={<button>Open workspace</button>}
+@@ -224,7 +214,7 @@ describe("ThreadDetailHeader", () => {
+     );
+   });
+ 
+-  it("keeps responsive controls inline and out of the menu for wide split panes", () => {
++  it("keeps the workspace control inline for wide split panes", () => {
+     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+       bottom: 40,
+       height: 40,
+@@ -257,11 +247,7 @@ describe("ThreadDetailHeader", () => {
+           childPillLabel={null}
+           isSecondaryPanelOpen={false}
+           onClosePane={vi.fn()}
+-          onOpenThreadGitAction={vi.fn()}
+           onToggleSecondaryPanel={vi.fn()}
+-          threadHeaderGitActions={[
+-            { label: "Commit", target: { kind: "commit" } },
+-          ]}
+           threadId={THREAD_ID}
+           threadTitle="Wide split"
+           workspaceOpenButton={<button>Open workspace</button>}
+@@ -270,7 +256,7 @@ describe("ThreadDetailHeader", () => {
+     );
+ 
+     expect(screen.getByText("Open workspace")).not.toBeNull();
+-    expect(screen.getByText("Commit")).not.toBeNull();
++    expect(screen.queryByText("Commit")).toBeNull();
+     expect(screen.getByText("Thread menu")).not.toBeNull();
+     expect(screen.queryByText("Responsive menu actions")).toBeNull();
+   });
+@@ -282,9 +268,7 @@ describe("ThreadDetailHeader", () => {
+           actionsMenu={null}
+           childPillLabel={null}
+           isSecondaryPanelOpen={false}
+-          onOpenThreadGitAction={vi.fn()}
+           onToggleSecondaryPanel={vi.fn()}
+-          threadHeaderGitActions={[]}
+           threadId={THREAD_ID}
+           threadTitle="Review @docs/foo.test.ts with @thread:thr_worker"
+         />
+@@ -318,9 +302,7 @@ describe("ThreadDetailHeader", () => {
+             actionsMenu={null}
+             childPillLabel={null}
+             isSecondaryPanelOpen={false}
+-            onOpenThreadGitAction={vi.fn()}
+             onToggleSecondaryPanel={vi.fn()}
+-            threadHeaderGitActions={[]}
+             threadId={THREAD_ID}
+             threadTitle="Continue from thr_dcwivn5n8w docs/foo.ts"
+           />
+@@ -359,9 +341,7 @@ describe("ThreadDetailHeader", () => {
+               actionsMenu={null}
+               childPillLabel={null}
+               isSecondaryPanelOpen={false}
+-              onOpenThreadGitAction={vi.fn()}
+               onToggleSecondaryPanel={vi.fn()}
+-              threadHeaderGitActions={[]}
+               threadId={THREAD_ID}
+               threadTitle={title}
+             />
+@@ -407,9 +387,7 @@ describe("ThreadDetailHeader", () => {
+             actionsMenu={null}
+             childPillLabel={null}
+             isSecondaryPanelOpen={false}
+-            onOpenThreadGitAction={vi.fn()}
+             onToggleSecondaryPanel={vi.fn()}
+-            threadHeaderGitActions={[]}
+             threadId={THREAD_ID}
+             threadTitle={title}
+           />
+@@ -437,9 +415,7 @@ describe("ThreadDetailHeader", () => {
+             actionsMenu={null}
+             childPillLabel={null}
+             isSecondaryPanelOpen={false}
+-            onOpenThreadGitAction={vi.fn()}
+             onToggleSecondaryPanel={vi.fn()}
+-            threadHeaderGitActions={[]}
+             threadId={THREAD_ID}
+             threadTitle="Unknown thr_2222222222"
+           />
+@@ -459,9 +435,7 @@ describe("ThreadDetailHeader", () => {
+           actionsMenu={null}
+           childPillLabel={null}
+           isSecondaryPanelOpen={false}
+-          onOpenThreadGitAction={vi.fn()}
+           onToggleSecondaryPanel={vi.fn()}
+-          threadHeaderGitActions={[]}
+           threadId={THREAD_ID}
+           threadTitle="Focused thread"
+         />
+@@ -490,9 +464,7 @@ describe("ThreadDetailHeader", () => {
+           actionsMenu={null}
+           childPillLabel={null}
+           isSecondaryPanelOpen={false}
+-          onOpenThreadGitAction={vi.fn()}
+           onToggleSecondaryPanel={vi.fn()}
+-          threadHeaderGitActions={[]}
+           threadId={THREAD_ID}
+           threadTitle="Focused thread"
+         />
+@@ -523,9 +495,7 @@ describe("ThreadDetailHeader", () => {
+           actionsMenu={null}
+           childPillLabel={null}
+           isSecondaryPanelOpen={false}
+-          onOpenThreadGitAction={vi.fn()}
+           onToggleSecondaryPanel={vi.fn()}
+-          threadHeaderGitActions={[]}
+           threadId={THREAD_ID}
+           threadTitle="Focused thread"
+         />
+diff --git a/apps/app/src/views/thread-detail/ThreadDetailHeader.tsx b/apps/app/src/views/thread-detail/ThreadDetailHeader.tsx
+index 58cd70570f24de660e7df134b86536bf5fc9bb09..91bf0e7df31a88c7810e677ea2a46212ace52ee2 100644
+--- a/apps/app/src/views/thread-detail/ThreadDetailHeader.tsx
++++ b/apps/app/src/views/thread-detail/ThreadDetailHeader.tsx
+@@ -9,17 +9,14 @@ import {
+ } from "react";
+ import { Button } from "@bb/shared-ui/button";
+ import { useAtomValue } from "jotai";
+-import { COARSE_POINTER_TOOLBAR_ACTION_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
+ import { Icon } from "@bb/shared-ui/icon";
+ import { Pill } from "@bb/shared-ui/pill";
+ import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
+-import { SplitButton } from "@/components/ui/split-button.js";
+ import {
+   AppPageHeader,
+   HEADER_ICON_BUTTON_CLASS,
+   HEADER_PANE_ACTION_ICON_BUTTON_CLASS,
+ } from "@/components/layout/AppPageHeader";
+-import type { ThreadGitActionDialogTarget } from "@/components/dialogs/ThreadGitActionDialog";
+ import {
+   getBbDesktopInfo,
+   MACOS_WINDOW_NO_DRAG_CLASS,
+@@ -41,12 +38,6 @@ import {
+ } from "@/components/ui/context-selection";
+ import { usePaneContext } from "./PaneContext";
+ import { PaneMaximizeButton } from "./PaneMaximizeButton";
+-import type { ThreadHeaderGitAction } from "./useThreadGitActions";
+-
+-const THREAD_HEADER_ACTION_BUTTON_CLASS = cn(
+-  COARSE_POINTER_TOOLBAR_ACTION_BUTTON_CLASS,
+-  "border-border/70 bg-transparent font-normal hover:bg-state-hover",
+-);
+ 
+ const NARROW_SPLIT_HEADER_MAX_WIDTH = 560;
+ 
+@@ -61,13 +52,11 @@ interface ThreadDetailHeaderProps {
+   isSecondaryPanelOpen: boolean;
+   /** Closes this pane; only provided when the layout is split (>1 pane). */
+   onClosePane?: () => void;
+-  onOpenThreadGitAction: (target: ThreadGitActionDialogTarget) => void;
+   onToggleSecondaryPanel: () => void;
+   /** Plugin-contributed thread action buttons (design §4.9); optional. */
+   pluginActions?: ReactNode;
+   /** Avatar row of the other p6rCollaborators currently viewing this thread. */
+   p6rPresenceIndicator?: ReactNode;
+-  threadHeaderGitActions: ThreadHeaderGitAction[];
+   threadId: string;
+   threadTitle: string;
+   workspaceOpenButton?: ReactNode;
+@@ -78,16 +67,13 @@ export function ThreadDetailHeader({
+   childPillLabel,
+   isSecondaryPanelOpen,
+   onClosePane,
+-  onOpenThreadGitAction,
+   onToggleSecondaryPanel,
+   pluginActions,
+   p6rPresenceIndicator,
+-  threadHeaderGitActions,
+   threadId,
+   threadTitle,
+   workspaceOpenButton,
+ }: ThreadDetailHeaderProps) {
+-  const [primaryAction, ...secondaryActions] = threadHeaderGitActions;
+   const { renameThread } = useThreadActions();
+   const handleRename = useCallback(
+     (nextTitle: string) => {
+@@ -242,33 +228,6 @@ export function ThreadDetailHeader({
+             {workspaceOpenButton}
+           </span>
+         ) : null}
+-        {!usesResponsiveActionOverflow && primaryAction ? (
+-          <span className="inline-flex" data-thread-header-responsive-action="">
+-            {secondaryActions.length > 0 ? (
+-              <SplitButton
+-                className={THREAD_HEADER_ACTION_BUTTON_CLASS}
+-                primaryAction={{
+-                  label: primaryAction.label,
+-                  onSelect: () => onOpenThreadGitAction(primaryAction.target),
+-                }}
+-                secondaryActions={secondaryActions.map((action) => ({
+-                  label: action.label,
+-                  onSelect: () => onOpenThreadGitAction(action.target),
+-                }))}
+-              />
+-            ) : (
+-              <Button
+-                type="button"
+-                variant="outline"
+-                size="sm"
+-                className={THREAD_HEADER_ACTION_BUTTON_CLASS}
+-                onClick={() => onOpenThreadGitAction(primaryAction.target)}
+-              >
+-                {primaryAction.label}
+-              </Button>
+-            )}
+-          </span>
+-        ) : null}
+       </div>
+       <div
+         className="ml-1 flex items-center gap-0.5"
+diff --git a/apps/app/src/views/thread-detail/ThreadDetailView.tsx b/apps/app/src/views/thread-detail/ThreadDetailView.tsx
+index 7d252eed2e6372de397a46d57da87c312e3a8cc3..99f385e29a714a013d7e319243f75a4d8c2b9307 100644
+--- a/apps/app/src/views/thread-detail/ThreadDetailView.tsx
++++ b/apps/app/src/views/thread-detail/ThreadDetailView.tsx
+@@ -2495,10 +2495,6 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
+         gitActions.threadGitActionDialog.onOpen(action.target);
+       },
+     }));
+-  const responsiveHeaderActions = [
+-    ...responsiveWorkspaceActions,
+-    ...responsiveGitActions,
+-  ];
+   const workspaceOpenButton =
+     workspaceOpenPath && preferredDirectoryTarget ? (
+       <ThreadWorkspaceOpenButton
+@@ -2526,9 +2522,10 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
+         <ThreadActionsMenu
+           thread={thread}
+           triggerClassName={HEADER_ICON_BUTTON_CLASS}
+-          responsiveActions={
+-            includeResponsiveActions ? responsiveHeaderActions : undefined
+-          }
++          responsiveActions={[
++            ...(includeResponsiveActions ? responsiveWorkspaceActions : []),
++            ...responsiveGitActions,
++          ]}
+         />
+       )}
+       childPillLabel={
+@@ -2536,7 +2533,6 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
+       }
+       isSecondaryPanelOpen={isSecondaryPanelOpen}
+       onClosePane={onRequestClose ?? undefined}
+-      onOpenThreadGitAction={gitActions.threadGitActionDialog.onOpen}
+       onToggleSecondaryPanel={toggleSecondaryPanel}
+       pluginActions={
+         <PluginThreadHeaderActions
+@@ -2547,7 +2543,6 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
+       p6rPresenceIndicator={
+         <P6rThreadPresenceHeaderAvatars threadId={thread.id} />
+       }
+-      threadHeaderGitActions={gitActions.threadHeaderGitActions}
+       threadId={thread.id}
+       threadTitle={threadTitle}
+       workspaceOpenButton={workspaceOpenButton}
+diff --git a/packages/plugin-sdk/src/app-contract.ts b/packages/plugin-sdk/src/app-contract.ts
+index d8b9ea0ec57ed8959ea5d0af60eb6d5e13c430f1..0226b17cf55d24a5265c7ebe81c70b46c96c6544 100644
+--- a/packages/plugin-sdk/src/app-contract.ts
++++ b/packages/plugin-sdk/src/app-contract.ts
+@@ -152,8 +152,9 @@ export interface PluginThreadHeaderActionProps {
+   threadId: string;
+   projectId: string;
+   /**
+-   * True on phone-width viewports and coarse pointers. Collapse to an
+-   * icon-sized control when it is true — the row is short.
++   * True when the viewport or containing split pane leaves limited header
++   * space. Collapse to an icon-sized control when it is true — the row is
++   * short and the thread title keeps priority.
+    */
+   isCompactViewport: boolean;
+ }
+-- 
+2.43.0
+

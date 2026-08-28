@@ -27,12 +27,13 @@
 23. **Principal-key boundary witness** distinguishes provider lease subject encoding from the provider/subject delimiter retained in authenticated request keys.
 24. **Canonical plugin PrincipalKeys** supersedes that differing-key interpretation: provider handles, production HTTP/RPC resolution, and the fake SDK host now derive the same actor key for one registered provider and subject.
 25. **Thread-list cache shape validation** rejects generalized `threads` query entries whose pages are facet response objects or empty participant pages before sidebar cache iteration can treat them as thread arrays.
+26. **Per-person palette overrides** keep the Settings appearance write and UI as the shared default for everybody while letting a provider-established or claimed principal store a personal override on a downstream-namespaced `app_theme` row via additive `/settings/p6r-personal-appearance` routes; `/system/config` resolves override-else-shared per requesting principal and carries an optional `p6rPaletteRoster` for a future override UI or plugin.
 
 ## Exact source receipt
 
 - Upstream: `5205d98a74ed5a22469e521cf1f86b00b8232827`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: twenty-five patches in `patches/series`.
+- Patch queue: twenty-seven patches in `patches/series`.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries

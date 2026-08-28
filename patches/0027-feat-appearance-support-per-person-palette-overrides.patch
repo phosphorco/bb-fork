@@ -1,0 +1,624 @@
+From 06e1294ded4cb99a9ba8171e941fc4d5e4cc42c5 Mon Sep 17 00:00:00 2001
+From: Rosetta <its-rosetta@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 22:34:51 -0400
+Subject: [PATCH] feat(appearance): support per-person palette overrides behind
+ the shared default
+
+The Settings appearance write stays the shared default for everybody and
+the Settings UI is untouched. A provider-established or claimed principal
+can store a personal override on a downstream-namespaced row in the
+existing app_theme table (no schema change) through the additive
+/settings/p6r-personal-appearance PUT/DELETE routes; /system/config then
+resolves that principal's palette as override-else-shared and carries an
+optional p6rPaletteRoster of each recently seen person's choice for a
+future override UI or plugin. The local operator and unclaimed requests
+have no personal row, so single-user installs and the CLI are unchanged.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ apps/server/src/routes/system.ts              |  91 +++++++++-
+ .../system/p6r-principal-appearance.ts        |  82 +++++++++
+ .../system/p6r-principal-appearance.test.ts   | 170 ++++++++++++++++++
+ packages/db/src/data/index.ts                 |   9 +
+ .../db/src/data/p6r-principal-appearance.ts   | 100 +++++++++++
+ packages/server-contract/src/api/system.ts    |  24 +++
+ packages/server-contract/src/public-api.ts    |  17 ++
+ 7 files changed, 488 insertions(+), 5 deletions(-)
+ create mode 100644 apps/server/src/services/system/p6r-principal-appearance.ts
+ create mode 100644 apps/server/test/system/p6r-principal-appearance.test.ts
+ create mode 100644 packages/db/src/data/p6r-principal-appearance.ts
+
+diff --git a/apps/server/src/routes/system.ts b/apps/server/src/routes/system.ts
+index 6142263c9851bc8c1aa7347a2f19175e11ca0e4d..09268344bf758d440cc50b3e826169cccbfe370f 100644
+--- a/apps/server/src/routes/system.ts
++++ b/apps/server/src/routes/system.ts
+@@ -12,7 +12,14 @@ import {
+   setAppKeybindingOverrides,
+   setExperiments,
+   setStoredAppearance,
++  p6rClearStoredAppearanceForPrincipalKey,
++  p6rSetStoredAppearanceForPrincipalKey,
+ } from "@bb/db";
++import {
++  p6rBuildPaletteRoster,
++  p6rPersonalAppearanceKey,
++  p6rResolveAppearanceSelection,
++} from "../services/system/p6r-principal-appearance.js";
+ import {
+   applyAppKeybindingOverrides,
+   customThemeNameSchema,
+@@ -21,6 +28,7 @@ import {
+   type AppKeybindingOverrides,
+   type AppTheme,
+   type P6rActorSnapshot,
++  type P6rPrincipalKey,
+ } from "@bb/domain";
+ import {
+   publicApiRoutes,
+@@ -114,7 +122,7 @@ export function registerSystemRoutes(
+   deps: ServerAppDeps,
+   pluginService: PluginService,
+ ): void {
+-  const { get, post, put } = typedRoutes<PublicApiSchema>(app, {
++  const { del, get, post, put } = typedRoutes<PublicApiSchema>(app, {
+     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
+   });
+   const routes = publicApiRoutes.system;
+@@ -191,10 +199,17 @@ export function registerSystemRoutes(
+       defaultKeybindings: DEFAULT_APP_KEYBINDINGS,
+       keybindingOverrides,
+       experiments: getExperiments(deps.db),
+-      appearance: await resolveSelectedTheme(
+-        getStoredThemeId(deps.db),
+-        getStoredFaviconColor(deps.db),
+-      ),
++      appearance: await (async () => {
++        const p6rSelection = p6rResolveAppearanceSelection(
++          deps.db,
++          p6rCurrentPrincipal,
++        );
++        return resolveSelectedTheme(
++          p6rSelection.themeId,
++          p6rSelection.faviconColor,
++        );
++      })(),
++      p6rPaletteRoster: p6rBuildPaletteRoster(deps.db),
+       customThemes: listCustomThemeNames(themeRoot),
+       pluginThemes: pluginService.listThemes(),
+       featureFlags: deps.config.featureFlags,
+@@ -271,6 +286,72 @@ export function registerSystemRoutes(
+     return context.json(await resolveSelectedTheme(themeId, faviconColor));
+   });
+ 
++  // Downstream (p6r): a personal palette override for the requesting
++  // principal. The plain appearance route above stays the shared default for
++  // everybody; the local operator and unclaimed requests have no personal row
++  // (their palette *is* the shared one), so they are rejected here.
++  function p6rRequirePersonalAppearanceKey(context: {
++    get(key: string): unknown;
++  }): P6rPrincipalKey {
++    const p6rKey = p6rPersonalAppearanceKey(
++      (context.get("p6rRequestPrincipal") as
++        | P6rActorSnapshot
++        | null
++        | undefined) ?? null,
++    );
++    if (p6rKey === null) {
++      throw new ApiError(
++        400,
++        "invalid_request",
++        "A personal palette needs an authenticated principal; this session already follows the shared appearance.",
++      );
++    }
++    return p6rKey;
++  }
++
++  async function p6rAssertSelectableThemeId(themeId: string): Promise<void> {
++    if (isBuiltInThemeId(themeId)) return;
++    if ((await pluginService.readThemeCss(themeId)) !== null) return;
++    if (!customThemeNameSchema.safeParse(themeId).success) {
++      throw new ApiError(
++        400,
++        "invalid_request",
++        `Invalid theme id '${themeId}'.`,
++      );
++    }
++    if (readCustomThemeCss(themeRoot, themeId) === null) {
++      throw new ApiError(
++        404,
++        "theme_not_found",
++        `Custom theme '${themeId}' not found. Create ${resolveCustomThemeCssPath(themeRoot, themeId)} first.`,
++      );
++    }
++  }
++
++  put(routes.p6rPersonalAppearance, async (context, payload) => {
++    const p6rKey = p6rRequirePersonalAppearanceKey(context);
++    const { themeId, faviconColor } = payload;
++    await p6rAssertSelectableThemeId(themeId);
++    p6rSetStoredAppearanceForPrincipalKey(deps.db, p6rKey, {
++      themeId,
++      faviconColor,
++    });
++    deps.hub.notifySystem(["config-changed"]);
++    return context.json(await resolveSelectedTheme(themeId, faviconColor));
++  });
++
++  del(routes.p6rPersonalAppearanceClear, async (context) => {
++    const p6rKey = p6rRequirePersonalAppearanceKey(context);
++    p6rClearStoredAppearanceForPrincipalKey(deps.db, p6rKey);
++    deps.hub.notifySystem(["config-changed"]);
++    return context.json(
++      await resolveSelectedTheme(
++        getStoredThemeId(deps.db),
++        getStoredFaviconColor(deps.db),
++      ),
++    );
++  });
++
+   get(routes.themes, async (context) =>
+     context.json({
+       dir: themeRoot,
+diff --git a/apps/server/src/services/system/p6r-principal-appearance.ts b/apps/server/src/services/system/p6r-principal-appearance.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..1c034ae3d88a60923a7cf2e5ffb048f519b94092
+--- /dev/null
++++ b/apps/server/src/services/system/p6r-principal-appearance.ts
+@@ -0,0 +1,82 @@
++import {
++  getStoredFaviconColor,
++  getStoredThemeId,
++  p6rGetStoredAppearanceForPrincipalKey,
++  p6rListRecentActorSnapshots,
++  p6rListStoredPrincipalAppearance,
++  type DbConnection,
++  type P6rStoredPrincipalAppearance,
++} from "@bb/db";
++import type { P6rActorSnapshot, P6rPrincipalKey } from "@bb/domain";
++import type { P6rPaletteRosterEntry } from "@bb/server-contract";
++import {
++  P6R_LOCAL_OPERATOR_PROVIDER_ID,
++  p6rPrincipalKeyForActor,
++} from "../identity.js";
++
++/**
++ * The `app_theme` row a person's palette writes land on: their PrincipalKey
++ * for provider-established or claimed principals, null (the shared global
++ * "current" row) for the local operator and unclaimed requests. Keeping the
++ * local operator on the global row preserves the single-user, CLI, and
++ * pre-existing semantics unchanged.
++ */
++export function p6rPersonalAppearanceKey(
++  p6rPrincipal: P6rActorSnapshot | null,
++): P6rPrincipalKey | null {
++  if (p6rPrincipal === null) return null;
++  if (p6rPrincipal.p6rProviderId === P6R_LOCAL_OPERATOR_PROVIDER_ID) {
++    return null;
++  }
++  return p6rPrincipalKeyForActor(p6rPrincipal);
++}
++
++/**
++ * The palette selection this person should see: their stored personal choice
++ * when one exists, else the shared global row.
++ */
++export function p6rResolveAppearanceSelection(
++  db: DbConnection,
++  p6rPrincipal: P6rActorSnapshot | null,
++): P6rStoredPrincipalAppearance {
++  const p6rKey = p6rPersonalAppearanceKey(p6rPrincipal);
++  const personal =
++    p6rKey === null ? null : p6rGetStoredAppearanceForPrincipalKey(db, p6rKey);
++  return (
++    personal ?? {
++      themeId: getStoredThemeId(db),
++      faviconColor: getStoredFaviconColor(db),
++    }
++  );
++}
++
++/**
++ * Each recently seen person's palette choice for the Settings roster. A null
++ * `themeId` means the person follows the shared default; the local operator's
++ * entry reflects the global row, which is where their writes land.
++ */
++export function p6rBuildPaletteRoster(
++  db: DbConnection,
++): P6rPaletteRosterEntry[] {
++  const personalThemeIds = new Map(
++    p6rListStoredPrincipalAppearance(db).map((row) => [
++      row.p6rPrincipalKey,
++      row.themeId,
++    ]),
++  );
++  const globalThemeId = getStoredThemeId(db);
++  return p6rListRecentActorSnapshots(db).map((actor) => {
++    const p6rPrincipalKey = p6rPrincipalKeyForActor(actor);
++    const themeId =
++      actor.p6rProviderId === P6R_LOCAL_OPERATOR_PROVIDER_ID
++        ? globalThemeId
++        : (personalThemeIds.get(p6rPrincipalKey) ?? null);
++    return {
++      p6rPrincipalKey,
++      p6rHandle: actor.p6rHandle,
++      p6rDisplayName: actor.p6rDisplayName,
++      p6rImageUrl: actor.p6rImageUrl,
++      themeId,
++    };
++  });
++}
+diff --git a/apps/server/test/system/p6r-principal-appearance.test.ts b/apps/server/test/system/p6r-principal-appearance.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..dea8984962ef7b2f6182b564d795d086fd718668
+--- /dev/null
++++ b/apps/server/test/system/p6r-principal-appearance.test.ts
+@@ -0,0 +1,170 @@
++import { describe, expect, it } from "vitest";
++import {
++  getStoredThemeId,
++  p6rClearStoredAppearanceForPrincipalKey,
++  p6rListStoredPrincipalAppearance,
++  p6rSetStoredAppearanceForPrincipalKey,
++  p6rUpsertActorSnapshot,
++} from "@bb/db";
++import { defaultFaviconColor, type P6rActorSnapshot } from "@bb/domain";
++import { systemConfigResponseSchema } from "@bb/server-contract";
++import { p6rCreateLocalOperatorIdentity } from "../../src/services/actors.js";
++import { P6R_LOCAL_OPERATOR_PROVIDER_ID } from "../../src/services/identity.js";
++import {
++  p6rBuildPaletteRoster,
++  p6rResolveAppearanceSelection,
++} from "../../src/services/system/p6r-principal-appearance.js";
++import { readJson } from "../helpers/json.js";
++import { withTestHarness } from "../helpers/test-app.js";
++
++const alice: P6rActorSnapshot = {
++  p6rProviderId: "tailscale",
++  p6rSubject: "1001",
++  p6rHandle: "alice",
++  p6rDisplayName: "Alice",
++  p6rImageUrl: null,
++};
++
++const aliceKey = "p6r:tailscale/1001";
++
++const bob: P6rActorSnapshot = {
++  p6rProviderId: "tailscale",
++  p6rSubject: "1002",
++  p6rHandle: "bob",
++  p6rDisplayName: "Bob",
++  p6rImageUrl: null,
++};
++
++describe("p6r principal appearance", () => {
++  it("overrides the shared palette only for the principal who stored one", async () => {
++    await withTestHarness(async (harness) => {
++      p6rSetStoredAppearanceForPrincipalKey(harness.db, aliceKey, {
++        themeId: "dracula",
++        faviconColor: defaultFaviconColor,
++      });
++
++      expect(p6rResolveAppearanceSelection(harness.db, alice).themeId).toBe(
++        "dracula",
++      );
++      // The shared row, other principals, and local sessions are untouched.
++      expect(getStoredThemeId(harness.db)).toBe("default");
++      expect(p6rResolveAppearanceSelection(harness.db, bob).themeId).toBe(
++        "default",
++      );
++      expect(p6rResolveAppearanceSelection(harness.db, null).themeId).toBe(
++        "default",
++      );
++
++      p6rClearStoredAppearanceForPrincipalKey(harness.db, aliceKey);
++      expect(p6rResolveAppearanceSelection(harness.db, alice).themeId).toBe(
++        "default",
++      );
++      expect(p6rListStoredPrincipalAppearance(harness.db)).toEqual([]);
++    });
++  });
++
++  it("resolves the local operator from the shared row, never a personal one", async () => {
++    await withTestHarness(async (harness) => {
++      const localIdentity = p6rCreateLocalOperatorIdentity();
++      const localOperator: P6rActorSnapshot = {
++        p6rProviderId: P6R_LOCAL_OPERATOR_PROVIDER_ID,
++        p6rSubject: localIdentity.p6rHandle,
++        p6rHandle: localIdentity.p6rHandle,
++        p6rDisplayName: localIdentity.p6rDisplayName,
++        p6rImageUrl: localIdentity.p6rImageUrl,
++      };
++
++      const put = await harness.app.request("/api/v1/settings/appearance", {
++        method: "PUT",
++        headers: { "content-type": "application/json" },
++        body: JSON.stringify({ themeId: "nord", faviconColor: "default" }),
++      });
++      expect(put.status).toBe(200);
++
++      // The Settings write stayed on the shared row and the local operator
++      // reads it from there.
++      expect(getStoredThemeId(harness.db)).toBe("nord");
++      expect(p6rListStoredPrincipalAppearance(harness.db)).toEqual([]);
++      expect(
++        p6rResolveAppearanceSelection(harness.db, localOperator).themeId,
++      ).toBe("nord");
++    });
++  });
++
++  it("rejects personal overrides from sessions that follow the shared row", async () => {
++    await withTestHarness(async (harness) => {
++      const put = await harness.app.request(
++        "/api/v1/settings/p6r-personal-appearance",
++        {
++          method: "PUT",
++          headers: { "content-type": "application/json" },
++          body: JSON.stringify({ themeId: "nord", faviconColor: "default" }),
++        },
++      );
++      expect(put.status).toBe(400);
++
++      const clear = await harness.app.request(
++        "/api/v1/settings/p6r-personal-appearance",
++        { method: "DELETE" },
++      );
++      expect(clear.status).toBe(400);
++      expect(p6rListStoredPrincipalAppearance(harness.db)).toEqual([]);
++    });
++  });
++
++  it("builds a roster of each person's choice with null for followers", async () => {
++    await withTestHarness(async (harness) => {
++      const now = Date.now();
++      p6rUpsertActorSnapshot(harness.db, alice, now);
++      p6rUpsertActorSnapshot(harness.db, bob, now + 1);
++      p6rSetStoredAppearanceForPrincipalKey(harness.db, aliceKey, {
++        themeId: "gruvbox",
++        faviconColor: defaultFaviconColor,
++      });
++
++      const roster = p6rBuildPaletteRoster(harness.db);
++      expect(roster).toEqual([
++        {
++          p6rPrincipalKey: "p6r:tailscale/1002",
++          p6rHandle: "bob",
++          p6rDisplayName: "Bob",
++          p6rImageUrl: null,
++          themeId: null,
++        },
++        {
++          p6rPrincipalKey: aliceKey,
++          p6rHandle: "alice",
++          p6rDisplayName: "Alice",
++          p6rImageUrl: null,
++          themeId: "gruvbox",
++        },
++      ]);
++    });
++  });
++
++  it("reflects the shared choice in /system/config's roster entry for the local operator", async () => {
++    await withTestHarness(async (harness) => {
++      const put = await harness.app.request("/api/v1/settings/appearance", {
++        method: "PUT",
++        headers: { "content-type": "application/json" },
++        body: JSON.stringify({ themeId: "nord", faviconColor: "default" }),
++      });
++      expect(put.status).toBe(200);
++
++      const response = await harness.app.request("/api/v1/system/config");
++      expect(response.status).toBe(200);
++      const body = systemConfigResponseSchema.parse(await readJson(response));
++      expect(body.appearance.themeId).toBe("nord");
++      const localOperator = p6rCreateLocalOperatorIdentity();
++      expect(body.p6rPaletteRoster).toEqual([
++        {
++          p6rPrincipalKey: expect.stringContaining("local:"),
++          p6rHandle: localOperator.p6rHandle,
++          p6rDisplayName: localOperator.p6rDisplayName,
++          p6rImageUrl: null,
++          themeId: "nord",
++        },
++      ]);
++    });
++  });
++});
+diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
+index baf69da70cb84882c0a7c85927caf73fabf0acb2..83d5739247ee687cadca80b68c06906349fd16b7 100644
+--- a/packages/db/src/data/index.ts
++++ b/packages/db/src/data/index.ts
+@@ -245,6 +245,15 @@ export {
+   setStoredAppearance,
+ } from "./app-theme.js";
+ 
++export {
++  p6rClearStoredAppearanceForPrincipalKey,
++  p6rGetStoredAppearanceForPrincipalKey,
++  p6rListRecentActorSnapshots,
++  p6rListStoredPrincipalAppearance,
++  p6rSetStoredAppearanceForPrincipalKey,
++  type P6rStoredPrincipalAppearance,
++} from "./p6r-principal-appearance.js";
++
+ export {
+   createEnvironment,
+   getEnvironment,
+diff --git a/packages/db/src/data/p6r-principal-appearance.ts b/packages/db/src/data/p6r-principal-appearance.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..47359633a5dc12ae3466f9a4dabeded7f101246c
+--- /dev/null
++++ b/packages/db/src/data/p6r-principal-appearance.ts
+@@ -0,0 +1,100 @@
++import { desc, eq, like } from "drizzle-orm";
++import type { FaviconColorPreference, P6rActorSnapshot } from "@bb/domain";
++import type { DbConnection, DbQueryConnection } from "../connection.js";
++import { appTheme, p6rActors } from "../schema.js";
++
++// Personal palette choices reuse the `app_theme` table: the shared default
++// stays in the singleton "current" row while each explicit per-person choice
++// is stored under a downstream-namespaced row id derived from that person's
++// serialized PrincipalKey, so no schema change is required. The local operator
++// never gets a personal row — their writes stay on the global row so the CLI,
++// single-user installs, and existing data keep exactly one meaning.
++
++const P6R_PERSONAL_APP_THEME_ROW_PREFIX = "p6r-appearance:";
++
++function p6rPersonalAppearanceRowId(p6rPrincipalKey: string): string {
++  return `${P6R_PERSONAL_APP_THEME_ROW_PREFIX}${p6rPrincipalKey}`;
++}
++
++export interface P6rStoredPrincipalAppearance {
++  themeId: string;
++  faviconColor: FaviconColorPreference;
++}
++
++export function p6rGetStoredAppearanceForPrincipalKey(
++  db: DbQueryConnection,
++  p6rPrincipalKey: string,
++): P6rStoredPrincipalAppearance | null {
++  const row = db
++    .select({ themeId: appTheme.themeId, faviconColor: appTheme.faviconColor })
++    .from(appTheme)
++    .where(eq(appTheme.id, p6rPersonalAppearanceRowId(p6rPrincipalKey)))
++    .get();
++  return row ?? null;
++}
++
++export function p6rSetStoredAppearanceForPrincipalKey(
++  db: DbConnection,
++  p6rPrincipalKey: string,
++  appearance: P6rStoredPrincipalAppearance,
++): void {
++  const updatedAt = Date.now();
++  const { themeId, faviconColor } = appearance;
++  db.insert(appTheme)
++    .values({
++      id: p6rPersonalAppearanceRowId(p6rPrincipalKey),
++      themeId,
++      faviconColor,
++      updatedAt,
++    })
++    .onConflictDoUpdate({
++      target: appTheme.id,
++      set: { themeId, faviconColor, updatedAt },
++    })
++    .run();
++}
++
++/** Drop a personal override so the person follows the shared row again. */
++export function p6rClearStoredAppearanceForPrincipalKey(
++  db: DbConnection,
++  p6rPrincipalKey: string,
++): void {
++  db.delete(appTheme)
++    .where(eq(appTheme.id, p6rPersonalAppearanceRowId(p6rPrincipalKey)))
++    .run();
++}
++
++/** Every stored personal palette row (the global "current" row excluded). */
++export function p6rListStoredPrincipalAppearance(
++  db: DbQueryConnection,
++): Array<{ p6rPrincipalKey: string; themeId: string }> {
++  return db
++    .select({ id: appTheme.id, themeId: appTheme.themeId })
++    .from(appTheme)
++    .where(like(appTheme.id, `${P6R_PERSONAL_APP_THEME_ROW_PREFIX}%`))
++    .all()
++    .map((row) => ({
++      p6rPrincipalKey: row.id.slice(P6R_PERSONAL_APP_THEME_ROW_PREFIX.length),
++      themeId: row.themeId,
++    }));
++}
++
++/** Bounds the Settings palette roster on servers with a long actor history. */
++export const P6R_PALETTE_ROSTER_ACTOR_LIMIT = 32;
++
++export function p6rListRecentActorSnapshots(
++  db: DbQueryConnection,
++): P6rActorSnapshot[] {
++  return db
++    .select({
++      p6rProviderId: p6rActors.p6rProviderId,
++      p6rSubject: p6rActors.p6rSubject,
++      p6rHandle: p6rActors.p6rHandle,
++      p6rDisplayName: p6rActors.p6rDisplayName,
++      p6rImageUrl: p6rActors.p6rImageUrl,
++    })
++    .from(p6rActors)
++    .orderBy(desc(p6rActors.p6rLastSeenAt))
++    .limit(P6R_PALETTE_ROSTER_ACTOR_LIMIT)
++    .all();
++}
+diff --git a/packages/server-contract/src/api/system.ts b/packages/server-contract/src/api/system.ts
+index ee462df218f1ad4312395e85507690b98ff973c1..8c0fc86e456c9f90410694dbf58c2eef0e8ccdd0 100644
+--- a/packages/server-contract/src/api/system.ts
++++ b/packages/server-contract/src/api/system.ts
+@@ -188,6 +188,25 @@ export const systemConfigResponseSchema = z.object({
+   experiments: experimentsSchema,
+   /** Active app-wide palette (built-in id or custom theme), resolved server-side. */
+   appearance: appThemeSchema,
++  /**
++   * Downstream (p6r): each recently seen person's palette choice, so Settings
++   * can show what everyone on this bb is using. A null `themeId` means the
++   * person follows the shared default; the local operator's entry reflects
++   * the global row, which is where their palette writes land.
++   */
++  p6rPaletteRoster: z
++    .array(
++      z
++        .object({
++          p6rPrincipalKey: p6rPrincipalKeySchema,
++          p6rHandle: z.string().min(1).max(512),
++          p6rDisplayName: z.string().min(1).max(512),
++          p6rImageUrl: z.string().max(2_048).nullable(),
++          themeId: z.string().nullable(),
++        })
++        .strict(),
++    )
++    .optional(),
+   /**
+    * Names of custom themes discovered under `<data-dir>/theme/<name>/theme.css`,
+    * so the Settings picker can offer them alongside the built-ins.
+@@ -216,6 +235,11 @@ export const systemConfigResponseSchema = z.object({
+ 
+ export type SystemConfigResponse = z.infer<typeof systemConfigResponseSchema>;
+ 
++/** Downstream (p6r): one person's row in the Settings palette roster. */
++export type P6rPaletteRosterEntry = NonNullable<
++  SystemConfigResponse["p6rPaletteRoster"]
++>[number];
++
+ export const systemAttentionResponseSchema = z.object({
+   hasAttention: z.boolean(),
+ });
+diff --git a/packages/server-contract/src/public-api.ts b/packages/server-contract/src/public-api.ts
+index 356250fddbe3d815ebe0d780c3e507506d84bf70..0e5eb5a6af4a406133c569b875e22673690c76d6 100644
+--- a/packages/server-contract/src/public-api.ts
++++ b/packages/server-contract/src/public-api.ts
+@@ -1420,6 +1420,23 @@ export const publicApiRoutes = {
+       ),
+       response: jsonResponse<AppTheme>(),
+     }),
++    // Downstream (p6r): a personal palette override for the requesting
++    // principal, stored beside the shared appearance row (which the plain
++    // appearance route above keeps as the default for everybody).
++    p6rPersonalAppearance: defineRoute({
++      path: "/settings/p6r-personal-appearance",
++      method: "put",
++      request: jsonRequest<EmptyInput, AppThemeSelection>(
++        appThemeSelectionSchema,
++      ),
++      response: jsonResponse<AppTheme>(),
++    }),
++    p6rPersonalAppearanceClear: defineRoute({
++      path: "/settings/p6r-personal-appearance",
++      method: "delete",
++      request: noRequest(),
++      response: jsonResponse<AppTheme>(),
++    }),
+     themes: defineRoute({
+       path: "/settings/themes",
+       method: "get",
+-- 
+2.43.0
+
