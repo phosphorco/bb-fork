@@ -27,13 +27,19 @@
 23. **Principal-key boundary witness** distinguishes provider lease subject encoding from the provider/subject delimiter retained in authenticated request keys.
 24. **Canonical plugin PrincipalKeys** supersedes that differing-key interpretation: provider handles, production HTTP/RPC resolution, and the fake SDK host now derive the same actor key for one registered provider and subject.
 25. **Thread-list cache shape validation** rejects generalized `threads` query entries whose pages are facet response objects or empty participant pages before sidebar cache iteration can treat them as thread arrays.
-26. **Per-person palette overrides** keep the Settings appearance write and UI as the shared default for everybody while letting a provider-established or claimed principal store a personal override on a downstream-namespaced `app_theme` row via additive `/settings/p6r-personal-appearance` routes; `/system/config` resolves override-else-shared per requesting principal and carries an optional `p6rPaletteRoster` for a future override UI or plugin.
+26. **Compact thread header controls** derive plugin control density from the containing split pane while keeping Git actions out of the title row.
+27. **Per-person palette overrides** keep the Settings appearance write and UI as the shared default for everybody while letting a provider-established or claimed principal store a personal override on a downstream-namespaced `app_theme` row via additive `/settings/p6r-personal-appearance` routes; `/system/config` resolves override-else-shared per requesting principal and carries an optional `p6rPaletteRoster` for a future override UI or plugin.
+28. **Configurable prompt stacks** add server-backed prompt sequences with per-project step overrides and native follow-up slash dispatch.
+29. **Multiplayer timeline authors** render attributed message authors from their durable actor presentation snapshots, reuse the HTTPS-only avatar component and accessible initials fallback, and show author labels whenever the durable thread roster has multiple participants rather than waiting for two distinct authors to appear in the loaded timeline page.
+30. **Workspace-local shell environments** resolve each provisioned workspace's login-shell `PATH` from that workspace before its provider runtime starts, so version managers and local package binaries take precedence without changing the daemon-global maintenance environment.
+31. **Capability-authenticated plugin routes** let plugin HTTP and RPC registrations require narrowly declared host capabilities without broadening unauthenticated plugin access.
+32. **Covered background-command presentation** carries the newest active provider-shell start into the sidebar contract so clients can quietly mark commands older than thirty minutes without hiding newer commands or other live work.
 
 ## Exact source receipt
 
 - Upstream: `5205d98a74ed5a22469e521cf1f86b00b8232827`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: twenty-eight patches in `patches/series`.
+- Patch queue: thirty-two patches in `patches/series`.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries
@@ -42,6 +48,8 @@
 - SQLite changes are additive: `0107_p6r_identity_authorship` adds provider-qualified actor and collaborator snapshots plus nullable authorship columns, and `0108_thread_facets` adds declarations, members, owner generations, reconciliation obligations, relations, exact participant profiles, and the stable cursor key.
 - Installs that ran the experimental branch's conflicting `0079_multiplayer-collaborators` migration are staged through canonical upstream migrations and restored without losing collaborator or attribution data.
 - Existing stored events remain readable with `actorHandle: null`.
+- The background-command start timestamp is additive and optional for older clients; servers emit null when no provider-backgrounded shell command is active.
+- Provider-runtime environment resolution is host-local and changes no server/daemon wire contract; a workspace shell-probe failure retains the existing daemon-login `PATH` fallback.
 - Old rows and no-provider installations remain readable with nullable
   structured actor data; historical actor reads use the stored snapshot
   without a live provider. Facet declarations and last-known positive
