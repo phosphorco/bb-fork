@@ -1,0 +1,1084 @@
+From 93a922cc2a1a96d6e31d8ac9134ba54dce7e98f1 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 29 Aug 2026 20:36:56 -0400
+Subject: [PATCH] feat(recovery-mobile): add bounded snapshot contract
+
+---
+ .../src/data/sidebar/sidebar-bootstrap.ts     |   3 +-
+ apps/recovery-mobile/src/persistence/index.ts |   1 +
+ .../src/persistence/recovery-snapshot.test.ts | 203 ++++++++++++++++++
+ .../src/persistence/recovery-snapshot.ts      |  94 ++++++++
+ .../src/persistence/repository.ts             |  50 +++--
+ apps/server/src/routes/projects.ts            |   2 +-
+ apps/server/src/routes/recovery.ts            | 140 ++++++++++++
+ apps/server/src/server.ts                     |   5 +-
+ .../public/public-recovery-snapshot.test.ts   |  77 +++++++
+ packages/sdk/src/areas/recovery.ts            |  40 ++++
+ packages/sdk/src/core.ts                      |   3 +
+ packages/sdk/src/public-types.ts              |   1 +
+ packages/sdk/test/public-types.test.ts        |   6 +
+ packages/sdk/test/sdk.test.ts                 |  30 +++
+ packages/server-contract/src/api-types.ts     |   1 +
+ packages/server-contract/src/api/recovery.ts  |  95 ++++++++
+ packages/server-contract/src/public-api.ts    |  13 ++
+ .../server-contract/test/recovery.test.ts     |  52 +++++
+ 18 files changed, 792 insertions(+), 24 deletions(-)
+ create mode 100644 apps/recovery-mobile/src/persistence/recovery-snapshot.test.ts
+ create mode 100644 apps/recovery-mobile/src/persistence/recovery-snapshot.ts
+ create mode 100644 apps/server/src/routes/recovery.ts
+ create mode 100644 apps/server/test/public/public-recovery-snapshot.test.ts
+ create mode 100644 packages/sdk/src/areas/recovery.ts
+ create mode 100644 packages/server-contract/src/api/recovery.ts
+ create mode 100644 packages/server-contract/test/recovery.test.ts
+
+diff --git a/apps/recovery-mobile/src/data/sidebar/sidebar-bootstrap.ts b/apps/recovery-mobile/src/data/sidebar/sidebar-bootstrap.ts
+index 6a8d09424..4a06e1f25 100644
+--- a/apps/recovery-mobile/src/data/sidebar/sidebar-bootstrap.ts
++++ b/apps/recovery-mobile/src/data/sidebar/sidebar-bootstrap.ts
+@@ -6,6 +6,7 @@ import { useProfileClient } from "@/app-shell/ProfilesProvider";
+ import { sidebarNavigationQueryKey } from "@/lib/query/query-keys";
+ import { useRecoveryQueryPersistence } from "@/persistence/use-recovery-query-persistence";
+ import { useRecoveryNamespace } from "@/persistence/use-recovery-namespace";
++import { RECOVERY_SIDEBAR_RECORD_KEY } from "@/persistence/recovery-snapshot";
+ import { REALTIME_OWNED_STATIC_CACHE_QUERY_POLICY } from "../shared/query-policies";
+ import {
+   useEnvironmentListRealtimeSubscription,
+@@ -18,8 +19,6 @@ interface QueryOptions {
+   enabled?: boolean;
+ }
+ 
+-const RECOVERY_SIDEBAR_RECORD_KEY = "sidebar-bootstrap:v1";
+-
+ /**
+  * `GET /projects/sidebar-bootstrap`: sections, every project with its live
+  * threads and resolved thread-creation defaults, and the personal project.
+diff --git a/apps/recovery-mobile/src/persistence/index.ts b/apps/recovery-mobile/src/persistence/index.ts
+index ed72464c7..d0d8b4299 100644
+--- a/apps/recovery-mobile/src/persistence/index.ts
++++ b/apps/recovery-mobile/src/persistence/index.ts
+@@ -2,4 +2,5 @@ export * from "./contracts";
+ export * from "./attachments";
+ export * from "./migrations";
+ export * from "./repository";
++export * from "./recovery-snapshot";
+ export * from "./use-recovery-namespace";
+diff --git a/apps/recovery-mobile/src/persistence/recovery-snapshot.test.ts b/apps/recovery-mobile/src/persistence/recovery-snapshot.test.ts
+new file mode 100644
+index 000000000..280e5cd1b
+--- /dev/null
++++ b/apps/recovery-mobile/src/persistence/recovery-snapshot.test.ts
+@@ -0,0 +1,203 @@
++import { mkdtemp, rm } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import type { RecoverySnapshotResponse } from "@bb/server-contract";
++import { afterEach, describe, expect, it } from "vitest";
++import { sidebarBootstrap, timelineResponse } from "@/data/test/fixtures";
++import type { ProfileIdentityContext } from "./contracts";
++import { NodeRecoverySqlDatabase } from "./node-sqlite";
++import {
++  ingestRecoverySnapshot,
++  refreshRecoverySnapshot,
++  RECOVERY_SIDEBAR_RECORD_KEY,
++  RECOVERY_SNAPSHOT_METADATA_RECORD_KEY,
++} from "./recovery-snapshot";
++import { RecoveryRepository } from "./repository";
++
++const temporaryDirectories: string[] = [];
++
++async function createRepository(): Promise<RecoveryRepository> {
++  const directory = await mkdtemp(join(tmpdir(), "bb-recovery-snapshot-"));
++  temporaryDirectories.push(directory);
++  const repository = new RecoveryRepository(
++    NodeRecoverySqlDatabase.open(join(directory, "recovery.db")),
++  );
++  await repository.initialize();
++  return repository;
++}
++
++afterEach(async () => {
++  await Promise.all(
++    temporaryDirectories
++      .splice(0)
++      .map((directory) => rm(directory, { recursive: true, force: true })),
++  );
++});
++
++const namespace: ProfileIdentityContext = {
++  profileId: "profile-a",
++  serverUrl: "https://bb.example.test",
++  namespaceId: '["profile-a","principal-a"]',
++  principalKey: "principal-a",
++  providerId: "tailnet",
++  subject: "subject-a",
++  ownerState: "resolved",
++  updatedAt: 100,
++};
++
++function snapshot(): RecoverySnapshotResponse {
++  return {
++    contractVersion: 1,
++    generatedAtMs: 200,
++    consistency: "partial",
++    incompleteReasons: ["sidebar-revision-unavailable"],
++    cacheOwner: {
++      state: "resolved",
++      principalKey: "principal-a",
++      actor: {
++        p6rProviderId: "tailnet",
++        p6rSubject: "subject-a",
++        p6rHandle: "ada",
++        p6rDisplayName: "Ada",
++        p6rImageUrl: null,
++      },
++    },
++    sidebar: sidebarBootstrap(),
++    timelines: [
++      {
++        threadId: "thread-coherent",
++        consistency: "coherent",
++        headSequence: 7,
++        projectionCoverage: "complete",
++        olderCursor: null,
++        timeline: timelineResponse([], { maxSeq: 7 }),
++      },
++      {
++        threadId: "thread-retry",
++        consistency: "retry",
++        headSequence: 8,
++        projectionCoverage: "windowed",
++        olderCursor: { anchorSeq: 4, anchorId: "row-4" },
++        timeline: timelineResponse([], { maxSeq: 8 }),
++      },
++    ],
++    unavailableThreads: [{ threadId: "gone", reason: "not-found" }],
++  };
++}
++
++describe("recovery snapshot ingestion", () => {
++  it("atomically persists shared metadata and only coherent timelines", async () => {
++    const repository = await createRepository();
++    await expect(
++      ingestRecoverySnapshot(repository, namespace, snapshot()),
++    ).resolves.toEqual({ persistedTimelineCount: 1 });
++
++    await expect(
++      repository.getObservedRecord(
++        namespace.namespaceId,
++        RECOVERY_SIDEBAR_RECORD_KEY,
++      ),
++    ).resolves.toMatchObject({ updatedAt: 200 });
++    await expect(
++      repository.getObservedRecord(
++        namespace.namespaceId,
++        "thread-timeline-latest:v1:thread-coherent",
++      ),
++    ).resolves.toMatchObject({ revision: 7 });
++    await expect(
++      repository.getObservedRecord(
++        namespace.namespaceId,
++        "thread-timeline-latest:v1:thread-retry",
++      ),
++    ).resolves.toBeNull();
++    await expect(
++      repository.getObservedRecord(
++        namespace.namespaceId,
++        RECOVERY_SNAPSHOT_METADATA_RECORD_KEY,
++      ),
++    ).resolves.toMatchObject({
++      payload: { unavailableThreads: [{ threadId: "gone" }] },
++    });
++    await repository.close();
++  });
++
++  it("fetches through the SDK with the bounded default before ingestion", async () => {
++    const repository = await createRepository();
++    const requestedThreadIds: string[][] = [];
++    await expect(
++      refreshRecoverySnapshot({
++        sdk: {
++          recovery: {
++            snapshot: async (input) => {
++              requestedThreadIds.push(input.threadIds);
++              expect(input).toMatchObject({
++                contractVersion: 1,
++                timelineSegmentLimit: 20,
++              });
++              return snapshot();
++            },
++          },
++        },
++        repository,
++        namespace,
++        threadIds: ["thread-coherent"],
++      }),
++    ).resolves.toEqual({ persistedTimelineCount: 1 });
++    expect(requestedThreadIds).toEqual([["thread-coherent"]]);
++    await repository.close();
++  });
++
++  it("rejects another principal before creating or writing its namespace", async () => {
++    const repository = await createRepository();
++    const mismatched = snapshot();
++    if (mismatched.cacheOwner.state !== "resolved") {
++      throw new Error("fixture must have a resolved cache owner");
++    }
++    mismatched.cacheOwner = {
++      ...mismatched.cacheOwner,
++      principalKey: "principal-b",
++    };
++    await expect(
++      ingestRecoverySnapshot(repository, namespace, mismatched),
++    ).rejects.toThrow("principal does not match");
++    await expect(
++      repository.getObservedRecord(
++        namespace.namespaceId,
++        RECOVERY_SIDEBAR_RECORD_KEY,
++      ),
++    ).resolves.toBeNull();
++    await repository.close();
++  });
++
++  it("rolls back the whole observed-record batch on a foreign-key failure", async () => {
++    const repository = await createRepository();
++    await repository.ensureNamespace({
++      namespaceId: "valid",
++      serverProfileKey: "profile-a",
++      ownerKey: "principal-a",
++      ownerState: "resolved",
++    });
++    await expect(
++      repository.putObservedRecords([
++        {
++          namespaceId: "valid",
++          recordKey: "first",
++          payload: { value: 1 },
++          revision: 1,
++          updatedAt: 1,
++        },
++        {
++          namespaceId: "missing",
++          recordKey: "second",
++          payload: { value: 2 },
++          revision: 1,
++          updatedAt: 1,
++        },
++      ]),
++    ).rejects.toThrow();
++    await expect(
++      repository.getObservedRecord("valid", "first"),
++    ).resolves.toBeNull();
++    await repository.close();
++  });
++});
+diff --git a/apps/recovery-mobile/src/persistence/recovery-snapshot.ts b/apps/recovery-mobile/src/persistence/recovery-snapshot.ts
+new file mode 100644
+index 000000000..69251495c
+--- /dev/null
++++ b/apps/recovery-mobile/src/persistence/recovery-snapshot.ts
+@@ -0,0 +1,94 @@
++import type { RecoverySnapshotResponse } from "@bb/server-contract";
++import { RECOVERY_SNAPSHOT_CONTRACT_VERSION } from "@bb/server-contract";
++import type { BrowserBbSdk } from "@bb/sdk/browser";
++import type { ObservedRecord, ProfileIdentityContext } from "./contracts";
++import type { RecoveryRepository } from "./repository";
++
++export const RECOVERY_SIDEBAR_RECORD_KEY = "sidebar-bootstrap:v1";
++export const RECOVERY_SNAPSHOT_METADATA_RECORD_KEY = "recovery-snapshot:v1";
++export const RECOVERY_SNAPSHOT_DEFAULT_SEGMENT_LIMIT = 20;
++
++function assertMatchingCacheOwner(
++  namespace: ProfileIdentityContext,
++  snapshot: RecoverySnapshotResponse,
++): void {
++  const owner = snapshot.cacheOwner;
++  const matches =
++    namespace.ownerState === "resolved"
++      ? owner.state === "resolved" &&
++        owner.principalKey === namespace.principalKey
++      : owner.state === "read-only" && namespace.principalKey === null;
++  if (!matches) {
++    throw new Error(
++      "Recovery snapshot principal does not match the cache namespace",
++    );
++  }
++}
++
++/**
++ * Persist one server bundle as a single SQLite commit. Retry-marked timelines
++ * are excluded; their head may have changed while the server projected rows.
++ */
++export async function ingestRecoverySnapshot(
++  repository: RecoveryRepository,
++  namespace: ProfileIdentityContext,
++  snapshot: RecoverySnapshotResponse,
++): Promise<{ persistedTimelineCount: number }> {
++  assertMatchingCacheOwner(namespace, snapshot);
++  await repository.ensureNamespace({
++    namespaceId: namespace.namespaceId,
++    serverProfileKey: namespace.profileId,
++    ownerKey: namespace.principalKey ?? "read-only",
++    ownerState: namespace.ownerState,
++  });
++
++  const coherentTimelines = snapshot.timelines.filter(
++    (timeline) => timeline.consistency === "coherent",
++  );
++  const records: ObservedRecord[] = [
++    {
++      namespaceId: namespace.namespaceId,
++      recordKey: RECOVERY_SIDEBAR_RECORD_KEY,
++      payload: snapshot.sidebar,
++      revision: 0,
++      updatedAt: snapshot.generatedAtMs,
++    },
++    {
++      namespaceId: namespace.namespaceId,
++      recordKey: RECOVERY_SNAPSHOT_METADATA_RECORD_KEY,
++      payload: {
++        consistency: snapshot.consistency,
++        incompleteReasons: snapshot.incompleteReasons,
++        unavailableThreads: snapshot.unavailableThreads,
++      },
++      revision: 0,
++      updatedAt: snapshot.generatedAtMs,
++    },
++    ...coherentTimelines.map((observation) => ({
++      namespaceId: namespace.namespaceId,
++      recordKey: `thread-timeline-latest:v1:${observation.threadId}`,
++      payload: observation.timeline,
++      revision: observation.headSequence,
++      updatedAt: snapshot.generatedAtMs,
++    })),
++  ];
++  await repository.putObservedRecords(records);
++  return { persistedTimelineCount: coherentTimelines.length };
++}
++
++/** Network-to-SQLite seam for a future foreground/idle refresh scheduler. */
++export async function refreshRecoverySnapshot(args: {
++  sdk: Pick<BrowserBbSdk, "recovery">;
++  repository: RecoveryRepository;
++  namespace: ProfileIdentityContext;
++  threadIds: string[];
++  signal?: AbortSignal;
++}): Promise<{ persistedTimelineCount: number }> {
++  const snapshot = await args.sdk.recovery.snapshot({
++    contractVersion: RECOVERY_SNAPSHOT_CONTRACT_VERSION,
++    threadIds: args.threadIds,
++    timelineSegmentLimit: RECOVERY_SNAPSHOT_DEFAULT_SEGMENT_LIMIT,
++    signal: args.signal,
++  });
++  return ingestRecoverySnapshot(args.repository, args.namespace, snapshot);
++}
+diff --git a/apps/recovery-mobile/src/persistence/repository.ts b/apps/recovery-mobile/src/persistence/repository.ts
+index ac3b7e36a..8bec544d0 100644
+--- a/apps/recovery-mobile/src/persistence/repository.ts
++++ b/apps/recovery-mobile/src/persistence/repository.ts
+@@ -132,7 +132,9 @@ export class RecoveryRepository {
+     );
+     const integrityResult = integrity?.integrity_check ?? "missing";
+     if (integrityResult !== "ok") {
+-      throw new Error(`Recovery database integrity check failed: ${integrityResult}`);
++      throw new Error(
++        `Recovery database integrity check failed: ${integrityResult}`,
++      );
+     }
+     return {
+       journalMode: journal?.journal_mode ?? "unknown",
+@@ -202,26 +204,36 @@ export class RecoveryRepository {
+   }
+ 
+   async putObservedRecord<T>(record: ObservedRecord<T>): Promise<void> {
+-    const key = observationKey(record.namespaceId, record.recordKey);
++    await this.putObservedRecords([record]);
++  }
++
++  /** Commit a related cache snapshot atomically, then publish keyed updates. */
++  async putObservedRecords(records: readonly ObservedRecord[]): Promise<void> {
++    if (records.length === 0) return;
+     await this.db.transaction(async (tx) => {
+-      await tx.run(
+-        `INSERT INTO observed_records (
+-          namespace_id, record_key, payload_json, revision, updated_at
+-        ) VALUES (?, ?, ?, ?, ?)
+-        ON CONFLICT(namespace_id, record_key) DO UPDATE SET
+-          payload_json = excluded.payload_json,
+-          revision = excluded.revision,
+-          updated_at = excluded.updated_at`,
+-        [
+-          record.namespaceId,
+-          record.recordKey,
+-          JSON.stringify(record.payload),
+-          record.revision,
+-          record.updatedAt,
+-        ],
+-      );
++      for (const record of records) {
++        await tx.run(
++          `INSERT INTO observed_records (
++            namespace_id, record_key, payload_json, revision, updated_at
++          ) VALUES (?, ?, ?, ?, ?)
++          ON CONFLICT(namespace_id, record_key) DO UPDATE SET
++            payload_json = excluded.payload_json,
++            revision = excluded.revision,
++            updated_at = excluded.updated_at`,
++          [
++            record.namespaceId,
++            record.recordKey,
++            JSON.stringify(record.payload),
++            record.revision,
++            record.updatedAt,
++          ],
++        );
++      }
+     });
+-    for (const listener of this.listeners.get(key) ?? []) listener();
++    for (const record of records) {
++      const key = observationKey(record.namespaceId, record.recordKey);
++      for (const listener of this.listeners.get(key) ?? []) listener();
++    }
+   }
+ 
+   async getObservedRecord<T>(
+diff --git a/apps/server/src/routes/projects.ts b/apps/server/src/routes/projects.ts
+index eefd45c38..0a686f59d 100644
+--- a/apps/server/src/routes/projects.ts
++++ b/apps/server/src/routes/projects.ts
+@@ -257,7 +257,7 @@ function buildProjectsWithThreadsResponseFromRows(
+   }));
+ }
+ 
+-function buildSidebarBootstrapResponse(deps: AppDeps) {
++export function buildSidebarBootstrapResponse(deps: AppDeps) {
+   const personalProject = getPersonalProject(deps.db);
+   if (!personalProject) {
+     throw new ApiError(
+diff --git a/apps/server/src/routes/recovery.ts b/apps/server/src/routes/recovery.ts
+new file mode 100644
+index 000000000..67f100d2c
+--- /dev/null
++++ b/apps/server/src/routes/recovery.ts
+@@ -0,0 +1,140 @@
++import { formatCustomAcpAgentProviderId } from "@bb/config/bb-app-managed-config";
++import { getAppSettings, getLatestThreadSequence } from "@bb/db";
++import {
++  RECOVERY_SNAPSHOT_CONTRACT_VERSION,
++  publicApiRoutes,
++  typedRoutes,
++  type PublicApiSchema,
++  type RecoverySnapshotResponse,
++  type RecoveryTimelineObservation,
++} from "@bb/server-contract";
++import type { Context, Hono } from "hono";
++import { ApiError } from "../errors.js";
++import {
++  p6rGetRequestPrincipal,
++  p6rPrincipalKeyForActor,
++} from "../services/identity.js";
++import { requirePublicThread } from "../services/lib/entity-lookup.js";
++import { resolveProviderPlanCommand } from "../services/providers/provider-plan-command.js";
++import { buildThreadTimelineWithProfile } from "../services/threads/timeline.js";
++import {
++  DEFAULT_MAX_INLINE_OUTPUT_CHARS,
++  truncateTimelineResponseOutputs,
++} from "../services/threads/timeline-output-truncation.js";
++import { previewTimelineResponseOutputs } from "../services/threads/timeline-output-preview.js";
++import type { AppDeps } from "../types.js";
++import { buildSidebarBootstrapResponse } from "./projects.js";
++
++function resolveThreadProviderDisplayName(
++  deps: Pick<AppDeps, "config" | "providerRegistry">,
++  providerId: string,
++): string | undefined {
++  const customAcpAgent = deps.config.customAcpAgents.find(
++    (agent) => formatCustomAcpAgentProviderId(agent.id) === providerId,
++  );
++  return (
++    customAcpAgent?.displayName ??
++    deps.providerRegistry.get(providerId)?.info.displayName
++  );
++}
++
++function buildTimelineObservation(
++  deps: AppDeps,
++  threadId: string,
++  segmentLimit: number,
++): RecoveryTimelineObservation {
++  const thread = requirePublicThread(deps.db, threadId);
++  const headSequence = getLatestThreadSequence(deps.db, { threadId });
++  const providerDisplayName = resolveThreadProviderDisplayName(
++    deps,
++    thread.providerId,
++  );
++  const includeProviderUnhandledOperations =
++    deps.config.isDevelopment ||
++    getAppSettings(deps.db).showUnhandledProviderEvents;
++  const { response } = buildThreadTimelineWithProfile(deps.db, thread, {
++    eventBudget: deps.config.featureFlags.timelineWindowEventBudget,
++    includeNestedRows: false,
++    includeProviderUnhandledOperations,
++    maxInlineOutputChars: DEFAULT_MAX_INLINE_OUTPUT_CHARS,
++    maxSeq: headSequence,
++    page: { kind: "latest", segmentLimit },
++    planCommand: resolveProviderPlanCommand(
++      deps.providerRegistry,
++      thread.providerId,
++    ),
++    providerDisplayName,
++    summaryOnly: false,
++  });
++  const timeline = previewTimelineResponseOutputs(
++    truncateTimelineResponseOutputs(response, DEFAULT_MAX_INLINE_OUTPUT_CHARS),
++  );
++  const observedHeadSequence = getLatestThreadSequence(deps.db, { threadId });
++  return {
++    threadId,
++    consistency: observedHeadSequence === headSequence ? "coherent" : "retry",
++    headSequence,
++    projectionCoverage: timeline.timelinePage.hasOlderRows
++      ? "windowed"
++      : "complete",
++    olderCursor: timeline.timelinePage.olderCursor,
++    timeline,
++  };
++}
++
++export function registerRecoveryRoutes(app: Hono, deps: AppDeps): void {
++  const { post } = typedRoutes<PublicApiSchema>(app, {
++    onValidationError: (message) =>
++      new ApiError(400, "invalid_request", message),
++  });
++
++  post(publicApiRoutes.recovery.snapshot, (context, request) => {
++    const actor = p6rGetRequestPrincipal(context as unknown as Context);
++    const timelines: RecoveryTimelineObservation[] = [];
++    const unavailableThreads: RecoverySnapshotResponse["unavailableThreads"] =
++      [];
++
++    for (const threadId of request.threadIds) {
++      try {
++        timelines.push(
++          buildTimelineObservation(
++            deps,
++            threadId,
++            request.timelineSegmentLimit,
++          ),
++        );
++      } catch (error) {
++        if (error instanceof ApiError && error.status === 404) {
++          unavailableThreads.push({ threadId, reason: "not-found" });
++          continue;
++        }
++        throw error;
++      }
++    }
++
++    const threadChanged = timelines.some(
++      (timeline) => timeline.consistency === "retry",
++    );
++    const response: RecoverySnapshotResponse = {
++      contractVersion: RECOVERY_SNAPSHOT_CONTRACT_VERSION,
++      generatedAtMs: Date.now(),
++      consistency: threadChanged ? "retry" : "partial",
++      incompleteReasons: [
++        "sidebar-revision-unavailable",
++        ...(threadChanged ? (["thread-changed-during-snapshot"] as const) : []),
++      ],
++      cacheOwner:
++        actor === null
++          ? { state: "read-only", principalKey: null, actor: null }
++          : {
++              state: "resolved",
++              principalKey: p6rPrincipalKeyForActor(actor),
++              actor,
++            },
++      sidebar: buildSidebarBootstrapResponse(deps),
++      timelines,
++      unavailableThreads,
++    };
++    return context.json(response);
++  });
++}
+diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
+index 1ec16112f..81c603140 100644
+--- a/apps/server/src/server.ts
++++ b/apps/server/src/server.ts
+@@ -18,6 +18,7 @@ import { registerEnvironmentRoutes } from "./routes/environments.js";
+ import { registerFileRoutes } from "./routes/files.js";
+ import { registerHostRoutes } from "./routes/hosts.js";
+ import { registerProjectRoutes } from "./routes/projects.js";
++import { registerRecoveryRoutes } from "./routes/recovery.js";
+ import { registerThreadSectionRoutes } from "./routes/thread-sections.js";
+ import { registerSystemRoutes } from "./routes/system.js";
+ import { registerTerminalRoutes } from "./routes/terminals.js";
+@@ -340,8 +341,7 @@ export function createApp(
+     method: string,
+     path: string,
+   ): boolean => {
+-    const match =
+-      /^\/api\/v1\/plugins\/([^/]+)\/http(\/.*)?$/u.exec(path);
++    const match = /^\/api\/v1\/plugins\/([^/]+)\/http(\/.*)?$/u.exec(path);
+     if (match === null || pluginService === undefined) return false;
+     const lookup = pluginService.getHttpRoute(
+       match[1]!,
+@@ -626,6 +626,7 @@ export function createApp(
+     warn: (message) => deps.logger.warn(message),
+   });
+   registerProjectRoutes(publicApi, deps);
++  registerRecoveryRoutes(publicApi, deps);
+   registerThreadSectionRoutes(publicApi, deps);
+   registerFileRoutes(publicApi, deps);
+   registerHostRoutes(publicApi, deps, pluginService);
+diff --git a/apps/server/test/public/public-recovery-snapshot.test.ts b/apps/server/test/public/public-recovery-snapshot.test.ts
+new file mode 100644
+index 000000000..3a18bb7a2
+--- /dev/null
++++ b/apps/server/test/public/public-recovery-snapshot.test.ts
+@@ -0,0 +1,77 @@
++import { threadScope } from "@bb/domain";
++import {
++  RECOVERY_SNAPSHOT_CONTRACT_VERSION,
++  recoverySnapshotResponseSchema,
++} from "@bb/server-contract";
++import { describe, expect, it } from "vitest";
++import { readJson } from "../helpers/json.js";
++import { seedEvent, seedThreadFixture } from "../helpers/seed.js";
++import { withTestHarness } from "../helpers/test-app.js";
++
++describe("POST /recovery/snapshot", () => {
++  it("returns a principal-fenced bounded timeline observation without claiming global coherence", async () => {
++    await withTestHarness(async (harness) => {
++      const { environment, thread } = seedThreadFixture(harness);
++      seedEvent(harness.deps, {
++        threadId: thread.id,
++        environmentId: environment.id,
++        sequence: 1,
++        type: "system/manager/user_message",
++        scope: threadScope(),
++        data: { text: "cached recovery context" },
++      });
++
++      const response = await harness.app.request("/api/v1/recovery/snapshot", {
++        method: "POST",
++        headers: { "content-type": "application/json" },
++        body: JSON.stringify({
++          contractVersion: RECOVERY_SNAPSHOT_CONTRACT_VERSION,
++          threadIds: [thread.id, "missing-thread"],
++          timelineSegmentLimit: 20,
++        }),
++      });
++
++      expect(response.status).toBe(200);
++      const snapshot = recoverySnapshotResponseSchema.parse(
++        await readJson(response),
++      );
++      expect(snapshot.consistency).toBe("partial");
++      expect(snapshot.incompleteReasons).toEqual([
++        "sidebar-revision-unavailable",
++      ]);
++      expect(snapshot.cacheOwner.state).toBe("resolved");
++      expect(snapshot.timelines).toHaveLength(1);
++      expect(snapshot.timelines[0]).toMatchObject({
++        threadId: thread.id,
++        consistency: "coherent",
++        headSequence: 1,
++        projectionCoverage: "complete",
++        olderCursor: null,
++      });
++      expect(snapshot.timelines[0]?.timeline.maxSeq).toBe(1);
++      expect(snapshot.unavailableThreads).toEqual([
++        { threadId: "missing-thread", reason: "not-found" },
++      ]);
++      expect(
++        snapshot.sidebar.projects.some(
++          (project) => project.id === thread.projectId,
++        ),
++      ).toBe(true);
++    });
++  });
++
++  it("rejects duplicate thread work at the HTTP boundary", async () => {
++    await withTestHarness(async (harness) => {
++      const response = await harness.app.request("/api/v1/recovery/snapshot", {
++        method: "POST",
++        headers: { "content-type": "application/json" },
++        body: JSON.stringify({
++          contractVersion: RECOVERY_SNAPSHOT_CONTRACT_VERSION,
++          threadIds: ["same", "same"],
++          timelineSegmentLimit: 20,
++        }),
++      });
++      expect(response.status).toBe(400);
++    });
++  });
++});
+diff --git a/packages/sdk/src/areas/recovery.ts b/packages/sdk/src/areas/recovery.ts
+new file mode 100644
+index 000000000..3d7de6a42
+--- /dev/null
++++ b/packages/sdk/src/areas/recovery.ts
+@@ -0,0 +1,40 @@
++import type {
++  RecoverySnapshotRequest,
++  RecoverySnapshotResponse,
++} from "@bb/server-contract";
++import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
++
++export interface RecoverySnapshotArgs extends RecoverySnapshotRequest {
++  signal?: AbortSignal;
++}
++
++export type RecoverySnapshotResult = RecoverySnapshotResponse;
++
++export interface RecoveryArea {
++  /**
++   * Read a bounded cache bootstrap. Overall `partial` is intentional until
++   * BB can issue one revision spanning sidebar metadata and thread timelines.
++   */
++  snapshot(args: RecoverySnapshotArgs): Promise<RecoverySnapshotResult>;
++}
++
++export function createRecoveryArea({
++  transport,
++}: CreateSdkAreaArgs): RecoveryArea {
++  return {
++    async snapshot(input) {
++      return transport.readJson(
++        transport.api.v1.recovery.snapshot.$post(
++          {
++            json: {
++              contractVersion: input.contractVersion,
++              threadIds: input.threadIds,
++              timelineSegmentLimit: input.timelineSegmentLimit,
++            },
++          },
++          ...signalRequestArgs(input.signal),
++        ),
++      );
++    },
++  };
++}
+diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+index b9052d749..04a80f3f5 100644
+--- a/packages/sdk/src/core.ts
++++ b/packages/sdk/src/core.ts
+@@ -7,6 +7,7 @@ import { createFilesArea, type FilesArea } from "./areas/files.js";
+ import type { GuideArea } from "./areas/guide.js";
+ import { createHostsArea, type HostsArea } from "./areas/hosts.js";
+ import { createProjectsArea, type ProjectsArea } from "./areas/projects.js";
++import { createRecoveryArea, type RecoveryArea } from "./areas/recovery.js";
+ import { createProvidersArea, type ProvidersArea } from "./areas/providers.js";
+ import { createPluginsArea, type PluginsArea } from "./areas/plugins.js";
+ import { createBbRealtimeClient } from "./realtime-client.js";
+@@ -54,6 +55,7 @@ export interface BbSdkAreas extends BbRealtime {
+   p6rMembers: P6rMembersArea;
+   p6rPresence: P6rPresenceArea;
+   projects: ProjectsArea;
++  recovery: RecoveryArea;
+   plugins: PluginsArea;
+   providers: ProvidersArea;
+   skills: SkillsArea;
+@@ -88,6 +90,7 @@ export function createBbSdk(
+       return realtime.subscribe(args);
+     },
+     projects: createProjectsArea(sdkContext),
++    recovery: createRecoveryArea(sdkContext),
+     plugins: createPluginsArea(sdkContext),
+     providers: createProvidersArea(sdkContext),
+     skills: createSkillsArea(sdkContext),
+diff --git a/packages/sdk/src/public-types.ts b/packages/sdk/src/public-types.ts
+index b859eaa18..8e3b8aa4b 100644
+--- a/packages/sdk/src/public-types.ts
++++ b/packages/sdk/src/public-types.ts
+@@ -30,6 +30,7 @@ export type * from "./areas/members.js";
+ export type * from "./areas/presence.js";
+ export type * from "./areas/plugins.js";
+ export type * from "./areas/projects.js";
++export type * from "./areas/recovery.js";
+ export type * from "./areas/providers.js";
+ export type * from "./areas/status.js";
+ export type * from "./areas/system.js";
+diff --git a/packages/sdk/test/public-types.test.ts b/packages/sdk/test/public-types.test.ts
+index d6570c093..aca5bfb09 100644
+--- a/packages/sdk/test/public-types.test.ts
++++ b/packages/sdk/test/public-types.test.ts
+@@ -229,6 +229,7 @@ type ExpectedBbSdkKey =
+   | "p6rPresence"
+   | "plugins"
+   | "projects"
++  | "recovery"
+   | "providers"
+   | "skills"
+   | "status"
+@@ -333,6 +334,8 @@ type ExpectedProjectAttachmentsKey = "copy" | "read" | "upload";
+ 
+ type ExpectedProvidersKey = "list" | "models";
+ 
++type ExpectedRecoveryKey = "snapshot";
++
+ type ExpectedStatusKey = "get";
+ 
+ type ExpectedSystemKey =
+@@ -536,6 +539,9 @@ describe("SDK public type entrypoints", () => {
+     expectTypeOf<
+       keyof RootBbSdk["providers"]
+     >().toEqualTypeOf<ExpectedProvidersKey>();
++    expectTypeOf<
++      keyof RootBbSdk["recovery"]
++    >().toEqualTypeOf<ExpectedRecoveryKey>();
+     expectTypeOf<
+       keyof RootBbSdk["status"]
+     >().toEqualTypeOf<ExpectedStatusKey>();
+diff --git a/packages/sdk/test/sdk.test.ts b/packages/sdk/test/sdk.test.ts
+index 51729da53..c3d4e675b 100644
+--- a/packages/sdk/test/sdk.test.ts
++++ b/packages/sdk/test/sdk.test.ts
+@@ -110,6 +110,36 @@ function createFetchQueue(
+ }
+ 
+ describe("@bb/sdk", () => {
++  it("requests a bounded recovery snapshot through the typed transport", async () => {
++    const queue = createFetchQueue([{ body: { ok: true } }]);
++    const sdk = createBbSdk({
++      transport: createHttpTransport({
++        baseUrl: "http://bb.test",
++        fetch: queue.fetch,
++        runtime: "node",
++      }),
++    });
++
++    await expect(
++      sdk.recovery.snapshot({
++        contractVersion: 1,
++        threadIds: ["thread-a", "thread-b"],
++        timelineSegmentLimit: 20,
++      }),
++    ).resolves.toEqual({ ok: true });
++    expect(queue.requests).toEqual([
++      {
++        bodyText: JSON.stringify({
++          contractVersion: 1,
++          threadIds: ["thread-a", "thread-b"],
++          timelineSegmentLimit: 20,
++        }),
++        method: "POST",
++        url: "http://bb.test/api/v1/recovery/snapshot",
++      },
++    ]);
++  });
++
+   it("lists, adds, and removes Connect members through the members area", async () => {
+     const member = {
+       p6rUserId: "user-1",
+diff --git a/packages/server-contract/src/api-types.ts b/packages/server-contract/src/api-types.ts
+index 892221e11..4fcd4ad4f 100644
+--- a/packages/server-contract/src/api-types.ts
++++ b/packages/server-contract/src/api-types.ts
+@@ -1,5 +1,6 @@
+ export * from "./api/shared.js";
+ export * from "./api/projects.js";
++export * from "./api/recovery.js";
+ export * from "./api/skills.js";
+ export * from "./api/environments.js";
+ export * from "./api/files.js";
+diff --git a/packages/server-contract/src/api/recovery.ts b/packages/server-contract/src/api/recovery.ts
+new file mode 100644
+index 000000000..562ea8604
+--- /dev/null
++++ b/packages/server-contract/src/api/recovery.ts
+@@ -0,0 +1,95 @@
++import { p6rActorSnapshotSchema } from "@bb/domain";
++import { z } from "zod";
++import { sidebarBootstrapResponseSchema } from "./projects.js";
++import {
++  timelinePaginationCursorSchema,
++  threadTimelineResponseSchema,
++} from "./threads.js";
++
++export const RECOVERY_SNAPSHOT_CONTRACT_VERSION = 1;
++export const RECOVERY_SNAPSHOT_MAX_THREAD_COUNT = 12;
++export const RECOVERY_SNAPSHOT_MAX_SEGMENT_LIMIT = 40;
++
++export const recoverySnapshotRequestSchema = z
++  .object({
++    contractVersion: z.literal(RECOVERY_SNAPSHOT_CONTRACT_VERSION),
++    threadIds: z
++      .array(z.string().min(1))
++      .max(RECOVERY_SNAPSHOT_MAX_THREAD_COUNT),
++    timelineSegmentLimit: z
++      .number()
++      .int()
++      .positive()
++      .max(RECOVERY_SNAPSHOT_MAX_SEGMENT_LIMIT),
++  })
++  .strict()
++  .superRefine((request, context) => {
++    if (new Set(request.threadIds).size === request.threadIds.length) return;
++    context.addIssue({
++      code: "custom",
++      message: "threadIds must not contain duplicates",
++      path: ["threadIds"],
++    });
++  });
++export type RecoverySnapshotRequest = z.infer<
++  typeof recoverySnapshotRequestSchema
++>;
++
++export const recoverySnapshotCacheOwnerSchema = z.discriminatedUnion("state", [
++  z
++    .object({
++      state: z.literal("resolved"),
++      principalKey: z.string().min(1),
++      actor: p6rActorSnapshotSchema,
++    })
++    .strict(),
++  z
++    .object({
++      state: z.literal("read-only"),
++      principalKey: z.null(),
++      actor: z.null(),
++    })
++    .strict(),
++]);
++
++export const recoveryTimelineObservationSchema = z
++  .object({
++    threadId: z.string().min(1),
++    consistency: z.enum(["coherent", "retry"]),
++    headSequence: z.number().int().nonnegative(),
++    projectionCoverage: z.enum(["complete", "windowed"]),
++    olderCursor: timelinePaginationCursorSchema.nullable(),
++    timeline: threadTimelineResponseSchema,
++  })
++  .strict();
++export type RecoveryTimelineObservation = z.infer<
++  typeof recoveryTimelineObservationSchema
++>;
++
++export const recoverySnapshotUnavailableThreadSchema = z
++  .object({
++    threadId: z.string().min(1),
++    reason: z.literal("not-found"),
++  })
++  .strict();
++
++export const recoverySnapshotResponseSchema = z
++  .object({
++    contractVersion: z.literal(RECOVERY_SNAPSHOT_CONTRACT_VERSION),
++    generatedAtMs: z.number().int().nonnegative(),
++    consistency: z.enum(["coherent", "partial", "retry"]),
++    incompleteReasons: z.array(
++      z.enum([
++        "sidebar-revision-unavailable",
++        "thread-changed-during-snapshot",
++      ]),
++    ),
++    cacheOwner: recoverySnapshotCacheOwnerSchema,
++    sidebar: sidebarBootstrapResponseSchema,
++    timelines: z.array(recoveryTimelineObservationSchema),
++    unavailableThreads: z.array(recoverySnapshotUnavailableThreadSchema),
++  })
++  .strict();
++export type RecoverySnapshotResponse = z.infer<
++  typeof recoverySnapshotResponseSchema
++>;
+diff --git a/packages/server-contract/src/public-api.ts b/packages/server-contract/src/public-api.ts
+index b78d97830..6c545b6c6 100644
+--- a/packages/server-contract/src/public-api.ts
++++ b/packages/server-contract/src/public-api.ts
+@@ -133,6 +133,8 @@ import type {
+   ReorderPinnedThreadRequest,
+   ReorderProjectRequest,
+   ReorderQueuedMessageRequest,
++  RecoverySnapshotRequest,
++  RecoverySnapshotResponse,
+   ResolvePendingInteractionRequest,
+   ResolveThreadMentionsRequest,
+   ResolveThreadMentionsResponse,
+@@ -280,6 +282,7 @@ import {
+   reorderPinnedThreadRequestSchema,
+   reorderProjectRequestSchema,
+   reorderQueuedMessageRequestSchema,
++  recoverySnapshotRequestSchema,
+   resolvePendingInteractionRequestSchema,
+   resolveThreadMentionsRequestSchema,
+   respondPluginInteractionRequestSchema,
+@@ -334,6 +337,16 @@ type PathThreadInteractionId = {
+ };
+ 
+ export const publicApiRoutes = {
++  recovery: {
++    snapshot: defineRoute({
++      path: "/recovery/snapshot",
++      method: "post",
++      request: jsonRequest<EmptyInput, RecoverySnapshotRequest>(
++        recoverySnapshotRequestSchema,
++      ),
++      response: jsonResponse<RecoverySnapshotResponse>(),
++    }),
++  },
+   projects: {
+     list: defineRoute({
+       path: "/projects",
+diff --git a/packages/server-contract/test/recovery.test.ts b/packages/server-contract/test/recovery.test.ts
+new file mode 100644
+index 000000000..990526f0f
+--- /dev/null
++++ b/packages/server-contract/test/recovery.test.ts
+@@ -0,0 +1,52 @@
++import {
++  RECOVERY_SNAPSHOT_CONTRACT_VERSION,
++  RECOVERY_SNAPSHOT_MAX_SEGMENT_LIMIT,
++  RECOVERY_SNAPSHOT_MAX_THREAD_COUNT,
++  recoverySnapshotCacheOwnerSchema,
++  recoverySnapshotRequestSchema,
++} from "@bb/server-contract";
++import { describe, expect, it } from "vitest";
++
++describe("recovery snapshot contract", () => {
++  it("bounds both fan-out axes and rejects duplicate thread work", () => {
++    const baseline = {
++      contractVersion: RECOVERY_SNAPSHOT_CONTRACT_VERSION,
++      threadIds: ["thread-a"],
++      timelineSegmentLimit: RECOVERY_SNAPSHOT_MAX_SEGMENT_LIMIT,
++    } as const;
++    expect(recoverySnapshotRequestSchema.safeParse(baseline).success).toBe(
++      true,
++    );
++    expect(
++      recoverySnapshotRequestSchema.safeParse({
++        ...baseline,
++        threadIds: Array.from(
++          { length: RECOVERY_SNAPSHOT_MAX_THREAD_COUNT + 1 },
++          (_, index) => `thread-${index}`,
++        ),
++      }).success,
++    ).toBe(false);
++    expect(
++      recoverySnapshotRequestSchema.safeParse({
++        ...baseline,
++        timelineSegmentLimit: RECOVERY_SNAPSHOT_MAX_SEGMENT_LIMIT + 1,
++      }).success,
++    ).toBe(false);
++    expect(
++      recoverySnapshotRequestSchema.safeParse({
++        ...baseline,
++        threadIds: ["thread-a", "thread-a"],
++      }).success,
++    ).toBe(false);
++  });
++
++  it("cannot pair a read-only cache namespace with an asserted principal", () => {
++    expect(
++      recoverySnapshotCacheOwnerSchema.safeParse({
++        state: "read-only",
++        principalKey: "principal-a",
++        actor: null,
++      }).success,
++    ).toBe(false);
++  });
++});
+-- 
+2.43.0
+

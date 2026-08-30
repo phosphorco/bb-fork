@@ -34,12 +34,23 @@
 30. **Workspace-local shell environments** resolve each provisioned workspace's login-shell `PATH` from that workspace before its provider runtime starts, so version managers and local package binaries take precedence without changing the daemon-global maintenance environment.
 31. **Capability-authenticated plugin routes** let plugin HTTP and RPC registrations require narrowly declared host capabilities without broadening unauthenticated plugin access.
 32. **Covered background-command presentation** carries the newest active provider-shell start into the sidebar contract so clients can quietly mark commands older than thirty minutes without hiding newer commands or other live work.
+33. **Event-loop plugin RPC observation** adds bounded diagnostics for plugin RPC fan-out without changing the plugin wire contract.
+34. **Independent Recovery native baseline** adds a separately identified Expo/React Native application package without changing the ordinary mobile app or default BB runtime.
+35. **Recovery persistence kernel** adds app-owned SQLite namespaces, durable observed records/outbox metadata, and content-addressed attachment staging for the Recovery package.
+36. **Cached-first Recovery reads** hydrates principal-fenced sidebar, thread-shell, and latest-timeline data from SQLite while keeping rendered Recovery composers draft-only.
+37. **Bounded Recovery snapshot foundation** adds the versioned principal-fenced snapshot route and SDK plus atomic native ingestion; the overall bundle remains explicitly partial until sidebar revision/tombstone authority exists.
+38. **Bounded execution reassignment** adds opt-in execution facets, catalog-bound preflight/apply, atomic set-based sticky override persistence, native picker parity, CLI controls, and aggregate realtime invalidation for Thread Manager and native clients.
+39. **Indexed batched execution history** keeps latest-request lookup on the event indexes when resolving many execution summaries.
+40. **Stable participant projection skipping** avoids recomputing participant facets when the requested projection is already stable.
+41. **Shared participant facet projection** reuses the server projection instead of repeating participant derivation in runtime display.
+42. **Hardened execution catalogs** adds provider-targeted public catalog lookup, exact post-clear fallback review, raw nested model identity, fresh apply-time catalog validation, and an independent 100-route server ceiling.
+43. **Provider-scoped native execution fallback** keeps the existing-thread picker and CLI clear path from reconciling reasoning against a project default owned by another provider.
 
 ## Exact source receipt
 
 - Upstream: `5205d98a74ed5a22469e521cf1f86b00b8232827`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: thirty-two patches in `patches/series`.
+- Patch queue: forty-three patches in `patches/series`.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries
@@ -49,6 +60,11 @@
 - Installs that ran the experimental branch's conflicting `0079_multiplayer-collaborators` migration are staged through canonical upstream migrations and restored without losing collaborator or attribution data.
 - Existing stored events remain readable with `actorHandle: null`.
 - The background-command start timestamp is additive and optional for older clients; servers emit null when no provider-backgrounded shell command is active.
+- Recovery is an independently identified native package. Its snapshot read is
+  capped at 12 distinct thread IDs and 40 timeline segments per thread, adds no
+  server/daemon wire field, and cannot claim whole-bundle coherence while the
+  sidebar lacks an authoritative revision. The client rejects cache-owner
+  mismatches and persists related observations atomically.
 - Provider-runtime environment resolution is host-local and changes no server/daemon wire contract; a workspace shell-probe failure retains the existing daemon-login `PATH` fallback.
 - Old rows and no-provider installations remain readable with nullable
   structured actor data; historical actor reads use the stored snapshot

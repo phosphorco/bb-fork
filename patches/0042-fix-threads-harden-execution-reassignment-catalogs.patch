@@ -1,0 +1,1382 @@
+From 9e52839dbb442dd913a7417e247a12b9d3e580a0 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 29 Aug 2026 22:00:00 -0400
+Subject: [PATCH] fix(threads): harden execution reassignment catalogs
+
+---
+ apps/server/src/routes/system.ts              |  22 +-
+ .../src/services/system/execution-options.ts  |  63 ++-
+ .../threads/thread-execution-batch.ts         | 132 +++++-
+ .../threads/thread-execution-override.ts      |  25 +-
+ .../services/threads/thread-facet-query.ts    |  77 +++-
+ .../threads/thread-execution-batch.test.ts    | 413 +++++++++++++++++-
+ .../threads/thread-execution-override.test.ts |  15 +
+ .../test/system/execution-options.test.ts     |  14 +
+ .../test/system/provider-routing.test.ts      |  62 +++
+ docs/api_to_audit.md                          |  10 +
+ packages/sdk/src/areas/providers.ts           |  23 +-
+ packages/sdk/test/sdk.test.ts                 |   3 +-
+ packages/server-contract/src/api/system.ts    |  30 +-
+ packages/server-contract/src/api/threads.ts   |   4 +
+ 14 files changed, 825 insertions(+), 68 deletions(-)
+
+diff --git a/apps/server/src/routes/system.ts b/apps/server/src/routes/system.ts
+index 440482ad99ee3908c33e9bd36a02ee78a356d5d0..433c7656bf3b1d164b2ccfb4ff4c9b607985f6c3 100644
+--- a/apps/server/src/routes/system.ts
++++ b/apps/server/src/routes/system.ts
+@@ -53,6 +53,7 @@ import {
+ import {
+   listSystemProviderInfos,
+   resolveSystemExecutionOptions,
++  resolveTargetedSystemExecutionOptions,
+ } from "../services/system/execution-options.js";
+ import { getProviderStates } from "../services/system/provider-states.js";
+ import { getProviderUsageLimits } from "../services/system/usage-limits.js";
+@@ -474,9 +475,24 @@ export function registerSystemRoutes(
+     context.json(await getProviderUsageLimits(deps, query)),
+   );
+ 
+-  get(routes.executionOptions, async (context, query) =>
+-    context.json(await resolveSystemExecutionOptions(deps, query)),
+-  );
++  get(routes.executionOptions, async (context, query) => {
++    if (query.experimental_targeted === "true") {
++      if (query.providerId === undefined) {
++        throw new ApiError(
++          400,
++          "invalid_request",
++          "experimental_targeted requires providerId",
++        );
++      }
++      return context.json(
++        await resolveTargetedSystemExecutionOptions(deps, {
++          ...query,
++          providerId: query.providerId,
++        }),
++      );
++    }
++    return context.json(await resolveSystemExecutionOptions(deps, query));
++  });
+ 
+   post(routes.voiceTranscription, async (context) => {
+     const formData = await context.req.formData();
+diff --git a/apps/server/src/services/system/execution-options.ts b/apps/server/src/services/system/execution-options.ts
+index 8368b970d8ea8c7651096dee7c05f9b6461283d6..a5b201107b34b9d2764b38723f1eb2d38127c4e0 100644
+--- a/apps/server/src/services/system/execution-options.ts
++++ b/apps/server/src/services/system/execution-options.ts
+@@ -48,6 +48,7 @@ interface BuildModelLoadErrorArgs {
+ 
+ interface ResolveSystemProviderModelsArgs {
+   cwd?: string;
++  fresh?: boolean;
+   hostId: string;
+   providerId: string;
+ }
+@@ -330,6 +331,18 @@ function findCustomAcpAgentForProviderId(
+ export async function resolveSystemProviderModels(
+   deps: LoggedWorkSessionDeps,
+   args: ResolveSystemProviderModelsArgs,
++): Promise<ModelListResult> {
++  return resolveSystemProviderModelsWithCustomModels(
++    deps,
++    args,
++    deps.config.customModels,
++  );
++}
++
++async function resolveSystemProviderModelsWithCustomModels(
++  deps: LoggedWorkSessionDeps,
++  args: ResolveSystemProviderModelsArgs,
++  customModels: readonly CustomProviderModel[],
+ ): Promise<ModelListResult> {
+   await deps.providerRegistry.whenProviderRegistered(args.providerId);
+   const provider = includeRequestedRegisteredProvider(
+@@ -347,13 +360,14 @@ export async function resolveSystemProviderModels(
+ 
+   const result = await loadSystemProviderModels(deps, {
+     ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
++    ...(args.fresh === undefined ? {} : { fresh: args.fresh }),
+     hostId: args.hostId,
+     provider,
+   });
+   const { models, selectedOnlyModels } = appendCustomModels(
+     deps.providerRegistry,
+     {
+-      customModels: deps.config.customModels,
++      customModels: [...customModels],
+       models: result.models,
+       providerId: provider.id,
+       selectedOnlyModels: result.selectedOnlyModels,
+@@ -366,6 +380,37 @@ export async function resolveSystemProviderModels(
+   };
+ }
+ 
++/**
++ * Public picker-shaped response for one explicitly requested provider. This
++ * preserves the existing response envelope while deliberately avoiding the
++ * installed-provider discovery/health fan-out performed by the aggregate
++ * execution-options endpoint.
++ */
++export async function resolveTargetedSystemExecutionOptions(
++  deps: LoggedWorkSessionDeps,
++  query: SystemExecutionOptionsQuery & { providerId: string },
++): Promise<SystemExecutionOptionsResponse> {
++  const hostId = resolveSystemLookupHostId(deps, query);
++  const cwd =
++    query.environmentId === undefined
++      ? query.experimental_workspacePath
++      : (requireEnvironment(deps.db, query.environmentId).path ?? undefined);
++  const result = await resolveSystemProviderModelsWithCustomModels(
++    deps,
++    {
++      providerId: query.providerId,
++      hostId,
++      ...(cwd === undefined ? {} : { cwd }),
++    },
++    listVisibleCustomModels(deps),
++  );
++  return {
++    providers: [],
++    permissionCeiling: getHostPermissionCeiling(deps, hostId),
++    ...result,
++  };
++}
++
+ /**
+  * The config.json custom models that public model lists may show. Streamer
+  * mode hides all of them: a custom entry is often a private or early-access
+@@ -586,10 +631,12 @@ async function loadSystemProviderModels(
+   deps: LoggedWorkSessionDeps,
+   {
+     cwd,
++    fresh,
+     hostId,
+     provider,
+   }: {
+     cwd?: string;
++    fresh?: boolean;
+     hostId: string;
+     provider: ProviderInfo;
+   },
+@@ -621,7 +668,7 @@ async function loadSystemProviderModels(
+   try {
+     const { models, selectedOnlyModels } = await listProviderModelsMemoized(
+       deps,
+-      { command, hostId },
++      { command, fresh, hostId },
+     );
+     return {
+       models,
+@@ -678,7 +725,15 @@ type ProviderListModelsCommand = Extract<
+  */
+ async function listProviderModelsMemoized(
+   deps: LoggedWorkSessionDeps,
+-  { command, hostId }: { command: ProviderListModelsCommand; hostId: string },
++  {
++    command,
++    fresh,
++    hostId,
++  }: {
++    command: ProviderListModelsCommand;
++    fresh?: boolean;
++    hostId: string;
++  },
+ ): Promise<ProviderModelListMemoValue> {
+   const probe = (): Promise<ProviderModelListMemoValue> =>
+     callHostRetryableOnlineRpc(deps, {
+@@ -687,7 +742,7 @@ async function listProviderModelsMemoized(
+       command,
+     });
+   const daemonSessionId = deps.hub.getDaemonSessionIdForHost(hostId);
+-  if (daemonSessionId === null) {
++  if (fresh === true || daemonSessionId === null) {
+     return probe();
+   }
+   const memoKey = JSON.stringify([
+diff --git a/apps/server/src/services/threads/thread-execution-batch.ts b/apps/server/src/services/threads/thread-execution-batch.ts
+index bda6eeea7f3a5636bbccaaaf0724119e04b8fbef..76e8b869179534845a9e94ec5c28b3ef4b826304 100644
+--- a/apps/server/src/services/threads/thread-execution-batch.ts
++++ b/apps/server/src/services/threads/thread-execution-batch.ts
+@@ -20,11 +20,15 @@ import { z } from "zod";
+ import type { LoggedWorkSessionDeps } from "../../types.js";
+ import { resolveSystemProviderModels } from "../system/execution-options.js";
+ import { resolveSystemLookupHostId } from "../system/host-lookup.js";
+-import { buildThreadExecutionProjection } from "./thread-facet-query.js";
++import {
++  buildThreadExecutionProjection,
++  buildThreadExecutionProjectionDetails,
++} from "./thread-facet-query.js";
+ import { resolveThreadExecutionOverrideUpdate } from "./thread-execution-override.js";
+ 
+ const APPLY_TOKEN_TTL_MS = 5 * 60 * 1_000;
+ const CATALOG_LOAD_CONCURRENCY = 4;
++const MAX_CATALOG_ROUTES = 100;
+ 
+ const applyTokenPayloadSchema = z
+   .object({
+@@ -96,19 +100,32 @@ function resolveCatalogRoute(
+ function catalogFingerprint(
+   route: CatalogRoute,
+   models: readonly AvailableModel[],
++  selectedOnlyModels: readonly AvailableModel[],
+ ): string {
++  const catalogModels = [
++    ...models.map((model) => ({ model, selectedOnly: false })),
++    ...selectedOnlyModels.map((model) => ({ model, selectedOnly: true })),
++  ];
+   return digest(
+     JSON.stringify({
+       providerId: route.providerId,
+       hostId: route.hostId,
+       workspacePath: route.workspacePath,
+       registrationRevision: route.registrationRevision,
+-      models: [...models]
+-        .map((model) => ({
++      models: catalogModels
++        .map(({ model, selectedOnly }) => ({
++          id: model.id,
+           model: model.model,
+-          supportedReasoningEfforts: model.supportedReasoningEfforts,
++          routeProviderId: model.routeProviderId ?? null,
++          selectedOnly,
++          supportedReasoningEfforts: [...model.supportedReasoningEfforts].sort(
++            (left, right) =>
++              left.reasoningEffort.localeCompare(right.reasoningEffort),
++          ),
+         }))
+-        .sort((left, right) => left.model.localeCompare(right.model)),
++        .sort((left, right) =>
++          JSON.stringify(left).localeCompare(JSON.stringify(right)),
++        ),
+     }),
+   );
+ }
+@@ -175,12 +192,30 @@ async function mapWithConcurrency<TValue, TResult>(
+ async function loadCatalogs(
+   deps: LoggedWorkSessionDeps,
+   threads: readonly ThreadExecutionProjectionRow[],
++  { fresh = false }: { fresh?: boolean } = {},
+ ): Promise<Map<string, CatalogResult>> {
+   const routes = new Map<string, CatalogRoute>();
+   for (const thread of threads) {
+     const route = resolveCatalogRoute(deps, thread);
+     routes.set(route.key, route);
+   }
++  if (routes.size > MAX_CATALOG_ROUTES) {
++    deps.logger.warn(
++      { routeCount: routes.size, routeLimit: MAX_CATALOG_ROUTES },
++      "Execution batch exceeds the catalog route limit",
++    );
++    return new Map(
++      [...routes].map(([key, route]) => [
++        key,
++        {
++          error: "catalog-unavailable" as const,
++          fingerprint: null,
++          models: [],
++          route,
++        },
++      ]),
++    );
++  }
+   const loaded = await mapWithConcurrency(
+     [...routes.values()],
+     CATALOG_LOAD_CONCURRENCY,
+@@ -189,6 +224,7 @@ async function loadCatalogs(
+         const response = await resolveSystemProviderModels(deps, {
+           providerId: route.providerId,
+           hostId: route.hostId,
++          fresh,
+           ...(route.workspacePath === null ? {} : { cwd: route.workspacePath }),
+         });
+         if (response.modelLoadError !== null) {
+@@ -207,7 +243,11 @@ async function loadCatalogs(
+           route.key,
+           {
+             error: null,
+-            fingerprint: catalogFingerprint(route, models),
++            fingerprint: catalogFingerprint(
++              route,
++              response.models,
++              response.selectedOnlyModels,
++            ),
+             models,
+             route,
+           },
+@@ -264,10 +304,16 @@ export async function preflightThreadExecutionOverrides(
+     request.items.map(({ threadId }) => threadId),
+   );
+   const rowsById = new Map(rows.map((row) => [row.threadId, row]));
+-  const summaries = buildThreadExecutionProjection(
++  const projectionDetails = buildThreadExecutionProjectionDetails(
+     deps,
+     projectionInputs(rows),
+   );
++  const summaries = new Map(
++    [...projectionDetails].map(([threadId, details]) => [
++      threadId,
++      details.summary,
++    ]),
++  );
+   const candidates = request.items.flatMap(({ threadId, witness }) => {
+     const row = rowsById.get(threadId);
+     const summary = summaries.get(threadId);
+@@ -303,6 +349,19 @@ export async function preflightThreadExecutionOverrides(
+           current,
+         };
+       }
++      if (
++        item.patch.model === null &&
++        projectionDetails.get(item.threadId)?.fallbackModel == null
++      ) {
++        return {
++          status: "unavailable" as const,
++          threadId: item.threadId,
++          reason: "invalid-target" as const,
++          message:
++            "This thread has no next-turn fallback model; choose an explicit model instead",
++          current,
++        };
++      }
+       if (current.state === "unresolved" && item.patch.model === undefined) {
+         return {
+           status: "unavailable" as const,
+@@ -325,15 +384,25 @@ export async function preflightThreadExecutionOverrides(
+             models: catalog.models,
+             providerId: row.providerId,
+             fallbackModel:
+-              current.state === "resolved" ? current.effectiveModel : null,
++              projectionDetails.get(item.threadId)?.fallbackModel ?? null,
+           },
+         );
++        const details = projectionDetails.get(item.threadId);
+         return {
+           status: "ready" as const,
+           threadId: item.threadId,
+           current,
+           nextModelOverride: next.modelOverride,
+           nextReasoningLevelOverride: next.reasoningLevelOverride,
++          nextEffectiveModel:
++            next.modelOverride ?? details?.fallbackModel ?? null,
++          nextEffectiveReasoningLevel:
++            next.reasoningLevelOverride ??
++            details?.fallbackReasoningLevel ??
++            null,
++          unchanged:
++            row.modelOverride === next.modelOverride &&
++            row.reasoningLevelOverride === next.reasoningLevelOverride,
+           applyToken: encodeApplyToken(
+             {
+               version: 2,
+@@ -385,7 +454,9 @@ export async function applyPreflightedThreadExecutionOverrides(
+   const initialRowsById = new Map(
+     initialRows.map((row) => [row.threadId, row]),
+   );
+-  const catalogs = await loadCatalogs(deps, initialRows);
++  // Apply bypasses the picker memo so a retirement or capability change on
++  // the same daemon session invalidates the signed preflight token.
++  const catalogs = await loadCatalogs(deps, initialRows, { fresh: true });
+   const preclassified = new Map<
+     string,
+     ExperimentalThreadExecutionApplyResponse["results"][number]
+@@ -431,6 +502,10 @@ export async function applyPreflightedThreadExecutionOverrides(
+     ({ item }) => !preclassified.has(item.threadId),
+   );
+   const changedByProject = new Map<string, string[]>();
++  const transactionIndependentResults = new Map<
++    string,
++    ExperimentalThreadExecutionApplyResponse["results"][number]
++  >();
+   let transactionalResults: ExperimentalThreadExecutionApplyResponse["results"];
+   try {
+     transactionalResults = deps.db.transaction(
+@@ -453,32 +528,38 @@ export async function applyPreflightedThreadExecutionOverrides(
+           const row = rowsById.get(item.threadId);
+           const current = summaries.get(item.threadId);
+           if (!row || !current) {
+-            results.set(item.threadId, {
++            const result = {
+               status: "rejected",
+               threadId: item.threadId,
+               reason: "thread-not-found",
+               retryable: false,
+-            });
++            } as const;
++            results.set(item.threadId, result);
++            transactionIndependentResults.set(item.threadId, result);
+             continue;
+           }
+           if (current.witness !== payload.witness) {
+-            results.set(item.threadId, {
++            const result = {
+               status: "stale",
+               threadId: item.threadId,
+               current,
+-            });
++            } as const;
++            results.set(item.threadId, result);
++            transactionIndependentResults.set(item.threadId, result);
+             continue;
+           }
+           if (
+             row.modelOverride === payload.modelOverride &&
+             row.reasoningLevelOverride === payload.reasoningLevelOverride
+           ) {
+-            results.set(item.threadId, {
++            const result = {
+               status: "unchanged",
+               threadId: item.threadId,
+               finalModelOverride: row.modelOverride,
+               finalReasoningLevelOverride: row.reasoningLevelOverride,
+-            });
++            } as const;
++            results.set(item.threadId, result);
++            transactionIndependentResults.set(item.threadId, result);
+             continue;
+           }
+           writes.push({
+@@ -513,15 +594,18 @@ export async function applyPreflightedThreadExecutionOverrides(
+   } catch (error) {
+     changedByProject.clear();
+     deps.logger.error({ error }, "Failed to apply thread execution overrides");
+-    transactionalResults = candidates.map(({ item }) => ({
+-      status: "failed" as const,
+-      threadId: item.threadId,
+-      reason:
+-        error instanceof ThreadExecutionWriteConflictError
+-          ? ("write-conflict" as const)
+-          : ("transaction-failed" as const),
+-      retryable: true,
+-    }));
++    transactionalResults = candidates.map(
++      ({ item }) =>
++        transactionIndependentResults.get(item.threadId) ?? {
++          status: "failed" as const,
++          threadId: item.threadId,
++          reason:
++            error instanceof ThreadExecutionWriteConflictError
++              ? ("write-conflict" as const)
++              : ("transaction-failed" as const),
++          retryable: true,
++        },
++    );
+   }
+ 
+   for (const [projectId, threadIds] of changedByProject) {
+diff --git a/apps/server/src/services/threads/thread-execution-override.ts b/apps/server/src/services/threads/thread-execution-override.ts
+index 57193be6f812326e2baa50530ff08ad52e1c9b01..378ba492371f4e0cfc7302e4f66c9d6af1bdf446 100644
+--- a/apps/server/src/services/threads/thread-execution-override.ts
++++ b/apps/server/src/services/threads/thread-execution-override.ts
+@@ -76,16 +76,23 @@ export function resolveThreadExecutionOverrideUpdate(
+     if (patch.model === null || patch.model === undefined) {
+       nextModel = null;
+     } else {
+-      const target = models.find(
++      const targets = models.filter(
+         (candidate) => candidate.model === patch.model,
+       );
+-      if (!target) {
++      if (targets.length === 0) {
+         throw new ApiError(
+           400,
+           "invalid_request",
+           `Model "${patch.model}" is not available in this thread's ${providerId} model catalog. Choose a model offered by ${providerId}; changing providers requires starting a new thread.`,
+         );
+       }
++      if (targets.length > 1) {
++        throw new ApiError(
++          400,
++          "invalid_request",
++          `Model "${patch.model}" is ambiguous in this thread's ${providerId} model catalog. Refresh the catalog or choose a uniquely identified model.`,
++        );
++      }
+       nextModel = patch.model;
+     }
+   }
+@@ -93,9 +100,17 @@ export function resolveThreadExecutionOverrideUpdate(
+   // The model whose reasoning support we validate/reconcile against: the new
+   // override if set, otherwise what the next turn would resolve to.
+   const effectiveModel = nextModel ?? fallbackModel;
+-  const effectiveModelEntry = effectiveModel
+-    ? models.find((candidate) => candidate.model === effectiveModel)
+-    : undefined;
++  const effectiveModelEntries = effectiveModel
++    ? models.filter((candidate) => candidate.model === effectiveModel)
++    : [];
++  if (effectiveModelEntries.length > 1) {
++    throw new ApiError(
++      400,
++      "invalid_request",
++      `Model "${effectiveModel}" is ambiguous in this thread's ${providerId} model catalog. Refresh the catalog or choose a uniquely identified model.`,
++    );
++  }
++  const effectiveModelEntry = effectiveModelEntries[0];
+   const supportedReasoning: readonly ReasoningLevel[] = effectiveModelEntry
+     ? effectiveModelEntry.supportedReasoningEfforts.map(
+         (effort) => effort.reasoningEffort,
+diff --git a/apps/server/src/services/threads/thread-facet-query.ts b/apps/server/src/services/threads/thread-facet-query.ts
+index b5c0c241374dd7c13f6d39eaae0de0beb98e6f3a..1154f32bdef1c0572484303edc1ddd1b456be505 100644
+--- a/apps/server/src/services/threads/thread-facet-query.ts
++++ b/apps/server/src/services/threads/thread-facet-query.ts
+@@ -19,6 +19,7 @@ import {
+ } from "@bb/db";
+ import {
+   p6rPrincipalKeyForActorSnapshot,
++  providerModelCatalogDependsOnWorkspace,
+   type P6rActorSnapshot,
+   type ResolvedThreadFacetFilter,
+   type ThreadFacetFilter,
+@@ -207,11 +208,19 @@ interface ThreadExecutionProjectionInput {
+   providerId: string;
+ }
+ 
+-export function buildThreadExecutionProjection(
++export interface ThreadExecutionProjectionDetails {
++  /** Model that becomes effective after clearing a sticky model override. */
++  fallbackModel: string | null;
++  /** Reasoning that becomes effective after clearing its sticky override. */
++  fallbackReasoningLevel: ReasoningLevel | null;
++  summary: ExperimentalThreadExecutionSummary;
++}
++
++export function buildThreadExecutionProjectionDetails(
+   deps: { db: DbQueryConnection },
+   threads: readonly ThreadExecutionProjectionInput[],
+-): Map<string, ExperimentalThreadExecutionSummary> {
+-  const summaries = new Map<string, ExperimentalThreadExecutionSummary>();
++): Map<string, ThreadExecutionProjectionDetails> {
++  const details = new Map<string, ThreadExecutionProjectionDetails>();
+   const threadIds = threads.map(({ id }) => id);
+   const overrides = listThreadExecutionOverridesByThreadIds(deps.db, threadIds);
+   const projectDefaults = listProjectExecutionDefaultsByProjectIds(deps.db, {
+@@ -285,6 +294,9 @@ export function buildThreadExecutionProjection(
+     );
+     const base = {
+       providerId: thread.providerId,
++      catalogDependsOnWorkspace: providerModelCatalogDependsOnWorkspace(
++        thread.providerId,
++      ),
+       projectId: thread.projectId,
+       environmentId: thread.environmentId,
+       hostId: thread.hostId,
+@@ -296,33 +308,52 @@ export function buildThreadExecutionProjection(
+       latestRequestSequence: lastRow?.sequence ?? null,
+       witness,
+     } as const;
+-    summaries.set(
+-      thread.id,
+-      malformedHistory
++    const summary: ExperimentalThreadExecutionSummary = malformedHistory
++      ? {
++          ...base,
++          state: "unresolved",
++          effectiveModel: null,
++          modelSource: "unresolved",
++          issue: "malformed-history",
++        }
++      : modelResolution === null
+         ? {
+             ...base,
+             state: "unresolved",
+             effectiveModel: null,
+             modelSource: "unresolved",
+-            issue: "malformed-history",
++            issue: "missing-model",
+           }
+-        : modelResolution === null
+-          ? {
+-              ...base,
+-              state: "unresolved",
+-              effectiveModel: null,
+-              modelSource: "unresolved",
+-              issue: "missing-model",
+-            }
+-          : {
+-              ...base,
+-              state: "resolved",
+-              effectiveModel: modelResolution.model,
+-              modelSource: modelResolution.source,
+-            },
+-    );
++        : {
++            ...base,
++            state: "resolved",
++            effectiveModel: modelResolution.model,
++            modelSource: modelResolution.source,
++          };
++    details.set(thread.id, {
++      fallbackModel: malformedHistory
++        ? null
++        : (lastExecution?.model ?? matchingProjectDefault?.model ?? null),
++      fallbackReasoningLevel: malformedHistory
++        ? null
++        : (lastExecution?.reasoningLevel ??
++          matchingProjectDefault?.reasoningLevel ??
++          DEFAULT_REASONING_LEVEL),
++      summary,
++    });
+   }
+-  return summaries;
++  return details;
++}
++
++export function buildThreadExecutionProjection(
++  deps: { db: DbQueryConnection },
++  threads: readonly ThreadExecutionProjectionInput[],
++): Map<string, ExperimentalThreadExecutionSummary> {
++  return new Map(
++    [...buildThreadExecutionProjectionDetails(deps, threads)].map(
++      ([threadId, details]) => [threadId, details.summary],
++    ),
++  );
+ }
+ 
+ function decodeQueryCursor(
+diff --git a/apps/server/test/services/threads/thread-execution-batch.test.ts b/apps/server/test/services/threads/thread-execution-batch.test.ts
+index c5a42735709da9d94b73ccab65fbf5eb8511fc14..99d81919f7d9e97845ac94333cd7006bd7108199 100644
+--- a/apps/server/test/services/threads/thread-execution-batch.test.ts
++++ b/apps/server/test/services/threads/thread-execution-batch.test.ts
+@@ -1,16 +1,24 @@
+ import {
+   getThreadExecutionOverride,
++  listThreadExecutionProjectionRowsByIds,
+   setThreadExecutionOverride,
+   updateThread,
++  upsertProjectExecutionDefaults,
+ } from "@bb/db";
+ import { describe, expect, it } from "vitest";
+ import {
+   applyPreflightedThreadExecutionOverrides,
+   preflightThreadExecutionOverrides,
+ } from "../../../src/services/threads/thread-execution-batch.js";
+-import { executeThreadFacetQuery } from "../../../src/services/threads/thread-facet-query.js";
++import {
++  buildThreadExecutionProjection,
++  executeThreadFacetQuery,
++} from "../../../src/services/threads/thread-facet-query.js";
+ import { availableModelFixture } from "../../helpers/available-models.js";
+-import { registerProviderHostRpcResponder } from "../../helpers/host-rpc.js";
++import {
++  registerHostRpcResponder,
++  registerProviderHostRpcResponder,
++} from "../../helpers/host-rpc.js";
+ import {
+   seedEnvironment,
+   seedHostSession,
+@@ -79,6 +87,24 @@ describe("thread execution override batches", () => {
+         lastReadAt: Date.now(),
+       });
+ 
++      expect(
++        (
++          await preflightThreadExecutionOverrides(harness.deps, {
++            items: [
++              {
++                threadId: thread.id,
++                witness: current.witness,
++                patch: { model: null },
++              },
++            ],
++          })
++        ).results[0],
++      ).toMatchObject({
++        status: "unavailable",
++        reason: "invalid-target",
++        threadId: thread.id,
++      });
++
+       const preflight = await preflightThreadExecutionOverrides(harness.deps, {
+         items: [
+           {
+@@ -93,6 +119,9 @@ describe("thread execution override batches", () => {
+         threadId: thread.id,
+         nextModelOverride: "claude-opus-5",
+         nextReasoningLevelOverride: "high",
++        nextEffectiveModel: "claude-opus-5",
++        nextEffectiveReasoningLevel: "high",
++        unchanged: false,
+       });
+       const ready = preflight.results[0];
+       if (ready?.status !== "ready") throw new Error("Expected ready result");
+@@ -143,7 +172,7 @@ describe("thread execution override batches", () => {
+         responder.requests.filter(
+           ({ command }) => command.type === "provider.list_models",
+         ),
+-      ).toHaveLength(1);
++      ).toHaveLength(2);
+     });
+   });
+ 
+@@ -223,4 +252,382 @@ describe("thread execution override batches", () => {
+       });
+     });
+   });
++
++  it("reconciles reasoning against the real fallback when clearing a model override", async () => {
++    await withTestHarness(async (harness) => {
++      const { host, session } = seedHostSession(harness.deps, {
++        id: "host-execution-batch-clear",
++      });
++      const { project } = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/thread-execution-batch-clear",
++      });
++      const environment = seedEnvironment(harness.deps, {
++        hostId: host.id,
++        projectId: project.id,
++        path: "/tmp/thread-execution-batch-clear",
++        status: "ready",
++      });
++      const thread = seedThread(harness.deps, {
++        environmentId: environment.id,
++        projectId: project.id,
++        providerId: "claude-code",
++      });
++      upsertProjectExecutionDefaults(harness.db, {
++        projectId: project.id,
++        providerId: "claude-code",
++        model: "claude-haiku-5",
++        reasoningLevel: "low",
++        permissionMode: "full",
++        serviceTier: "default",
++      });
++      setThreadExecutionOverride(harness.db, {
++        threadId: thread.id,
++        modelOverride: "claude-fable-5",
++        reasoningLevelOverride: "high",
++      });
++      registerProviderHostRpcResponder(harness, {
++        hostId: host.id,
++        sessionId: session.id,
++        modelsByProviderId: {
++          "claude-code": {
++            models: [
++              availableModelFixture({
++                model: "claude-fable-5",
++                reasoningLevels: ["medium", "high"],
++              }),
++              availableModelFixture({
++                model: "claude-haiku-5",
++                reasoningLevels: ["low"],
++                defaultReasoningLevel: "low",
++              }),
++            ],
++            selectedOnlyModels: [],
++          },
++        },
++      });
++      const current = executeThreadFacetQuery(harness.deps, {
++        actor: null,
++        request: {
++          scope: { projectId: project.id },
++          filters: [],
++          pageSize: 10,
++          experimental_includeExecution: true,
++        },
++      }).threads[0]?.experimental_execution;
++      if (!current) throw new Error("Expected execution projection");
++
++      const preflight = await preflightThreadExecutionOverrides(harness.deps, {
++        items: [
++          {
++            threadId: thread.id,
++            witness: current.witness,
++            patch: { model: null },
++          },
++        ],
++      });
++
++      expect(preflight.results[0]).toMatchObject({
++        status: "ready",
++        nextModelOverride: null,
++        nextReasoningLevelOverride: "low",
++        nextEffectiveModel: "claude-haiku-5",
++        nextEffectiveReasoningLevel: "low",
++        unchanged: false,
++      });
++    });
++  });
++
++  it("preserves stale classifications when another write rolls back", async () => {
++    await withTestHarness(async (harness) => {
++      const { host, session } = seedHostSession(harness.deps, {
++        id: "host-execution-batch-rollback",
++      });
++      const { project } = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/thread-execution-batch-rollback",
++      });
++      const environment = seedEnvironment(harness.deps, {
++        hostId: host.id,
++        projectId: project.id,
++        path: "/tmp/thread-execution-batch-rollback",
++        status: "ready",
++      });
++      const staleThread = seedThread(harness.deps, {
++        environmentId: environment.id,
++        projectId: project.id,
++        providerId: "claude-code",
++        title: "Stale thread",
++      });
++      const writeThread = seedThread(harness.deps, {
++        environmentId: environment.id,
++        projectId: project.id,
++        providerId: "claude-code",
++        title: "Write thread",
++      });
++      for (const thread of [staleThread, writeThread]) {
++        setThreadExecutionOverride(harness.db, {
++          threadId: thread.id,
++          modelOverride: "claude-fable-5",
++          reasoningLevelOverride: "medium",
++        });
++      }
++      registerProviderHostRpcResponder(harness, {
++        hostId: host.id,
++        sessionId: session.id,
++        modelsByProviderId: {
++          "claude-code": {
++            models: [
++              availableModelFixture({ model: "claude-fable-5" }),
++              availableModelFixture({ model: "claude-opus-5" }),
++            ],
++            selectedOnlyModels: [],
++          },
++        },
++      });
++      const facet = executeThreadFacetQuery(harness.deps, {
++        actor: null,
++        request: {
++          scope: { projectId: project.id },
++          filters: [],
++          pageSize: 10,
++          experimental_includeExecution: true,
++        },
++      });
++      const witnesses = new Map(
++        facet.threads.map((thread) => [
++          thread.id,
++          thread.experimental_execution?.witness,
++        ]),
++      );
++      const preflight = await preflightThreadExecutionOverrides(harness.deps, {
++        items: [staleThread, writeThread].map((thread) => ({
++          threadId: thread.id,
++          witness: witnesses.get(thread.id) ?? "",
++          patch: { model: "claude-opus-5" },
++        })),
++      });
++      const tokens = new Map(
++        preflight.results.flatMap((result) =>
++          result.status === "ready"
++            ? [[result.threadId, result.applyToken] as const]
++            : [],
++        ),
++      );
++      expect(tokens.size).toBe(2);
++
++      setThreadExecutionOverride(harness.db, {
++        threadId: staleThread.id,
++        reasoningLevelOverride: "high",
++      });
++      harness.db.$client.exec(`
++        CREATE TRIGGER force_execution_batch_rollback
++        BEFORE UPDATE OF model_override ON threads
++        BEGIN
++          SELECT RAISE(ABORT, 'forced execution batch rollback');
++        END
++      `);
++
++      const applied = await applyPreflightedThreadExecutionOverrides(
++        harness.deps,
++        {
++          items: [staleThread, writeThread].map((thread) => ({
++            threadId: thread.id,
++            applyToken: tokens.get(thread.id) ?? "",
++          })),
++        },
++      );
++
++      expect(applied.results[0]).toMatchObject({
++        status: "stale",
++        threadId: staleThread.id,
++      });
++      expect(applied.results[1]).toEqual({
++        status: "failed",
++        threadId: writeThread.id,
++        reason: "transaction-failed",
++        retryable: true,
++      });
++      expect(getThreadExecutionOverride(harness.db, writeThread.id)).toEqual({
++        modelOverride: "claude-fable-5",
++        reasoningLevelOverride: "medium",
++      });
++    });
++  });
++
++  it("freshly rechecks the catalog before applying a signed token", async () => {
++    await withTestHarness(async (harness) => {
++      const { host, session } = seedHostSession(harness.deps, {
++        id: "host-execution-batch-catalog-refresh",
++      });
++      const { project } = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/thread-execution-batch-catalog-refresh",
++      });
++      const environment = seedEnvironment(harness.deps, {
++        hostId: host.id,
++        projectId: project.id,
++        path: "/tmp/thread-execution-batch-catalog-refresh",
++        status: "ready",
++      });
++      const thread = seedThread(harness.deps, {
++        environmentId: environment.id,
++        projectId: project.id,
++        providerId: "claude-code",
++      });
++      setThreadExecutionOverride(harness.db, {
++        threadId: thread.id,
++        modelOverride: "claude-fable-5",
++      });
++      let catalog = [
++        availableModelFixture({ model: "claude-fable-5" }),
++        availableModelFixture({ model: "claude-opus-5" }),
++      ];
++      const responder = registerHostRpcResponder(harness, {
++        hostId: host.id,
++        sessionId: session.id,
++        handle: (request) => {
++          if (request.command.type !== "provider.list_models") {
++            throw new Error(`Unexpected RPC command ${request.command.type}`);
++          }
++          return {
++            ok: true,
++            result: { models: catalog, selectedOnlyModels: [] },
++          };
++        },
++      });
++      const current = executeThreadFacetQuery(harness.deps, {
++        actor: null,
++        request: {
++          scope: { projectId: project.id },
++          filters: [],
++          pageSize: 10,
++          experimental_includeExecution: true,
++        },
++      }).threads[0]?.experimental_execution;
++      if (!current) throw new Error("Expected execution projection");
++      const preflight = await preflightThreadExecutionOverrides(harness.deps, {
++        items: [
++          {
++            threadId: thread.id,
++            witness: current.witness,
++            patch: { model: "claude-opus-5" },
++          },
++        ],
++      });
++      const ready = preflight.results[0];
++      if (ready?.status !== "ready") throw new Error("Expected ready result");
++
++      catalog = [availableModelFixture({ model: "claude-fable-5" })];
++      const applied = await applyPreflightedThreadExecutionOverrides(
++        harness.deps,
++        {
++          items: [{ threadId: thread.id, applyToken: ready.applyToken }],
++        },
++      );
++
++      expect(applied.results).toEqual([
++        {
++          status: "rejected",
++          threadId: thread.id,
++          reason: "catalog-changed",
++          retryable: true,
++        },
++      ]);
++      expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({
++        modelOverride: "claude-fable-5",
++        reasoningLevelOverride: null,
++      });
++      expect(
++        responder.requests.filter(
++          ({ command }) => command.type === "provider.list_models",
++        ),
++      ).toHaveLength(2);
++    });
++  });
++
++  it("rejects more than 100 unique catalog routes without probing providers", async () => {
++    await withTestHarness(async (harness) => {
++      const { host, session } = seedHostSession(harness.deps, {
++        id: "host-execution-batch-route-limit",
++      });
++      const { project } = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/thread-execution-batch-route-limit",
++      });
++      upsertProjectExecutionDefaults(harness.db, {
++        projectId: project.id,
++        providerId: "pi",
++        model: "anthropic/claude-opus-5",
++        reasoningLevel: "medium",
++        permissionMode: "full",
++        serviceTier: "default",
++      });
++      const threads = Array.from({ length: 101 }, (_, index) => {
++        const environment = seedEnvironment(harness.deps, {
++          hostId: host.id,
++          projectId: project.id,
++          path: `/tmp/thread-execution-batch-route-limit/${index}`,
++          status: "ready",
++        });
++        return seedThread(harness.deps, {
++          environmentId: environment.id,
++          projectId: project.id,
++          providerId: "pi",
++          title: `Route ${index}`,
++        });
++      });
++      const responder = registerProviderHostRpcResponder(harness, {
++        hostId: host.id,
++        sessionId: session.id,
++        modelsByProviderId: {
++          pi: {
++            models: [
++              availableModelFixture({ model: "anthropic/claude-opus-5" }),
++            ],
++            selectedOnlyModels: [],
++          },
++        },
++      });
++      const rows = listThreadExecutionProjectionRowsByIds(
++        harness.db,
++        threads.map(({ id }) => id),
++      );
++      const summaries = buildThreadExecutionProjection(
++        harness.deps,
++        rows.map((row) => ({
++          environmentId: row.environmentId,
++          environmentUpdatedAt: row.environmentUpdatedAt,
++          executionRevision: row.executionRevision,
++          hostId: row.hostId,
++          id: row.threadId,
++          path: row.path,
++          projectId: row.projectId,
++          providerId: row.providerId,
++        })),
++      );
++
++      const preflight = await preflightThreadExecutionOverrides(harness.deps, {
++        items: threads.map(({ id }) => ({
++          threadId: id,
++          witness: summaries.get(id)?.witness ?? "",
++          patch: { model: "anthropic/claude-opus-5" },
++        })),
++      });
++
++      expect(preflight.results).toHaveLength(101);
++      expect(
++        preflight.results.every(
++          (result) =>
++            result.status === "unavailable" &&
++            result.reason === "catalog-unavailable",
++        ),
++      ).toBe(true);
++      expect(
++        responder.requests.filter(
++          ({ command }) => command.type === "provider.list_models",
++        ),
++      ).toHaveLength(0);
++    });
++  });
+ });
+diff --git a/apps/server/test/services/threads/thread-execution-override.test.ts b/apps/server/test/services/threads/thread-execution-override.test.ts
+index 0ca70d83f83333f08871d70e62974c10c44e2bbf..e4c0412299e6bd9a2767750ebbef506bd6f2a57c 100644
+--- a/apps/server/test/services/threads/thread-execution-override.test.ts
++++ b/apps/server/test/services/threads/thread-execution-override.test.ts
+@@ -42,6 +42,21 @@ describe("resolveThreadExecutionOverrideUpdate", () => {
+     ).toThrow(/not available in this thread's claude-code model catalog/);
+   });
+ 
++  it("rejects an ambiguous persisted model string", () => {
++    expect(() =>
++      resolveThreadExecutionOverrideUpdate(registry, {
++        existing: EMPTY,
++        patch: { model: "claude-opus-4-8" },
++        models: [
++          OPUS,
++          { ...OPUS, id: "nested-opus", routeProviderId: "anthropic" },
++        ],
++        providerId: "claude-code",
++        fallbackModel: null,
++      }),
++    ).toThrow(/ambiguous/);
++  });
++
+   it("accepts an explicit reasoning level supported by the target model", () => {
+     expect(
+       resolveThreadExecutionOverrideUpdate(registry, {
+diff --git a/apps/server/test/system/execution-options.test.ts b/apps/server/test/system/execution-options.test.ts
+index 994e95043ad4c9affc9941b02f677e57d1896356..164a4ebf2cb5af23937259e06091cf837a6b1d2e 100644
+--- a/apps/server/test/system/execution-options.test.ts
++++ b/apps/server/test/system/execution-options.test.ts
+@@ -9,6 +9,7 @@ import {
+   listSystemProviderInfos,
+   resolveSystemExecutionOptions,
+   resolveSystemProviderModels,
++  resolveTargetedSystemExecutionOptions,
+ } from "../../src/services/system/execution-options.js";
+ import { ApiError } from "../../src/errors.js";
+ import { availableModelFixture } from "../helpers/available-models.js";
+@@ -890,17 +891,30 @@ describe("resolveSystemExecutionOptions", () => {
+               providerId: "claude-code",
+             })
+           ).models.map((model) => model.model);
++        const listTargetedModelIds = async () =>
++          (
++            await resolveTargetedSystemExecutionOptions(harness.deps, {
++              hostId: host.id,
++              providerId: "claude-code",
++              experimental_targeted: "true",
++            })
++          ).models.map((model) => model.model);
+ 
+         expect(await listModelIds()).toEqual([
+           "claude-opus-5",
+           "claude-example-preview",
+         ]);
++        expect(await listTargetedModelIds()).toEqual([
++          "claude-opus-5",
++          "claude-example-preview",
++        ]);
+ 
+         setAppSettings(harness.db, {
+           ...getAppSettings(harness.db),
+           streamerMode: true,
+         });
+         expect(await listModelIds()).toEqual(["claude-opus-5"]);
++        expect(await listTargetedModelIds()).toEqual(["claude-opus-5"]);
+ 
+         setAppSettings(harness.db, {
+           ...getAppSettings(harness.db),
+diff --git a/apps/server/test/system/provider-routing.test.ts b/apps/server/test/system/provider-routing.test.ts
+index 5181cee810872b475a263035576e2c50185d13fa..fd18719836db5e00e4733f24fb0f9171bab3e629 100644
+--- a/apps/server/test/system/provider-routing.test.ts
++++ b/apps/server/test/system/provider-routing.test.ts
+@@ -61,6 +61,68 @@ async function providerIds(response: Response): Promise<string[]> {
+ }
+ 
+ describe("system provider host routing", () => {
++  it("loads one targeted catalog without provider-wide health discovery", async () => {
++    await withTestHarness({}, async (harness) => {
++      const target = seedHostSession(harness.deps, {
++        id: "host-provider-targeted-catalog",
++      });
++      seedPrimaryHost(harness.deps, target.host.id);
++      const responder = registerHostRpcResponder(harness, {
++        hostId: target.host.id,
++        sessionId: target.session.id,
++        handle: (request) => {
++          if (request.command.type !== "provider.list_models") {
++            throw new Error(`Unexpected RPC command ${request.command.type}`);
++          }
++          return {
++            ok: true,
++            result: {
++              models: [availableModelFixture({ model: "targeted-model" })],
++              selectedOnlyModels: [],
++            },
++          };
++        },
++      });
++
++      const response = systemExecutionOptionsResponseSchema.parse(
++        await readJson(
++          await harness.app.request(
++            "/api/v1/system/execution-options?providerId=codex&experimental_targeted=true",
++          ),
++        ),
++      );
++
++      expect(response.providers).toEqual([]);
++      expect(response.models.map(({ model }) => model)).toEqual([
++        "targeted-model",
++      ]);
++      const workspaceResponse = systemExecutionOptionsResponseSchema.parse(
++        await readJson(
++          await harness.app.request(
++            "/api/v1/system/execution-options?providerId=pi&hostId=host-provider-targeted-catalog&experimental_targeted=true&experimental_workspacePath=%2Fworkspace%2Ftargeted",
++          ),
++        ),
++      );
++      expect(workspaceResponse.models.map(({ model }) => model)).toEqual([
++        "targeted-model",
++      ]);
++      expect(
++        responder.requests.map(({ command }) => {
++          if (command.type !== "provider.list_models") return command.type;
++          const { bridgeLaunch: _ignored, ...rest } = command;
++          return rest;
++        }),
++      ).toEqual([
++        { type: "provider.list_models", providerId: "codex" },
++        {
++          type: "provider.list_models",
++          providerId: "pi",
++          cwd: "/workspace/targeted",
++        },
++      ]);
++    });
++  });
++
+   it("separates provider discovery by explicit host and environment host while preserving primary fallback", async () => {
+     await withTestHarness({}, async (harness) => {
+       const primary = seedHostSession(harness.deps, {
+diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
+index 4bbc03e97a808a82dd0ac418778b2fe8bad5a56b..2754ad78a17fdb62ae16e153da67d63f2f6ac685 100644
+--- a/docs/api_to_audit.md
++++ b/docs/api_to_audit.md
+@@ -1347,3 +1347,13 @@ candidate set before hydration.
+    projection, `bb thread update` can set or clear each sticky override, and
+    `bb thread execution preflight|apply` exposes the two-phase batch protocol
+    for JSON composition. Confirm that this remains the right operator surface.
++8. **Targeted catalog discovery.** `providers.models({
++   experimental_targeted: true, providerId, ...route })` preserves the normal
++   execution-options response envelope while returning an empty provider roster
++   and probing only the requested provider. Confirm whether this should become
++   the default behavior whenever `providerId` is explicit before stabilizing
++   the option.
++9. **Exact review fields.** Ready preflight rows include the final override
++   values, resolved next-turn effective model/reasoning, and an authoritative
++   `unchanged` flag. Confirm these duplicated derived fields remain worthwhile
++   for non-UI SDK consumers.
+diff --git a/packages/sdk/src/areas/providers.ts b/packages/sdk/src/areas/providers.ts
+index cad1a97d60131de776ad4ef3c28c255e676cb3e8..15caa0bd4704e7f03b598497196319fcb51fe5a1 100644
+--- a/packages/sdk/src/areas/providers.ts
++++ b/packages/sdk/src/areas/providers.ts
+@@ -15,10 +15,21 @@ export type ProviderListArgs = ProviderHostRoutingArgs & {
+   capability?: SystemProvidersQuery["capability"];
+   signal?: AbortSignal;
+ };
+-export type ProviderModelsArgs = ProviderHostRoutingArgs & {
+-  providerId?: string;
+-  signal?: AbortSignal;
+-};
++export type ProviderModelsArgs = ProviderHostRoutingArgs &
++  (
++    | {
++        /** Load only `providerId`; avoids provider-wide discovery. */
++        experimental_targeted: true;
++        /** Workspace for primary/explicit-host workspace-scoped catalogs. */
++        experimental_workspacePath?: string;
++        providerId: string;
++      }
++    | {
++        experimental_targeted?: false;
++        experimental_workspacePath?: never;
++        providerId?: string;
++      }
++  ) & { signal?: AbortSignal };
+ 
+ export type ProviderListResult = SystemProviderInfo[];
+ export type ProviderModelsResult = SystemExecutionOptionsResponse;
+@@ -55,6 +66,10 @@ export function createProvidersArea(args: CreateSdkAreaArgs): ProvidersArea {
+               environmentId: input.environmentId,
+               hostId: input.hostId,
+               providerId: input.providerId,
++              experimental_targeted: input.experimental_targeted
++                ? "true"
++                : undefined,
++              experimental_workspacePath: input.experimental_workspacePath,
+             },
+           },
+           ...signalRequestArgs(input.signal),
+diff --git a/packages/sdk/test/sdk.test.ts b/packages/sdk/test/sdk.test.ts
+index 51729da530cff8ccd5de0e827b85426db1148e9f..4d8f59223ef56abe726774b79d93506288cf8807 100644
+--- a/packages/sdk/test/sdk.test.ts
++++ b/packages/sdk/test/sdk.test.ts
+@@ -666,6 +666,7 @@ describe("@bb/sdk", () => {
+     await expect(
+       sdk.providers.models({
+         environmentId: "env_remote",
++        experimental_targeted: true,
+         providerId: "acp-remote",
+       }),
+     ).resolves.toMatchObject({ models: [], providers: [] });
+@@ -679,7 +680,7 @@ describe("@bb/sdk", () => {
+       {
+         bodyText: undefined,
+         method: "GET",
+-        url: "http://bb.test/api/v1/system/execution-options?environmentId=env_remote&providerId=acp-remote",
++        url: "http://bb.test/api/v1/system/execution-options?environmentId=env_remote&providerId=acp-remote&experimental_targeted=true",
+       },
+     ]);
+   });
+diff --git a/packages/server-contract/src/api/system.ts b/packages/server-contract/src/api/system.ts
+index 8c0fc86e456c9f90410694dbf58c2eef0e8ccdd0..2d091cc303ea7747231a06b32a955d6cab986058 100644
+--- a/packages/server-contract/src/api/system.ts
++++ b/packages/server-contract/src/api/system.ts
+@@ -102,9 +102,37 @@ export const systemExecutionOptionsQuerySchema = z
+   .object({
+     ...systemProviderHostQueryFields,
+     providerId: z.string().min(1),
++    /** Skip provider-wide discovery and load only `providerId`'s catalog. */
++    experimental_targeted: z.literal("true"),
++    /** Workspace path for a targeted primary/explicit-host catalog route. */
++    experimental_workspacePath: z.string().min(1),
+   })
+   .partial()
+-  .superRefine(rejectMultipleProviderHostSelectors);
++  .superRefine((query, context) => {
++    rejectMultipleProviderHostSelectors(query, context);
++    if (
++      query.experimental_workspacePath !== undefined &&
++      query.experimental_targeted !== "true"
++    ) {
++      context.addIssue({
++        code: "custom",
++        message:
++          "experimental_workspacePath requires experimental_targeted=true",
++        path: ["experimental_workspacePath"],
++      });
++    }
++    if (
++      query.experimental_workspacePath !== undefined &&
++      query.environmentId !== undefined
++    ) {
++      context.addIssue({
++        code: "custom",
++        message:
++          "experimental_workspacePath cannot be combined with environmentId",
++        path: ["experimental_workspacePath"],
++      });
++    }
++  });
+ 
+ export type SystemExecutionOptionsQuery = z.infer<
+   typeof systemExecutionOptionsQuerySchema
+diff --git a/packages/server-contract/src/api/threads.ts b/packages/server-contract/src/api/threads.ts
+index 5209cb8cc2a1e5fdd56c39f3407f126a185e57b0..b2ffe2a49ff82e31b2cbf5916b1803e3fdc40404 100644
+--- a/packages/server-contract/src/api/threads.ts
++++ b/packages/server-contract/src/api/threads.ts
+@@ -325,6 +325,7 @@ export const experimentalThreadExecutionReasoningSourceSchema = z.enum([
+ const experimentalThreadExecutionSummaryBaseSchema = z
+   .object({
+     providerId: z.string().min(1),
++    catalogDependsOnWorkspace: z.boolean(),
+     projectId: z.string().min(1),
+     environmentId: z.string().min(1).nullable(),
+     hostId: z.string().min(1).nullable(),
+@@ -425,6 +426,9 @@ export const experimentalThreadExecutionPreflightResultSchema =
+         current: experimentalThreadExecutionSummarySchema,
+         nextModelOverride: z.string().min(1).nullable(),
+         nextReasoningLevelOverride: reasoningLevelSchema.nullable(),
++        nextEffectiveModel: z.string().min(1).nullable(),
++        nextEffectiveReasoningLevel: reasoningLevelSchema.nullable(),
++        unchanged: z.boolean(),
+         applyToken: z.string().min(1).max(4096),
+       })
+       .strict(),
+-- 
+2.43.0
+

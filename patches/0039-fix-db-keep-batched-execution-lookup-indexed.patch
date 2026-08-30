@@ -1,0 +1,165 @@
+From a737d5c5987aebb7f8fb1c16f2a823649cd5ed83 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 29 Aug 2026 21:31:30 -0400
+Subject: [PATCH] fix(db): keep batched execution lookup indexed
+
+---
+ packages/db/src/data/events.ts       | 81 ++++++++++++++++------------
+ packages/db/test/query-plans.test.ts | 32 +++++++++++
+ 2 files changed, 79 insertions(+), 34 deletions(-)
+
+diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
+index 8f6f65fd17227b7836af230d0eb377cf9567c62a..dc2946406b2855ea0b6dc6fd3416e90ef042ee23 100644
+--- a/packages/db/src/data/events.ts
++++ b/packages/db/src/data/events.ts
+@@ -1560,9 +1560,11 @@ export function listStoredEventRowsByThreadIdsAndTypes(
+ }
+ 
+ /**
+- * Reads at most one execution-bearing request row per thread. The grouped
+- * maximum stays on events_thread_type_sequence_idx and avoids loading a
+- * thread's complete turn history just to resolve its next-turn defaults.
++ * Reads at most one execution-bearing request row per thread. Keep the
++ * request and legacy-start branches separate so SQLite can seek by both
++ * thread and type. A correlated OR here makes the planner walk every event in
++ * each thread before applying the type/JSON predicates, which is catastrophic
++ * for long-running threads and blocks the server event loop.
+  */
+ export function listLastStoredTurnRequestEventsByThreadIds(
+   db: DbQueryConnection,
+@@ -1570,40 +1572,51 @@ export function listLastStoredTurnRequestEventsByThreadIds(
+ ): StoredTurnRequestEventRow[] {
+   return queryInSqliteVariableBatches({
+     dedupeKey: (threadId) => threadId,
+-    fixedVariableCount: 0,
++    fixedVariableCount: 3,
+     queryBatch: (threadIds) =>
+-      db
+-        .select({
+-          data: events.data,
+-          sequence: events.sequence,
+-          threadId: events.threadId,
+-          type: events.type,
+-        })
+-        .from(events)
+-        .where(
+-          and(
+-            inArray(events.threadId, [...threadIds]),
+-            sql`${events.sequence} = (
+-              SELECT MAX(latest_turn_request.sequence)
+-              FROM events AS latest_turn_request
+-              WHERE latest_turn_request.thread_id = ${events.threadId}
+-                AND (
+-                  latest_turn_request.type = 'client/turn/requested'
+-                  OR (
+-                    latest_turn_request.type IN ('client/thread/start', 'client/turn/start')
+-                    AND CASE
+-                      WHEN json_valid(latest_turn_request.data)
+-                        THEN json_type(latest_turn_request.data, '$.input') IS NOT NULL
+-                      ELSE FALSE
+-                    END
+-                  )
+-                )
+-            )`,
+-          ),
++      db.all<StoredTurnRequestEventRow>(sql`
++        WITH execution_request_candidates AS (
++          SELECT
++            ${events.threadId} AS thread_id,
++            MAX(${events.sequence}) AS sequence
++          FROM ${events} INDEXED BY events_thread_type_sequence_idx
++          WHERE ${inArray(events.threadId, [...threadIds])}
++            AND ${events.type} = 'client/turn/requested'
++          GROUP BY ${events.threadId}
++
++          UNION ALL
++
++          SELECT
++            ${events.threadId} AS thread_id,
++            MAX(${events.sequence}) AS sequence
++          FROM ${events} INDEXED BY events_thread_type_sequence_idx
++          WHERE ${inArray(events.threadId, [...threadIds])}
++            AND ${inArray(events.type, [
++              "client/thread/start",
++              "client/turn/start",
++            ])}
++            AND json_valid(${events.data})
++            AND json_type(${events.data}, '$.input') IS NOT NULL
++          GROUP BY ${events.threadId}
++        ),
++        latest_execution_request AS (
++          SELECT thread_id, MAX(sequence) AS sequence
++          FROM execution_request_candidates
++          GROUP BY thread_id
+         )
+-        .all(),
++        SELECT
++          event.data AS data,
++          event.sequence AS sequence,
++          event.thread_id AS threadId,
++          event.type AS type
++        FROM latest_execution_request latest
++        JOIN events event
++          ON event.thread_id = latest.thread_id
++          AND event.sequence = latest.sequence
++        ORDER BY event.thread_id
++      `),
+     values: args.threadIds,
+-    variableCountPerValue: 1,
++    variableCountPerValue: 2,
+   });
+ }
+ 
+diff --git a/packages/db/test/query-plans.test.ts b/packages/db/test/query-plans.test.ts
+index 87ec6dd2d3427f706b6d3158c9262b45a09ab028..3ed2cee8edb2b085d5deac419623d9fab55f3e5b 100644
+--- a/packages/db/test/query-plans.test.ts
++++ b/packages/db/test/query-plans.test.ts
+@@ -19,6 +19,7 @@ import {
+   listActiveBackgroundTaskCountsByThreadIds,
+   listLatestThreadStateEventRowsByThreadIds,
+   listLatestOpenBackgroundTaskStateRowsForThread,
++  listLastStoredTurnRequestEventsByThreadIds,
+   listStoredConversationOutlineEventRows,
+   listStoredEventRows,
+   listStoredEventRowsByParentToolCallIds,
+@@ -281,6 +282,37 @@ describe("slow query index plans", () => {
+     db.$client.close();
+   });
+ 
++  it("keeps batched execution history lookup on thread/type indexes", () => {
++    const { db, thread } = setup();
++
++    const captured = captureStatements(db, () => {
++      expect(
++        listLastStoredTurnRequestEventsByThreadIds(db, {
++          threadIds: [thread.id],
++        }),
++      ).toEqual([]);
++    });
++    expect(captured).toHaveLength(1);
++    const query = captured[0];
++    if (!query) {
++      throw new Error("Expected the execution history SQL");
++    }
++    const details = queryPlanDetails({
++      db,
++      params: query.params,
++      sql: query.sql,
++    });
++    expect(
++      details.match(
++        /USING (?:COVERING )?INDEX events_thread_type_sequence_idx/gu,
++      ),
++    ).toHaveLength(2);
++    expect(details).toMatch(/USING INDEX events_thread_sequence_idx/u);
++    expect(details).not.toMatch(/SCAN events/u);
++
++    db.$client.close();
++  });
++
+   it("loads daemon item lifecycle state through the targeted partial index", () => {
+     const { db, logger, thread } = setup();
+     const turnId = "turn-lifecycle-plan";
+-- 
+2.43.0
+
