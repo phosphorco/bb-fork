@@ -51,6 +51,7 @@ import {
   threadFacetReconciliationTargets,
   threadFacetRelations,
   threadFacetSnapshots,
+  events,
   projects,
   threads,
 } from "../schema.js";
@@ -1212,6 +1213,38 @@ interface ProjectedParticipant {
   name: string;
 }
 
+interface CoreParticipantSourceVersionRow {
+  sourceVersion: number;
+  threadId: string;
+}
+
+function listCoreParticipantSourceVersions(
+  db: DbQueryConnection,
+  threadIds: readonly string[],
+): Map<string, number> {
+  const versions = new Map(threadIds.map((threadId) => [threadId, 0]));
+  const rows = queryInSqliteVariableBatches({
+    values: threadIds,
+    dedupeKey: (threadId) => threadId,
+    fixedVariableCount: CORE_PARTICIPANT_EVENT_TYPES.length,
+    variableCountPerValue: 1,
+    queryBatch: (threadIdBatch) =>
+      db.all<CoreParticipantSourceVersionRow>(sql`
+        SELECT
+          ${events.threadId} AS threadId,
+          MAX(${events.sequence}) AS sourceVersion
+        FROM ${events} INDEXED BY events_thread_type_sequence_idx
+        WHERE ${inArray(events.threadId, [...threadIdBatch])}
+          AND ${inArray(events.type, [...CORE_PARTICIPANT_EVENT_TYPES])}
+        GROUP BY ${events.threadId}
+      `),
+  });
+  for (const row of rows) {
+    versions.set(row.threadId, row.sourceVersion);
+  }
+  return versions;
+}
+
 function projectParticipantsByThreadId(
   db: DbQueryConnection,
   threadIds: readonly string[],
@@ -1305,20 +1338,23 @@ export function ensureCoreParticipantsProjection(
   if (persistedThreadIds.length === 0) {
     return;
   }
-  const projected = projectParticipantsByThreadId(db, persistedThreadIds);
   const key = facetTypeKey(CORE_PARTICIPANTS_FACET_TYPE_ID);
-  db.transaction(
-    (tx) => {
-      ensureCoreParticipantsDeclaration(tx);
-      for (const threadId of persistedThreadIds) {
-        const target = projected.get(threadId);
-        if (target === undefined) {
-          continue;
-        }
-        const existing = tx
+  const sourceVersions = listCoreParticipantSourceVersions(
+    db,
+    persistedThreadIds,
+  );
+  const snapshotVersions = new Map(
+    queryInSqliteVariableBatches({
+      values: persistedThreadIds,
+      dedupeKey: (threadId) => threadId,
+      fixedVariableCount: 4,
+      variableCountPerValue: 1,
+      queryBatch: (threadIdBatch) =>
+        db
           .select({
             generation: threadFacetSnapshots.ownerGeneration,
             sourceVersion: threadFacetSnapshots.sourceVersion,
+            threadId: threadFacetSnapshots.threadId,
           })
           .from(threadFacetSnapshots)
           .where(
@@ -1327,14 +1363,29 @@ export function ensureCoreParticipantsProjection(
               eq(threadFacetSnapshots.typeOwner, key.typeOwner),
               eq(threadFacetSnapshots.localName, key.localName),
               eq(threadFacetSnapshots.assignmentScope, "shared-thread"),
-              eq(threadFacetSnapshots.threadId, threadId),
+              inArray(threadFacetSnapshots.threadId, [...threadIdBatch]),
             ),
           )
-          .get();
-        if (
-          existing?.generation === 1 &&
-          existing.sourceVersion === target.sourceVersion
-        ) {
+          .all(),
+    }).map((row) => [row.threadId, row] as const),
+  );
+  const staleThreadIds = persistedThreadIds.filter((threadId) => {
+    const snapshot = snapshotVersions.get(threadId);
+    return (
+      snapshot?.generation !== 1 ||
+      snapshot.sourceVersion !== sourceVersions.get(threadId)
+    );
+  });
+  if (staleThreadIds.length === 0) {
+    return;
+  }
+  const projected = projectParticipantsByThreadId(db, staleThreadIds);
+  db.transaction(
+    (tx) => {
+      ensureCoreParticipantsDeclaration(tx);
+      for (const threadId of staleThreadIds) {
+        const target = projected.get(threadId);
+        if (target === undefined) {
           continue;
         }
         replaceRelationsInTransaction(tx, {
