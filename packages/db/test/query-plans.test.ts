@@ -19,6 +19,7 @@ import {
   listActiveBackgroundTaskCountsByThreadIds,
   listLatestThreadStateEventRowsByThreadIds,
   listLatestOpenBackgroundTaskStateRowsForThread,
+  listLastStoredTurnRequestEventsByThreadIds,
   listStoredConversationOutlineEventRows,
   listStoredEventRows,
   listStoredEventRowsByParentToolCallIds,
@@ -277,6 +278,37 @@ describe("slow query index plans", () => {
       expect(details).toMatch(/USING INDEX events_thread_type_sequence_idx/u);
       expect(details).not.toMatch(/events_thread_sequence_idx/u);
     }
+
+    db.$client.close();
+  });
+
+  it("keeps batched execution history lookup on thread/type indexes", () => {
+    const { db, thread } = setup();
+
+    const captured = captureStatements(db, () => {
+      expect(
+        listLastStoredTurnRequestEventsByThreadIds(db, {
+          threadIds: [thread.id],
+        }),
+      ).toEqual([]);
+    });
+    expect(captured).toHaveLength(1);
+    const query = captured[0];
+    if (!query) {
+      throw new Error("Expected the execution history SQL");
+    }
+    const details = queryPlanDetails({
+      db,
+      params: query.params,
+      sql: query.sql,
+    });
+    expect(
+      details.match(
+        /USING (?:COVERING )?INDEX events_thread_type_sequence_idx/gu,
+      ),
+    ).toHaveLength(2);
+    expect(details).toMatch(/USING INDEX events_thread_sequence_idx/u);
+    expect(details).not.toMatch(/SCAN events/u);
 
     db.$client.close();
   });

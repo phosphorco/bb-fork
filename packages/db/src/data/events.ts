@@ -1560,9 +1560,11 @@ export function listStoredEventRowsByThreadIdsAndTypes(
 }
 
 /**
- * Reads at most one execution-bearing request row per thread. The grouped
- * maximum stays on events_thread_type_sequence_idx and avoids loading a
- * thread's complete turn history just to resolve its next-turn defaults.
+ * Reads at most one execution-bearing request row per thread. Keep the
+ * request and legacy-start branches separate so SQLite can seek by both
+ * thread and type. A correlated OR here makes the planner walk every event in
+ * each thread before applying the type/JSON predicates, which is catastrophic
+ * for long-running threads and blocks the server event loop.
  */
 export function listLastStoredTurnRequestEventsByThreadIds(
   db: DbQueryConnection,
@@ -1570,40 +1572,51 @@ export function listLastStoredTurnRequestEventsByThreadIds(
 ): StoredTurnRequestEventRow[] {
   return queryInSqliteVariableBatches({
     dedupeKey: (threadId) => threadId,
-    fixedVariableCount: 0,
+    fixedVariableCount: 3,
     queryBatch: (threadIds) =>
-      db
-        .select({
-          data: events.data,
-          sequence: events.sequence,
-          threadId: events.threadId,
-          type: events.type,
-        })
-        .from(events)
-        .where(
-          and(
-            inArray(events.threadId, [...threadIds]),
-            sql`${events.sequence} = (
-              SELECT MAX(latest_turn_request.sequence)
-              FROM events AS latest_turn_request
-              WHERE latest_turn_request.thread_id = ${events.threadId}
-                AND (
-                  latest_turn_request.type = 'client/turn/requested'
-                  OR (
-                    latest_turn_request.type IN ('client/thread/start', 'client/turn/start')
-                    AND CASE
-                      WHEN json_valid(latest_turn_request.data)
-                        THEN json_type(latest_turn_request.data, '$.input') IS NOT NULL
-                      ELSE FALSE
-                    END
-                  )
-                )
-            )`,
-          ),
+      db.all<StoredTurnRequestEventRow>(sql`
+        WITH execution_request_candidates AS (
+          SELECT
+            ${events.threadId} AS thread_id,
+            MAX(${events.sequence}) AS sequence
+          FROM ${events} INDEXED BY events_thread_type_sequence_idx
+          WHERE ${inArray(events.threadId, [...threadIds])}
+            AND ${events.type} = 'client/turn/requested'
+          GROUP BY ${events.threadId}
+
+          UNION ALL
+
+          SELECT
+            ${events.threadId} AS thread_id,
+            MAX(${events.sequence}) AS sequence
+          FROM ${events} INDEXED BY events_thread_type_sequence_idx
+          WHERE ${inArray(events.threadId, [...threadIds])}
+            AND ${inArray(events.type, [
+              "client/thread/start",
+              "client/turn/start",
+            ])}
+            AND json_valid(${events.data})
+            AND json_type(${events.data}, '$.input') IS NOT NULL
+          GROUP BY ${events.threadId}
+        ),
+        latest_execution_request AS (
+          SELECT thread_id, MAX(sequence) AS sequence
+          FROM execution_request_candidates
+          GROUP BY thread_id
         )
-        .all(),
+        SELECT
+          event.data AS data,
+          event.sequence AS sequence,
+          event.thread_id AS threadId,
+          event.type AS type
+        FROM latest_execution_request latest
+        JOIN events event
+          ON event.thread_id = latest.thread_id
+          AND event.sequence = latest.sequence
+        ORDER BY event.thread_id
+      `),
     values: args.threadIds,
-    variableCountPerValue: 1,
+    variableCountPerValue: 2,
   });
 }
 
