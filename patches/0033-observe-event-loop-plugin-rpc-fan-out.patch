@@ -1,0 +1,167 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 29 Aug 2026 18:03:00 -0400
+Subject: [PATCH] feat(server): observe event-loop plugin RPC fan-out
+
+Bound the detailed active-work lineages emitted on event-loop stalls and add
+structured counts for total active work and plugin RPC work. This keeps stall
+logs useful under extreme request fan-out without letting the diagnostic
+payload itself grow with every in-flight request.
+
+Protect the structured queue-delay/fan-out correlation and detail bound with a
+focused concurrent RPC regression test.
+---
+ .../services/system/event-loop-work.ts        | 39 +++++++++++++++--
+ .../system/event-loop-stall-monitor.test.ts   | 46 ++++++++++++++++++++
+ 2 files changed, 81 insertions(+), 4 deletions(-)
+
+diff --git a/apps/server/src/services/system/event-loop-work.ts b/apps/server/src/services/system/event-loop-work.ts
+index edfff39a31b5243740149af4c90e2f5845db09e3..5a69f4c4bb9c67f453c02c07547ba2045579cae9 100644
+--- a/apps/server/src/services/system/event-loop-work.ts
++++ b/apps/server/src/services/system/event-loop-work.ts
+@@ -17,9 +17,12 @@ interface CompletedEventLoopWork {
+ }
+ 
+ interface EventLoopWorkSnapshot {
++  activePluginRpcCount: number;
++  activeWorkCount: number;
+   currentWork: string | null;
+   lastWork: string | null;
+   lastWorkMs: number | null;
++  omittedCurrentWorkCount: number;
+   slowestWork: string | null;
+   slowestWorkMs: number | null;
+ }
+@@ -27,6 +30,7 @@ interface EventLoopWorkSnapshot {
+ const activeFrames = new Map<number, EventLoopWorkFrame>();
+ const currentFrameId = new AsyncLocalStorage<number>();
+ const completedInWindow: CompletedEventLoopWork[] = [];
++const MAX_CURRENT_WORK_DETAILS = 20;
+ let nextFrameId = 1;
+ let lastCompleted: CompletedEventLoopWork | null = null;
+ 
+@@ -75,16 +79,43 @@ function formatLineage(root: EventLoopWorkFrame): string {
+   return labels.join(" > ");
+ }
+ 
+-function formatActiveWork(): string | null {
++function isPluginRpcFrame(frame: EventLoopWorkFrame): boolean {
++  return /^plugin:[^ ]+ rpc /u.test(frame.label);
++}
++
++function summarizeActiveWork(): Pick<
++  EventLoopWorkSnapshot,
++  | "activePluginRpcCount"
++  | "activeWorkCount"
++  | "currentWork"
++  | "omittedCurrentWorkCount"
++> {
+   if (activeFrames.size === 0) {
+-    return null;
++    return {
++      activePluginRpcCount: 0,
++      activeWorkCount: 0,
++      currentWork: null,
++      omittedCurrentWorkCount: 0,
++    };
+   }
+   const roots = [...activeFrames.values()]
+     .filter(
+       (frame) => frame.parentId === null || !activeFrames.has(frame.parentId),
+     )
+     .sort((left, right) => left.id - right.id);
+-  return roots.map((root) => formatLineage(root)).join(" | ");
++  const visibleRoots = roots.slice(0, MAX_CURRENT_WORK_DETAILS);
++  let activePluginRpcCount = 0;
++  for (const frame of activeFrames.values()) {
++    if (isPluginRpcFrame(frame)) {
++      activePluginRpcCount += 1;
++    }
++  }
++  return {
++    activePluginRpcCount,
++    activeWorkCount: roots.length,
++    currentWork: visibleRoots.map((root) => formatLineage(root)).join(" | "),
++    omittedCurrentWorkCount: roots.length - visibleRoots.length,
++  };
+ }
+ 
+ function selectSlowestWork(): CompletedEventLoopWork | null {
+@@ -103,7 +134,7 @@ function selectSlowestWork(): CompletedEventLoopWork | null {
+ function getEventLoopWorkSnapshot(): EventLoopWorkSnapshot {
+   const slowest = selectSlowestWork();
+   return {
+-    currentWork: formatActiveWork(),
++    ...summarizeActiveWork(),
+     lastWork: lastCompleted?.label ?? null,
+     lastWorkMs:
+       lastCompleted === null ? null : roundDurationMs(lastCompleted.durationMs),
+diff --git a/apps/server/test/system/event-loop-stall-monitor.test.ts b/apps/server/test/system/event-loop-stall-monitor.test.ts
+index 321c58f24fe35f00664589007d25ec6c7046ce8f..28fd8c0dc7a9d96dbb7fc0e6cd4a5c04a608e6bd 100644
+--- a/apps/server/test/system/event-loop-stall-monitor.test.ts
++++ b/apps/server/test/system/event-loop-stall-monitor.test.ts
+@@ -71,9 +71,12 @@ function installHistogram(
+ }
+ 
+ const EMPTY_WORK_SNAPSHOT = {
++  activePluginRpcCount: 0,
++  activeWorkCount: 0,
+   currentWork: null,
+   lastWork: null,
+   lastWorkMs: null,
++  omittedCurrentWorkCount: 0,
+   slowestWork: null,
+   slowestWorkMs: null,
+ };
+@@ -317,6 +320,49 @@ describe("event loop stall monitor", () => {
+     monitor.stop();
+   });
+ 
++  it("bounds details and counts plugin RPC fan-out on a stall", async () => {
++    installHistogram({
++      maxDelayMs: 750,
++      meanDelayMs: 80,
++      p99DelayMs: 700,
++    });
++    const logger = { info: vi.fn() };
++    const monitor = startEventLoopStallMonitor({ logger });
++    const releases: Array<() => void> = [];
++    const held = Array.from({ length: 25 }, (_, index) =>
++      runEventLoopWork(`POST /api/v1/plugins/example/rpc/read-${index}`, () =>
++        runEventLoopWork(
++          `plugin:example rpc read-${index}`,
++          () =>
++            new Promise<void>((resolve) => {
++              releases.push(resolve);
++            }),
++        ),
++      ),
++    );
++
++    vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
++
++    expect(logger.info).toHaveBeenCalledWith(
++      expect.objectContaining({
++        activePluginRpcCount: 25,
++        activeWorkCount: 25,
++        maxDelayMs: 750,
++        omittedCurrentWorkCount: 5,
++      }),
++      "Event loop stalled",
++    );
++    const fields = logger.info.mock.calls[0]?.[0] as {
++      currentWork: string;
++    };
++    expect(fields.currentWork.split(" | ")).toHaveLength(20);
++    expect(fields.currentWork).not.toContain("read-24");
++
++    for (const release of releases) release();
++    await Promise.all(held);
++    monitor.stop();
++  });
++
+   it("keeps the slowest work from the stall window after later short work", () => {
+     installHistogram({
+       maxDelayMs: 500,
+-- 
+2.43.0

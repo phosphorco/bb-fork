@@ -1,0 +1,238 @@
+From 82611602b3302c8e80a9b462a0ac32cae72fc5f3 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sun, 30 Aug 2026 08:54:09 -0400
+Subject: [PATCH] fix(facets): preserve legacy participant projection
+
+---
+ packages/db/src/data/thread-facets.ts       |   6 +-
+ packages/db/test/data/thread-facets.test.ts | 114 +++++++++++++++++++-
+ packages/db/test/query-plans.test.ts        |  34 +++++-
+ 3 files changed, 147 insertions(+), 7 deletions(-)
+
+diff --git a/packages/db/src/data/thread-facets.ts b/packages/db/src/data/thread-facets.ts
+index 593a942482b61b8dd11b6cf204b4861d3988a1cf..3d644673f05cf02ee9982c1db810f63650e36fd4 100644
+--- a/packages/db/src/data/thread-facets.ts
++++ b/packages/db/src/data/thread-facets.ts
+@@ -1272,11 +1272,13 @@ function projectParticipantsByThreadId(
+       continue;
+     }
+     target.sourceVersion = Math.max(target.sourceVersion, row.sequence);
++    const displayName = row.p6rActorDisplayName ?? row.p6rActorHandle;
++    const handle = row.p6rActorHandle ?? displayName;
+     const parsed = p6rActorSnapshotSchema.safeParse({
+       p6rProviderId: row.p6rActorProviderId,
+       p6rSubject: row.p6rActorSubject,
+-      p6rHandle: row.p6rActorHandle,
+-      p6rDisplayName: row.p6rActorDisplayName,
++      p6rHandle: handle,
++      p6rDisplayName: displayName,
+       p6rImageUrl: row.p6rActorImageUrl,
+     });
+     if (!parsed.success) {
+diff --git a/packages/db/test/data/thread-facets.test.ts b/packages/db/test/data/thread-facets.test.ts
+index 689ca3173174e0530eb5a9610e10c88e3d8f84db..be0a7caebbc0999199f067486ad9303bea10a7fb 100644
+--- a/packages/db/test/data/thread-facets.test.ts
++++ b/packages/db/test/data/thread-facets.test.ts
+@@ -1029,13 +1029,43 @@ describe("core participants facet", () => {
+           p6rActorImageUrl: null,
+           data: "{}",
+         },
++        {
++          threadId: thread.id,
++          scope: threadScope(),
++          sequence: participants.length + 2,
++          type: "client/turn/requested",
++          itemId: null,
++          itemKind: null,
++          parentToolCallId: null,
++          p6rActorProviderId: "test-provider",
++          p6rActorSubject: "handle-only",
++          p6rActorHandle: "Legacy handle",
++          p6rActorDisplayName: null,
++          p6rActorImageUrl: null,
++          data: "{}",
++        },
++        {
++          threadId: thread.id,
++          scope: threadScope(),
++          sequence: participants.length + 3,
++          type: "client/turn/requested",
++          itemId: null,
++          itemKind: null,
++          parentToolCallId: null,
++          p6rActorProviderId: "test-provider",
++          p6rActorSubject: "display-only",
++          p6rActorHandle: null,
++          p6rActorDisplayName: "Legacy display",
++          p6rActorImageUrl: null,
++          data: "{}",
++        },
+       ]);
+ 
+       ensureCoreParticipantsProjection(db, [thread.id]);
+       const all = listCoreParticipantProfilesByThreadIds(db, [thread.id]).get(
+         thread.id,
+       );
+-      expect(all).toHaveLength(70);
++      expect(all).toHaveLength(72);
+       expect(all?.slice(0, 4)).toEqual([
+         {
+           p6rPrincipalKey: p6rPrincipalKeyForActorSnapshot(oldA),
+@@ -1060,7 +1090,25 @@ describe("core participants facet", () => {
+       ]);
+       expect(
+         new Set(all?.map(({ p6rPrincipalKey }) => p6rPrincipalKey)).size,
+-      ).toBe(70);
++      ).toBe(72);
++      expect(all?.slice(-2)).toEqual([
++        {
++          p6rPrincipalKey: p6rPrincipalKeyForActorSnapshot({
++            p6rProviderId: "test-provider",
++            p6rSubject: "handle-only",
++          }),
++          p6rDisplayName: "Legacy handle",
++          p6rImageUrl: null,
++        },
++        {
++          p6rPrincipalKey: p6rPrincipalKeyForActorSnapshot({
++            p6rProviderId: "test-provider",
++            p6rSubject: "display-only",
++          }),
++          p6rDisplayName: "Legacy display",
++          p6rImageUrl: null,
++        },
++      ]);
+ 
+       const firstPage = listCoreParticipantProfilePage(db, {
+         threadId: thread.id,
+@@ -1073,7 +1121,7 @@ describe("core participants facet", () => {
+         pageSize: 64,
+         afterPosition: firstPage.nextPosition ?? undefined,
+       });
+-      expect(finalPage.profiles).toHaveLength(6);
++      expect(finalPage.profiles).toHaveLength(8);
+       expect(finalPage.nextPosition).toBeNull();
+ 
+       db.update(threads)
+@@ -1083,7 +1131,65 @@ describe("core participants facet", () => {
+       ensureCoreParticipantsProjection(db, [thread.id]);
+       expect(
+         listCoreParticipantProfilesByThreadIds(db, [thread.id]).get(thread.id),
+-      ).toHaveLength(70);
++      ).toHaveLength(72);
++    } finally {
++      db.$client.close();
++    }
++  });
++
++  it("refreshes only when participant-bearing history advances", () => {
++    const { db, createVisibleThread } = setup();
++    try {
++      const thread = createVisibleThread();
++      const participantEvent = (sequence: number, displayName: string) => ({
++        threadId: thread.id,
++        scope: threadScope(),
++        sequence,
++        type: "client/turn/requested" as const,
++        itemId: null,
++        itemKind: null,
++        parentToolCallId: null,
++        p6rActorProviderId: "test-provider",
++        p6rActorSubject: "participant",
++        p6rActorHandle: "participant",
++        p6rActorDisplayName: displayName,
++        p6rActorImageUrl: null,
++        data: "{}",
++      });
++      insertEvents(db, noopNotifier, [participantEvent(1, "Before")]);
++      ensureCoreParticipantsProjection(db, [thread.id]);
++      expect(
++        listCoreParticipantProfilesByThreadIds(db, [thread.id]).get(thread.id),
++      ).toEqual([
++        expect.objectContaining({ p6rDisplayName: "Before" }),
++      ]);
++
++      insertEvents(db, noopNotifier, [
++        {
++          threadId: thread.id,
++          scope: threadScope(),
++          sequence: 2,
++          type: "system/error",
++          itemId: null,
++          itemKind: null,
++          parentToolCallId: null,
++          data: "{}",
++        },
++      ]);
++      ensureCoreParticipantsProjection(db, [thread.id]);
++      expect(
++        listCoreParticipantProfilesByThreadIds(db, [thread.id]).get(thread.id),
++      ).toEqual([
++        expect.objectContaining({ p6rDisplayName: "Before" }),
++      ]);
++
++      insertEvents(db, noopNotifier, [participantEvent(3, "After")]);
++      ensureCoreParticipantsProjection(db, [thread.id]);
++      expect(
++        listCoreParticipantProfilesByThreadIds(db, [thread.id]).get(thread.id),
++      ).toEqual([
++        expect.objectContaining({ p6rDisplayName: "After" }),
++      ]);
+     } finally {
+       db.$client.close();
+     }
+diff --git a/packages/db/test/query-plans.test.ts b/packages/db/test/query-plans.test.ts
+index 3ed2cee8edb2b085d5deac419623d9fab55f3e5b..a669f52ca160d0ec985677466f24229194092995 100644
+--- a/packages/db/test/query-plans.test.ts
++++ b/packages/db/test/query-plans.test.ts
+@@ -40,7 +40,10 @@ import {
+   createThread,
+   listThreadsWithPendingInteractionState,
+ } from "../src/data/threads.js";
+-import { listThreadIdsForFacetProjection } from "../src/data/thread-facets.js";
++import {
++  ensureCoreParticipantsProjection,
++  listThreadIdsForFacetProjection,
++} from "../src/data/thread-facets.js";
+ 
+ type SqliteParameter = string | number | bigint | Buffer | null;
+ type LoggedSqlPredicate = (fields: SlowDbQueryLogFields) => boolean;
+@@ -313,6 +316,35 @@ describe("slow query index plans", () => {
+     db.$client.close();
+   });
+ 
++  it("uses an index-only participant census and skips stable history reads", () => {
++    const { db, thread } = setup();
++    ensureCoreParticipantsProjection(db, [thread.id]);
++
++    const captured = captureStatements(db, () => {
++      ensureCoreParticipantsProjection(db, [thread.id]);
++    });
++    const census = captured.find((query) =>
++      query.sql.includes("INDEXED BY events_thread_type_sequence_idx"),
++    );
++    if (!census) {
++      throw new Error("Expected the participant source-version census SQL");
++    }
++    const details = queryPlanDetails({
++      db,
++      params: census.params,
++      sql: census.sql,
++    });
++    expect(details).toMatch(
++      /USING COVERING INDEX events_thread_type_sequence_idx/u,
++    );
++    expect(details).not.toMatch(/SCAN events/u);
++    expect(
++      captured.some((query) => query.sql.includes('"p6r_actor_handle"')),
++    ).toBe(false);
++
++    db.$client.close();
++  });
++
+   it("loads daemon item lifecycle state through the targeted partial index", () => {
+     const { db, logger, thread } = setup();
+     const turnId = "turn-lifecycle-plan";
+-- 
+2.43.0
+

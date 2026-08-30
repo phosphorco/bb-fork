@@ -1,0 +1,65 @@
+From bfe1605cb0cbc5624e62e91d0cda2cac1338d37b Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 29 Aug 2026 23:04:15 -0400
+Subject: [PATCH] test(threads): cover execution contract boundaries
+
+---
+ .../server-contract/test/contract.test.ts     |  2 ++
+ .../test/thread-execution-overrides.test.ts   | 28 +++++++++++++++++++
+ 2 files changed, 30 insertions(+)
+
+diff --git a/packages/server-contract/test/contract.test.ts b/packages/server-contract/test/contract.test.ts
+index 5ed28e038f965a02995d77bbbcb28974423e9ddd..50355f485c2e74704d3b7ec1f839f55d98b810bd 100644
+--- a/packages/server-contract/test/contract.test.ts
++++ b/packages/server-contract/test/contract.test.ts
+@@ -203,6 +203,8 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
+       "System provider lookups may target a host indirectly or directly, omit provider id to use the host default, and omit capability to return the full roster.",
+     fields: [
+       "systemExecutionOptionsQuerySchema.environmentId",
++      "systemExecutionOptionsQuerySchema.experimental_targeted",
++      "systemExecutionOptionsQuerySchema.experimental_workspacePath",
+       "systemExecutionOptionsQuerySchema.hostId",
+       "systemExecutionOptionsQuerySchema.providerId",
+       "systemProvidersQuerySchema.capability",
+diff --git a/packages/server-contract/test/thread-execution-overrides.test.ts b/packages/server-contract/test/thread-execution-overrides.test.ts
+index 3ce253d06ba965b1cf11deb850d26b56ed60aaf5..32a5dce0586115d7bb669b2d3c07dd68dca7202c 100644
+--- a/packages/server-contract/test/thread-execution-overrides.test.ts
++++ b/packages/server-contract/test/thread-execution-overrides.test.ts
+@@ -17,6 +17,34 @@ describe("experimental thread execution override requests", () => {
+     return `thr_${suffix}`;
+   };
+ 
++  it("rejects zero targets and accepts one target", () => {
++    const preflightItem = {
++      threadId: threadId(0),
++      witness: "a".repeat(64),
++      patch: { model: "opus" },
++    };
++    const applyItem = { threadId: threadId(0), applyToken: "token" };
++    expect(
++      experimentalThreadExecutionPreflightRequestSchema.safeParse({
++        items: [],
++      }).success,
++    ).toBe(false);
++    expect(
++      experimentalThreadExecutionPreflightRequestSchema.safeParse({
++        items: [preflightItem],
++      }).success,
++    ).toBe(true);
++    expect(
++      experimentalThreadExecutionApplyRequestSchema.safeParse({ items: [] })
++        .success,
++    ).toBe(false);
++    expect(
++      experimentalThreadExecutionApplyRequestSchema.safeParse({
++        items: [applyItem],
++      }).success,
++    ).toBe(true);
++  });
++
+   it("rejects duplicate thread ids before service execution", () => {
+     expect(
+       experimentalThreadExecutionPreflightRequestSchema.safeParse({
+-- 
+2.43.0
+
