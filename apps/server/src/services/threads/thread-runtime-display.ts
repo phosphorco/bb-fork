@@ -2,12 +2,14 @@ import {
   getEnvironment,
   getLatestSessionForHost,
   getSessionById,
+  ensureCoreParticipantsProjection,
+  listCoreParticipantProfilesByThreadIds,
+  p6rListActiveBackgroundCommandStartsByThreadIds,
   listActiveBackgroundTaskCountsByThreadIds,
   listLatestThreadStateEventRowsByThreadIds,
   listLatestSessionsForHosts,
   listOpenTurnInputAcceptedRowsByThreadIds,
   listStoredClientTurnRequestRowsByKeys,
-  listStoredEventRowsByThreadIdsAndTypes,
   type DbConnection,
   type HostDaemonSessionRow,
   type StoredEventRow,
@@ -16,7 +18,6 @@ import {
 } from "@bb/db";
 import {
   LEGACY_CODEX_GOAL_EXTENSION_KIND,
-  p6rActorSnapshotSchema,
 } from "@bb/domain";
 import type {
   Thread,
@@ -36,7 +37,6 @@ import {
 import type { ThreadResponse } from "@bb/server-contract";
 import { DAEMON_ACTIVE_WORK_DISCONNECT_GRACE_MS } from "../../constants.js";
 import type { NotificationHub } from "../../ws/hub.js";
-import { p6rPrincipalKeyForActor } from "../identity.js";
 import { resolveProviderPlanCommand } from "../providers/provider-plan-command.js";
 import type { ProviderRegistryService } from "../providers/provider-registry.js";
 import { canThreadSpawnChild } from "./thread-parent.js";
@@ -110,74 +110,19 @@ interface PromptBannerActivityState extends Pick<
 const EMPTY_THREAD_ACTIVITY: ThreadActivityState = {
   activeBackgroundAgentCount: 0,
   activeBackgroundCommandCount: 0,
+  newestActiveBackgroundCommandStartedAt: null,
   activeGoalCount: 0,
   activePlanModeCount: 0,
   activeWorkflowCount: 0,
 };
 
-const PARTICIPANT_EVENT_TYPES = [
-  "client/thread/start",
-  "client/turn/requested",
-  "client/turn/start",
-] as const;
-
 function buildThreadParticipantsByThreadId(
   deps: ThreadRuntimeDisplayDeps,
   threads: readonly ThreadWithPendingInteractionState[],
 ): Map<string, P6rThreadParticipantProfile[]> {
-  const rows = listStoredEventRowsByThreadIdsAndTypes(deps.db, {
-    threadIds: threads.map((thread) => thread.id),
-    types: PARTICIPANT_EVENT_TYPES,
-  });
-  const participantsByThreadId = new Map<
-    string,
-    P6rThreadParticipantProfile[]
-  >();
-  const participantIndexesByThreadId = new Map<string, Map<string, number>>();
-
-  for (const row of rows) {
-    if (row.p6rActorProviderId === null || row.p6rActorSubject === null) {
-      continue;
-    }
-    const displayName = row.p6rActorDisplayName ?? row.p6rActorHandle;
-    if (displayName === null) {
-      continue;
-    }
-    const actorResult = p6rActorSnapshotSchema.safeParse({
-      p6rProviderId: row.p6rActorProviderId,
-      p6rSubject: row.p6rActorSubject,
-      p6rHandle: row.p6rActorHandle ?? displayName,
-      p6rDisplayName: displayName,
-      p6rImageUrl: row.p6rActorImageUrl,
-    });
-    if (!actorResult.success) {
-      continue;
-    }
-    const principalKey = p6rPrincipalKeyForActor(actorResult.data);
-    const participant: P6rThreadParticipantProfile = {
-      p6rPrincipalKey: principalKey,
-      p6rDisplayName: actorResult.data.p6rDisplayName,
-      p6rImageUrl: actorResult.data.p6rImageUrl,
-    };
-    const participants = participantsByThreadId.get(row.threadId);
-    const indexes = participantIndexesByThreadId.get(row.threadId);
-    if (participants && indexes) {
-      const existingIndex = indexes.get(principalKey);
-      if (existingIndex === undefined) {
-        indexes.set(principalKey, participants.length);
-        participants.push(participant);
-      } else {
-        participants[existingIndex] = participant;
-      }
-      continue;
-    }
-    participantsByThreadId.set(row.threadId, [participant]);
-    participantIndexesByThreadId.set(
-      row.threadId,
-      new Map([[principalKey, 0]]),
-    );
-  }
-  return participantsByThreadId;
+  const threadIds = threads.map((thread) => thread.id);
+  ensureCoreParticipantsProjection(deps.db, threadIds);
+  return listCoreParticipantProfilesByThreadIds(deps.db, threadIds);
 }
 
 function threadStatusRuntimeState(status: ThreadStatus): ThreadRuntimeState {
@@ -507,6 +452,16 @@ function buildThreadActivityStateByThreadId(
       threadIds: threads.map((thread) => thread.id),
     }).map((activity) => [activity.threadId, activity]),
   );
+  const activeBackgroundCommandStartByThreadId = new Map(
+    p6rListActiveBackgroundCommandStartsByThreadIds(deps.db, {
+      threadIds: [...backgroundTaskActivityByThreadId.values()].flatMap(
+        (activity) =>
+          activity.activeBackgroundCommandCount > 0
+            ? [activity.threadId]
+            : [],
+      ),
+    }).map((state) => [state.threadId, state]),
+  );
   const promptBannerActivityByThreadId =
     buildThreadPromptBannerActivityByThreadId(deps, threads);
   const result = new Map<string, ThreadActivityState>();
@@ -523,6 +478,9 @@ function buildThreadActivityStateByThreadId(
       activeBackgroundCommandCount:
         backgroundActivity?.activeBackgroundCommandCount ??
         EMPTY_THREAD_ACTIVITY.activeBackgroundCommandCount,
+      newestActiveBackgroundCommandStartedAt:
+        activeBackgroundCommandStartByThreadId.get(thread.id)
+          ?.newestActiveBackgroundCommandStartedAt ?? null,
       activeGoalCount:
         promptBannerActivity?.activeGoalCount ??
         EMPTY_THREAD_ACTIVITY.activeGoalCount,
