@@ -40,6 +40,7 @@ const entrypoints = [
   ["bb-app", "bb-app.js"],
   ["bb", "bb.js"],
   ["bb-server", "bb-server.js"],
+  ["bb-migrate-rosetta", "bb-migrate-rosetta.js"],
   ["bb-host-daemon", "bb-host-daemon.js"],
 ];
 

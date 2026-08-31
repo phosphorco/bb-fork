@@ -493,6 +493,19 @@ function readExpectedAppliedMigrations(
   });
 }
 
+export interface PackagedMigrationReceipt {
+  createdAt: number;
+  hash: string;
+  tag: string;
+}
+
+/** Exact receipt metadata from the migration journal shipped with this build. */
+export function readPackagedMigrationReceipts(): PackagedMigrationReceipt[] {
+  return readExpectedAppliedMigrations(resolveMigrationsFolder()).map(
+    ({ createdAt, hash, tag }) => ({ createdAt, hash, tag }),
+  );
+}
+
 function readAppliedMigrationCreatedAts(db: DbConnection): Set<number> {
   if (!tableExists(db, "__drizzle_migrations")) {
     return new Set();
@@ -1508,6 +1521,40 @@ function validateAppliedMigrationHistory(
 export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
   const migrationsFolder = resolveMigrationsFolder();
   const sqlite = db.$client;
+
+  if (tableExists(db, "__drizzle_migrations")) {
+    const legacyReceipts = sqlite
+      .prepare<
+        [number, string, number, string],
+        { count: number }
+      >(
+        `SELECT count(*) AS count
+         FROM __drizzle_migrations
+         WHERE (created_at = ? AND hash = ?)
+            OR (created_at = ? AND hash = ?)`,
+      )
+      .get(
+        1_787_517_263_970,
+        "303073917afaade57ab1072f09d51da7f62c42df71cc4e3009906b21b6d40709",
+        1_787_520_353_659,
+        "e051e9e2591a08907d9b53bb1243a11d5c1384f07a131c4a2a9367b0b4954cce",
+      );
+    const targetIdentity = sqlite
+      .prepare<[number, string], { count: number }>(
+        `SELECT count(*) AS count
+         FROM __drizzle_migrations
+         WHERE created_at = ? AND hash = ?`,
+      )
+      .get(
+        1_788_093_466_101,
+        "303073917afaade57ab1072f09d51da7f62c42df71cc4e3009906b21b6d40709",
+      );
+    if (legacyReceipts?.count === 2 && targetIdentity?.count === 0) {
+      throw new Error(
+        "This database is the recognized Rosetta legacy state. Stop every writer and run bb-migrate-rosetta --database /absolute/path/to/the/database before starting BB 0.40.",
+      );
+    }
+  }
 
   sqlite.pragma("foreign_keys = OFF");
   try {

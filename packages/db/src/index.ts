@@ -21,12 +21,23 @@ export {
   createThreadProvisioningId,
 } from "./ids.js";
 
-export { migrate } from "./migrate.js";
+export { migrate, readPackagedMigrationReceipts } from "./migrate.js";
 export {
   isSqliteForeignKeyConstraint,
   isSqliteUniqueConstraintOnColumns,
 } from "./sqlite-errors.js";
-export type { MigrationWarningLogger } from "./migrate.js";
+export type {
+  MigrationWarningLogger,
+  PackagedMigrationReceipt,
+} from "./migrate.js";
+export {
+  rosettaMigrationReceipts,
+  runRosettaMigrationBridgeLocked,
+} from "./rosetta-migration-bridge.js";
+export type {
+  RosettaBridgeResult,
+  RosettaBridgeState,
+} from "./rosetta-migration-bridge.js";
 export {
   deriveStoredEventItemFields,
   deriveStoredEventItemFieldsFromSource,
