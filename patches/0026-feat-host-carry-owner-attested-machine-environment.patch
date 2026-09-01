@@ -1,0 +1,966 @@
+From fb99a64f1b00f23f074959eb1585179949118b68 Mon Sep 17 00:00:00 2001
+From: B disposable proof <b-proof@invalid.local>
+Date: Tue, 1 Sep 2026 19:07:43 -0400
+Subject: [PATCH] feat(host): carry owner-attested machine environment once
+
+---
+ apps/host-daemon/src/app.ts                   |   9 +-
+ .../machine-environment-projection.test.ts    | 237 ++++++++++++
+ .../src/machine-environment-projection.ts     | 355 ++++++++++++++++++
+ apps/host-daemon/src/runtime-manager.test.ts  |  33 ++
+ apps/host-daemon/src/runtime-manager.ts       |  62 ++-
+ apps/host-daemon/src/start-host-daemon.ts     |  12 +-
+ packages/host-workspace/src/provision.ts      |   3 +
+ packages/host-workspace/src/provisioning.ts   |   7 +-
+ .../host-workspace/test/provisioning.test.ts  |  24 ++
+ 9 files changed, 724 insertions(+), 18 deletions(-)
+ create mode 100644 apps/host-daemon/src/machine-environment-projection.test.ts
+ create mode 100644 apps/host-daemon/src/machine-environment-projection.ts
+
+diff --git a/apps/host-daemon/src/app.ts b/apps/host-daemon/src/app.ts
+index 0eeed2ddb..9a9200119 100644
+--- a/apps/host-daemon/src/app.ts
++++ b/apps/host-daemon/src/app.ts
+@@ -122,9 +122,9 @@ interface CreateHostDaemonAppOptions {
+   createRuntime?: RuntimeManagerOptions["createRuntime"];
+   runtimeShellEnv?: AgentRuntimeOptions["shellEnv"];
+   runtimeShellEnvResolvedAtMs?: number;
+-  resolveRuntimeShellEnv?: () => Promise<
+-    NonNullable<AgentRuntimeOptions["shellEnv"]>
+-  >;
++  resolveRuntimeShellEnv?: (
++    workspacePath: string,
++  ) => Promise<NonNullable<AgentRuntimeOptions["shellEnv"]>>;
+   nowMs?: () => number;
+   hostWatcher?: HostWatcher;
+   onToolCall?: (request: ToolCallRequest) => Promise<ToolCallResponse>;
+@@ -511,6 +511,7 @@ export async function createHostDaemonApp(
+       }),
+     hostWatcher: options.hostWatcher,
+     logger: options.logger,
++    resolveRuntimeShellEnv: options.resolveRuntimeShellEnv,
+     shellEnv: options.runtimeShellEnv,
+     onEvent: ({ environmentId, event }) => {
+       try {
+@@ -676,7 +677,7 @@ export async function createHostDaemonApp(
+     }
+ 
+     const promise = (async () => {
+-      const shellEnv = await options.resolveRuntimeShellEnv?.();
++      const shellEnv = await options.resolveRuntimeShellEnv?.(options.dataDir);
+       if (shellEnv === undefined) {
+         return runtimeManager.getShellEnv();
+       }
+diff --git a/apps/host-daemon/src/machine-environment-projection.test.ts b/apps/host-daemon/src/machine-environment-projection.test.ts
+new file mode 100644
+index 000000000..82824bc91
+--- /dev/null
++++ b/apps/host-daemon/src/machine-environment-projection.test.ts
+@@ -0,0 +1,237 @@
++import { createHash } from "node:crypto";
++import fs from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++import { afterEach, describe, expect, it } from "vitest";
++import readMachineEnvironmentProjection from "./machine-environment-projection.js";
++
++const MACHINE_ENVIRONMENT_KEYS = [
++  "BUN_INSTALL_CACHE_DIR",
++  "BUN_TMPDIR",
++  "npm_config_store_dir",
++  "GOCACHE",
++  "GOMODCACHE",
++  "MISE_DATA_DIR",
++  "MISE_CACHE_DIR",
++  "MISE_STATE_DIR",
++  "DPRINT_CACHE_DIR",
++  "TMPDIR",
++  "TEMP",
++  "TMP",
++] as const;
++
++type MachineEnvironment = Record<
++  (typeof MACHINE_ENVIRONMENT_KEYS)[number],
++  string
++>;
++
++const tempDirs: string[] = [];
++
++async function makeFixture(): Promise<{
++  designationPath: string;
++  environment: MachineEnvironment;
++  machineHome: string;
++  projectionPath: string;
++  workspace: string;
++}> {
++  const root = await fs.mkdtemp(
++    path.join(os.tmpdir(), "bb-machine-projection-"),
++  );
++  tempDirs.push(root);
++  const machineHome = path.join(root, "machine-home");
++  const workspace = path.join(root, ".bb", "worktrees", "env");
++  const designationPath = path.join(root, ".phosphor-machine-home");
++  const projectionPath = path.join(
++    machineHome,
++    ".phosphor",
++    "machine",
++    "environment.json",
++  );
++  await fs.mkdir(workspace, { recursive: true });
++  await fs.mkdir(machineHome, { recursive: true });
++  const designation = `${machineHome}\n`;
++  await fs.writeFile(designationPath, designation, "utf8");
++  const environment = Object.fromEntries(
++    MACHINE_ENVIRONMENT_KEYS.map((key) => [key, `/machine/${key}`]),
++  ) as MachineEnvironment;
++  await writeProjection({
++    designation,
++    designationPath,
++    environment,
++    machineHome,
++    projectionPath,
++  });
++  return {
++    designationPath,
++    environment,
++    machineHome,
++    projectionPath,
++    workspace,
++  };
++}
++
++async function writeProjection(args: {
++  designation: string;
++  designationPath: string;
++  environment: MachineEnvironment;
++  machineHome: string;
++  projectionPath: string;
++  overrides?: Record<string, unknown>;
++}): Promise<void> {
++  const projection = {
++    schemaVersion: 1,
++    writer: "machine-home",
++    machineHome: args.machineHome,
++    designationPath: args.designationPath,
++    designationDigest: createHash("sha256")
++      .update(args.designation)
++      .digest("hex"),
++    environment: args.environment,
++    ...args.overrides,
++  };
++  await fs.mkdir(path.dirname(args.projectionPath), { recursive: true });
++  await fs.chmod(args.projectionPath, 0o644).catch((cause: unknown) => {
++    if ((cause as NodeJS.ErrnoException).code !== "ENOENT") {
++      throw cause;
++    }
++  });
++  await fs.writeFile(args.projectionPath, JSON.stringify(projection), {
++    encoding: "utf8",
++    mode: 0o444,
++  });
++  await fs.chmod(args.projectionPath, 0o444);
++}
++
++afterEach(async () => {
++  await Promise.all(
++    tempDirs
++      .splice(0)
++      .map((directory) => fs.rm(directory, { recursive: true, force: true })),
++  );
++});
++
++describe("readMachineEnvironmentProjection", () => {
++  it("resolves the nearest designation and returns the frozen exact environment", async () => {
++    const fixture = await makeFixture();
++
++    const projection = await readMachineEnvironmentProjection(
++      fixture.workspace,
++    );
++
++    expect(projection.machineHome).toBe(fixture.machineHome);
++    expect(projection.designationPath).toBe(fixture.designationPath);
++    expect(projection.environment).toEqual(fixture.environment);
++    expect(Object.isFrozen(projection)).toBe(true);
++    expect(Object.isFrozen(projection.environment)).toBe(true);
++  });
++
++  it("resolves an absent managed-worktree leaf from its existing ancestor", async () => {
++    const fixture = await makeFixture();
++    const absentWorkspace = path.join(fixture.workspace, "new-env");
++    await fs.rm(fixture.workspace, { recursive: true });
++
++    await expect(
++      readMachineEnvironmentProjection(absentWorkspace),
++    ).resolves.toMatchObject({
++      machineHome: fixture.machineHome,
++      designationPath: fixture.designationPath,
++      environment: fixture.environment,
++    });
++    await expect(fs.stat(absentWorkspace)).rejects.toMatchObject({
++      code: "ENOENT",
++    });
++  });
++
++  it("does not skip a malformed nearer marker for an absent leaf", async () => {
++    const fixture = await makeFixture();
++    const absentWorkspace = path.join(fixture.workspace, "new-env");
++    await fs.writeFile(
++      path.join(fixture.workspace, ".phosphor-machine-home"),
++      "not-an-absolute-machine-home\n",
++      "utf8",
++    );
++
++    await expect(
++      readMachineEnvironmentProjection(absentWorkspace),
++    ).rejects.toMatchObject({ reason: "designation-invalid" });
++  });
++
++  it.each([
++    [
++      "missing",
++      "projection-missing",
++      async (fixture: Awaited<ReturnType<typeof makeFixture>>) => {
++        await fs.rm(fixture.projectionPath);
++      },
++    ],
++    [
++      "malformed",
++      "projection-malformed",
++      async (fixture: Awaited<ReturnType<typeof makeFixture>>) => {
++        await fs.chmod(fixture.projectionPath, 0o644);
++        await fs.writeFile(fixture.projectionPath, "not-json", "utf8");
++        await fs.chmod(fixture.projectionPath, 0o444);
++      },
++    ],
++    [
++      "writable",
++      "projection-malformed",
++      async (fixture: Awaited<ReturnType<typeof makeFixture>>) => {
++        await fs.chmod(fixture.projectionPath, 0o644);
++      },
++    ],
++    [
++      "foreign",
++      "foreign-machine-home",
++      async (fixture: Awaited<ReturnType<typeof makeFixture>>) => {
++        await writeProjection({
++          designation: `${fixture.machineHome}\n`,
++          designationPath: fixture.designationPath,
++          environment: fixture.environment,
++          machineHome: path.join(
++            path.dirname(fixture.machineHome),
++            "other-home",
++          ),
++          projectionPath: fixture.projectionPath,
++        });
++      },
++    ],
++    [
++      "stale",
++      "stale-designation",
++      async (fixture: Awaited<ReturnType<typeof makeFixture>>) => {
++        await writeProjection({
++          designation: `${fixture.machineHome}\n`,
++          designationPath: path.join(
++            path.dirname(fixture.designationPath),
++            "other-marker",
++          ),
++          environment: fixture.environment,
++          machineHome: fixture.machineHome,
++          projectionPath: fixture.projectionPath,
++        });
++      },
++    ],
++    [
++      "wrong shape",
++      "projection-malformed",
++      async (fixture: Awaited<ReturnType<typeof makeFixture>>) => {
++        await writeProjection({
++          designation: `${fixture.machineHome}\n`,
++          designationPath: fixture.designationPath,
++          environment: fixture.environment,
++          machineHome: fixture.machineHome,
++          overrides: { extra: true },
++          projectionPath: fixture.projectionPath,
++        });
++      },
++    ],
++  ] as const)("refuses %s projections", async (_name, reason, mutate) => {
++    const fixture = await makeFixture();
++    await mutate(fixture);
++
++    await expect(
++      readMachineEnvironmentProjection(fixture.workspace),
++    ).rejects.toMatchObject({ reason });
++  });
++});
+diff --git a/apps/host-daemon/src/machine-environment-projection.ts b/apps/host-daemon/src/machine-environment-projection.ts
+new file mode 100644
+index 000000000..aed569fe7
+--- /dev/null
++++ b/apps/host-daemon/src/machine-environment-projection.ts
+@@ -0,0 +1,355 @@
++import { createHash } from "node:crypto";
++import { readFile, realpath, stat } from "node:fs/promises";
++import path from "node:path";
++
++/** The versioned carrier written by the Machine Home owner. */
++const MACHINE_ENVIRONMENT_PROJECTION_PATH = path.join(
++  ".phosphor",
++  "machine",
++  "environment.json",
++);
++const MACHINE_HOME_DESIGNATION_FILE = ".phosphor-machine-home";
++
++const MACHINE_ENVIRONMENT_KEYS = [
++  "BUN_INSTALL_CACHE_DIR",
++  "BUN_TMPDIR",
++  "npm_config_store_dir",
++  "GOCACHE",
++  "GOMODCACHE",
++  "MISE_DATA_DIR",
++  "MISE_CACHE_DIR",
++  "MISE_STATE_DIR",
++  "DPRINT_CACHE_DIR",
++  "TMPDIR",
++  "TEMP",
++  "TMP",
++] as const;
++
++type MachineEnvironmentKey = (typeof MACHINE_ENVIRONMENT_KEYS)[number];
++
++type MachineEnvironment = {
++  readonly [Key in MachineEnvironmentKey]: string;
++};
++
++interface MachineEnvironmentProjection {
++  readonly schemaVersion: 1;
++  readonly writer: "machine-home";
++  readonly machineHome: string;
++  readonly designationPath: string;
++  readonly designationDigest: string;
++  readonly environment: MachineEnvironment;
++}
++
++type MachineEnvironmentProjectionRefusalReason =
++  | "input-invalid"
++  | "designation-missing"
++  | "designation-invalid"
++  | "projection-missing"
++  | "projection-malformed"
++  | "foreign-machine-home"
++  | "stale-designation";
++
++class MachineEnvironmentProjectionError extends Error {
++  constructor(
++    readonly reason: MachineEnvironmentProjectionRefusalReason,
++    readonly path: string,
++    message: string,
++    options?: ErrorOptions,
++  ) {
++    super(message, options);
++    this.name = "MachineEnvironmentProjectionError";
++  }
++}
++
++const PROJECTION_KEYS = [
++  "schemaVersion",
++  "writer",
++  "machineHome",
++  "designationPath",
++  "designationDigest",
++  "environment",
++] as const;
++
++const isRecord = (value: unknown): value is Record<string, unknown> =>
++  typeof value === "object" && value !== null && !Array.isArray(value);
++
++const errorCode = (cause: unknown): string | undefined =>
++  cause &&
++  typeof cause === "object" &&
++  "code" in cause &&
++  typeof cause.code === "string"
++    ? cause.code
++    : undefined;
++
++const refusal = (
++  reason: MachineEnvironmentProjectionRefusalReason,
++  pathValue: string,
++  message: string,
++  cause?: unknown,
++): MachineEnvironmentProjectionError =>
++  new MachineEnvironmentProjectionError(
++    reason,
++    pathValue,
++    message,
++    cause === undefined ? undefined : { cause },
++  );
++
++const hasExactKeys = (
++  value: Record<string, unknown>,
++  expected: readonly string[],
++): boolean => {
++  const actual = Object.keys(value);
++  return (
++    actual.length === expected.length && expected.every((key) => key in value)
++  );
++};
++
++const readFileOrRefuse = async (
++  filePath: string,
++  reason: MachineEnvironmentProjectionRefusalReason,
++  message: string,
++): Promise<Buffer> => {
++  try {
++    return await readFile(filePath);
++  } catch (cause) {
++    throw refusal(reason, filePath, message, cause);
++  }
++};
++
++async function nearestExistingDirectory(
++  startDirectory: string,
++): Promise<string> {
++  let candidate = startDirectory;
++  while (true) {
++    try {
++      return await realpath(candidate);
++    } catch (cause) {
++      if (errorCode(cause) !== "ENOENT") {
++        throw cause;
++      }
++      const parent = path.dirname(candidate);
++      if (parent === candidate) {
++        throw cause;
++      }
++      candidate = parent;
++    }
++  }
++}
++
++async function nearestDesignation(startDirectory: string): Promise<{
++  designationDigest: string;
++  designationPath: string;
++  machineHome: string;
++}> {
++  if (!path.isAbsolute(startDirectory)) {
++    throw refusal(
++      "input-invalid",
++      startDirectory,
++      "Projection resolution requires an absolute start directory.",
++    );
++  }
++
++  let directory: string;
++  try {
++    directory = await nearestExistingDirectory(startDirectory);
++    if (!(await stat(directory)).isDirectory()) {
++      throw new Error("not a directory");
++    }
++  } catch (cause) {
++    throw refusal(
++      "input-invalid",
++      startDirectory,
++      "The projection start directory is unavailable or is not a directory.",
++      cause,
++    );
++  }
++
++  while (true) {
++    const designationPath = path.join(directory, MACHINE_HOME_DESIGNATION_FILE);
++    try {
++      const info = await stat(designationPath);
++      if (!info.isFile()) {
++        throw refusal(
++          "designation-invalid",
++          designationPath,
++          "The nearest Machine Home designation is not a file.",
++        );
++      }
++      const raw = await readFileOrRefuse(
++        designationPath,
++        "designation-invalid",
++        "The nearest Machine Home designation cannot be read.",
++      );
++      const designated = raw.toString("utf8").trim();
++      if (!path.isAbsolute(designated)) {
++        throw refusal(
++          "designation-invalid",
++          designationPath,
++          "The nearest Machine Home designation must contain one absolute Machine Home path.",
++        );
++      }
++      const machineHome = await realpath(designated).catch((cause) => {
++        throw refusal(
++          "designation-invalid",
++          designationPath,
++          "The designated Machine Home is unavailable.",
++          cause,
++        );
++      });
++      if (!(await stat(machineHome)).isDirectory()) {
++        throw refusal(
++          "designation-invalid",
++          designationPath,
++          "The designated Machine Home is not a directory.",
++        );
++      }
++      return {
++        designationDigest: createHash("sha256").update(raw).digest("hex"),
++        designationPath,
++        machineHome,
++      };
++    } catch (cause) {
++      if (cause instanceof MachineEnvironmentProjectionError) {
++        throw cause;
++      }
++      if (errorCode(cause) !== "ENOENT") {
++        throw refusal(
++          "designation-invalid",
++          designationPath,
++          "The nearest Machine Home designation cannot be inspected.",
++          cause,
++        );
++      }
++    }
++
++    const parent = path.dirname(directory);
++    if (parent === directory) {
++      throw refusal(
++        "designation-missing",
++        startDirectory,
++        `No ${MACHINE_HOME_DESIGNATION_FILE} designation exists at or above ${startDirectory}.`,
++      );
++    }
++    directory = parent;
++  }
++}
++
++function decodeProjection(
++  value: unknown,
++  projectionPath: string,
++): MachineEnvironmentProjection {
++  if (!isRecord(value) || !hasExactKeys(value, PROJECTION_KEYS)) {
++    throw refusal(
++      "projection-malformed",
++      projectionPath,
++      "The Machine Home environment projection has an invalid shape.",
++    );
++  }
++  const environment = value.environment;
++  if (
++    value.schemaVersion !== 1 ||
++    value.writer !== "machine-home" ||
++    typeof value.machineHome !== "string" ||
++    typeof value.designationPath !== "string" ||
++    typeof value.designationDigest !== "string" ||
++    !/^[0-9a-f]{64}$/u.test(value.designationDigest) ||
++    !isRecord(environment) ||
++    !hasExactKeys(environment, MACHINE_ENVIRONMENT_KEYS) ||
++    MACHINE_ENVIRONMENT_KEYS.some((key) => typeof environment[key] !== "string")
++  ) {
++    throw refusal(
++      "projection-malformed",
++      projectionPath,
++      "The Machine Home environment projection has an invalid schema.",
++    );
++  }
++
++  const frozenEnvironment = Object.freeze(
++    Object.fromEntries(
++      MACHINE_ENVIRONMENT_KEYS.map((key) => [key, environment[key]]),
++    ) as MachineEnvironment,
++  );
++  return Object.freeze({
++    schemaVersion: 1,
++    writer: "machine-home",
++    machineHome: value.machineHome,
++    designationPath: value.designationPath,
++    designationDigest: value.designationDigest,
++    environment: frozenEnvironment,
++  });
++}
++
++/** Read the owner-attested projection selected by the nearest designation. */
++async function readMachineEnvironmentProjection(
++  startDirectory: string,
++): Promise<MachineEnvironmentProjection> {
++  const designation = await nearestDesignation(startDirectory);
++  const projectionPath = path.join(
++    designation.machineHome,
++    MACHINE_ENVIRONMENT_PROJECTION_PATH,
++  );
++  let info;
++  try {
++    info = await stat(projectionPath);
++  } catch (cause) {
++    if (errorCode(cause) === "ENOENT") {
++      throw refusal(
++        "projection-missing",
++        projectionPath,
++        "The Machine Home environment projection is unavailable.",
++        cause,
++      );
++    }
++    throw refusal(
++      "projection-malformed",
++      projectionPath,
++      "The Machine Home environment projection cannot be inspected.",
++      cause,
++    );
++  }
++  if (!info.isFile() || (info.mode & 0o222) !== 0) {
++    throw refusal(
++      "projection-malformed",
++      projectionPath,
++      "The Machine Home environment projection must be a read-only file.",
++    );
++  }
++
++  const raw = await readFileOrRefuse(
++    projectionPath,
++    "projection-malformed",
++    "The Machine Home environment projection cannot be read.",
++  );
++  let decoded: unknown;
++  try {
++    decoded = JSON.parse(raw.toString("utf8"));
++  } catch (cause) {
++    throw refusal(
++      "projection-malformed",
++      projectionPath,
++      "The Machine Home environment projection is not valid JSON.",
++      cause,
++    );
++  }
++  const projection = decodeProjection(decoded, projectionPath);
++  if (projection.machineHome !== designation.machineHome) {
++    throw refusal(
++      "foreign-machine-home",
++      projectionPath,
++      "The projection is attested to another Machine Home.",
++    );
++  }
++  if (
++    projection.designationPath !== designation.designationPath ||
++    projection.designationDigest !== designation.designationDigest
++  ) {
++    throw refusal(
++      "stale-designation",
++      projectionPath,
++      "The nearest Machine Home designation no longer matches the projection attestation.",
++    );
++  }
++  return projection;
++}
++
++export default readMachineEnvironmentProjection;
+diff --git a/apps/host-daemon/src/runtime-manager.test.ts b/apps/host-daemon/src/runtime-manager.test.ts
+index 8ceedfcb3..bf926679b 100644
+--- a/apps/host-daemon/src/runtime-manager.test.ts
++++ b/apps/host-daemon/src/runtime-manager.test.ts
+@@ -1184,6 +1184,39 @@ describe("RuntimeManager", () => {
+     );
+   });
+ 
++  it("resolves one shell environment and passes the same values to setup and runtime", async () => {
++    const provisionWorkspace = createProvisionWorkspaceMock("/tmp/env-1");
++    const createRuntime = vi.fn(() => createFakeRuntime());
++    const shellEnv = Object.freeze({
++      PATH: "/machine/bin:/usr/bin",
++      BUN_TMPDIR: "/machine/bun/tmp",
++      GOCACHE: "/machine/go/build",
++      TMPDIR: "/machine/tmp",
++    });
++    const resolveRuntimeShellEnv = vi.fn(async (workspacePath: string) => {
++      expect(workspacePath).toBe("/tmp/env-1");
++      return shellEnv;
++    });
++    const manager = new RuntimeManager({
++      provisionWorkspace,
++      createRuntime,
++      resolveRuntimeShellEnv,
++    });
++
++    await manager.ensureEnvironment({
++      environmentId: "env-one-owner",
++      workspacePath: "/tmp/env-1",
++    });
++
++    expect(resolveRuntimeShellEnv).toHaveBeenCalledTimes(1);
++    expect(provisionWorkspace).toHaveBeenCalledWith(
++      expect.objectContaining({ shellEnv }),
++    );
++    expect(createRuntime).toHaveBeenCalledWith(
++      expect.objectContaining({ shellEnv }),
++    );
++  });
++
+   it("forwards the bridge record-mode directory to provider processes but not the shell env", async () => {
+     vi.stubEnv("BB_PROVIDER_BRIDGE_RECORD_DIR", "/tmp/provider-recordings/raw");
+     const provisionWorkspace = createProvisionWorkspaceMock("/tmp/env-1");
+diff --git a/apps/host-daemon/src/runtime-manager.ts b/apps/host-daemon/src/runtime-manager.ts
+index 5c38c372c..f8123a187 100644
+--- a/apps/host-daemon/src/runtime-manager.ts
++++ b/apps/host-daemon/src/runtime-manager.ts
+@@ -133,6 +133,17 @@ function buildProviderProcessExitDetail(
+   return `stderr:\n${info.stderr.slice(-PROVIDER_PROCESS_EXIT_DETAIL_MAX_LENGTH)}`;
+ }
+ 
++function workspacePathForProvision(provision: ProvisionWorkspaceArgs): string {
++  switch (provision.workspaceProvisionType) {
++    case "unmanaged":
++    case "reconnect-managed-worktree":
++      return provision.path;
++    case "managed-worktree":
++    case "personal":
++      return provision.targetPath;
++  }
++}
++
+ export interface RuntimeEntry {
+   environmentId: string;
+   runtime: AgentRuntime;
+@@ -149,6 +160,8 @@ export interface RuntimeEntry {
+   workspace: HostWorkspace;
+   path: string;
+   terminals: Set<string>;
++  /** The one host-resolved shell environment used for this entry's lifetime. */
++  shellEnv: NonNullable<AgentRuntimeOptions["shellEnv"]>;
+ }
+ 
+ interface InjectedSkillsChangedNotification {
+@@ -205,6 +218,9 @@ export interface RuntimeManagerOptions {
+   ) => Promise<HostWorkspace>;
+   providerMaintenanceIdleTimeoutMs?: number;
+   shellEnv?: AgentRuntimeOptions["shellEnv"];
++  resolveRuntimeShellEnv?: (
++    workspacePath: string,
++  ) => Promise<NonNullable<AgentRuntimeOptions["shellEnv"]>>;
+   onEvent?: (args: { environmentId: string; event: ThreadEvent }) => void;
+   threadStorageRootPath?: string | null;
+   onInjectedSkillsChanged?: (args: InjectedSkillsChangedNotification) => void;
+@@ -1065,7 +1081,12 @@ export class RuntimeManager {
+       );
+     }
+ 
+-    const workspace = await this.provisionHostWorkspace(args.provision);
++    const shellEnv =
++      entry?.shellEnv ?? (await this.resolveShellEnv(args.workspacePath));
++    const workspace = await this.provisionHostWorkspace(
++      args.provision,
++      shellEnv,
++    );
+     if (workspace.path !== args.workspacePath) {
+       throw new Error(
+         `Workspace refresh for ${args.environmentId} returned ${workspace.path}, not ${args.workspacePath}`,
+@@ -1150,10 +1171,13 @@ export class RuntimeManager {
+       );
+     }
+ 
+-    await this.provisionHostWorkspace({
+-      ...args.provision,
+-      signal: args.signal,
+-    });
++    await this.provisionHostWorkspace(
++      {
++        ...args.provision,
++        signal: args.signal,
++      },
++      args.entry.shellEnv,
++    );
+     this.options.onWorkspaceStatusChanged?.({
+       environmentId: args.entry.environmentId,
+       changeKinds: ["work-status-changed", "git-refs-changed"],
+@@ -1427,10 +1451,16 @@ export class RuntimeManager {
+       );
+     }
+ 
+-    const workspace = await this.provisionHostWorkspace({
+-      ...provision,
+-      signal: args.provisionSignal,
+-    });
++    const shellEnv = await this.resolveShellEnv(
++      workspacePathForProvision(provision),
++    );
++    const workspace = await this.provisionHostWorkspace(
++      {
++        ...provision,
++        signal: args.provisionSignal,
++      },
++      shellEnv,
++    );
+     const workspaceWriteRoots =
+       await workspace.getAdditionalWorkspaceWriteRoots();
+     const additionalWorkspaceWriteRoots = this.runtimeWorkspaceWriteRoots({
+@@ -1438,7 +1468,6 @@ export class RuntimeManager {
+       workspaceRoots: workspaceWriteRoots,
+     });
+     let runtime: AgentRuntime | null = null;
+-    const shellEnv = this.getShellEnv();
+     const providerProcessEnv = providerProcessEnvFromShellEnv(shellEnv);
+     runtime = this.createRuntime({
+       workspacePath: workspace.path,
+@@ -1507,15 +1536,26 @@ export class RuntimeManager {
+       terminals: new Set<string>(),
+       workspace,
+       path: workspace.path,
++      shellEnv,
+     };
+   }
+ 
++  private async resolveShellEnv(
++    workspacePath: string,
++  ): Promise<NonNullable<AgentRuntimeOptions["shellEnv"]>> {
++    return this.options.resolveRuntimeShellEnv
++      ? this.options.resolveRuntimeShellEnv(workspacePath)
++      : this.getShellEnv();
++  }
++
+   private provisionHostWorkspace(
+     provision: ProvisionWorkspaceArgs,
++    shellEnv: NonNullable<AgentRuntimeOptions["shellEnv"]> = this.getShellEnv(),
+   ): Promise<HostWorkspace> {
+     return this.provisionWorkspace({
+       ...provision,
+-      ...userExecutableProcessOptions(this.getShellEnv()),
++      ...userExecutableProcessOptions(shellEnv),
++      shellEnv,
+     });
+   }
+ 
+diff --git a/apps/host-daemon/src/start-host-daemon.ts b/apps/host-daemon/src/start-host-daemon.ts
+index 2e35346ad..0808abe8d 100644
+--- a/apps/host-daemon/src/start-host-daemon.ts
++++ b/apps/host-daemon/src/start-host-daemon.ts
+@@ -25,6 +25,7 @@ import {
+   resolveLocalBbExecutablePath,
+   resolveUserShellPath,
+ } from "./runtime-shell-env.js";
++import readMachineEnvironmentProjection from "./machine-environment-projection.js";
+ import type { HostDaemonLogger } from "./logger.js";
+ import {
+   startMachineAuthProxy,
+@@ -180,7 +181,7 @@ export async function startHostDaemon(
+       }),
+     );
+     const hostWatcher = createHostWatcher();
+-    const resolveRuntimeShellEnv = async () =>
++    const resolveBaseRuntimeShellEnv = async () =>
+       prepareRuntimeShellEnv({
+         bbExecutableDirectory,
+         bbExecutablePath,
+@@ -188,7 +189,14 @@ export async function startHostDaemon(
+         inheritedPath: (await resolveUserShellPath()) ?? process.env.PATH,
+         serverUrl: machineAuthProxy?.serverUrl ?? serverUrl,
+       });
+-    const runtimeShellEnv = await resolveRuntimeShellEnv();
++    const resolveRuntimeShellEnv = async (workspacePath: string) => {
++      const projection = await readMachineEnvironmentProjection(workspacePath);
++      return Object.freeze({
++        ...(await resolveBaseRuntimeShellEnv()),
++        ...projection.environment,
++      });
++    };
++    const runtimeShellEnv = await resolveBaseRuntimeShellEnv();
+     const runtimeShellEnvResolvedAtMs = Date.now();
+     app = await createHostDaemonApp({
+       dataDir,
+diff --git a/packages/host-workspace/src/provision.ts b/packages/host-workspace/src/provision.ts
+index a90931a71..59f19f7f7 100644
+--- a/packages/host-workspace/src/provision.ts
++++ b/packages/host-workspace/src/provision.ts
+@@ -59,6 +59,8 @@ interface ProvisionBase {
+   onProgress?: ProvisionProgressCallback;
+   /** Resolved user login-shell PATH for workspace Git and setup commands. */
+   shellPath?: string;
++  /** Immutable host-resolved environment carrier for setup provisioning. */
++  shellEnv?: Readonly<Record<string, string>>;
+   signal?: AbortSignal;
+ }
+ 
+@@ -725,6 +727,7 @@ async function provisionWorktree(
+     baseBranch: opts.baseBranch,
+     timeoutMs: opts.timeoutMs,
+     shellPath: opts.shellPath,
++    shellEnv: opts.shellEnv,
+     onProgress: opts.onProgress,
+     pruneEmptyParent: true,
+     signal: opts.signal,
+diff --git a/packages/host-workspace/src/provisioning.ts b/packages/host-workspace/src/provisioning.ts
+index 461c7b10e..ea5087999 100644
+--- a/packages/host-workspace/src/provisioning.ts
++++ b/packages/host-workspace/src/provisioning.ts
+@@ -58,6 +58,8 @@ interface CreateWorkspaceArgs {
+   timeoutMs: number;
+   /** Resolved user-shell PATH for the setup script. */
+   shellPath?: string;
++  /** Immutable host-resolved environment carrier for the setup script. */
++  shellEnv?: Readonly<Record<string, string>>;
+   onProgress?: ProgressCallback;
+   pruneEmptyParent?: boolean;
+   signal?: AbortSignal;
+@@ -68,6 +70,8 @@ interface RunSetupScriptArgs {
+   timeoutMs: number;
+   /** Resolved user-shell PATH. Falls back to the daemon process PATH. */
+   shellPath?: string;
++  /** Immutable host-resolved environment carrier for the setup script. */
++  shellEnv?: Readonly<Record<string, string>>;
+   onProgress?: ProgressCallback;
+   signal?: AbortSignal;
+ }
+@@ -434,6 +438,7 @@ export async function createWorktree(
+       workspacePath: args.targetPath,
+       timeoutMs: args.timeoutMs,
+       shellPath: args.shellPath,
++      shellEnv: args.shellEnv,
+       onProgress: args.onProgress,
+       signal: args.signal,
+     });
+@@ -573,7 +578,7 @@ export async function runSetupScript(
+ 
+   const { timeoutMs } = args;
+   const env = sanitizeInheritedChildProcessEnv({
+-    env: process.env,
++    env: { ...process.env, ...(args.shellEnv ?? {}) },
+     ...(args.shellPath !== undefined ? { shellPath: args.shellPath } : {}),
+   });
+   const child = spawnPortableOutputProcess({
+diff --git a/packages/host-workspace/test/provisioning.test.ts b/packages/host-workspace/test/provisioning.test.ts
+index 54f4c6398..03b08e8f7 100644
+--- a/packages/host-workspace/test/provisioning.test.ts
++++ b/packages/host-workspace/test/provisioning.test.ts
+@@ -552,6 +552,30 @@ describe("workspace provisioning", () => {
+     expect(result.output).toBe("missing|missing|missing|external-value\n");
+   });
+ 
++  it("passes the host-resolved shell environment unchanged to setup scripts", async () => {
++    const workspacePath = await makeTempDir("bb-setup-machine-env-");
++    await fs.writeFile(
++      path.join(workspacePath, DEFAULT_ENV_SETUP_SCRIPT_NAME),
++      'printf "%s|%s|%s\\n" "$BUN_TMPDIR" "$GOCACHE" "$TMPDIR"\n',
++      "utf8",
++    );
++    const shellEnv = Object.freeze({
++      BUN_TMPDIR: "/machine/bun/tmp",
++      GOCACHE: "/machine/go/build",
++      TMPDIR: "/machine/tmp",
++    });
++
++    const result = await runSetupScript({
++      workspacePath,
++      timeoutMs: 900000,
++      shellEnv,
++    });
++
++    expect(result.output).toBe(
++      "/machine/bun/tmp|/machine/go/build|/machine/tmp\n",
++    );
++  });
++
+   it("uses the resolved user-shell PATH for setup scripts", async () => {
+     const workspacePath = await makeTempDir("bb-setup-shell-path-");
+     const binPath = await makeTempDir("bb-setup-shell-bin-");
+-- 
+2.43.0
+
