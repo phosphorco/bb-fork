@@ -1,0 +1,443 @@
+From b0a2eb7d78612bf6d08c5ee394cc91c50b82df21 Mon Sep 17 00:00:00 2001
+From: B disposable proof <b-proof@invalid.local>
+Date: Tue, 1 Sep 2026 20:56:34 -0400
+Subject: [PATCH] fix: bind dev launcher Node runtime through package children
+
+---
+ apps/app/package.json                 |   2 +-
+ apps/host-daemon/package.json         |   2 +-
+ apps/server/package.json              |   2 +-
+ package.json                          |   4 +-
+ packages/scripts/test/run-dev.test.ts |  25 +++++
+ scripts/assert-selected-node.mjs      |  58 +++++++++++
+ scripts/assert-selected-node.test.mjs |  44 ++++++++
+ scripts/bb-dev-app                    | 140 ++++++++++++++------------
+ 8 files changed, 206 insertions(+), 71 deletions(-)
+ create mode 100644 scripts/assert-selected-node.mjs
+ create mode 100644 scripts/assert-selected-node.test.mjs
+
+diff --git a/apps/app/package.json b/apps/app/package.json
+index 2c671181d5ddd86027564117b29a8b7c4fe81a59..312c4716649f28a7d100b44db1f4339b3f5effbb 100644
+--- a/apps/app/package.json
++++ b/apps/app/package.json
+@@ -6,7 +6,7 @@
+   "scripts": {
+     "generate:pwa-icons": "node scripts/generate-pwa-icons.mjs",
+     "generate:pwa-icons:check": "node scripts/generate-pwa-icons.mjs --check",
+-    "dev": "node scripts/generate-pwa-icons.mjs && vite --config vite.dev.config.ts --configLoader runner",
++    "dev": "\"${BB_DEV_NODE_EXEC_PATH:-node}\" scripts/generate-pwa-icons.mjs && \"${BB_DEV_NODE_EXEC_PATH:-node}\" ./node_modules/vite/bin/vite.js --config vite.dev.config.ts --configLoader runner",
+     "build": "node scripts/generate-pwa-icons.mjs && vite build --logLevel warn && node ../../scripts/precompress-app-dist.mjs dist",
+     "preview": "vite preview",
+     "check:bundle": "node scripts/check-bundle-budget.mjs",
+diff --git a/apps/host-daemon/package.json b/apps/host-daemon/package.json
+index 3d809afbfea1455c634db44e4f82bb838fab17dc..1b2a9111e16940faf9b6fe296329dcb5c316952e 100644
+--- a/apps/host-daemon/package.json
++++ b/apps/host-daemon/package.json
+@@ -15,7 +15,7 @@
+     "bundle": "node ./scripts/build-bundles.mjs",
+     "start": "node dist/index.js",
+     "start:prod": "cross-env NODE_ENV=production node dist/index.js",
+-    "dev": "node --conditions=source --import tsx scripts/dev-supervisor.mjs",
++    "dev": "\"${BB_DEV_NODE_EXEC_PATH:-node}\" --conditions=source --import tsx scripts/dev-supervisor.mjs",
+     "clean": "rimraf dist",
+     "typecheck": "tsc --noEmit",
+     "test": "vitest run --config vitest.config.ts"
+diff --git a/apps/server/package.json b/apps/server/package.json
+index b88790d090a28883c17c3a3a8c1965d29f12fc85..1a6c11873d18c65224c29c9f902f040063bb91b6 100644
+--- a/apps/server/package.json
++++ b/apps/server/package.json
+@@ -7,7 +7,7 @@
+     "build": "node ../../scripts/build-node-entry.mjs src/index.ts dist/index.js --clean-dist --external ./start-server.js --copy-dir ../../packages/db/drizzle dist/drizzle --copy-dir src/assets dist/assets && node --import tsx scripts/copy-builtin-skills.ts && node ../../scripts/build-node-entry.mjs src/start-server.ts dist/start-server.js && node ../../scripts/build-node-entry.mjs ../../packages/plugin-sdk/src/index.ts dist/plugin-sdk-runtime.js",
+     "start": "node dist/index.js",
+     "start:prod": "cross-env NODE_ENV=production node dist/index.js",
+-    "dev": "node --conditions=source --import tsx scripts/dev-supervisor.mjs",
++    "dev": "\"${BB_DEV_NODE_EXEC_PATH:-node}\" --conditions=source --import tsx scripts/dev-supervisor.mjs",
+     "clean": "rimraf dist",
+     "typecheck": "tsc --noEmit",
+     "test": "vitest run --config vitest.config.ts",
+diff --git a/package.json b/package.json
+index 1e72357820d20f72754a5b7e996c2fd3cc47e325..b9e7732ce0af0b0dd145e00c137e021fb6968bb3 100644
+--- a/package.json
++++ b/package.json
+@@ -11,7 +11,7 @@
+     "scripts:prepare": "pnpm exec turbo run build --filter=@bb/scripts --output-logs=none --log-prefix=none --summarize=false",
+     "cli:prepare": "pnpm exec turbo run build --filter=@bb/scripts --filter=@bb/cli --output-logs=none --log-prefix=none --summarize=false",
+     "ensure-native-modules": "node scripts/ensure-native-modules.mjs",
+-    "dev": "node scripts/ensure-native-modules.mjs && cross-env NODE_ENV=development dotenv -c development -- node --conditions=source --import tsx packages/scripts/src/commands/run-dev.ts",
++    "dev": "\"${BB_DEV_NODE_EXEC_PATH:-node}\" scripts/ensure-native-modules.mjs && \"${BB_DEV_NODE_EXEC_PATH:-node}\" ./node_modules/cross-env/dist/bin/cross-env.js NODE_ENV=development ./node_modules/dotenv-cli/cli.js -c development -- \"${BB_DEV_NODE_EXEC_PATH:-node}\" --conditions=source --import tsx packages/scripts/src/commands/run-dev.ts",
+     "start:worktree": "cross-env NODE_ENV=development dotenv -c development -- node --conditions=source --import tsx packages/scripts/src/commands/run-dev.ts --worktree",
+     "dev:remote": "cross-env BB_DEV_APP_HOST=0.0.0.0 BB_SERVER_BIND_HOST=0.0.0.0 pnpm run dev",
+     "cloud:dev": "node --conditions=source --import tsx scripts/bb-cloud-dev.mjs",
+@@ -21,7 +21,7 @@
+     "dev:restart": "cross-env NODE_ENV=development node --conditions=source --import tsx packages/scripts/src/commands/request-dev-restart.ts both",
+     "dev:restart-server": "cross-env NODE_ENV=development node --conditions=source --import tsx packages/scripts/src/commands/request-dev-restart.ts server",
+     "dev:restart-host-daemon": "cross-env NODE_ENV=development node --conditions=source --import tsx packages/scripts/src/commands/request-dev-restart.ts host-daemon",
+-    "dev:host-daemon": "cross-env NODE_ENV=development dotenv -c development -- node --conditions=source --import tsx packages/scripts/src/commands/run-host-daemon.ts",
++    "dev:host-daemon": "\"${BB_DEV_NODE_EXEC_PATH:-node}\" ./node_modules/cross-env/dist/bin/cross-env.js NODE_ENV=development ./node_modules/dotenv-cli/cli.js -c development -- \"${BB_DEV_NODE_EXEC_PATH:-node}\" --conditions=source --import tsx packages/scripts/src/commands/run-host-daemon.ts",
+     "build": "turbo run build --filter=@bb/scripts --filter=@bb/app --filter=@bb/server --filter=@bb/host-daemon --filter=@bb/cli --filter=bb-app",
+     "bb-app:prepare": "turbo run build --filter=bb-app --output-logs=none --log-prefix=none --summarize=false",
+     "start": "cross-env NODE_ENV=production dotenv -c production -- node --conditions=source --import tsx scripts/start-bb.mjs",
+diff --git a/packages/scripts/test/run-dev.test.ts b/packages/scripts/test/run-dev.test.ts
+index c2376be1c1c752f93afdebd865b89465f1c537cc..3a90d54a674ac7923da5ac74a6d2449f83df4a65 100644
+--- a/packages/scripts/test/run-dev.test.ts
++++ b/packages/scripts/test/run-dev.test.ts
+@@ -231,6 +231,31 @@ describe("run-dev", () => {
+     });
+   });
+ 
++  it("preserves the launcher-selected Node binding for package children", () => {
++    const config = resolveDevInstanceConfig({
++      homeDir: "/Users/tester",
++      repoRoot: "/Users/tester/src/bb",
++    });
++
++    const env = toDevLaunchProcessEnv({
++      baseEnv: {
++        BB_DEV_NODE_BIN_DIR: "/selected/bin",
++        BB_DEV_NODE_EXEC_PATH: "/selected/bin/node",
++        BB_DEV_NODE_VERSION: "22.21.1",
++        NODE_OPTIONS: "--import=/selected/assert-selected-node.mjs",
++      },
++      config,
++      mode: "vite",
++    });
++
++    expect(env).toMatchObject({
++      BB_DEV_NODE_BIN_DIR: "/selected/bin",
++      BB_DEV_NODE_EXEC_PATH: "/selected/bin/node",
++      BB_DEV_NODE_VERSION: "22.21.1",
++      NODE_OPTIONS: "--import=/selected/assert-selected-node.mjs",
++    });
++  });
++
+   it("runs the production-style source launcher for worktree start", () => {
+     const command = createStartWorktreeCommand();
+ 
+diff --git a/scripts/assert-selected-node.mjs b/scripts/assert-selected-node.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a2feeb5bf343762201ec4836692103f57cab66e7
+--- /dev/null
++++ b/scripts/assert-selected-node.mjs
+@@ -0,0 +1,58 @@
++import { realpathSync } from "node:fs";
++import * as nodeModule from "node:module";
++
++export function assertSelectedNodeBinding({
++  actualExecPath,
++  expectedExecPath,
++  actualVersion,
++  expectedVersion,
++  registerHooksAvailable,
++}) {
++  if (actualExecPath !== expectedExecPath) {
++    throw new Error(
++      `expected executable ${expectedExecPath}, got ${actualExecPath}`,
++    );
++  }
++  if (actualVersion !== expectedVersion) {
++    throw new Error(
++      `expected Node ${expectedVersion}, got Node ${actualVersion}`,
++    );
++  }
++  if (!registerHooksAvailable) {
++    throw new Error(
++      `Node ${actualVersion} does not provide node:module.registerHooks`,
++    );
++  }
++}
++
++function realpath(path) {
++  try {
++    return realpathSync.native(path);
++  } catch {
++    return path;
++  }
++}
++
++function assertFromEnvironment() {
++  const expectedExecPath = process.env.BB_DEV_NODE_EXEC_PATH;
++  if (expectedExecPath === undefined || expectedExecPath === "") {
++    return;
++  }
++
++  try {
++    assertSelectedNodeBinding({
++      actualExecPath: realpath(process.execPath),
++      expectedExecPath: realpath(expectedExecPath),
++      actualVersion: process.versions.node,
++      expectedVersion: process.env.BB_DEV_NODE_VERSION,
++      registerHooksAvailable: typeof nodeModule.registerHooks === "function",
++    });
++  } catch (error) {
++    process.stderr.write(
++      `[bb-dev-node] runtime binding refused: ${error instanceof Error ? error.message : String(error)}\n`,
++    );
++    process.exit(1);
++  }
++}
++
++assertFromEnvironment();
+diff --git a/scripts/assert-selected-node.test.mjs b/scripts/assert-selected-node.test.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..9eb111a812ad321e567ae5d2c19a19a43c3af62d
+--- /dev/null
++++ b/scripts/assert-selected-node.test.mjs
+@@ -0,0 +1,44 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++
++import { assertSelectedNodeBinding } from "./assert-selected-node.mjs";
++
++test("accepts one exact executable with registerHooks", () => {
++  assert.doesNotThrow(() =>
++    assertSelectedNodeBinding({
++      actualExecPath: "/selected/bin/node",
++      expectedExecPath: "/selected/bin/node",
++      actualVersion: "22.21.1",
++      expectedVersion: "22.21.1",
++      registerHooksAvailable: true,
++    }),
++  );
++});
++
++test("refuses a replaced executable", () => {
++  assert.throws(
++    () =>
++      assertSelectedNodeBinding({
++        actualExecPath: "/incompatible/bin/node",
++        expectedExecPath: "/selected/bin/node",
++        actualVersion: "22.21.1",
++        expectedVersion: "22.21.1",
++        registerHooksAvailable: true,
++      }),
++    /expected executable \/selected\/bin\/node, got \/incompatible\/bin\/node/,
++  );
++});
++
++test("refuses a runtime without registerHooks", () => {
++  assert.throws(
++    () =>
++      assertSelectedNodeBinding({
++        actualExecPath: "/selected/bin/node",
++        expectedExecPath: "/selected/bin/node",
++        actualVersion: "22.12.0",
++        expectedVersion: "22.12.0",
++        registerHooksAvailable: false,
++      }),
++    /does not provide node:module\.registerHooks/,
++  );
++});
+diff --git a/scripts/bb-dev-app b/scripts/bb-dev-app
+index a9400ccec891f83df4b98e2e993b50e60b37dce9..bf054ae10c43232629b690591b33ef8fd85f7995 100755
+--- a/scripts/bb-dev-app
++++ b/scripts/bb-dev-app
+@@ -2,69 +2,69 @@
+ set -euo pipefail
+ 
+ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+-REPO_ROOT="${BB_DEV_REPO_ROOT:-$(dirname -- "${script_dir}")}"
+-
+-resolve_dev_node_bin_dir() {
+-  if [[ -n "${BB_DEV_NODE_BIN_DIR:-}" ]]; then
+-    printf '%s\n' "${BB_DEV_NODE_BIN_DIR}"
+-    return
++REPO_ROOT="$(cd -- "${BB_DEV_REPO_ROOT:-$(dirname -- "${script_dir}")}" && pwd -P)"
++
++resolve_dev_node_exec_path() {
++  local node_bin_dir="${BB_DEV_NODE_BIN_DIR:-}"
++  if [[ -z "${node_bin_dir}" ]]; then
++    local node_on_path
++    node_on_path="$(command -v node || true)"
++    [[ -n "${node_on_path}" ]] || {
++      printf '%s\n' "BB dev runtime binding refused: node is not on PATH" >&2
++      return 1
++    }
++    node_bin_dir="$(dirname -- "${node_on_path}")"
+   fi
+ 
+-  local current_major
+-  current_major="$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || true)"
+-  if [[ "${current_major}" == "22" ]]; then
+-    return
++  [[ "${node_bin_dir}" = /* ]] || {
++    printf '%s\n' "BB dev runtime binding refused: BB_DEV_NODE_BIN_DIR must be an absolute directory: ${node_bin_dir}" >&2
++    return 1
++  }
++  [[ -d "${node_bin_dir}" ]] || {
++    printf '%s\n' "BB dev runtime binding refused: Node bin directory does not exist: ${node_bin_dir}" >&2
++    return 1
++  }
++
++  local candidate="${node_bin_dir}/node"
++  [[ -x "${candidate}" ]] || {
++    printf '%s\n' "BB dev runtime binding refused: executable not found: ${candidate}" >&2
++    return 1
++  }
++
++  local version
++  version="$("${candidate}" -p "process.versions.node" 2>/dev/null)" || {
++    printf '%s\n' "BB dev runtime binding refused: could not execute ${candidate}" >&2
++    return 1
++  }
++  if ! "${candidate}" -e '
++    const [major, minor] = process.versions.node.split(".").map(Number);
++    process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1);
++  '; then
++    printf '%s\n' "BB dev runtime binding refused: Node ${version} at ${candidate} is incompatible; requires Node >=22.19.0" >&2
++    return 1
++  fi
++  if ! "${candidate}" -e 'process.exit(typeof require("node:module").registerHooks === "function" ? 0 : 1)'; then
++    printf '%s\n' "BB dev runtime binding refused: Node ${version} at ${candidate} does not provide node:module.registerHooks" >&2
++    return 1
+   fi
+ 
+-  local node_versions_dir="${NVM_DIR:-${HOME}/.nvm}/versions/node"
+-  [[ -d "${node_versions_dir}" ]] || return 0
+-
+-  node - "${node_versions_dir}" <<'NODE' || true
+-const fs = require("node:fs");
+-const path = require("node:path");
+-
+-const nodeVersionsDir = process.argv[2];
+-const candidates = fs
+-  .readdirSync(nodeVersionsDir, { withFileTypes: true })
+-  .filter((entry) => entry.isDirectory())
+-  .map((entry) => {
+-    const match = /^v(\d+)\.(\d+)\.(\d+)$/.exec(entry.name);
+-    if (match === null) {
+-      return null;
+-    }
+-    return {
+-      name: entry.name,
+-      major: Number(match[1]),
+-      minor: Number(match[2]),
+-      patch: Number(match[3]),
+-    };
+-  })
+-  .filter(
+-    (version) =>
+-      version !== null &&
+-      version.major === 22 &&
+-      (version.minor > 12 || (version.minor === 12 && version.patch >= 0)),
+-  )
+-  .sort((left, right) => {
+-    if (left.minor !== right.minor) return left.minor - right.minor;
+-    return left.patch - right.patch;
+-  });
+-
+-const selected = candidates.at(-1);
+-if (selected !== undefined) {
+-  console.log(path.join(nodeVersionsDir, selected.name, "bin"));
+-}
+-NODE
++  "${candidate}" -p "process.execPath"
+ }
+ 
+-dev_node_bin_dir="$(resolve_dev_node_bin_dir)"
+-if [[ -n "${dev_node_bin_dir}" ]]; then
+-  PATH="${dev_node_bin_dir}:${PATH}:${HOME}/.local/bin"
++dev_node_exec_path="$(resolve_dev_node_exec_path)" || exit 1
++dev_node_bin_dir="$(dirname -- "${dev_node_exec_path}")"
++dev_node_version="$("${dev_node_exec_path}" -p "process.versions.node")"
++export BB_DEV_NODE_BIN_DIR="${dev_node_bin_dir}"
++export BB_DEV_NODE_EXEC_PATH="${dev_node_exec_path}"
++export BB_DEV_NODE_VERSION="${dev_node_version}"
++node_assert_module="${REPO_ROOT}/scripts/assert-selected-node.mjs"
++if [[ -n "${NODE_OPTIONS:-}" ]]; then
++  export NODE_OPTIONS="${NODE_OPTIONS} --import=${node_assert_module}"
+ else
+-  # Append, never prepend: a node in ~/.local/bin must not shadow the node the
+-  # caller already resolved (nvm, mise, asdf, ...).
+-  PATH="${PATH}:${HOME}/.local/bin"
++  export NODE_OPTIONS="--import=${node_assert_module}"
+ fi
++PATH="${dev_node_bin_dir}:${PATH}:${HOME}/.local/bin"
++export PATH
+ 
+ sanitize_label() {
+   printf '%s\n' "$1" \
+@@ -139,10 +139,10 @@ require_command() {
+ 
+ assert_desktop_node_runtime() {
+   local version exec_path
+-  version="$(node -p "process.version" 2>/dev/null || echo "unknown")"
+-  exec_path="$(command -v node || echo "unknown")"
++  version="${BB_DEV_NODE_VERSION}"
++  exec_path="${BB_DEV_NODE_EXEC_PATH}"
+ 
+-  if ! node -e '
++  if ! "${BB_DEV_NODE_EXEC_PATH}" -e '
+     const [major, minor] = process.versions.node.split(".").map(Number);
+     process.exit(major === 22 && minor >= 19 ? 0 : 1);
+   '; then
+@@ -159,7 +159,7 @@ ensure_repo() {
+ load_config() {
+   local config
+   config="$(
+-    node - "${REPO_ROOT}" <<'NODE'
++    "${BB_DEV_NODE_EXEC_PATH}" - "${REPO_ROOT}" <<'NODE'
+ const crypto = require("node:crypto");
+ const os = require("node:os");
+ const path = require("node:path");
+@@ -322,21 +322,21 @@ ensure_dependencies() {
+   pnpm -C "${REPO_ROOT}" install --frozen-lockfile
+ 
+   log "Checking native Node modules"
+-  node "${REPO_ROOT}/scripts/ensure-native-modules.mjs"
++  "${BB_DEV_NODE_EXEC_PATH}" "${REPO_ROOT}/scripts/ensure-native-modules.mjs"
+ 
+   # Official catalog installs execute the packaged plugin SDK at runtime.
+   # Build it before source dev starts so a clean worktree can install a plugin.
+   log "Building plugin SDK runtime"
+   pnpm -C "${REPO_ROOT}" exec turbo run build --filter=@get-bb/plugin-sdk
+ 
+-  if ! (cd "${REPO_ROOT}/apps/desktop" && node -e "require('electron')" >/dev/null 2>&1); then
++  if ! (cd "${REPO_ROOT}/apps/desktop" && "${BB_DEV_NODE_EXEC_PATH}" -e "require('electron')" >/dev/null 2>&1); then
+     local electron_install
+     electron_install="$(
+       find "${REPO_ROOT}/node_modules/.pnpm" -path '*/node_modules/electron/install.js' -type f -print -quit
+     )"
+     [[ -n "${electron_install}" ]] || die "Could not find Electron install.js"
+     log "Installing Electron runtime"
+-    node "${electron_install}"
++    "${BB_DEV_NODE_EXEC_PATH}" "${electron_install}"
+   fi
+ }
+ 
+@@ -360,24 +360,32 @@ wait_for_log_pattern() {
+ }
+ 
+ start_dev_server() {
+-  local repo_root_q path_q dev_log_q
++  local repo_root_q path_q node_bin_dir_q node_exec_path_q node_version_q node_options_q dev_log_q
+   printf -v repo_root_q '%q' "${REPO_ROOT}"
+   printf -v path_q '%q' "${PATH}"
++  printf -v node_bin_dir_q '%q' "${BB_DEV_NODE_BIN_DIR}"
++  printf -v node_exec_path_q '%q' "${BB_DEV_NODE_EXEC_PATH}"
++  printf -v node_version_q '%q' "${BB_DEV_NODE_VERSION}"
++  printf -v node_options_q '%q' "${NODE_OPTIONS}"
+   printf -v dev_log_q '%q' "${DEV_LOG}"
+   log "Starting dev server session ${DEV_SESSION}"
+   rm -f "${DEV_LOG}"
+-  screen -dmS "${DEV_SESSION}" "${BASH}" -lc "cd ${repo_root_q} && export PATH=${path_q} && unset BB_THREAD_ID BB_ENVIRONMENT_ID BB_THREAD_STORAGE && exec pnpm dev > ${dev_log_q} 2>&1"
++  screen -dmS "${DEV_SESSION}" "${BASH}" -lc "cd ${repo_root_q} && export PATH=${path_q} BB_DEV_NODE_BIN_DIR=${node_bin_dir_q} BB_DEV_NODE_EXEC_PATH=${node_exec_path_q} BB_DEV_NODE_VERSION=${node_version_q} NODE_OPTIONS=${node_options_q} && unset BB_THREAD_ID BB_ENVIRONMENT_ID BB_THREAD_STORAGE && exec pnpm dev > ${dev_log_q} 2>&1"
+   wait_for_log_pattern "${DEV_LOG}" "Host daemon started" "dev server" 90
+ }
+ 
+ start_desktop() {
+-  local repo_root_q path_q desktop_log_q
++  local repo_root_q path_q node_bin_dir_q node_exec_path_q node_version_q node_options_q desktop_log_q
+   printf -v repo_root_q '%q' "${REPO_ROOT}"
+   printf -v path_q '%q' "${PATH}"
++  printf -v node_bin_dir_q '%q' "${BB_DEV_NODE_BIN_DIR}"
++  printf -v node_exec_path_q '%q' "${BB_DEV_NODE_EXEC_PATH}"
++  printf -v node_version_q '%q' "${BB_DEV_NODE_VERSION}"
++  printf -v node_options_q '%q' "${NODE_OPTIONS}"
+   printf -v desktop_log_q '%q' "${DESKTOP_LOG}"
+   log "Starting desktop session ${DESKTOP_SESSION}"
+   rm -f "${DESKTOP_LOG}"
+-  screen -dmS "${DESKTOP_SESSION}" "${BASH}" -lc "cd ${repo_root_q} && export PATH=${path_q} && unset BB_THREAD_ID BB_ENVIRONMENT_ID BB_THREAD_STORAGE && exec pnpm exec turbo run dev --filter=@bb/desktop > ${desktop_log_q} 2>&1"
++  screen -dmS "${DESKTOP_SESSION}" "${BASH}" -lc "cd ${repo_root_q} && export PATH=${path_q} BB_DEV_NODE_BIN_DIR=${node_bin_dir_q} BB_DEV_NODE_EXEC_PATH=${node_exec_path_q} BB_DEV_NODE_VERSION=${node_version_q} NODE_OPTIONS=${node_options_q} && unset BB_THREAD_ID BB_ENVIRONMENT_ID BB_THREAD_STORAGE && exec pnpm exec turbo run dev --filter=@bb/desktop > ${desktop_log_q} 2>&1"
+   wait_for_log_pattern "${DESKTOP_LOG}" "@bb/desktop: app http://localhost:${BB_DEV_APP_PORT}" "desktop app" 120
+ }
+ 
