@@ -1,0 +1,683 @@
+From b988958eea27d93a04146d22660c1361afa220b8 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Thu, 3 Sep 2026 03:24:24 -0400
+Subject: [PATCH 1/2] feat(plugin-sdk): expose trusted external request origin
+
+---
+ apps/server/src/external-origin.ts            | 13 ++++
+ apps/server/src/routes/plugins.ts             |  8 ++-
+ apps/server/src/routes/system.ts              | 26 ++------
+ .../server/src/services/plugins/plugin-api.ts |  1 +
+ .../src/services/plugins/plugin-service.ts    |  9 ++-
+ .../bb-plugin-authoring/SKILL.md              |  9 +++
+ .../services/system/bb-app-managed-config.ts  |  4 +-
+ apps/server/src/start-server.ts               |  7 +-
+ .../test/services/plugins/plugin-wire.test.ts | 65 +++++++++++++++++++
+ .../test/system/bb-app-managed-config.test.ts | 22 +++++++
+ .../test/system/external-origin.test.ts       | 22 +++++++
+ docs/api_to_audit.md                          | 12 ++++
+ docs/configuration.md                         |  2 +-
+ packages/bb-app/src/launcher.ts               |  7 +-
+ packages/bb-app/test/index.test.ts            |  5 ++
+ packages/config/src/env-vars.ts               | 12 +++-
+ packages/config/src/host-daemon.ts            |  6 +-
+ packages/config/src/public-url.ts             | 21 ++++++
+ .../src/__tests__/public-types.test.ts        |  1 +
+ packages/plugin-sdk/src/backend-contract.ts   | 11 +++-
+ .../src/testing/fake-plugin-host.ts           |  1 +
+ 21 files changed, 227 insertions(+), 37 deletions(-)
+ create mode 100644 apps/server/src/external-origin.ts
+ create mode 100644 apps/server/test/system/external-origin.test.ts
+
+diff --git a/apps/server/src/external-origin.ts b/apps/server/src/external-origin.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d89704f0b3a43193a63a1bf15f971b14127dc51c
+--- /dev/null
++++ b/apps/server/src/external-origin.ts
+@@ -0,0 +1,13 @@
++/**
++ * The configured public origin, or a normalized direct request-origin
++ * candidate when BB has no public URL configured. The fallback observes the
++ * inbound Host and is not an identity, authorization, or trusted-proxy signal.
++ */
++export function p6rResolveExternalOrigin(
++  requestUrl: string,
++  appUrl: string | undefined,
++): string {
++  if (appUrl?.trim()) return new URL(appUrl).origin;
++
++  return new URL(requestUrl).origin;
++}
+diff --git a/apps/server/src/routes/plugins.ts b/apps/server/src/routes/plugins.ts
+index fe2f398dc49a1823e8fb82e395fbfc2e9341b417..4ff372c4506cd44b8cbc71ab4e34ac7796a7290c 100644
+--- a/apps/server/src/routes/plugins.ts
++++ b/apps/server/src/routes/plugins.ts
+@@ -4,6 +4,7 @@ import { promisify } from "node:util";
+ import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
+ import type { Context, Hono } from "hono";
+ import type { ServerRuntimeConfig } from "../types.js";
++import { p6rResolveExternalOrigin } from "../external-origin.js";
+ import {
+   browserRequestProblem,
+   type BrowserRequestProblem,
+@@ -616,7 +617,12 @@ export function registerPluginRoutes(
+         503,
+       );
+     }
+-    return plugins.invokeHttpRoute(id, fresh.value, context);
++    return plugins.invokeHttpRoute(id, fresh.value, context, {
++      experimental_p6rExternalOrigin: p6rResolveExternalOrigin(
++        context.req.url,
++        deps.config.appUrl,
++      ),
++    });
+   });
+ 
+   // bb.rpc dispatcher (design §4.6): always "local" auth semantics —
+diff --git a/apps/server/src/routes/system.ts b/apps/server/src/routes/system.ts
+index 6142263c9851bc8c1aa7347a2f19175e11ca0e4d..8d3ee95ea5f5f1547040aa2bbf4a9ff27e51a150 100644
+--- a/apps/server/src/routes/system.ts
++++ b/apps/server/src/routes/system.ts
+@@ -66,11 +66,6 @@ const CUSTOM_ACP_LOGO_CONTENT_TYPES = {
+   ".webp": "image/webp",
+ } as const;
+ 
+-interface SystemConfigRequest {
+-  url: string;
+-  header(name: string): string | undefined;
+-}
+-
+ function firstForwardedValue(value: string | undefined): string | undefined {
+   return value?.split(",", 1)[0]?.trim() || undefined;
+ }
+@@ -83,29 +78,16 @@ function effectivePort(url: URL): number | null {
+ }
+ 
+ function resolveSystemServerUrl(
+-  request: SystemConfigRequest,
+-  config: Pick<
+-    ServerRuntimeConfig,
+-    "appUrl" | "devAppPort" | "isDevelopment" | "serverPort"
+-  >,
++  request: { url: string; header(name: string): string | undefined },
++  config: Pick<ServerRuntimeConfig, "appUrl" | "devAppPort" | "isDevelopment" | "serverPort">,
+ ): string {
+   if (config.appUrl !== undefined) return config.appUrl.replace(/\/+$/u, "");
+-
+   const requestUrl = new URL(request.url);
+   const forwardedHost = firstForwardedValue(request.header("x-forwarded-host"));
+   if (forwardedHost === undefined) return requestUrl.origin;
+-
+-  const forwardedProtocol =
+-    firstForwardedValue(request.header("x-forwarded-proto")) ??
+-    requestUrl.protocol.replace(/:$/u, "");
++  const forwardedProtocol = firstForwardedValue(request.header("x-forwarded-proto")) ?? requestUrl.protocol.replace(/:$/u, "");
+   const forwardedUrl = new URL(`${forwardedProtocol}://${forwardedHost}`);
+-  if (
+-    config.isDevelopment &&
+-    config.devAppPort !== undefined &&
+-    effectivePort(forwardedUrl) === config.devAppPort
+-  ) {
+-    forwardedUrl.port = String(config.serverPort);
+-  }
++  if (config.isDevelopment && config.devAppPort !== undefined && effectivePort(forwardedUrl) === config.devAppPort) forwardedUrl.port = String(config.serverPort);
+   return forwardedUrl.origin;
+ }
+ 
+diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
+index 99e091bb570fa89830b9fbfe9b72f3f58ea122f1..51616463e0fb590fffa5b3c77c6eaf4467212776 100644
+--- a/apps/server/src/services/plugins/plugin-api.ts
++++ b/apps/server/src/services/plugins/plugin-api.ts
+@@ -121,6 +121,7 @@ export type {
+   PluginCliContext,
+   P6rIdentityApi,
+   P6rIdentityProviderRegistration,
++  P6rPluginHttpRequestContext,
+   P6rPluginRequestContext,
+   PluginMentionTrigger,
+   PluginThreadEventName,
+diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
+index f03ca8a5015874a3fece93d8ed116d980d0f6538..091cd2a52c81bf11bcf6b9b566172828ed1226ae 100644
+--- a/apps/server/src/services/plugins/plugin-service.ts
++++ b/apps/server/src/services/plugins/plugin-service.ts
+@@ -87,6 +87,7 @@ import {
+   type PluginAgentToolRecord,
+   type PluginCliContext,
+   type PluginHttpRouteRecord,
++  type P6rPluginHttpRequestContext,
+   type PluginMentionTrigger,
+   type PluginRpcHandler,
+   type P6rPluginRequestContext,
+@@ -342,6 +343,10 @@ export interface PluginService {
+     id: string,
+     route: PluginHttpRouteRecord,
+     context: Context,
++    p6rHttpRequest: Pick<
++      P6rPluginHttpRequestContext,
++      "experimental_p6rExternalOrigin"
++    >,
+   ): Promise<Response>;
+   /**
+    * Validate RPC input, run the handler with failure isolation, validate its
+@@ -2037,7 +2042,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+       return wireLookup(id, (plugin) => plugin.handle.rpcHandlers.get(method));
+     },
+ 
+-    async invokeHttpRoute(id, route, context) {
++    async invokeHttpRoute(id, route, context, p6rHttpRequest) {
+       const outcome = await invokeWrapped(
+         id,
+         `http ${route.method} ${route.path}`,
+@@ -2045,6 +2050,8 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+           const p6rRequestPrincipal =
+             context.get("p6rRequestPrincipal") ?? null;
+           const response = await route.handler(context, {
++            experimental_p6rExternalOrigin:
++              p6rHttpRequest.experimental_p6rExternalOrigin,
+             p6rRequestPrincipal,
+             p6rRequestPrincipalKey:
+               p6rRequestPrincipal === null
+diff --git a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
+index 18880d2f39077e9d1d415fdf13449f8d1f1d4749..00b00a7413a6ebf449b5d9b4dfce3affc3d74340 100644
+--- a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
++++ b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
+@@ -387,6 +387,15 @@ code: the personal project is intentionally projectless and resolves to
+ `/threads/:threadId`, while ordinary projects resolve to
+ `/projects/:projectId/threads/:threadId`.
+ 
++### p6r HTTP request context — external origin
++
++HTTP route handlers receive `ctx.experimental_p6rExternalOrigin`: BB's
++configured public origin when `BB_APP_URL` is set, otherwise a normalized
++direct request-origin candidate. The fallback is not a trust or authorization
++signal; use it only to form token-free same-server links. Do not read
++`X-Forwarded-*` headers in plugin code; capability routes do not establish a
++trusted proxy boundary.
++
+ ### bb.log
+ 
+ `bb.log.debug|info|warn|error(message: string)` — goes to the server log
+diff --git a/apps/server/src/services/system/bb-app-managed-config.ts b/apps/server/src/services/system/bb-app-managed-config.ts
+index a0174af0f747ac2a72f747a112babb51b6339fa2..c05686c36d894b7cf7f849f37c024f574bc2dd73 100644
+--- a/apps/server/src/services/system/bb-app-managed-config.ts
++++ b/apps/server/src/services/system/bb-app-managed-config.ts
+@@ -13,7 +13,7 @@ import {
+   validateInferenceModel,
+   validateTranscriptionModel,
+ } from "@bb/config/inference-model";
+-import { validateOptionalUrl } from "@bb/config/public-url";
++import { p6rValidateOptionalHttpAppUrl } from "@bb/config/public-url";
+ import type { ServerLogger, ServerRuntimeConfig } from "../../types.js";
+ import type { NotificationHub } from "../../ws/hub.js";
+ 
+@@ -126,7 +126,7 @@ export function applyBbAppManagedConfig(
+   setOptionalAppUrl(
+     args.targetConfig,
+     managedConfig.BB_APP_URL !== undefined
+-      ? validateOptionalUrl("BB_APP_URL", managedConfig.BB_APP_URL)
++      ? p6rValidateOptionalHttpAppUrl("BB_APP_URL", managedConfig.BB_APP_URL)
+       : args.baseConfig.appUrl,
+   );
+ }
+diff --git a/apps/server/src/start-server.ts b/apps/server/src/start-server.ts
+index badcc7c8ad5d8db7b494210edb652f653fdee5f0..e7967cdbce569254d481f63cc480e062777e2123 100644
+--- a/apps/server/src/start-server.ts
++++ b/apps/server/src/start-server.ts
+@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import type { ServerConfig } from "@bb/config/server";
+ import { isLoopbackHostname } from "@bb/config/loopback";
+-import { toOptionalString } from "@bb/config/strings";
++import { p6rValidateOptionalHttpAppUrl } from "@bb/config/public-url";
+ import { createLogger } from "@bb/logger";
+ import { getAppSettings } from "@bb/db";
+ import { initDb } from "./db.js";
+@@ -60,7 +60,10 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+   const sharedPorts = new HostSharedPortCoordinator({ db, hub });
+   const workspaceReadCaches = new WorkspaceReadCaches({ hub });
+   const lifecycleDedupers = createLifecycleDedupers();
+-  const appUrl = toOptionalString(serverConfig.BB_APP_URL);
++  const appUrl = p6rValidateOptionalHttpAppUrl(
++    "BB_APP_URL",
++    serverConfig.BB_APP_URL,
++  );
+ 
+   const selfDir = dirname(fileURLToPath(import.meta.url));
+   const appDir = resolve(selfDir, "../../app");
+diff --git a/apps/server/test/services/plugins/plugin-wire.test.ts b/apps/server/test/services/plugins/plugin-wire.test.ts
+index 145f8aa870f0367550311d4b47fbd4b32ea034bd..267644b08ebbaecbaa0d3c6c0cb704c41946fb0b 100644
+--- a/apps/server/test/services/plugins/plugin-wire.test.ts
++++ b/apps/server/test/services/plugins/plugin-wire.test.ts
+@@ -1,4 +1,5 @@
+ import { mkdir, writeFile } from "node:fs/promises";
++import http from "node:http";
+ import { join } from "node:path";
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ import {
+@@ -8,6 +9,7 @@ import {
+ } from "@bb/db";
+ import {
+   createTestAppHarness,
++  startTestServer,
+   type TestAppHarness,
+ } from "../../helpers/test-app.js";
+ import { createMockHubSocket } from "../../helpers/mock-hub-socket.js";
+@@ -51,6 +53,8 @@ const WIRE_SOURCE = `
+     bb.http.route("GET", "/hello", (c: any) => c.json({ message: "hello v1" }));
+     bb.http.route("GET", "/identity", (c: any, ctx: any) =>
+       c.json({ principal: ctx.p6rRequestPrincipal, principalKey: ctx.p6rRequestPrincipalKey }));
++    bb.http.route("GET", "/request-context", (c: any, ctx: any) =>
++      c.json({ externalOrigin: ctx.experimental_p6rExternalOrigin }));
+     bb.http.route("POST", "/echo", async (c: any) =>
+       c.json({ echoed: await c.req.json() }));
+     bb.http.route("GET", "/guarded", (c: any) => c.json({ guarded: true }), {
+@@ -170,6 +174,29 @@ async function writePlugin(
+   return rootDir;
+ }
+ 
++function rawJson(
++  baseUrl: string,
++  path: string,
++  headers: Record<string, string>,
++): Promise<{ status: number; body: unknown }> {
++  const url = new URL(path, baseUrl);
++  return new Promise((resolve, reject) => {
++    const request = http.request(
++      { host: url.hostname, port: url.port, path: url.pathname, headers },
++      (response) => {
++        let body = "";
++        response.setEncoding("utf8");
++        response.on("data", (chunk) => (body += chunk));
++        response.once("end", () =>
++          resolve({ status: response.statusCode ?? 0, body: JSON.parse(body) }),
++        );
++      },
++    );
++    request.once("error", reject);
++    request.end();
++  });
++}
++
+ async function rpc(
+   harness: TestAppHarness,
+   method: string,
+@@ -248,6 +275,44 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
+     expect(appOrigin.status).toBe(200);
+   });
+ 
++  it("gives plugin routes the canonical configured origin, not spoofed forwarding headers", async () => {
++    const response = await harness.app.request(
++      `${BASE}/api/v1/plugins/wire/http/request-context`,
++      {
++        headers: {
++          "x-forwarded-host": "attacker.example",
++          "x-forwarded-proto": "https",
++        },
++      },
++    );
++    expect(response.status).toBe(200);
++    expect(await response.json()).toEqual({
++      externalOrigin: "https://bb.example.test",
++    });
++  });
++
++  it("keeps a blank local-only app URL from blocking a plugin route", async () => {
++    const live = await startTestServer({ appUrl: "" });
++    try {
++      const root = await writePlugin(join(live.config.dataDir, "fixtures"), {
++        name: "bb-plugin-wire-live",
++        serverSource: WIRE_SOURCE,
++      });
++      expect((await live.pluginService.installPath(root)).status).toBe("running");
++      const response = await rawJson(
++        live.baseUrl,
++        "/api/v1/plugins/wire-live/http/request-context",
++        { host: "candidate.example:25389" },
++      );
++      expect(response.status).toBe(200);
++      expect(response.body).toEqual({
++        externalOrigin: "http://candidate.example:25389",
++      });
++    } finally {
++      await live.close();
++    }
++  });
++
+   it("passes only the shared resolver principal to HTTP and RPC plugin edges", async () => {
+     const api = harness.pluginService.getApi("wire");
+     if (!api) throw new Error("wire plugin API was not loaded");
+diff --git a/apps/server/test/system/bb-app-managed-config.test.ts b/apps/server/test/system/bb-app-managed-config.test.ts
+index 69e2890b0e31fb0b8a9b36cda316a2c4d80f9207..4b684fe248c87e28b27e1b0e50c4511b1510e712 100644
+--- a/apps/server/test/system/bb-app-managed-config.test.ts
++++ b/apps/server/test/system/bb-app-managed-config.test.ts
+@@ -82,6 +82,28 @@ function createRuntimeConfig(): ServerRuntimeConfig {
+ }
+ 
+ describe("bb-app managed config", () => {
++  it("treats blank app URL as local-only and rejects non-browser schemes", () => {
++    const baseConfig = createRuntimeConfig();
++    const targetConfig = createRuntimeConfig();
++    applyBbAppManagedConfig({
++      baseConfig,
++      managedConfig: { config: { BB_APP_URL: "   " } },
++      managedEnvFile: {},
++      targetConfig,
++    });
++    expect(targetConfig.appUrl).toBeUndefined();
++    for (const value of ["file:///tmp/bb", "mailto:test@example.test", "data:,x", "javascript:alert(1)", "ftp://bb.example.test", "ws://bb.example.test"]) {
++      expect(() =>
++        applyBbAppManagedConfig({
++          baseConfig,
++          managedConfig: { config: { BB_APP_URL: value } },
++          managedEnvFile: {},
++          targetConfig,
++        }),
++      ).toThrow(/BB_APP_URL must use http or https/u);
++    }
++  });
++
+   it("applies managed config over the ambient runtime config", () => {
+     const baseConfig = createRuntimeConfig();
+     const targetConfig = createRuntimeConfig();
+diff --git a/apps/server/test/system/external-origin.test.ts b/apps/server/test/system/external-origin.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ba3a65c91b302f9f2c62c4ccc6e23bbfde0441c5
+--- /dev/null
++++ b/apps/server/test/system/external-origin.test.ts
+@@ -0,0 +1,22 @@
++import { describe, expect, it } from "vitest";
++import { p6rResolveExternalOrigin } from "../../src/external-origin.js";
++
++describe("external request origin", () => {
++  it("prefers configured public origin over a request-observed candidate", () => {
++    expect(
++      p6rResolveExternalOrigin(
++        "http://attacker.example/api",
++        "https://bb.example.test/path?ignored#ignored",
++      ),
++    ).toBe("https://bb.example.test");
++  });
++
++  it("returns only the normalized direct request-origin candidate when unconfigured", () => {
++    expect(
++      p6rResolveExternalOrigin(
++        "http://candidate.example:25389/api?token=secret#fragment",
++        undefined,
++      ),
++    ).toBe("http://candidate.example:25389");
++  });
++});
+diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
+index 125fe5c4c8b228598c91f7bd73fff82c04e33ef6..ec07f78084fe96c9558abab6109bd36c2ba1e3f4 100644
+--- a/docs/api_to_audit.md
++++ b/docs/api_to_audit.md
+@@ -18,6 +18,18 @@ derived path, decide whether URL origin construction belongs in this API or at
+ the caller's transport boundary, and add route kinds only when they have the
+ same cross-client ownership and compatibility guarantees.
+ 
++## `P6rPluginHttpRequestContext.experimental_p6rExternalOrigin`
++
++**What it does.** Supplies plugin HTTP handlers with a server-authored browser
++origin. `BB_APP_URL` is authoritative; without it the value is only a
++normalized direct request-origin candidate, not a trust or security signal. It
++deliberately excludes forwarded headers, credentials, paths, queries, and
++fragments.
++
++**Audit before stabilizing.** Decide whether an explicit trusted-proxy grant is
++needed before forwarding metadata can participate. Re-audit every capability
++route consumer to ensure it creates only token-free same-origin links.
++
+ ## `BbPluginApi.experimental_facets`
+ 
+ **What it does.** Lets a plugin declare an enum-valued, shared-thread
+diff --git a/docs/configuration.md b/docs/configuration.md
+index 1954cb64d1fe1cbe4949a3200bdb72f40523e0cf..d37d16dbe7c65cd7f1ede67b2bc08eec99e5cd7b 100644
+--- a/docs/configuration.md
++++ b/docs/configuration.md
+@@ -127,7 +127,7 @@ signal it, so a stale file left by a crash cannot stop an unrelated process.
+ 
+ | Key                     | Command                                            | When to set             | Used for                                                                                                                                                                                                                                                                                                                                                                                              |
+ | ----------------------- | -------------------------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+-| `BB_APP_URL`            | `bb-app config`                                    | Optional for remote use | Human-facing app URL used for generated links and allowed browser origins. Leave empty for local-only use.                                                                                                                                                                                                                                                                                            |
++| `BB_APP_URL`            | `bb-app config`                                    | Optional for remote use | HTTP(S) human-facing app URL used for generated links and allowed browser origins. Leave blank for local-only use.                                                                                                                                                                                                                                                                                    |
+ | `BB_INFERENCE`          | `bb-app config`                                    | Optional                | Primary server-side helper model in `provider/model` format. Defaults to `codex/gpt-5.6-luna`; the Codex helper route uses no reasoning.                                                                                                                                                                                                                                                              |
+ | `BB_INFERENCE_FALLBACK` | `bb-app config`                                    | Optional                | Helper model used after a transient primary timeout, rate limit, or service-unavailable failure. Defaults to `codex/gpt-5.4-mini`.                                                                                                                                                                                                                                                                    |
+ | `BB_TRANSCRIPTION`      | `bb-app config`                                    | Optional                | Voice transcription model in `provider/model` format. Defaults to `codex/gpt-transcribe`.                                                                                                                                                                                                                                                                                                             |
+diff --git a/packages/bb-app/src/launcher.ts b/packages/bb-app/src/launcher.ts
+index dad3e516313bc6440739b65308b5aa2c37d86bfe..cfcd20c43930588469f5c5082f1065281df69b40 100644
+--- a/packages/bb-app/src/launcher.ts
++++ b/packages/bb-app/src/launcher.ts
+@@ -55,7 +55,10 @@ import {
+   validateTranscriptionModel,
+ } from "@bb/config/inference-model";
+ import { validateLogLevel } from "@bb/config/log-level";
+-import { validateOptionalUrl } from "@bb/config/public-url";
++import {
++  p6rValidateOptionalHttpAppUrl,
++  validateOptionalUrl,
++} from "@bb/config/public-url";
+ import { parseServerBindHost, type ServerBindHost } from "@bb/config/server";
+ import { toOptionalString } from "@bb/config/strings";
+ import {
+@@ -1227,7 +1230,7 @@ function validateManagedConfigForWrite(config: ManagedConfigForWrite): void {
+     return;
+   }
+   if (configValues.BB_APP_URL !== undefined) {
+-    validateOptionalUrl("BB_APP_URL", configValues.BB_APP_URL);
++    p6rValidateOptionalHttpAppUrl("BB_APP_URL", configValues.BB_APP_URL);
+   }
+   if (configValues.BB_INFERENCE !== undefined) {
+     validateInferenceModel(configValues.BB_INFERENCE);
+diff --git a/packages/bb-app/test/index.test.ts b/packages/bb-app/test/index.test.ts
+index ae4fda4ab2e206c98fd301c10df312fb818aa547..e5d13f6ae8da69c0bb0e7665122d5390393f2413 100644
+--- a/packages/bb-app/test/index.test.ts
++++ b/packages/bb-app/test/index.test.ts
+@@ -136,6 +136,11 @@ const invalidConfigCommandCases: InvalidConfigCommandCase[] = [
+     key: "BB_APP_URL",
+     value: "not-a-url",
+   },
++  {
++    expectedError: /BB_APP_URL must use http or https/u,
++    key: "BB_APP_URL",
++    value: "mailto:test@example.test",
++  },
+   {
+     expectedError: /BB_SERVER_URL must be a valid URL/u,
+     key: "BB_SERVER_URL",
+diff --git a/packages/config/src/env-vars.ts b/packages/config/src/env-vars.ts
+index 3fc8b7b1aae5cf0d83937b2208d8bc6524b1bafc..9c3ad8d7a19df01af8bc4c4f082292c53fdbc8a3 100644
+--- a/packages/config/src/env-vars.ts
++++ b/packages/config/src/env-vars.ts
+@@ -15,7 +15,11 @@ import {
+   validateTranscriptionModel,
+ } from "./inference-model.js";
+ import { validateLogLevel } from "./log-level.js";
+-import { validateOptionalUrl, validateRequiredUrl } from "./public-url.js";
++import {
++  p6rValidateOptionalHttpAppUrl,
++  validateOptionalUrl,
++  validateRequiredUrl,
++} from "./public-url.js";
+ import { BB_LOOPBACK_HOST, parsePortValue } from "./runtime.js";
+ 
+ export type ServerBindHost = "127.0.0.1" | "0.0.0.0";
+@@ -123,6 +127,10 @@ function parseOptionalUrlEnvValue(args: EnvVarParseArgs): string {
+   return validateOptionalUrl(args.name, args.value);
+ }
+ 
++function parseP6rAppUrlEnvValue(args: EnvVarParseArgs): string {
++  return p6rValidateOptionalHttpAppUrl(args.name, args.value) ?? "";
++}
++
+ function parseLogLevelValue(args: EnvVarParseArgs): string {
+   return validateLogLevel(args.value);
+ }
+@@ -208,7 +216,7 @@ export const BB_APP_URL_ENV = defineEnvVar<string>({
+   description:
+     "Human-facing app/server base URL used for generated links and allowed browser origins. Does not control which host or port the server binds to.",
+   name: "BB_APP_URL",
+-  parse: parseOptionalUrlEnvValue,
++  parse: parseP6rAppUrlEnvValue,
+ });
+ 
+ export const BB_EXTERNAL_URL_ENV = defineEnvVar<string>({
+diff --git a/packages/config/src/host-daemon.ts b/packages/config/src/host-daemon.ts
+index c4f16716d6a318a87d1842067c0b9ec950041f4f..929740b9b4e0d522e0561dba5616f8f35983dc4d 100644
+--- a/packages/config/src/host-daemon.ts
++++ b/packages/config/src/host-daemon.ts
+@@ -16,7 +16,7 @@ import {
+ } from "./env-vars.js";
+ import { assignIfDefined } from "./objects.js";
+ import { loadHostDaemonPortValue } from "./ports.js";
+-import { validateOptionalUrl } from "./public-url.js";
++import { p6rValidateOptionalHttpAppUrl } from "./public-url.js";
+ import { validatePortNumber } from "./runtime.js";
+ import { loadServerUrlValue } from "./server-url.js";
+ 
+@@ -65,7 +65,7 @@ export function loadHostDaemonConnectionConfig(
+ ): HostDaemonConnectionConfig {
+   const loader = resolveEnvLoader(args);
+   const config: HostDaemonConnectionConfig = {
+-    BB_APP_URL: validateOptionalUrl(
++    BB_APP_URL: p6rValidateOptionalHttpAppUrl(
+       "BB_APP_URL",
+       readEnvVarWithDefault({
+         context: loader.context,
+@@ -73,7 +73,7 @@ export function loadHostDaemonConnectionConfig(
+         definition: BB_APP_URL_ENV,
+         env: loader.env,
+       }),
+-    ),
++    ) ?? "",
+     BB_HOST_DAEMON_PORT: resolveHostDaemonPort({
+       ...args,
+       env: loader.env,
+diff --git a/packages/config/src/public-url.ts b/packages/config/src/public-url.ts
+index 38be78cfb6d9506754fd852827fd7205a4b0a861..eac6d655c80964c3c1156822e2a551f6474a802c 100644
+--- a/packages/config/src/public-url.ts
++++ b/packages/config/src/public-url.ts
+@@ -6,6 +6,27 @@ export function validateOptionalUrl(name: string, value: string): string {
+   return validateRequiredUrl(name, trimmedValue);
+ }
+ 
++/** A configured browser-facing app URL, or absent for local-only operation. */
++export function p6rValidateOptionalHttpAppUrl(
++  name: string,
++  value: string,
++): string | undefined {
++  const trimmedValue = value.trim();
++  if (trimmedValue.length === 0) return undefined;
++  let url: URL;
++  try {
++    url = new URL(trimmedValue);
++  } catch {
++    throw new Error(`${name} must be a valid URL, received "${value}"`);
++  }
++  if (url.protocol !== "http:" && url.protocol !== "https:") {
++    throw new Error(`${name} must use http or https, received "${value}"`);
++  }
++  return url.pathname === "/" && url.search.length === 0 && url.hash.length === 0
++    ? url.origin
++    : url.href;
++}
++
+ export function validateRequiredUrl(name: string, value: string): string {
+   const trimmedValue = value.trim();
+   if (trimmedValue.length === 0) {
+diff --git a/packages/plugin-sdk/src/__tests__/public-types.test.ts b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+index a966182840893e2fed7bd2972a95dad740110312..b9e02d495a896c361c929fbdc263fb7c0130c6d2 100644
+--- a/packages/plugin-sdk/src/__tests__/public-types.test.ts
++++ b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+@@ -61,6 +61,7 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
+   "PluginHttp",
+   "PluginHttpAuthMode",
+   "PluginHttpHandler",
++  "P6rPluginHttpRequestContext",
+   "P6rIdentityApi",
+   "P6rIdentityProviderHandle",
+   "P6rIdentityProviderRegistration",
+diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
+index cb1c6334fc3e0de923a8f98053df2f153f043264..e14b39fe350493fbeb2ef45424dfd5be00229d19 100644
+--- a/packages/plugin-sdk/src/backend-contract.ts
++++ b/packages/plugin-sdk/src/backend-contract.ts
+@@ -182,9 +182,18 @@ export interface P6rPluginRequestContext {
+   p6rRequestPrincipalKey: P6rPrincipalKey | null;
+ }
+ 
++/** Server-authored request facts available only to HTTP route handlers. */
++export interface P6rPluginHttpRequestContext extends P6rPluginRequestContext {
++  /**
++   * Configured `BB_APP_URL` origin, or an untrusted direct request-origin
++   * candidate when no public URL is configured. Use only for token-free links.
++   */
++  experimental_p6rExternalOrigin: string;
++}
++
+ export type PluginHttpHandler = (
+   context: Context,
+-  p6rRequestContext: P6rPluginRequestContext,
++  p6rRequestContext: P6rPluginHttpRequestContext,
+ ) => Response | Promise<Response>;
+ 
+ export interface PluginHttp {
+diff --git a/packages/plugin-sdk/src/testing/fake-plugin-host.ts b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+index cfd62acc5e548dc18bac2c104e5c1a849e532419..cead2c75762a8c0d7b83bad68410868187c61739 100644
+--- a/packages/plugin-sdk/src/testing/fake-plugin-host.ts
++++ b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+@@ -2537,6 +2537,7 @@ function createFakePluginHostInternal(
+         try {
+           return adoptHttpRouteResponse(
+             await route.handler(context, {
++              experimental_p6rExternalOrigin: new URL(context.req.url).origin,
+               p6rRequestPrincipal: null,
+               p6rRequestPrincipalKey: null,
+             }),
+-- 
+2.43.0
+
+
+From 87851a2d92951280de5f762cb8d39d8ac85cdb3c Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Thu, 3 Sep 2026 04:27:36 -0400
+Subject: [PATCH 2/2] fix: keep plugin HTTP context owned by SDK
+
+---
+ apps/server/src/services/plugins/plugin-api.ts     | 1 -
+ apps/server/src/services/plugins/plugin-service.ts | 2 +-
+ 2 files changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
+index 51616463e0fb590fffa5b3c77c6eaf4467212776..99e091bb570fa89830b9fbfe9b72f3f58ea122f1 100644
+--- a/apps/server/src/services/plugins/plugin-api.ts
++++ b/apps/server/src/services/plugins/plugin-api.ts
+@@ -121,7 +121,6 @@ export type {
+   PluginCliContext,
+   P6rIdentityApi,
+   P6rIdentityProviderRegistration,
+-  P6rPluginHttpRequestContext,
+   P6rPluginRequestContext,
+   PluginMentionTrigger,
+   PluginThreadEventName,
+diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
+index 091cd2a52c81bf11bcf6b9b566172828ed1226ae..6f7ed27c0fb2795182d447ed6e59507932f6188e 100644
+--- a/apps/server/src/services/plugins/plugin-service.ts
++++ b/apps/server/src/services/plugins/plugin-service.ts
+@@ -21,6 +21,7 @@ import {
+   type PluginCliExecutionResult,
+   type PluginRpcError,
+   type PluginRpcValidationIssue,
++  type P6rPluginHttpRequestContext,
+   type StandardSchemaV1,
+   type StandardSchemaV1Issue,
+   type StandardSchemaV1Result,
+@@ -87,7 +88,6 @@ import {
+   type PluginAgentToolRecord,
+   type PluginCliContext,
+   type PluginHttpRouteRecord,
+-  type P6rPluginHttpRequestContext,
+   type PluginMentionTrigger,
+   type PluginRpcHandler,
+   type P6rPluginRequestContext,
+-- 
+2.43.0
+

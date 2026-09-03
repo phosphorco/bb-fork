@@ -30,12 +30,13 @@
 26. **Pane-aware thread header actions** compact plugin controls from their containing split-pane width, keep Git actions in the thread overflow menu, and preserve the title row for the active conversation.
 27. **Capability-authenticated plugin routes** permit a plugin route with its own bearer-capability check to run after ambient identity rejection, while preserving fail-closed behavior for every other route. The same patch exposes a server-authored, plugin-qualified external-message seam for Agent Connect.
 28. **Canonical plugin thread routes** exposes the client-core-owned thread route helper through an explicitly p6r-quarantined experimental plugin API, preserving projectless personal-thread behavior without making plugins infer browser paths.
+29. **Experimental plugin external-origin candidate** supplies token-free link construction with authoritative configured HTTP(S) `BB_APP_URL` origin or an explicitly untrusted request-observed fallback; shared configuration rejects opaque and non-browser schemes.
 
 ## Exact source receipt
 
 - Upstream: `5205d98a74ed5a22469e521cf1f86b00b8232827`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: twenty-eight patches in `patches/series`.
+- Patch queue: listed in `patches/series`.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries
@@ -76,6 +77,11 @@
   `experimental_p6rRoutes.p6rThreadPath`; it delegates to client-core's
   established raw-ID route helper, so route validation and encoding remain at
   the caller boundary rather than changing existing route semantics.
+- Plugin HTTP handlers receive the downstream-quarantined
+  `P6rPluginHttpRequestContext.experimental_p6rExternalOrigin` for token-free
+  same-server links. It uses `BB_APP_URL` when configured and otherwise only a
+  request-observed origin candidate; forwarding headers remain outside this
+  capability boundary.
 - The server and host daemon deploy together at protocol version 153. Enrolled execution machines fetch the server's exact `/install/bb-app.tgz` artifact and restart; the updater still refuses insecure non-loopback HTTP and never downgrades a newer daemon. The system-version ViewModel replaces `upgradeCommand` with `upgradeGuidance` alongside every in-tree app, CLI, SDK, fixture, and generated-contract consumer, so this queue intentionally does **not** claim mixed-version client or server/daemon compatibility.
 - Claimed identity is presentation only. HTTP and WebSocket claims are
   accepted only when no provider owns the remote path; the server authors a

@@ -42,7 +42,7 @@ try {
   );
   write(
     "packages/plugin-sdk/src/backend-contract.ts",
-    "interface P6rExperimentalPluginRoutes { p6rThreadPath(args: { projectId: string; threadId: string }): string; }\ninterface Backend { p6rIdentity: P6rIdentityApi; p6rRequestPrincipal: P6rActorSnapshot | null; p6rTurnAuthor: P6rActorSnapshot | null; experimental_p6rRoutes: P6rExperimentalPluginRoutes; }\n",
+    "interface P6rExperimentalPluginRoutes { p6rThreadPath(args: { projectId: string; threadId: string }): string; }\ninterface P6rPluginHttpRequestContext { experimental_p6rExternalOrigin: string; }\ninterface Backend { p6rIdentity: P6rIdentityApi; p6rRequestPrincipal: P6rActorSnapshot | null; p6rTurnAuthor: P6rActorSnapshot | null; experimental_p6rRoutes: P6rExperimentalPluginRoutes; }\n",
   );
   write(
     "packages/server-contract/src/thread-timeline.ts",
