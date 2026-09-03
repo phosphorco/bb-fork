@@ -29,12 +29,13 @@
 25. **Thread-list cache shape validation** rejects generalized `threads` query entries whose pages are facet response objects or empty participant pages before sidebar cache iteration can treat them as thread arrays.
 26. **Pane-aware thread header actions** compact plugin controls from their containing split-pane width, keep Git actions in the thread overflow menu, and preserve the title row for the active conversation.
 27. **Capability-authenticated plugin routes** permit a plugin route with its own bearer-capability check to run after ambient identity rejection, while preserving fail-closed behavior for every other route. The same patch exposes a server-authored, plugin-qualified external-message seam for Agent Connect.
+28. **Canonical plugin thread routes** exposes the client-core-owned thread route helper through an explicitly p6r-quarantined experimental plugin API, preserving projectless personal-thread behavior without making plugins infer browser paths.
 
 ## Exact source receipt
 
 - Upstream: `5205d98a74ed5a22469e521cf1f86b00b8232827`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: twenty-seven patches in `patches/series`.
+- Patch queue: twenty-eight patches in `patches/series`.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries
@@ -71,6 +72,10 @@
   surfaces and `thread_facet_*` persistence names are the bounded core
   infrastructure exception; an explicit path-and-symbol checker allowlist
   prevents that exception from admitting unrelated exports.
+- The experimental plugin route API remains downstream-quarantined as
+  `experimental_p6rRoutes.p6rThreadPath`; it delegates to client-core's
+  established raw-ID route helper, so route validation and encoding remain at
+  the caller boundary rather than changing existing route semantics.
 - The server and host daemon deploy together at protocol version 153. Enrolled execution machines fetch the server's exact `/install/bb-app.tgz` artifact and restart; the updater still refuses insecure non-loopback HTTP and never downgrades a newer daemon. The system-version ViewModel replaces `upgradeCommand` with `upgradeGuidance` alongside every in-tree app, CLI, SDK, fixture, and generated-contract consumer, so this queue intentionally does **not** claim mixed-version client or server/daemon compatibility.
 - Claimed identity is presentation only. HTTP and WebSocket claims are
   accepted only when no provider owns the remote path; the server authors a

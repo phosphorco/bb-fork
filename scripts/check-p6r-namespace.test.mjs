@@ -42,7 +42,7 @@ try {
   );
   write(
     "packages/plugin-sdk/src/backend-contract.ts",
-    "interface Backend { p6rIdentity: P6rIdentityApi; p6rRequestPrincipal: P6rActorSnapshot | null; p6rTurnAuthor: P6rActorSnapshot | null; }\n",
+    "interface P6rExperimentalPluginRoutes { p6rThreadPath(args: { projectId: string; threadId: string }): string; }\ninterface Backend { p6rIdentity: P6rIdentityApi; p6rRequestPrincipal: P6rActorSnapshot | null; p6rTurnAuthor: P6rActorSnapshot | null; experimental_p6rRoutes: P6rExperimentalPluginRoutes; }\n",
   );
   write(
     "packages/server-contract/src/thread-timeline.ts",
@@ -87,6 +87,20 @@ try {
     )
   ) {
     throw new Error(`unexpected refusal:\n${rejected.stdout}${rejected.stderr}`);
+  }
+
+  write(
+    "packages/plugin-sdk/src/backend-contract.ts",
+    "interface P6rExperimentalPluginRoutes { p6rThreadPath(args: { projectId: string; threadId: string }): string; }\ninterface Backend { p6rIdentity: P6rIdentityApi; p6rRequestPrincipal: P6rActorSnapshot | null; p6rTurnAuthor: P6rActorSnapshot | null; experimental_p6rRoutes: P6rExperimentalPluginRoutes; experimental_routes: P6rExperimentalPluginRoutes; }\n",
+  );
+  git("add", ".");
+  git("commit", "--quiet", "-m", "unquarantined plugin route member");
+  const unquarantined = runChecker(base);
+  if (unquarantined.status === 0) {
+    throw new Error("unquarantined plugin route member unexpectedly passed");
+  }
+  if (!unquarantined.stderr.includes("leaked unquarantined downstream member 'experimental_routes'")) {
+    throw new Error(`unexpected refusal:\n${unquarantined.stdout}${unquarantined.stderr}`);
   }
 
   console.log("p6r namespace adversarial witness passed");
