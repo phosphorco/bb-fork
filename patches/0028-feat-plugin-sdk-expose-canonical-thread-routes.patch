@@ -1,0 +1,320 @@
+From 2ebdf30e97cff98b6a906f1baf81fdf2a922b826 Mon Sep 17 00:00:00 2001
+From: Phosphor <engineering@phosphor.co>
+Date: Wed, 2 Sep 2026 23:14:33 -0400
+Subject: [PATCH] feat(plugin-sdk): expose canonical thread routes
+
+---
+ apps/server/package.json                      |  1 +
+ .../server/src/services/plugins/plugin-api.ts |  9 ++++++++
+ .../bb-plugin-authoring/SKILL.md              |  8 +++++++
+ .../plugins/plugin-authoring-docs.test.ts     |  1 +
+ .../test/services/plugins/plugin-sdk.test.ts  | 21 +++++++++++++++++++
+ docs/api_to_audit.md                          | 13 ++++++++++++
+ packages/client-core/package.json             |  5 +++++
+ packages/plugin-sdk/package.json              |  1 +
+ .../src/__tests__/public-types.test.ts        |  2 ++
+ packages/plugin-sdk/src/backend-contract.ts   | 12 +++++++++++
+ .../__tests__/fake-plugin-host.test.ts        | 18 ++++++++++++++++
+ .../src/testing/fake-plugin-host.ts           |  7 +++++++
+ pnpm-lock.yaml                                |  6 ++++++
+ 13 files changed, 104 insertions(+)
+
+diff --git a/apps/server/package.json b/apps/server/package.json
+index b88790d090a28883c17c3a3a8c1965d29f12fc85..e5919db803086cb678b46bef6440855e107ca2c8 100644
+--- a/apps/server/package.json
++++ b/apps/server/package.json
+@@ -14,6 +14,7 @@
+     "test:provider-corpus": "vitest run --config vitest.config.ts test/provider-corpus"
+   },
+   "dependencies": {
++    "@bb/client-core": "workspace:*",
+     "@bb/config": "workspace:*",
+     "@bb/core-ui": "workspace:*",
+     "@bb/db": "workspace:*",
+diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
+index 10e8228d3c61903f092697ad1acb58a785ce5421..99e091bb570fa89830b9fbfe9b72f3f58ea122f1 100644
+--- a/apps/server/src/services/plugins/plugin-api.ts
++++ b/apps/server/src/services/plugins/plugin-api.ts
+@@ -25,6 +25,7 @@ import {
+   type JsonValue,
+   type ThreadFacetTypeId,
+ } from "@bb/domain";
++import { getThreadRoutePath } from "@bb/client-core/routes/route-paths";
+ import type {
+   BbPluginApi,
+   PluginAgentConfiguration,
+@@ -46,6 +47,7 @@ import type {
+   ExperimentalThreadFacetTarget,
+   ExperimentalThreadFacetTargetGrant,
+   P6rExperimentalPluginThreadMessages,
++  P6rExperimentalPluginRoutes,
+   PluginHttp,
+   PluginHttpAuthMode,
+   PluginHttpHandler,
+@@ -1765,6 +1767,12 @@ export function createPluginApi(options: {
+       return registerProviderDeclaration(declaration);
+     },
+   };
++  const experimentalRoutes: P6rExperimentalPluginRoutes = {
++    p6rThreadPath(args) {
++      assertLive();
++      return getThreadRoutePath(args);
++    },
++  };
+ 
+   const api: BbPluginApi = {
+     pluginId,
+@@ -1774,6 +1782,7 @@ export function createPluginApi(options: {
+     http,
+     p6rIdentity,
+     experimental_threadMessages: experimentalThreadMessages,
++    experimental_p6rRoutes: experimentalRoutes,
+     rpc,
+     realtime,
+     background,
+diff --git a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
+index 76aaaa4f9e5cc0947e15fc3fb01ff0c12f2487b6..18880d2f39077e9d1d415fdf13449f8d1f1d4749 100644
+--- a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
++++ b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
+@@ -379,6 +379,14 @@ The surface is intentionally narrow: no attachments, mentions, execution
+ overrides, or permission changes. It remains experimental pending the audit in
+ `docs/api_to_audit.md`.
+ 
++### bb.experimental_p6rRoutes — canonical browser paths
++
++`bb.experimental_p6rRoutes.p6rThreadPath({ projectId, threadId })` returns BB's
++canonical browser path for a thread. Do not construct thread routes in plugin
++code: the personal project is intentionally projectless and resolves to
++`/threads/:threadId`, while ordinary projects resolve to
++`/projects/:projectId/threads/:threadId`.
++
+ ### bb.log
+ 
+ `bb.log.debug|info|warn|error(message: string)` — goes to the server log
+diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
+index d3f9255d27ca141397edda96c95b3cc850438567..0cf797f16c06d4980bde2b5061edc55942be2e43 100644
+--- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
++++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
+@@ -63,6 +63,7 @@ const BB_PLUGIN_API_KEYS = [
+   "http",
+   "p6rIdentity",
+   "experimental_threadMessages",
++  "experimental_p6rRoutes",
+   "rpc",
+   "realtime",
+   "background",
+diff --git a/apps/server/test/services/plugins/plugin-sdk.test.ts b/apps/server/test/services/plugins/plugin-sdk.test.ts
+index 5da4d8888c876f6678c521ab328a1e1f3d21fc67..055182cb797c81255bd86c596665c6ee863d72a2 100644
+--- a/apps/server/test/services/plugins/plugin-sdk.test.ts
++++ b/apps/server/test/services/plugins/plugin-sdk.test.ts
+@@ -151,6 +151,27 @@ describe("plugin bb.sdk bind gate", () => {
+     expect(typeof api.sdk.threads.spawn).toBe("function");
+   });
+ 
++  it("exposes canonical thread paths to installed backend plugins", async () => {
++    const rootDir = await writePlugin(workDir, {
++      name: "bb-plugin-routes",
++      serverSource: `export default function plugin() {}`,
++    });
++    await service.installPath(rootDir);
++    const api = requireApi(service, "routes");
++    expect(
++      api.experimental_p6rRoutes.p6rThreadPath({
++        projectId: "proj work/#",
++        threadId: "thr /?#雪",
++      }),
++    ).toBe("/projects/proj work/#/threads/thr /?#雪");
++    expect(
++      api.experimental_p6rRoutes.p6rThreadPath({
++        projectId: "proj_personal",
++        threadId: "thr /?#雪",
++      }),
++    ).toBe("/threads/thr /?#雪");
++  });
++
+   it("marks a plugin error when its factory touches bb.sdk at load time", async () => {
+     const rootDir = await writePlugin(workDir, {
+       name: "bb-plugin-eager",
+diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
+index 7a794b05961f9b8dcd57a1e76ae2c38830bb279f..125fe5c4c8b228598c91f7bd73fff82c04e33ef6 100644
+--- a/docs/api_to_audit.md
++++ b/docs/api_to_audit.md
+@@ -5,6 +5,19 @@ entry here (see [AGENTS.md](../AGENTS.md), "Plugin API"). Dropping the prefix
+ is the deliberate stabilization step: audit the entry, rename project-wide,
+ and delete the entry in the same change.
+ 
++## `BbPluginApi.experimental_p6rRoutes`
++
++**What it does.** Returns BB-owned canonical browser paths to backend plugins.
++It currently exposes thread paths and centralizes the personal project's
++projectless `/threads/:threadId` route rather than making plugins infer routing
++from a project id. It deliberately preserves client-core's existing raw-ID
++route behavior; validation and encoding stay at the route caller's boundary.
++
++**Audit before stabilizing.** Confirm every browser client still accepts each
++derived path, decide whether URL origin construction belongs in this API or at
++the caller's transport boundary, and add route kinds only when they have the
++same cross-client ownership and compatibility guarantees.
++
+ ## `BbPluginApi.experimental_facets`
+ 
+ **What it does.** Lets a plugin declare an enum-valued, shared-thread
+diff --git a/packages/client-core/package.json b/packages/client-core/package.json
+index e8b8666c2433e8e494b4c431fd8056a3d37dcde3..f32c7eb4f4183dc6529bab42c3809c870133bdbb 100644
+--- a/packages/client-core/package.json
++++ b/packages/client-core/package.json
+@@ -7,6 +7,11 @@
+       "source": "./src/index.ts",
+       "types": "./src/index.ts",
+       "default": "./src/index.ts"
++    },
++    "./routes/route-paths": {
++      "source": "./src/routes/route-paths.ts",
++      "types": "./src/routes/route-paths.ts",
++      "default": "./src/routes/route-paths.ts"
+     }
+   },
+   "types": "./src/index.ts",
+diff --git a/packages/plugin-sdk/package.json b/packages/plugin-sdk/package.json
+index 578b9a0846e7694efbb3b3786ed989c19e1e3ff1..d045cab2c24303370b774664854f73de3e6fbf2e 100644
+--- a/packages/plugin-sdk/package.json
++++ b/packages/plugin-sdk/package.json
+@@ -110,6 +110,7 @@
+     "typecheck": "tsc --noEmit"
+   },
+   "devDependencies": {
++    "@bb/client-core": "workspace:*",
+     "@bb/domain": "workspace:*",
+     "@bb/host-daemon-contract": "workspace:*",
+     "@bb/process-utils": "workspace:*",
+diff --git a/packages/plugin-sdk/src/__tests__/public-types.test.ts b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+index f5ce29a1ea549236452522c8a2502526a3a87530..a966182840893e2fed7bd2972a95dad740110312 100644
+--- a/packages/plugin-sdk/src/__tests__/public-types.test.ts
++++ b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+@@ -8,6 +8,7 @@ type ExpectedBbPluginApiKey =
+   | "cli"
+   | "events"
+   | "experimental_facets"
++  | "experimental_p6rRoutes"
+   | "experimental_threadMessages"
+   | "hosts"
+   | "http"
+@@ -36,6 +37,7 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
+   "ExperimentalThreadFacetTarget",
+   "ExperimentalThreadFacetTargetGrant",
+   "ExperimentalThreadFacetTargetPage",
++  "P6rExperimentalPluginRoutes",
+   "PluginAgents",
+   "PluginAgentConfiguration",
+   "PluginAgentConfigurationContext",
+diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
+index a61b508c9831f8cf5dc73ceb253501bdab6f82c1..cb1c6334fc3e0de923a8f98053df2f153f043264 100644
+--- a/packages/plugin-sdk/src/backend-contract.ts
++++ b/packages/plugin-sdk/src/backend-contract.ts
+@@ -1185,6 +1185,16 @@ export interface P6rExperimentalPluginThreadMessages {
+   }): Promise<{ ok: true }>;
+ }
+ 
++/** Canonical BB browser paths available to backend plugins. */
++export interface P6rExperimentalPluginRoutes {
++  /**
++   * Returns BB's canonical path for a thread. The personal project is
++   * projectless (`/threads/:threadId`); other projects use their scoped path.
++   * Experimental: see docs/api_to_audit.md.
++   */
++  p6rThreadPath(args: { projectId: string; threadId: string }): string;
++}
++
+ export interface BbPluginApi {
+   /** The plugin's own id (namespaces storage, routes, commands). */
+   readonly pluginId: string;
+@@ -1200,6 +1210,8 @@ export interface BbPluginApi {
+   readonly p6rIdentity: P6rIdentityApi;
+   /** Server-authored external-message attribution (experimental). */
+   readonly experimental_threadMessages: P6rExperimentalPluginThreadMessages;
++  /** Downstream canonical BB browser route derivation (experimental). */
++  readonly experimental_p6rRoutes: P6rExperimentalPluginRoutes;
+   /** RPC methods under /api/v1/plugins/<id>/rpc/<method> (design §4.6). */
+   readonly rpc: PluginRpc;
+   /** Ephemeral push to connected frontends (design §4.7). */
+diff --git a/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts b/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
+index a7e6f1329ff7ca586adab8a612b08721e851879a..99ee096f0d35cbf44f38633bb1ca5ccac7d188a7 100644
+--- a/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
++++ b/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
+@@ -22,6 +22,24 @@ describe("p6rIdentity", () => {
+   });
+ });
+ 
++describe("experimental_p6rRoutes", () => {
++  it("uses BB's canonical ordinary and personal thread paths", () => {
++    const { bb } = createFakePluginHost();
++    expect(
++      bb.experimental_p6rRoutes.p6rThreadPath({
++        projectId: "proj work/#",
++        threadId: "thr /?#雪",
++      }),
++    ).toBe("/projects/proj work/#/threads/thr /?#雪");
++    expect(
++      bb.experimental_p6rRoutes.p6rThreadPath({
++        projectId: "proj_personal",
++        threadId: "thr /?#雪",
++      }),
++    ).toBe("/threads/thr /?#雪");
++  });
++});
++
+ describe("ui.requestInput", () => {
+   it("settles a blocking request through the harness", async () => {
+     const { bb, harness } = createFakePluginHost();
+diff --git a/packages/plugin-sdk/src/testing/fake-plugin-host.ts b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+index 3f7b03090c80ec2a537d7e138dd7a676a472e48e..cfd62acc5e548dc18bac2c104e5c1a849e532419 100644
+--- a/packages/plugin-sdk/src/testing/fake-plugin-host.ts
++++ b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+@@ -7,6 +7,7 @@ import { Hono } from "hono";
+ import { z } from "zod";
+ import { PLUGIN_INTERACTION_MAX_TITLE_LENGTH } from "@bb/domain/plugin-interaction-limits";
+ import { p6rPrincipalKeyForActorSnapshot } from "@bb/domain";
++import { getThreadRoutePath } from "@bb/client-core/routes/route-paths";
+ import {
+   AGENT_TOOL_NAME_PATTERN,
+   assertNoRecursiveJsonSchemaReferences,
+@@ -2235,6 +2236,12 @@ function createFakePluginHostInternal(
+         return { ok: true };
+       },
+     },
++    experimental_p6rRoutes: {
++      p6rThreadPath(args) {
++        assertLive();
++        return getThreadRoutePath(args);
++      },
++    },
+     rpc,
+     realtime,
+     background,
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index de18bdabc11540d0d0b3bd2ddae9b0e9350e4109..71459d439fa8f04c26eec340ea80e33151c609b3 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -1068,6 +1068,9 @@ importers:
+ 
+   apps/server:
+     dependencies:
++      '@bb/client-core':
++        specifier: workspace:*
++        version: link:../../packages/client-core
+       '@bb/config':
+         specifier: workspace:*
+         version: link:../../packages/config
+@@ -2155,6 +2158,9 @@ importers:
+ 
+   packages/plugin-sdk:
+     devDependencies:
++      '@bb/client-core':
++        specifier: workspace:*
++        version: link:../client-core
+       '@bb/domain':
+         specifier: workspace:*
+         version: link:../domain
+-- 
+2.43.0
+
