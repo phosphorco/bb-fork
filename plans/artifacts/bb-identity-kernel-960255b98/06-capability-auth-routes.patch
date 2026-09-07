@@ -1,0 +1,78 @@
+diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
+index aa768bdb6..5dd841662 100644
+--- a/apps/server/src/services/plugins/plugin-api.ts
++++ b/apps/server/src/services/plugins/plugin-api.ts
+@@ -1019,9 +1019,12 @@ export function createPluginApi(options: {
+         );
+       }
+       const auth = opts?.auth ?? "local";
+-      if (auth !== "local" && auth !== "token" && auth !== "none") {
++      if (auth !== "local" &&
++        auth !== "token" &&
++        auth !== "capability" &&
++        auth !== "none") {
+         throw new Error(
+-          `invalid auth mode "${String(auth)}" for ${normalizedMethod} ${path} — use "local", "token", or "none"`,
++          `invalid auth mode "${String(auth)}" for ${normalizedMethod} ${path} — use "local", "token", "capability", or "none"`,
+         );
+       }
+       if (
+@@ -1048,9 +1051,12 @@ export function createPluginApi(options: {
+         );
+       }
+       const auth = opts?.auth ?? "local";
+-      if (auth !== "local" && auth !== "token" && auth !== "none") {
++      if (auth !== "local" &&
++        auth !== "token" &&
++        auth !== "capability" &&
++        auth !== "none") {
+         throw new Error(
+-          `invalid auth mode "${String(auth)}" for websocket ${path} — use "local", "token", or "none"`,
++          `invalid auth mode "${String(auth)}" for websocket ${path} — use "local", "token", "capability", or "none"`,
+         );
+       }
+       if (websocketRoutes.some((route) => route.path === path)) {
+diff --git a/apps/server/test/services/plugins/plugin-wire.test.ts b/apps/server/test/services/plugins/plugin-wire.test.ts
+index 249aab2bb..31906725f 100644
+--- a/apps/server/test/services/plugins/plugin-wire.test.ts
++++ b/apps/server/test/services/plugins/plugin-wire.test.ts
+@@ -45,6 +45,7 @@ const WIRE_SOURCE = `
+     bb.http.route("GET", "/open", (c: any) => c.json({ open: true }), {
+       auth: "none",
+     });
++    bb.http.route("POST", "/capability", (c: any) => c.json({ capability: c.req.header("x-capability") === "reviewed" }), { auth: "capability" });
+     bb.http.route("GET", "/boom", () => {
+       throw new Error("route boom");
+     });
+@@ -417,6 +418,17 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
+     expect(await response.json()).toEqual({ open: true });
+   });
+ 
++  it('auth "capability" reaches only the exact registered method and leaves credential verification to its handler', async () => {
++    const valid = await harness.app.request(`/api/v1/plugins/wire/http/capability`, { method: "POST", headers: { origin: EVIL_ORIGIN, "x-capability": "reviewed" } });
++    expect(valid.status).toBe(200);
++    expect(await valid.json()).toEqual({ capability: true });
++    const wrongMethod = await harness.app.request(`/api/v1/plugins/wire/http/capability`, { headers: { origin: EVIL_ORIGIN } });
++    expect(wrongMethod.status).toBe(404);
++    const handlerRejects = await harness.app.request(`/api/v1/plugins/wire/http/capability`, { method: "POST", headers: { origin: EVIL_ORIGIN, "x-capability": "wrong" } });
++    expect(handlerRejects.status).toBe(200);
++    expect(await handlerRejects.json()).toEqual({ capability: false });
++  });
++
+   it("maps unknown route → 404, unknown plugin → 404, disabled plugin → 503", async () => {
+     const unknownRoute = await harness.app.request(
+       `${BASE}/api/v1/plugins/wire/http/nope`,
+diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
+index 580063a5c..05b87c0c6 100644
+--- a/packages/plugin-sdk/src/backend-contract.ts
++++ b/packages/plugin-sdk/src/backend-contract.ts
+@@ -541,7 +541,8 @@ export interface PluginHooks {
+ // Wire surfaces: HTTP, rpc, realtime (design §4.6/§4.7).
+ // ---------------------------------------------------------------------------
+ 
+-export type PluginHttpAuthMode = "local" | "token" | "none";
++/** `capability` means the exact registered handler verifies its own credential. */
++export type PluginHttpAuthMode = "local" | "token" | "capability" | "none";
+ 
+ export type PluginHttpHandler = (
+   context: Context,

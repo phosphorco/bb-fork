@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec python3 - "$repo_root" "$@" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+if sys.argv[2:] not in ([], ["--kernel-only"]):
+    raise SystemExit("usage: verify-selected-kernel [--kernel-only]")
+artifacts = Path(sys.argv[1]) / "plans/artifacts/bb-identity-kernel-960255b98"
+manifest = json.loads((artifacts / "composition-replay.json").read_text())
+patches = manifest["patches"][:1] if sys.argv[2:] else manifest["patches"]
+for entry in patches:
+    patch = artifacts / entry["patch"]
+    if patch.parent != artifacts or hashlib.sha256(patch.read_bytes()).hexdigest() != entry["sha256"]:
+        raise SystemExit(f"Patch identity mismatch: {entry['patch']}")
+with tempfile.TemporaryDirectory(prefix="bb-identity-selected-replay-") as scratch:
+    repo = Path(scratch) / "replay.git"
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+    subprocess.run(["git", "init", "--bare", "--quiet", str(repo)], check=True)
+    git("fetch", "--quiet", "--no-tags", "--depth=1", manifest["sourceUrl"],
+        manifest["baseCommit"] + ":refs/heads/base")
+    if git("rev-parse", "refs/heads/base") != manifest["baseCommit"]:
+        raise SystemExit("Base commit mismatch")
+    if git("rev-parse", "refs/heads/base^{tree}") != manifest["baseTree"]:
+        raise SystemExit("Base tree mismatch")
+    git("update-ref", "HEAD", "refs/heads/base")
+    git("read-tree", "refs/heads/base^{tree}")
+    for entry in patches:
+        if git("write-tree") != entry["baseTree"]:
+            raise SystemExit(f"Predecessor mismatch: {entry['patch']}")
+        git("apply", "--cached", "--whitespace=nowarn", str(artifacts / entry["patch"]))
+        git("diff", "--cached", "--check")
+        if git("write-tree") != entry["resultTree"]:
+            raise SystemExit(f"Result mismatch: {entry['patch']}")
+        print(f"verified {entry['patch']} -> {entry['resultTree']}", flush=True)
+print("Review composition verified; active fork queue and runtime unchanged.")
+PY

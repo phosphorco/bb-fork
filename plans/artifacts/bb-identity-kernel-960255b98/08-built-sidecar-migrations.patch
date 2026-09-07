@@ -1,0 +1,110 @@
+diff --git a/apps/server/package.json b/apps/server/package.json
+index f2016a486..eefc721a3 100644
+--- a/apps/server/package.json
++++ b/apps/server/package.json
+@@ -4,7 +4,7 @@
+   "type": "module",
+   "private": true,
+   "scripts": {
+-    "build": "node ../../scripts/build-node-entry.mjs src/index.ts dist/index.js --clean-dist --external ./start-server.js --copy-dir ../../packages/db/drizzle dist/drizzle --copy-dir src/assets dist/assets && node --import tsx scripts/copy-builtin-skills.ts && node ../../scripts/build-node-entry.mjs src/start-server.ts dist/start-server.js && node ../../scripts/build-node-entry.mjs ../../packages/plugin-sdk/src/index.ts dist/plugin-sdk-runtime.js",
++    "build": "node ../../scripts/build-node-entry.mjs src/index.ts dist/index.js --clean-dist --external ./start-server.js --copy-dir ../../packages/db/drizzle dist/drizzle --copy-dir src/assets dist/assets && node --import tsx scripts/copy-builtin-skills.ts && node ../../scripts/build-node-entry.mjs src/services/p6r/sidecar-migrate.ts dist/services/p6r/sidecar-migrate.js --copy-dir src/services/p6r/drizzle dist/services/p6r/drizzle && node ../../scripts/build-node-entry.mjs src/start-server.ts dist/start-server.js --external ./services/p6r/sidecar-migrate.js && node ../../scripts/build-node-entry.mjs ../../packages/plugin-sdk/src/index.ts dist/plugin-sdk-runtime.js",
+     "start": "node dist/index.js",
+     "start:prod": "cross-env NODE_ENV=production node dist/index.js",
+     "dev": "node --conditions=source --import tsx scripts/dev-supervisor.mjs",
+diff --git a/apps/server/test/services/p6r/sidecar-built-artifact.test.ts b/apps/server/test/services/p6r/sidecar-built-artifact.test.ts
+new file mode 100644
+index 000000000..4b7fa3ef6
+--- /dev/null
++++ b/apps/server/test/services/p6r/sidecar-built-artifact.test.ts
+@@ -0,0 +1,91 @@
++import { execFile } from "node:child_process";
++import { access, readdir, readFile, rename, rm } from "node:fs/promises";
++import { dirname, join, resolve } from "node:path";
++import { fileURLToPath, pathToFileURL } from "node:url";
++import { promisify } from "node:util";
++import type { DbConnection } from "@bb/db";
++import { sql } from "drizzle-orm";
++import { expect, it } from "vitest";
++
++const execFileAsync = promisify(execFile);
++const serverRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
++
++it(
++  "ships P6R sidecar migrations and cold-starts built initDb without listeners",
++  async () => {
++    await execFileAsync("pnpm", ["run", "build"], { cwd: serverRoot });
++
++    const dist = join(serverRoot, "dist");
++    const sidecarDrizzle = join(dist, "services/p6r/drizzle");
++    await access(join(dist, "services/p6r/sidecar-migrate.js"));
++    await access(join(sidecarDrizzle, "meta/_journal.json"));
++    expect(
++      (await readdir(sidecarDrizzle)).filter((entry) => entry.endsWith(".sql")).sort(),
++    ).toEqual([
++      "0000_lying_energizer.sql",
++      "0001_aromatic_leopardon.sql",
++      "0002_pending_queued_dispatch.sql",
++    ]);
++    expect(
++      JSON.parse(
++        await readFile(join(sidecarDrizzle, "meta/_journal.json"), "utf8"),
++      ).entries.map((entry: { tag: string }) => entry.tag),
++    ).toEqual([
++      "0000_lying_energizer",
++      "0001_aromatic_leopardon",
++      "0002_pending_queued_dispatch",
++    ]);
++    expect(await readFile(join(dist, "start-server.js"), "utf8")).toContain(
++      'from "./services/p6r/sidecar-migrate.js"',
++    );
++
++    const probePath = join(dist, "db-probe.js");
++    try {
++      await execFileAsync(
++        process.execPath,
++        [
++          "../../scripts/build-node-entry.mjs",
++          "src/db.ts",
++          "dist/db-probe.js",
++          "--external",
++          "./services/p6r/sidecar-migrate.js",
++        ],
++        { cwd: serverRoot },
++      );
++      const builtDb = (await import(
++        `${pathToFileURL(probePath).href}?built-sidecar-witness=1`,
++      )) as { initDb: (databasePath: string) => DbConnection };
++      const db = builtDb.initDb(":memory:");
++      try {
++        expect(
++          db.get<{ name: string }>(
++            sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'p6r_metadata'`,
++          ),
++        ).toEqual({ name: "p6r_metadata" });
++      } finally {
++        db.$client.close();
++      }
++
++      const migrationPath = join(
++        sidecarDrizzle,
++        "0002_pending_queued_dispatch.sql",
++      );
++      const hiddenMigrationPath = `${migrationPath}.held`;
++      await rename(migrationPath, hiddenMigrationPath);
++      try {
++        const missingMigrationDb = (await import(
++          `${pathToFileURL(probePath).href}?missing-sidecar-migration=1`,
++        )) as { initDb: (databasePath: string) => DbConnection };
++        expect(() => missingMigrationDb.initDb(":memory:")).toThrow();
++      } finally {
++        await rename(hiddenMigrationPath, migrationPath);
++      }
++    } finally {
++      await Promise.all([
++        rm(probePath, { force: true }),
++        rm(`${probePath}.map`, { force: true }),
++      ]);
++    }
++  },
++  60_000,
++);
