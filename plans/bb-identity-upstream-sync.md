@@ -1,7 +1,7 @@
 # Identity provider kernel upstream-sync boundary
 
-Status: planning closeout only. This document does not approve the current
-candidate as minimal, releasable, or ready to promote. It records the smallest
+Status: a source review composition is committed and reproducibly replayed.
+This document does not approve a full-host release or normal promotion. It records the smallest
 authority-preserving core boundary to re-express against a later upstream
 revision. Existing candidate files are authored work and remain preserved until
 the fork owner selects a patch queue.
@@ -175,6 +175,49 @@ patch queue, an upstream-sync rehearsal, or a releasable artifact.
 The practical friction is the protocol split. The provider lifecycle is small,
 but current `identity-protocol.ts` reads sidecar-backed history and calls native
 acceptance. Keeping that coupling would drag database and native-route conflicts
-into every upstream update. The first re-port should make this separation
-explicit, with unsupported capability results until the acceptance/history
-family is deliberately restored.
+into every upstream update. The selected review families make this separation explicit while delivering
+the promised acceptance/history contract together. Do not introduce temporary
+unsupported results for capabilities already promised by the public package.
+
+## Selected-source receipt
+
+The ordered kernel/04–08 selection is committed in `443925687` on review branch
+`bb/identity-review-composition-thr_csw7br3yff`. `scripts/verify-selected-kernel`
+fetches the exact upstream source and verifies all patch hashes, intermediate
+trees, and final tree `8e2356517b37bcfe1384c9df53fa6ff3b39f0cce`. All 104 changed
+source files match the independently tested archive. This is a reproducibility
+witness against one base, not a rehearsal against a future upstream release.
+
+The selected tree passes 121 focused regressions, 12 typecheck tasks, actual
+create/live/queued mention paths, built migration cold start, and the two native
+consumer factory witnesses. Remaining host compatibility families and legacy
+feature preservation remain explicit in `review-composition.json`. Public URL
+and sidebar projection contracts must be reproduced by the selected SDK type
+generator before consumer source closure; old declaration files cannot stand
+in for missing implementation.
+
+An independent bounded footprint review of that exact tree found 21 new source
+or configuration files, 44 modified source/configuration files, 23 test files,
+14 migration artifacts, and two documentation changes. Authority/lifecycle
+logic is primarily encapsulated in `services/p6r`; existing integration hooks
+remain explicit at server construction, plugin lifecycle/dispatch, daemon
+ingress, event append/projection, and facet/execution services. The review found
+no concrete safe simplification worth adding to this slice. This supports a
+bounded source-footprint assessment; it does not prove that future upstream
+synchronization will be conflict-free or that the full host fork is minimal.
+
+## Final compatibility receipt (2026-09-06)
+
+The current review selection ends at tree
+`66a21cab13b65c6e2b4333ce76926529b9b9430b`. Families 09–11 preserve optional
+canonical plugin URLs, persisted sidebar participants, generated SDK contracts,
+and execution-cache invalidation. The source contains 117 changed files against
+the exact base; all match the checked selection. `verify-selected-kernel`
+fresh-fetch replay passes every predecessor and result hash.
+
+Server regressions pass 154/154 with explicit packed identity input and no skips.
+App cache tests pass 66/66; app, server, DB and SDK typechecks pass. This proves
+the recorded selection and current-base replay, not future upstream conflict
+freedom or full-host promotion. Keep lifecycle hooks and compatibility families
+separate during semantic upstream review; do not regenerate consumer declarations
+from an official SDK having the same version but lacking these fork extensions.

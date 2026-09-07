@@ -9,25 +9,34 @@ record; completion evidence belongs here rather than rewriting that history.
 
 ## Current handoff
 
-The selected review composition now replays from upstream commit `960255b98` to
-`8e2356517b37bcfe1384c9df53fa6ff3b39f0cce`, through the kernel and review families
-04–08. The verifier checks every patch hash and predecessor/result tree in a
-fresh repository. This selection includes retained facets/execution, capability
-routes, verified durable mention targets, and built sidecar migrations.
+The selected review composition replays from upstream commit `960255b98` to
+`66a21cab13b65c6e2b4333ce76926529b9b9430b`. All 117 changed files match the
+tested source, and fresh full replay passes. Families 09–10 add optional
+server-owned URL presentation, persisted sidebar participant projection, and
+built-in authoring guidance; family 11 closes execution-change cache invalidation.
+They preserve existing consumer behavior without
+adding a second identity authority. The final replay manifest records exact
+patch hashes and predecessor/result trees.
 
-The earlier dependency-isolation problem was corrected by removing only links
-inside the disposable selected archive and installing its frozen dependencies.
-Independent reruns pass: 121 focused tests (14 files, no skips, explicit reviewed
-identity archive), 12 typecheck tasks, the actual create/live-send/queued-send
-mention witness, and the built cold-initDb/missing-migration witness. The daemon
-rejection fixture is schema-valid and asserts the specific authority guard.
+Independent frozen-dependency verification now passes 154 focused server tests
+(18 files, no skips, explicit reviewed identity archive), including actual
+create/live/queued mention paths, the schema-valid daemon authority guard,
+capability routes, and thread lists above SQLite's parameter limit. Built P6R
+migration cold start and missing-migration failure also pass. Thread Manager
+and Thread Progress factory witnesses use the built SDK runtime.
 
-The new packed Identity Boundaries factory passes a request test on this selected
+The packed Identity Boundaries factory passes a request test on this selected
 host with controlled ingress and directory evidence. It does not establish live
 Tailnet admission. Existing proof runtime remains the local signed P/F fixture.
-Agent Connect's public-URL behavior exposed an additional missing host contract;
-its stale generated SDK declaration is rejected as verification evidence. That
-contract and reproducible plugin declaration closure remain under review.
+Agent Connect's missing URL contract is restored as optional presentation-only
+host capability. The selected CLI now reproduces its SDK declarations; its
+54 runtime tests, typecheck, and build pass. Sidebar consumer declarations use the same supported generator, with no restored
+stale types. App, server, DB, and SDK typechecks pass; app cache tests pass 66/66.
+
+Source already pushed to review branches: fork `4439256`, library `659e2ce`,
+and workspace guidance `6f81549`. Remaining compatibility and consumer integration
+commits follow their final checks. The workspace guidance commit changes no
+gitlinks and is not a composition promotion.
 
 Cole deferred npm publication and its dependent community manifest/registry
 lockfile/cold-install work until tomorrow. The approved archive remains unchanged.
@@ -398,12 +407,13 @@ including independent byte-identical rebuilds, installed public export probes,
 139 Bun + 3 Node tests, and React/SDK compatibility checks. Review receipt:
 `/home/ubuntu/.bb/thread-storage/thr_m3jtsjtmcx/release-approval-bb-identity-0.1.0.md`.
 
-The authorized exact-archive publication was attempted and failed with npm
-`ENEEDAUTH`; no publication occurred. Authentication recheck remains negative.
-Do not request release authorization again: after authentication is available,
-publish the unchanged approved archive, verify registry bytes/integrity, then
-generate the community exact dependency and registry-backed lockfile and verify
-a cold install. A changed archive requires renewed review. Core promotion remains
+The earlier exact-archive publication attempt failed with npm `ENEEDAUTH`;
+no publication occurred. Cole subsequently deferred publication until tomorrow,
+along with the community exact dependency, registry-backed lockfile and cold
+install. Do not publish today. The approval remains tied only to the unchanged
+reviewed archive; the newer source manifest requires a fresh artifact review.
+After the deferred release is resumed, verify registry bytes/integrity before
+generating the dependent community lockfile. Core promotion remains
 outside this package approval. SDK declaration consumers need the SDK's type
 prerequisites; community server execution needs the host SDK alias. Temporary
 archive probes do not prove standalone community or live-host installation.
