@@ -33,10 +33,30 @@ host capability. The selected CLI now reproduces its SDK declarations; its
 54 runtime tests, typecheck, and build pass. Sidebar consumer declarations use the same supported generator, with no restored
 stale types. App, server, DB, and SDK typechecks pass; app cache tests pass 66/66.
 
-Source already pushed to review branches: fork `4439256`, library `659e2ce`,
-and workspace guidance `6f81549`. Remaining compatibility and consumer integration
-commits follow their final checks. The workspace guidance commit changes no
-gitlinks and is not a composition promotion.
+The selected source closeout is committed and pushed on review branches:
+
+- Fork: `bb/identity-review-composition-thr_csw7br3yff` (compatibility source
+  receipts through `7acff4c53`, linked plan closure `27b5de596`).
+- Organization plugins: `bb/identity-source-thr_csw7br3yff`, commit
+  `1bce7bbb7a84a18971578679aaca58fecfbaa991`; all 253 changed source files
+  byte-match the checked isolated composition. This includes library source,
+  seven consumers, generator/lock closure and actual generated SDK declarations.
+- Workspace guidance: `bb/identity-guidance-thr_csw7br3yff`, `6f81549`.
+  This docs-only commit changes no gitlinks and is not a composition promotion.
+
+Final org metadata checks pass: synchronized generator outputs, pinned references,
+SDK type checks, and 8 generator tests. Agent Connect passes 54/54 runtime tests;
+Thread Progress passes 317 with one explicitly skipped test. Library runtime
+checks pass 139 and its real browser-fixture typecheck passes. The unrelated
+Phosphor Checkouts packaging hunk was removed. All selected commits are distinct
+from the remaining authored working-tree changes, which were preserved.
+
+Remaining gates are explicit: real Tailnet ingress/session plus a usable directory
+snapshot on an approved isolated host; full-host retained-feature composition and
+promotion; and deferred npm/community registry distribution. Source and artifact
+preparation does not require npm publication, but an honest registry-backed
+community dependency lock does. The normal runtime and workspace gitlinks remain
+unchanged. The old active patch queue was preserved, not silently replaced.
 
 Cole deferred npm publication and its dependent community manifest/registry
 lockfile/cold-install work until tomorrow. The approved archive remains unchanged.
