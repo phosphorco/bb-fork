@@ -31,61 +31,46 @@ try {
   git("init", "--quiet");
   git("config", "user.name", "Namespace Policy Test");
   git("config", "user.email", "namespace-policy@example.invalid");
-
-  write(
-    "packages/sdk/src/core.ts",
-    "interface Sdk { p6rMembers: P6rMembersArea; p6rPresence: P6rPresenceArea; }\n",
-  );
-  write(
-    "packages/plugin-sdk/src/app-contract.ts",
-    "interface P6rParticipantProfile {}\ninterface App { p6rParticipants?: readonly P6rParticipantProfile[]; }\n",
-  );
   write(
     "packages/plugin-sdk/src/backend-contract.ts",
-    "interface Backend { p6rIdentity: P6rIdentityApi; p6rRequestPrincipal: P6rActorSnapshot | null; p6rTurnAuthor: P6rActorSnapshot | null; }\n",
+    "interface Backend { experimental_p6rIdentity?: ExperimentalP6rIdentityProtocol; }\n",
   );
   write(
-    "packages/server-contract/src/thread-timeline.ts",
-    "interface TimelineRow { p6rActorHandle: string | null; }\n",
+    "packages/plugin-sdk/src/experimental-p6r-identity.ts",
+    "export interface ExperimentalP6rIdentityProtocol {}\nexport interface ExperimentalP6rInvocationContext {}\n",
   );
   write(
-    "apps/app/src/components/thread/timeline/ConversationMessageContent.tsx",
-    "export const presentation = { p6rShowAuthor: true };\n",
+    "apps/server/src/services/p6r/identity-protocol.ts",
+    "export interface P6rActorSnapshot {}\nexport function createP6rIdentityService() {}\n",
   );
   git("add", ".");
   git("commit", "--quiet", "-m", "baseline");
   const base = git("rev-parse", "HEAD").trim();
 
   write(
-    "packages/domain/src/thread-facet.ts",
-    "export type ThreadFacetTypeId = string;\n",
+    "apps/server/src/services/p6r/provider-admission.ts",
+    "export function createP6rProviderAdmission() {}\n",
   );
   git("add", ".");
-  git("commit", "--quiet", "-m", "approved facet surface");
+  git("commit", "--quiet", "-m", "namespaced addition");
   const approved = runChecker(base);
   if (approved.status !== 0) {
     throw new Error(
-      `approved facet surface was rejected:\n${approved.stdout}${approved.stderr}`,
+      `namespaced identity surface was rejected:\n${approved.stdout}${approved.stderr}`,
     );
   }
 
-  // The name deliberately contains `Facet`: only the exact approved
-  // path/symbol pair above is exempt, never a convenient generic prefix.
   write(
-    "packages/domain/src/unrelated-plugin-contract.ts",
-    "export type UnrelatedFacetEscape = string;\n",
+    "apps/server/src/services/p6r/provider-admission.ts",
+    "export function createProviderAdmission() {}\n",
   );
   git("add", ".");
-  git("commit", "--quiet", "-m", "unrelated downstream leak");
+  git("commit", "--quiet", "-m", "unprefixed identity export");
   const rejected = runChecker(base);
   if (rejected.status === 0) {
-    throw new Error("unrelated non-p6r export unexpectedly passed");
+    throw new Error("unprefixed identity export unexpectedly passed");
   }
-  if (
-    !rejected.stderr.includes(
-      "new exported symbol 'UnrelatedFacetEscape' is not p6r-prefixed",
-    )
-  ) {
+  if (!rejected.stderr.includes("does not contain the p6r namespace")) {
     throw new Error(`unexpected refusal:\n${rejected.stdout}${rejected.stderr}`);
   }
 

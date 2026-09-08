@@ -2,57 +2,35 @@
 
 ## Patch queue
 
-1. **Current-upstream multiplayer reconciliation** ports the verified-identity, provider-qualified PrincipalKey, durable-authorship, presence, attributed messaging, and managed-deployment guarantees onto exact current upstream behavior.
-2. **Extensible Thread Facets revision 1** adds the generic namespaced Thread–Member relation, one-or-many cardinality, authoritative completeness and generation lifecycle, stable public query/CLI, attenuated plugin capability, core participant projection, and saved web/mobile My progress views.
-3. **Namespace-neutral facet quarantine fixture** keeps the forbidden principal-member-kind declaration witness within the bounded generic facet namespace exception.
-4. **Condensed sidebar participant presentation** makes ordinary web and native rows use ordered avatar groups with lawful initials, accessible name disclosure, and `+N` overflow without visible full-name row text.
-5. **Structured compact command preservation** classifies an authenticated standalone built-in `/compact` selection before host-daemon sender presentation, retaining the existing provider compaction path without executing quoted, raw, attachment-bearing, agent-authored, plugin-origin, surrounding-text, or other slash inputs.
-6. **Deployment fixture contract alignment** updates the demo and provider-parity fixtures to carry the merged nullable authorship fields and managed Rosetta upgrade guidance required by the production TypeScript gate.
-7. **Plugin principal authority** exposes the server-authored PrincipalKey seam needed by downstream plugins without accepting a client-selected key.
-8. **Safe provider avatars** preserve HTTPS-only, anonymous image loading with an accessible initials fallback across presence and the condensed participant stack.
-9. **Interrupted identity staging recovery** preserves deployed multiplayer migration state while the current additive identity migration takes ownership.
-10. **Unbounded supervised server startup** lets production-sized migrations finish while retaining bounded health requests, launch-id identity, and child-exit failure.
-11. **Packaged runtime entrypoints** makes the immutable bb-app artifact contain the launcher, CLI, server, and daemon from one revision.
-12. **Current-protocol witness alignment** keeps public identity proofs and DB exports aligned with the coordinated daemon protocol base.
-13. **Completed-ledger staging recovery** restores staged identity tables even when the prior migration ledger had already advanced.
-14. **Trusted Tailnet admission** keeps authenticated Tailnet browser identity out of untrusted claimed-presentation mode.
-15. **Singular generalized event-query export** resolves the protocol witness port against the current shared Thread Facet query primitive without duplicating its public DB export.
-16. **Unified plugin principal imports** resolves the live SDK authority port against the current contract header without duplicate type declarations.
-17. **Distinct no-provider claimed principals** lets remote no-provider clients carry untrusted presentation while the server authors stable, distinct claimed PrincipalKeys; configured providers and loopback keep their own authority.
-18. **Deterministic unbounded-startup witness** drives more than sixty seconds of health-check intervals through an injected delay without fake-timer deadlock, preserving executable proof that long migrations have no launcher deadline.
-19. **Validation contract alignment** records the intentional optional speaker field and gives the lifecycle-heavy plugin-update scheduler witness the same bounded timeout as its neighboring regression.
-20. **Unbounded health witness alignment** removes obsolete timeout arguments from launcher-health tests and proves foreign responders remain rejected until the supervised child exits, without restoring a product startup deadline.
-21. **Complete query-plan witness** captures the prepared background-task statement instead of executing its intentionally truncated slow-query log representation after identity columns extend the generated SQL.
-22. **Server witness alignment** expects escaped provider subjects and server-authored claimed keys, while ordering direct event-table assertions by their declared sequence.
-23. **Principal-key boundary witness** distinguishes provider lease subject encoding from the provider/subject delimiter retained in authenticated request keys.
-24. **Canonical plugin PrincipalKeys** supersedes that differing-key interpretation: provider handles, production HTTP/RPC resolution, and the fake SDK host now derive the same actor key for one registered provider and subject.
-25. **Thread-list cache shape validation** rejects generalized `threads` query entries whose pages are facet response objects or empty participant pages before sidebar cache iteration can treat them as thread arrays.
-26. **Compact thread header controls** derive plugin control density from the containing split pane while keeping Git actions out of the title row.
-27. **Per-person palette overrides** keep the Settings appearance write and UI as the shared default for everybody while letting a provider-established or claimed principal store a personal override on a downstream-namespaced `app_theme` row via additive `/settings/p6r-personal-appearance` routes; `/system/config` resolves override-else-shared per requesting principal and carries an optional `p6rPaletteRoster` for a future override UI or plugin.
-28. **Configurable prompt stacks** add server-backed prompt sequences with per-project step overrides and native follow-up slash dispatch.
-29. **Multiplayer timeline authors** render attributed message authors from their durable actor presentation snapshots, reuse the HTTPS-only avatar component and accessible initials fallback, and show author labels whenever the durable thread roster has multiple participants rather than waiting for two distinct authors to appear in the loaded timeline page.
-30. **Workspace-local shell environments** resolve each provisioned workspace's login-shell `PATH` from that workspace before its provider runtime starts, so version managers and local package binaries take precedence without changing the daemon-global maintenance environment.
-31. **Capability-authenticated plugin routes** let plugin HTTP and RPC registrations require narrowly declared host capabilities without broadening unauthenticated plugin access.
-32. **Covered background-command presentation** carries the newest active provider-shell start into the sidebar contract so clients can quietly mark commands older than thirty minutes without hiding newer commands or other live work.
-33. **Event-loop plugin RPC observation** adds bounded diagnostics for plugin RPC fan-out without changing the plugin wire contract.
-34. **Independent Recovery native baseline** adds a separately identified Expo/React Native application package without changing the ordinary mobile app or default BB runtime.
-35. **Recovery persistence kernel** adds app-owned SQLite namespaces, durable observed records/outbox metadata, and content-addressed attachment staging for the Recovery package.
-36. **Cached-first Recovery reads** hydrates principal-fenced sidebar, thread-shell, and latest-timeline data from SQLite while keeping rendered Recovery composers draft-only.
-37. **Bounded Recovery snapshot foundation** adds the versioned principal-fenced snapshot route and SDK plus atomic native ingestion; the overall bundle remains explicitly partial until sidebar revision/tombstone authority exists.
-38. **Bounded execution reassignment** adds opt-in execution facets, catalog-bound preflight/apply, atomic set-based sticky override persistence, native picker parity, CLI controls, and aggregate realtime invalidation for Thread Manager and native clients.
-39. **Indexed batched execution history** keeps latest-request lookup on the event indexes when resolving many execution summaries.
-40. **Stable participant projection skipping** avoids recomputing participant facets when the requested projection is already stable.
-41. **Shared participant facet projection** reuses the server projection instead of repeating participant derivation in runtime display.
-42. **Hardened execution catalogs** adds provider-targeted public catalog lookup, exact post-clear fallback review, raw nested model identity, fresh apply-time catalog validation, and an independent 100-route server ceiling.
-43. **Provider-scoped native execution fallback** keeps the existing-thread picker and CLI clear path from reconciling reasoning against a project default owned by another provider.
-44. **Execution contract boundary coverage** records targeted execution-query optionals explicitly and proves zero-target rejection plus one-target acceptance alongside the existing 5,000/5,001 limits.
-45. **Legacy participant projection compatibility** preserves handle/display-name fallback semantics while proving stable projections avoid history materialization and participant-bearing changes refresh incrementally.
+1. **Selected identity kernel** establishes the reviewed provider, authorship,
+   admission, history, and native-event foundation on the current upstream.
+2. **Retained facets and execution** composes the still-required Thread Facet,
+   execution, sidebar, appearance, recovery, and provider behavior.
+3. **Consumer compatibility witnesses** pins the plugin and host-facing seams.
+4. **Capability-authenticated routes** adds bounded authenticated plugin HTTP
+   and RPC surfaces.
+5. **Verified mention targets** adds authenticated mention recipients without
+   conflating recipients and authors.
+6. **Built sidecar migrations** includes the generated P6R migration payloads.
+7. **Plugin presentation compatibility** preserves the existing plugin-facing
+   identity presentation contracts.
+8. **Sidebar participants and guidance** integrates participant presentation
+   with the current sidebar behavior.
+9. **Execution cache invalidation** rejects stale execution projections.
+10. **Admission boundary** fails closed before dispatch for non-ready providers.
+11. **Active external queues** preserves queued Agent Connect work across the
+    reviewed identity boundary.
+12. **Pending call history** retains exact operation history until turn linkage
+    is complete.
+13. **Pkl highlighting** adds shared Markdown and Monaco syntax coloring.
+14. **Migration-fixture rewind** keeps upstream replay tests valid after the downstream identity migrations.
+15. **Integration determinism** updates renamed mention seams and canonicalizes Git timestamps in downstream witnesses.
 
 ## Exact source receipt
 
-- Upstream: `5205d98a74ed5a22469e521cf1f86b00b8232827`.
-- Materialized package: `bb-app@0.39.0`.
-- Patch queue: forty-five patches in `patches/series`.
+- Upstream: `960255b98ce3dccdcb5754eb67a7f989236602a1`.
+- Materialized package: `bb-app@0.42.0` plus the reviewed downstream queue.
+- Patch queue: fifteen patches in `patches/series`.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries
