@@ -19,13 +19,12 @@ contracts do not masquerade as upstream identity APIs. Identity modules and
 symbols retain the explicit `p6r` namespace, while additive facet storage keeps
 the `thread_facet_*` namespace.
 
-Identity kernel additions follow the same rule: the immutable principal key is
-`(p6rProviderId, p6rSubject)`, while `p6rHandle`, `p6rDisplayName`, and
-`p6rImageUrl` are mutable presentation snapshot fields. Agent tools receive
-only nullable `p6rTurnAuthor` from durable accepted-unit data. Plugin HTTP/RPC
-handlers receive only nullable `p6rRequestPrincipal` from the shared inbound
-resolver; neither carrier is reconstructed from transcript `[from=...]`
-presentation or from a client claim.
+Identity kernel actors carry opaque provider-issued identity keys and frozen
+presentation snapshots. Native request events use `p6rAuthors`; neither that
+field nor a plugin invocation actor is reconstructed from transcript text or
+client claims. Plugin consumers use the public bb-identity binding. Native
+identity inspection is explicitly `system.p6rIdentity` and
+`/api/v1/system/p6rIdentity`.
 
 This includes internal contracts shared between bb packages, even when they are
 not currently exported by `@get-bb/plugin-sdk`. Ordinary implementation locals
@@ -38,10 +37,9 @@ Phosphor-only API for an upstream bb API. For example, the overlay exposes
 generic `bb.identity` member or through legacy `showAuthor` or `actorHandle`
 fields.
 
-The identity provider registration is exclusive and core-composed as
-`pluginId/registrationId`. Provider rejection, throw, malformed output, and
-timeout are terminal for provider-owned paths; the local operator is an
-explicit loopback fallback only after no-provider or not-applicable resolution.
+The operator selects the exclusive provider boundary. Provider rejection,
+throw, malformed output, and timeout are terminal for configured native sends.
+An unconfigured host retains ordinary native behavior without claiming a person.
 
 Legacy unprefixed database names may appear only in migration compatibility
 code that upgrades checkouts of the earlier experimental multiplayer branch.

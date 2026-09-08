@@ -37,13 +37,15 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The fifteen patches are the reviewed first-principles composition previously
+The sixteen patches are the reviewed first-principles composition previously
 verified as an isolated candidate. They establish the selected identity kernel,
 retain the required facet and execution behavior, add consumer witnesses and
 capability-authenticated routes, complete mention targets and sidecar
 migrations, preserve plugin/sidebar compatibility, harden execution and
 authentication boundaries, retain Agent Connect queue/history behavior, and
-finish with the reviewed Pkl syntax-highlighting change. The queue replays to
+include the reviewed Pkl syntax-highlighting change. The final patch adds
+`/settings/p6rIdentity` and provider-verified native message authorship while
+preserving upstream command dispatch. The queue replays to
 the exact tree recorded in `result-tree.lock`; the historical review artifacts
 under `plans/artifacts/` remain supporting evidence rather than a second build
 path.
