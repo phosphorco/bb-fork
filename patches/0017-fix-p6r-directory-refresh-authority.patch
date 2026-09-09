@@ -1,0 +1,230 @@
+From 1ac7aaf1b6e91b50461456053db396a83bbfd563 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 21:41:38 -0400
+Subject: [PATCH] fix(p6r): preserve admitted authority across directory
+ refresh
+
+---
+ .../src/services/p6r/provider-admission.ts    |  14 +-
+ .../services/p6r/provider-admission.test.ts   | 127 +++++++++++++++++-
+ .../services/p6r/provider-registry.test.ts    |  20 +++
+ 3 files changed, 159 insertions(+), 2 deletions(-)
+
+diff --git a/apps/server/src/services/p6r/provider-admission.ts b/apps/server/src/services/p6r/provider-admission.ts
+index 3b9ce5c3509c056700f5725a7167fd9977895899..3b72f8e91f395238ededbed42a0e5b88d72a5a02 100644
+--- a/apps/server/src/services/p6r/provider-admission.ts
++++ b/apps/server/src/services/p6r/provider-admission.ts
+@@ -44,7 +44,7 @@ type SessionRecord = {
+   readonly lineageKey: string;
+   readonly onLifetimeAbort: () => void;
+   readonly providerGeneration: string;
+-  readonly session: P6rReadySession;
++  session: P6rReadySession;
+   readonly subject: P6rPersonReference;
+   deadlineAt: number;
+   timer: Timer | undefined;
+@@ -222,6 +222,7 @@ export function createP6rProviderAdmission(
+     );
+   };
+   const invalidate = (event: P6rProviderInvalidation): void => {
++    if (event.kind === "directory") return;
+     for (const record of [...sessions.values()]) {
+       if (record.providerGeneration !== event.generation) continue;
+       if (
+@@ -274,6 +275,17 @@ export function createP6rProviderAdmission(
+       !existing.controller.signal.aborted &&
+       existing.deadlineAt > options.now()
+     ) {
++      existing.session = Object.freeze({
++        ...existing.session,
++        actor: Object.freeze({
++          ...existing.session.actor,
++          presentation: Object.freeze({
++            avatarUrl: input.presentation.avatarUrl,
++            displayName: input.presentation.displayName,
++            handle: input.presentation.handle,
++          }),
++        }),
++      });
+       schedule(existing, input.validUntil);
+       return existing;
+     }
+diff --git a/apps/server/test/services/p6r/provider-admission.test.ts b/apps/server/test/services/p6r/provider-admission.test.ts
+index 085c496e9b735929cdfa4cec2735e3d537f933c1..c2be207a9f2706fa68f08d5033ea05698f3bfceb 100644
+--- a/apps/server/test/services/p6r/provider-admission.test.ts
++++ b/apps/server/test/services/p6r/provider-admission.test.ts
+@@ -2,7 +2,7 @@ import { generateKeyPairSync, sign, verify, type KeyObject } from "node:crypto";
+ import { describe, expect, it } from "vitest";
+ import { createP6rProviderAdmission, type P6rAdmissionIngressFacts, type P6rAdmissionRequestFacts } from "../../../src/services/p6r/provider-admission.js";
+ import { createP6rProviderRegistry } from "../../../src/services/p6r/provider-registry.js";
+-import type { P6rForkIdentityProvider, P6rProviderConfiguration, P6rProviderEvidence, P6rProviderResolution } from "../../../src/services/p6r/provider-contract.js";
++import type { P6rForkIdentityProvider, P6rProfilePresentation, P6rProviderConfiguration, P6rProviderEvidence, P6rProviderResolution } from "../../../src/services/p6r/provider-contract.js";
+ 
+ const configuration: P6rProviderConfiguration = { boundaryId: "signed-boundary", credentials: [{ field: "x-proof-assertion", name: "assertion", source: "header" }], ingressIds: ["proof-ingress"], pluginId: "provider-plugin", resolver: { maxSessionAgeMs: 100, timeoutMs: 25 }, version: 1 };
+ 
+@@ -58,6 +58,131 @@ describe("P6r provider admission", () => {
+     expect(separate?.sessionEpoch).not.toBe(first?.sessionEpoch);
+   });
+ 
++  it("keeps admitted authority through directory refresh while future verified reads receive a new presentation and expiry", async () => {
++    let now = 100;
++    let presentation: P6rProfilePresentation = { avatarUrl: null, displayName: "Alice", handle: "alice" };
++    let validUntil = 180;
++    const registry = createP6rProviderRegistry({ now: () => now });
++    const prepared = await registry.prepare({
++      configuration,
++      deadlineAt: 125,
++      generation: "provider-generation",
++      provider: {
++        issuers: ["proof:issuer"],
++        async resolve() {
++          return {
++            issuer: "proof:issuer",
++            presentation,
++            status: "resolved",
++            subject: "alice",
++            validUntil,
++          };
++        },
++      },
++    });
++    if (!prepared.ok) throw new Error("expected provider preparation");
++    expect(registry.publish(prepared.value).ok).toBe(true);
++    const admission = createP6rProviderAdmission({
++      ingressFacts: () => ingress("browser-session"),
++      instanceId: "proof-instance",
++      now: () => now,
++      providerRegistry: registry,
++      requestFacts: () => requestFacts(now, "verified"),
++      selectedConfiguration: () => configuration,
++    });
++    try {
++      const lifetime = new AbortController();
++      const input = {
++        generation: {
++          generation: "feature-generation",
++          lifetime: lifetime.signal,
++          pluginId: "feature-plugin",
++        },
++        ingress: { requestId: "request-1", transport: "http" as const },
++        request: {},
++        routeClass: "anonymous" as const,
++      };
++      const first = await admission.trustedInvocation(input);
++      if (first?.session.status !== "ready" || first.signal === undefined)
++        throw new Error("expected first admitted invocation");
++      expect(first.deadlineAt).toBe(180);
++      expect(first.session.actor.presentation.displayName).toBe("Alice");
++      expect(prepared.value.registration.invalidate({ kind: "directory", revision: "next" }).ok).toBe(true);
++      expect(first.signal.aborted).toBe(false);
++      presentation = { avatarUrl: "/alice.png", displayName: "Alice Updated", handle: "alice" };
++      validUntil = 220;
++      const second = await admission.trustedInvocation({
++        ...input,
++        ingress: { requestId: "request-2", transport: "http" },
++      });
++      if (second?.session.status !== "ready" || second.signal === undefined)
++        throw new Error("expected second admitted invocation");
++      expect(second.sessionEpoch).toBe(first.session.stamp);
++      expect(second.signal).toBe(first.signal);
++      expect(first.session.actor.presentation.displayName).toBe("Alice");
++      expect(first.deadlineAt).toBe(180);
++      expect(second.session.actor.presentation).toEqual(presentation);
++      expect(second.deadlineAt).toBe(200);
++    } finally {
++      admission.dispose();
++      registry.retire(prepared.value);
++    }
++  });
++
++  it("rejects native commit validation after targeted authentication invalidation", async () => {
++    let now = 100;
++    const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
++    const calls = { value: 0 };
++    const registry = createP6rProviderRegistry({ now: () => now });
++    const prepared = await registry.prepare({
++      configuration,
++      deadlineAt: 125,
++      generation: "provider-generation",
++      provider: signedProvider(pair.publicKey, calls),
++    });
++    if (!prepared.ok) throw new Error("expected provider preparation");
++    expect(registry.publish(prepared.value).ok).toBe(true);
++    let token = assertion(pair.privateKey, "alice", 180);
++    const admission = createP6rProviderAdmission({
++      ingressFacts: () => ingress("native-request"),
++      instanceId: "proof-instance",
++      now: () => now,
++      providerRegistry: registry,
++      requestFacts: () => requestFacts(now, token),
++      selectedConfiguration: () => configuration,
++    });
++    try {
++      const admitted = await admission.admitNativeHttp({});
++      if (admitted.status !== "ready") throw new Error("expected native admission");
++      expect(admitted.validUntil).toBe(180);
++      expect(admitted.validate()).toEqual({ ok: true });
++      expect(prepared.value.registration.invalidate({ kind: "directory", revision: "next" }).ok).toBe(true);
++      expect(admitted.validUntil).toBe(180);
++      expect(admitted.validate()).toEqual({ ok: true });
++      expect(prepared.value.registration.invalidate({
++        kind: "authentication",
++        subjects: [{ issuer: "proof:issuer", subject: "bob" }],
++      }).ok).toBe(true);
++      expect(admitted.validate()).toEqual({ ok: true });
++      expect(prepared.value.registration.invalidate({
++        kind: "authentication",
++        subjects: [{ issuer: "proof:issuer", subject: "alice" }],
++      }).ok).toBe(true);
++      expect(admitted.validate()).toEqual({ code: "invalidated", ok: false });
++      admitted.release();
++      token = assertion(pair.privateKey, "alice", 260);
++      const expiring = await admission.admitNativeHttp({});
++      if (expiring.status !== "ready") throw new Error("expected expiring native admission");
++      expect(expiring.validUntil).toBe(200);
++      now = 200;
++      expect(expiring.validate()).toEqual({ code: "expired", ok: false });
++      expiring.release();
++    } finally {
++      admission.dispose();
++      registry.retire(prepared.value);
++    }
++  });
++
+   it("rejects unverified or direct ingress without forwarding an assertion to the provider", async () => {
+     let now = 100;
+     const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
+diff --git a/apps/server/test/services/p6r/provider-registry.test.ts b/apps/server/test/services/p6r/provider-registry.test.ts
+index 6bd657717b50cabe2a49c51e490638edcaf09feb..5771321e9db62a3f7ec300f19fd8c4046588ceeb 100644
+--- a/apps/server/test/services/p6r/provider-registry.test.ts
++++ b/apps/server/test/services/p6r/provider-registry.test.ts
+@@ -94,6 +94,26 @@ describe("P6r provider registry", () => {
+     expect(await registry.resolve({ ...evidence(100), configuration: configuration("same-plugin") })).toMatchObject({ status: "resolved", subject: "successor" });
+   });
+ 
++  it("preserves an in-flight resolution and its expiry cap through directory refresh", async () => {
++    let release: ((value: P6rProviderResolution) => void) | undefined;
++    const delayed = new Promise<P6rProviderResolution>((resolve) => { release = resolve; });
++    const signals: AbortSignal[] = [];
++    const registry = createP6rProviderRegistry({ now: () => 100 });
++    const prepared = await registry.prepare({
++      configuration: configuration(), deadlineAt: 150, generation: "generation-1",
++      provider: provider(async (input) => { signals.push(input.signal); return delayed; }),
++    });
++    if (!prepared.ok) throw new Error("expected prepared provider");
++    expect(registry.publish(prepared.value).ok).toBe(true);
++    const pending = registry.resolve(evidence(100));
++    expect(signals).toHaveLength(1);
++    expect(prepared.value.registration.invalidate({ kind: "directory", revision: "refresh" }).ok).toBe(true);
++    expect(signals[0]?.aborted).toBe(false);
++    release?.(resolved("fixture:issuer", "subject-1", 999));
++    expect(await pending).toMatchObject({ status: "resolved", validUntil: 150 });
++    registry.retire(prepared.value);
++  });
++
+   it("fences a late ignored-cancellation resolution after authentication invalidation", async () => {
+     let release: ((value: P6rProviderResolution) => void) | undefined;
+     const delayed = new Promise<P6rProviderResolution>((resolve) => { release = resolve; });
+-- 
+2.43.0
+

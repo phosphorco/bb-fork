@@ -27,11 +27,13 @@
 15. **Integration determinism** updates renamed mention seams and canonicalizes Git timestamps in downstream witnesses.
 16. **Native identity settings and authorship** exposes the current connection’s verified identity and retains native send authors across queueing, retry, model input, and timeline presentation.
 
+17. **Directory refresh authority** preserves admitted requests across directory-only invalidations; fresh verified admissions update presentation without rewriting prior snapshots. Targeted authentication revocation and expiry remain enforced.
+
 ## Exact source receipt
 
 - Upstream: `960255b98ce3dccdcb5754eb67a7f989236602a1`.
 - Materialized package: `bb-app@0.42.0` plus the reviewed downstream queue.
-- Patch queue: sixteen patches in `patches/series`.
+- Patch queue: seventeen patches in `patches/series`.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries
