@@ -1,5 +1,15 @@
 # Native identity settings and authorship
 
+> Policy update — 2026-09-09: the approved [Identities and multiplayer ADR](../../docs/adrs/2026-09-identities-and-multiplayer.md)
+> governs this trusted shared deployment. Use verified people when available,
+> applicable carried attribution next, and a stable machine actor otherwise;
+> missing or failed person verification must not block ordinary operations.
+> Never relabel fallback as a verified person or redirect pending personal-state
+> writes to another owner. Independent access checks and data validation remain.
+> Earlier rejection requirements below are superseded; versioned API descriptions
+> and test receipts remain historical evidence, not proof of ADR implementation.
+
+
 ## User behavior
 
 Settings → Identity (`/settings/p6rIdentity`) reports the provider-resolved person
@@ -30,9 +40,12 @@ accepted sender. Retry reads original event metadata. The optimized queue path
 defers attributed rows to the existing general dispatcher, avoiding a second
 identity implementation in the fast path.
 
-Provider rejection or outage fails closed on configured native write routes.
-Live validity is checked before acceptance; accepted queue snapshots can drain
-after that request ends. Client-supplied author metadata is not an authority.
+Target behavior: provider rejection or outage discards person evidence and uses
+applicable carried attribution or a stable machine actor on native write routes.
+Capture the selected attribution at acceptance; accepted queue snapshots can drain
+after that request ends. Client metadata must not be labeled provider-verified.
+The patch observations below describe the earlier implementation, not completed
+ADR acceptance.
 
 ## Checks and limits
 

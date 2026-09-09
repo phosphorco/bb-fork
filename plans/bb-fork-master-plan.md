@@ -1,5 +1,15 @@
 # BB fork master plan
 
+> Policy update — 2026-09-09: the approved [Identities and multiplayer ADR](../../docs/adrs/2026-09-identities-and-multiplayer.md)
+> governs this trusted shared deployment. Use verified people when available,
+> applicable carried attribution next, and a stable machine actor otherwise;
+> missing or failed person verification must not block ordinary operations.
+> Never relabel fallback as a verified person or redirect pending personal-state
+> writes to another owner. Independent access checks and data validation remain.
+> Earlier rejection requirements below are superseded; versioned API descriptions
+> and test receipts remain historical evidence, not proof of ADR implementation.
+
+
 Current implementation scope and checked results are recorded in the
 [identity completion ledger](bb-identity-completion.md). This document preserves
 planning requirements and historical inventory; it does not broaden the selected
@@ -234,8 +244,8 @@ Local operator and local tool identity are deployment policies, not identities
 proven by a browser surface header. The first implementation inventories CLI,
 desktop, browser, SDK, plugin, and agent transports. It must distinguish trusted
 local tool submission from plugin background execution without classifying both
-as the human operator. Unknown cases must remain unattributed or be rejected
-according to the operation; they cannot silently become a person.
+as the human operator. New operations without applicable person context use a stable machine actor and
+continue. Unknown historical authors remain unknown; neither becomes the operator.
 
 ### 5.2 Resolve once at the correct boundary
 
@@ -248,15 +258,17 @@ human actor. Their allowed operations remain constrained by route policy.
 Pass actor context explicitly; do not use an async-local or process-global
 current actor. Request-bound plugin actions capture a private immutable actor
 and expire on settlement, abort, or invalidation of the owning plugin generation.
-Delayed human-authored work must be accepted durably while authorized. A future
-need for longer-lived delegation requires a separate scoped grant design.
+Capture attribution durably at acceptance. Carry initiating-person context through
+agent and background work where applicable, separately from execution origin.
+Ordinary work requires no new delegation grant; missing context uses machine attribution.
 
 One configured boundary plugin may verify multiple issuers. Candidate provider
 registration commits with the plugin generation; failed reload preserves the
 active provider. Requests observe a complete generation, resolver work has a
 bounded deadline, and provider-bound sockets reauthenticate after replacement.
-Reject, malformed output, and timeout fail closed. Trusted ingress metadata
-must prevent proxied traffic from being rescued by loopback fallback.
+Reject, malformed output, and timeout discard unusable person evidence. Core
+continues with applicable carried attribution or a stable machine actor, including
+proxied and loopback traffic. Independent route access checks remain unchanged.
 
 ### 5.3 Define the facts at each lifecycle step
 
@@ -749,7 +761,7 @@ receipt reconciliation can proceed independently of candidate development.
 | --- | --- | --- | --- |
 | 0. Scope and placement | Confirmed baseline and staging; producer/consumer inventory; feature dispositions and decision register | Old runtime remains available; candidate location and required workflows are explicit | Fork lead, operator, product owner |
 | 1. Reproducible baseline | Empty-state upstream build plus minimal source/export/receipt tooling | Reproduce the exact candidate tree from pushed inputs; relevant upstream checks pass | Fork maintainer |
-| 2. Complete attribution slice | Two people and one Agent Connect author through send, mixed queue, restart, model input, and timeline; initial session compatibility fixture | Actual provider input, durable records, and UI agree; background work cannot borrow a person; ordinary thread content remains upstream-readable | Core and integration engineers |
+| 2. Complete attribution slice | Two people and one Agent Connect author through send, mixed queue, restart, model input, and timeline; initial session compatibility fixture | Actual provider input, durable records, and UI agree; background work distinguishes carried initiating-person context from execution origin; ordinary thread content remains upstream-readable | Core and integration engineers |
 | 3. Early compatibility and portability, alongside stage 2 | Representative thread, queued item, personal plugin record, and native session; shared identity package across server/state/UI with default-user and collaborator adapters; minimal migration choice | Upstream/fork session round trip and owner mappings validate; Agent Connect and Thread Progress use one package on both hosts; Notifications fits without feature concepts in core; precise host gaps identified | Data and plugin engineers |
 | 4. Durability completion | Supported edits, forks, retries, interactions, reload boundaries, participant maintenance | Producer matrix and failure tests pass; no unattributed-new-human-write escape | Core engineer, reviewer |
 | 5. Product completion | Required plugin ports, presence, rendering, accessibility, explicit remaining parity choices | End-user scenarios pass on desktop/mobile and supported host variants | Plugin/UI engineers, product owner |
@@ -786,7 +798,7 @@ behavior exercised, then the workspace receipt and normal-host pin advanced.
 | Fork-authored sessions fail in upstream | Preserve upstream formats and native state; raise material limitations with Cole before choosing an incompatible design | Stages 2–3 round-trip proof |
 | Default-user state changes when identities are toggled | Explicit mapping; preserve pending edits and distinguish absent capability from temporary failure | Stage 3 adapter and state-transition tests |
 | Recovery, palettes, or Thread Manager need more core support | Validate real consumer requirements; retain only justified narrow seams | Stage 5 product disposition |
-| Provider replacement races with requests | Preserve committed generations and bounded fail-closed resolution | Stage 4 reload tests |
+| Provider replacement races with requests | Preserve committed generations; bound resolution and fall back to machine attribution | Stage 4 reload tests |
 | Old snapshot cannot include new target writes | Forward repair after reopen unless reverse export is separately built | Stage 6 explicit cutover decision |
 
 No entry is resolved merely because it has a default. Attach evidence and the

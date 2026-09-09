@@ -1,5 +1,15 @@
 # bb-fork from first principles
 
+> Policy update — 2026-09-09: the approved [Identities and multiplayer ADR](../../docs/adrs/2026-09-identities-and-multiplayer.md)
+> governs this trusted shared deployment. Use verified people when available,
+> applicable carried attribution next, and a stable machine actor otherwise;
+> missing or failed person verification must not block ordinary operations.
+> Never relabel fallback as a verified person or redirect pending personal-state
+> writes to another owner. Independent access checks and data validation remain.
+> Earlier rejection requirements below are superseded; versioned API descriptions
+> and test receipts remain historical evidence, not proof of ADR implementation.
+
+
 Status: implementation plan, revision 3 after feasibility and source review.
 Scope: replace the current 51-patch overlay with a fork whose core delta is
 sized to its invariants, and whose maintenance tooling makes each upstream
@@ -348,24 +358,14 @@ against the pinned target; estimates are not used as acceptance criteria.
 - A core route that accepts user input must pass `p6rRequestActor` explicitly
   into the thread command. Plugin HTTP/RPC handlers receive the same captured
   value in their handler context. Fork APIs do not expose a global getter.
-- Resolver throw, malformed output, or reject fails closed with 401.
-  Not-applicable falls through to local identity if and only if the remote
-  address is loopback, and then:
-  - with the app surface header present, `local-operator`;
-  - without it (CLI, SDK, automations, and the plugin SDK client, which is
-    a loopback HTTP client), `local-tool`.
-  This distinction exists because today everything on loopback authors as
-  the human operator, including plugin-initiated sends, which contradicts
-  §1.2.1. Rosetta Slack forwarding through a plain send is the concrete
-  case; it must use §5.4 instead.
-- If Tailscale Serve terminates on the same host, tailnet requests arrive
-  from loopback at the socket level. The provider must therefore run before
-  the loopback fallback, and the fallback must never rescue a provider
-  rejection. Production ingress marks proxied requests with a configured
-  server-trusted marker; marked requests never receive loopback fallback,
-  including on `not-applicable`. The server strips an untrusted client copy
-  before ingress metadata is attached. Direct unmarked loopback remains
-  available to the app, CLI, SDK, and automations.
+- Resolver throw, malformed output, rejection, timeout, or not-applicable discards
+  unusable person evidence. Core uses applicable carried attribution or a stable
+  machine actor and continues. Neither loopback nor a browser surface header
+  establishes the human operator. Keep execution origin and initiating person
+  separate, including external integration contributions.
+- Trusted ingress metadata determines whether person evidence is verified. It
+  does not prevent machine fallback for proxied traffic. Existing network and
+  integration access checks remain independent of attribution.
 - WebSocket handshake performs the same resolution once and binds the result
   to the socket. A resolver generation swap closes sockets authenticated by
   the old generation with a reconnect close code. Agent tools never inspect
@@ -740,9 +740,9 @@ without conflict unless upstream creates the same path.
   themselves. Core-owned source labels and mandatory badges are tested in all
   actor renderers.
 - **Loopback breadth.** If the ingress terminates on the host, loopback
-  fallback must not rescue proxied traffic. The trusted ingress marker and
-  `local-tool` assurance bound that exposure; rejection and timeout always
-  fail closed.
+  fallback remains available to proxied and direct requests. Trusted ingress
+  evidence controls person verification; rejection and timeout degrade to a
+  machine actor rather than blocking ordinary work.
 
 ---
 

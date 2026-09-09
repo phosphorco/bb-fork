@@ -1,8 +1,18 @@
 # Identity provider kernel upstream-sync boundary
 
+> Policy update — 2026-09-09: the approved [Identities and multiplayer ADR](../../docs/adrs/2026-09-identities-and-multiplayer.md)
+> governs this trusted shared deployment. Use verified people when available,
+> applicable carried attribution next, and a stable machine actor otherwise;
+> missing or failed person verification must not block ordinary operations.
+> Never relabel fallback as a verified person or redirect pending personal-state
+> writes to another owner. Independent access checks and data validation remain.
+> Earlier rejection requirements below are superseded; versioned API descriptions
+> and test receipts remain historical evidence, not proof of ADR implementation.
+
+
 Status: a source review composition is committed and reproducibly replayed.
 This document does not approve a full-host release or normal promotion. It records the smallest
-authority-preserving core boundary to re-express against a later upstream
+attribution and lifecycle core boundary to re-express against a later upstream
 revision. Existing candidate files are authored work and remain preserved until
 the fork owner selects a patch queue.
 
@@ -15,12 +25,12 @@ multiplayer completion. It must preserve these properties:
 - one operator-selected boundary and trusted ingress mapping;
 - host-derived ingress facts and selected credential bytes only;
 - immutable normalized issuer and subject, with presentation separate from
-  authority;
+  stable identity keys;
 - bounded resolver work, generation-safe prepare/publish/retire, and request
-  scope invalidation; and
+  cancellation/disposal handling; and
 - absent boundary distinct from configured rejection or outage. A configured
-  failure blocks identity-dependent work and never becomes a singleton or
-  loopback default.
+  failure falls back to a stable machine actor and continues ordinary work;
+  it never silently becomes the operator.
 
 The current normal materialization cannot be reused as this kernel. Its
 [`services/identity.ts`](../build/bb/apps/server/src/services/identity.ts)
@@ -40,15 +50,15 @@ semantic re-port, not instructions to apply the current candidate diff.
 | Operator trust selection | [`packages/config/src/env-vars.ts`](../build/proof-bb/packages/config/src/env-vars.ts), [`packages/config/src/server.ts`](../build/proof-bb/packages/config/src/server.ts), [`apps/server/src/start-server.ts`](../build/proof-bb/apps/server/src/start-server.ts) | No current upstream identity-config hook | Parse one startup-only selected-boundary descriptor. Keep it narrow; do not add a generalized provider registry configuration API. |
 | Existing trusted request fact | [`apps/server/src/request-context.ts`](../build/proof-bb/apps/server/src/request-context.ts) | `apps/server/src/request-context.ts:29` and `apps/server/src/server.ts:288-291` | Reuse the existing server-captured remote address. Never accept a forwarded or browser-provided identity header as an ingress fact. |
 | Provider lifecycle | [`apps/server/src/services/p6r/provider-contract.ts`](../build/proof-bb/apps/server/src/services/p6r/provider-contract.ts), [`provider-registry.ts`](../build/proof-bb/apps/server/src/services/p6r/provider-registry.ts) | `apps/server/src/services/plugins/plugin-runtime.ts:1376` (`loadOne`) | Stage a candidate, validate it, publish it as one generation, then retire the predecessor. Failed reload retains the active generation. |
-| Request admission | [`apps/server/src/services/p6r/provider-admission.ts`](../build/proof-bb/apps/server/src/services/p6r/provider-admission.ts), [`invocation-registry.ts`](../build/proof-bb/apps/server/src/services/p6r/invocation-registry.ts) | `apps/server/src/server.ts:271` (`createApp`) and `:417` (`createPluginService`) | Resolve only from actual Hono request facts plus host-captured ingress lineage, issue an abortable request scope, and invalidate it on expiry, provider replacement, or configuration change. |
+| Request admission | [`apps/server/src/services/p6r/provider-admission.ts`](../build/proof-bb/apps/server/src/services/p6r/provider-admission.ts), [`invocation-registry.ts`](../build/proof-bb/apps/server/src/services/p6r/invocation-registry.ts) | `apps/server/src/server.ts:271` (`createApp`) and `:417` (`createPluginService`) | Capture best-effort attribution from available request/context facts, fall back to a machine, and retain actual cancellation/disposal without person-evidence expiry or lineage authorization. |
 | Plugin protocol | [`apps/server/src/services/p6r/identity-protocol.ts`](../build/proof-bb/apps/server/src/services/p6r/identity-protocol.ts), [`services/plugins/plugin-p6r-dispatch.ts`](../build/proof-bb/apps/server/src/services/plugins/plugin-p6r-dispatch.ts) | `apps/server/src/services/plugins/plugin-api.ts:415` (`createPluginApi`) | Supply a generation-bound protocol to a plugin factory, not an ambient actor or a raw resolver. Keep provider setup possible before a person is resolved. |
-| Plugin route dispatch | [`apps/server/src/services/plugins/plugin-service.ts`](../build/proof-bb/apps/server/src/services/plugins/plugin-service.ts), [`plugin-service-internal.ts`](../build/proof-bb/apps/server/src/services/plugins/plugin-service-internal.ts), [`plugin-runtime.ts`](../build/proof-bb/apps/server/src/services/plugins/plugin-runtime.ts) | `plugin-service.ts:973`, `plugin-runtime.ts:1461`, and `plugin-runtime.ts:1703` | Capture the issued scope at the actual RPC/HTTP handler boundary, retain it through handler completion, and retire it when the plugin generation retires. |
+| Plugin route dispatch | [`apps/server/src/services/plugins/plugin-service.ts`](../build/proof-bb/apps/server/src/services/plugins/plugin-service.ts), [`plugin-service-internal.ts`](../build/proof-bb/apps/server/src/services/plugins/plugin-service-internal.ts), [`plugin-runtime.ts`](../build/proof-bb/apps/server/src/services/plugins/plugin-runtime.ts) | `plugin-service.ts:973`, `plugin-runtime.ts:1461`, and `plugin-runtime.ts:1703` | Capture request context at the actual RPC/HTTP handler boundary, retain it through handler completion, and retire it when the plugin generation retires. |
 | Server assembly | [`apps/server/src/server.ts`](../build/proof-bb/apps/server/src/server.ts) | `apps/server/src/server.ts:417-440` | Construct the provider kernel once and pass only its explicit dependencies to plugin runtime/service. Do not change the existing global websocket at `:508-525`. |
 
 The compact kernel is therefore seven logical patch modules: SDK declaration,
 narrow configuration, provider contract/registry, admission/invocation,
-protocol/dispatch, plugin lifecycle dispatch, and server assembly. These are
-the unavoidable upstream touch points. The existing remote-address middleware
+protocol/dispatch, plugin lifecycle dispatch, and server assembly. These are historical integration touch points, not a minimum architecture to
+preserve. Remove those that serve only identity authorization or forgery resistance. The existing remote-address middleware
 is already upstream behavior and should be reused rather than forked.
 
 ## Provider kernel versus acceptance and history
@@ -69,7 +79,7 @@ mixes both domains and must be split before calling a patch minimal:
 | Boundary | Keep in first provider-kernel patch family | Separate follow-up when package behavior requires it |
 | --- | --- | --- |
 | Provider setup | Selected configuration, evidence resolution, normalized session, directory/profile callbacks, generation lifecycle | Nothing native. |
-| Plugin request work | Issued invocation scope, synchronous validity fence, bounded background/profile reads | Feature-owned storage and commits remain in the public package binding. |
+| Plugin request work | Captured attribution and request lifecycle, bounded background/profile reads | Feature-owned storage and commits remain in the public package binding. |
 | Structured acceptance | No native send or queue integration | [`native-acceptance.ts`](../build/proof-bb/apps/server/src/services/p6r/native-acceptance.ts), [`receipt-outcome.ts`](../build/proof-bb/apps/server/src/services/p6r/receipt-outcome.ts), and their transaction witnesses. |
 | Durable history | No sidecar schema or migrations in the first patch | [`sidecar-schema.ts`](../build/proof-bb/apps/server/src/services/p6r/sidecar-schema.ts), [`sidecar-store.ts`](../build/proof-bb/apps/server/src/services/p6r/sidecar-store.ts), correlation, contribution, attempt, and participant readers. |
 
@@ -148,8 +158,9 @@ tests for:
 - `provider-registry.test.ts`: preparation, publication, replacement, failed
   reload retention, and retirement;
 - `provider-admission.test.ts` and `invocation-registry.test.ts`: trusted
-  ingress only, malformed/rejected/unavailable resolution, expiry, selected
-  configuration changes, and generation invalidation;
+  ingress enrichment, machine fallback for malformed/rejected/unavailable
+  resolution, no invocation evidence-expiry gate, selected configuration changes,
+  and actual cancellation/disposal;
 - `identity-protocol.test.ts`, `plugin-p6r-dispatch.test.ts`, and
   `plugin-p6r-api-integration.test.ts`: factory registration, actual public
   protocol binding, request-scope lifetime, directory/profile behavior, and

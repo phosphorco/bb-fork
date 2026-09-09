@@ -1,5 +1,15 @@
 # bb-fork
 
+> Policy update — 2026-09-09: the approved [Identities and multiplayer ADR](../docs/adrs/2026-09-identities-and-multiplayer.md)
+> governs this trusted shared deployment. Use verified people when available,
+> applicable carried attribution next, and a stable machine actor otherwise;
+> missing or failed person verification must not block ordinary operations.
+> Never relabel fallback as a verified person or redirect pending personal-state
+> writes to another owner. Independent access checks and data validation remain.
+> Earlier rejection requirements below are superseded; versioned API descriptions
+> and test receipts remain historical evidence, not proof of ADR implementation.
+
+
 This is a thin, auditable deployment overlay for [get-bb/bb](https://github.com/get-bb/bb). It does not carry a second copy of upstream source and it does not treat a long-lived Git branch as the release definition.
 
 The current base is exact upstream commit `960255b98ce3dccdcb5754eb67a7f989236602a1` (`Prepare bb-app 0.42.0 (#3106)`). The lock records a reviewed source receipt rather than a moving branch or inferred release tag.
@@ -37,23 +47,16 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The twenty-two patches are the reviewed first-principles composition previously
-verified as an isolated candidate. They establish the selected identity kernel,
-retain the required facet and execution behavior, add consumer witnesses and
-capability-authenticated routes, complete mention targets and sidecar
-migrations, preserve plugin/sidebar compatibility, harden execution and
-authentication boundaries, retain Agent Connect queue/history behavior, and
-include the reviewed Pkl syntax-highlighting change. Patch 16 adds
-`/settings/p6rIdentity` and provider-verified native message authorship while
-preserving upstream command dispatch. Patch 17 keeps directory refresh separate
-from authentication revocation and refreshes presentation on verified admission.
-Patch 18 preserves original authors through edits and records the latest editor
-separately. Patch 19 aligns the public contract test expectations with those
-additions, and patch 20 includes the identity check in CLI skill discovery.
-Patch 21 verifies the Identity entry in the existing command palette.
-Patch 22 displays the provider-supplied avatar in Identity settings, with the
-shared avatar fallback for missing or failed images.
-The queue replays to
-the exact tree recorded in `result-tree.lock`; the historical review artifacts
-under `plans/artifacts/` remain supporting evidence rather than a second build
-path.
+The sixteen patches form the current implementation candidate. Patch 16
+consolidates the previous native identity patches 16–23, including the authored
+minimal sender wrapper. It adds machine attribution and removes native person
+admission callbacks and signed browser lineage while preserving accepted
+original authors, later editors, queue/retry history and native command dispatch.
+The preceding patches retain the independent facet, execution, plugin, Agent
+Connect and editor changes.
+
+This candidate is not yet activated. Plugin invocation expiry, obsolete host session-age configuration, and
+issuance-only checks have been removed under the approved ADR. The delivery
+plan records the remaining integration and runtime gates. The queue replays to
+the exact tree in `result-tree.lock`; historical review artifacts remain
+supporting evidence rather than a second deployment path.

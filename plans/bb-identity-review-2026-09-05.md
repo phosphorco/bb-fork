@@ -1,5 +1,15 @@
 # BB identity and Thread Sections review — 2026-09-05
 
+> Policy update — 2026-09-09: the approved [Identities and multiplayer ADR](../../docs/adrs/2026-09-identities-and-multiplayer.md)
+> governs this trusted shared deployment. Use verified people when available,
+> applicable carried attribution next, and a stable machine actor otherwise;
+> missing or failed person verification must not block ordinary operations.
+> Never relabel fallback as a verified person or redirect pending personal-state
+> writes to another owner. Independent access checks and data validation remain.
+> Earlier rejection requirements below are superseded; versioned API descriptions
+> and test receipts remain historical evidence, not proof of ADR implementation.
+
+
 Review scope: the current authored package, Thread Sections adoption, related proof-core boundaries, packaging, and isolated-proof preparation. This is not a review of every unrelated dirty change in the workspace. No implementation, normal runtime, proof runtime, plugin installation, checkout, or promotion was changed by this review.
 
 The core/package/feature ownership split remains appropriate. Core owns admitted identity and durable native attribution; the package owns portable binding and synchronization; Thread Progress owns its schema, SQLite, IndexedDB, migration, and recovery UI. The defects below do not justify transferring feature storage or UI into core. They do prevent an adoption-complete or deployment-ready verdict.
