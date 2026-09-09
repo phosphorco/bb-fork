@@ -33,11 +33,13 @@
 
 19. **Public contract witnesses** updates the SDK method snapshot and the explicit optional-field allowlist for verified author/editor metadata. No runtime contract changes.
 
+20. **CLI identity discovery** lists the existing read-only identity command in the shipped skill index and explains that its result belongs to the CLI connection.
+
 ## Exact source receipt
 
 - Upstream: `960255b98ce3dccdcb5754eb67a7f989236602a1`.
 - Materialized package: `bb-app@0.42.0` plus the reviewed downstream queue.
-- Patch queue: nineteen patches in `patches/series`.
+- Patch queue: twenty patches in `patches/series`.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries
