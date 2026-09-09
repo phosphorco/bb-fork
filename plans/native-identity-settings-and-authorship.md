@@ -49,3 +49,27 @@ after that request ends. Client-supplied author metadata is not an authority.
 
 The change does not introduce per-person theme storage, notification delivery,
 new provider credentials, or an upstream protocol replacement.
+
+## Edit attribution correction (patch 0018)
+
+Queued edits preserve the stored creator and capture the latest editor in the
+same database transaction. Accepted edit/resend preserves the source author
+and records the new editor. Unknown authors remain unknown; missing evidence
+for a later editor clears the earlier editor rather than misattributing the
+change. The timeline shows a separate “Edited by” label, and model context names
+the two roles separately.
+
+The existing queue JSON column accepts legacy author arrays and a strict
+`{authors, editors}` envelope. A shared decoder rejects corrupt attribution
+before content changes. This needs no SQL migration, but old readers cannot
+consume newly written envelopes; a downgrade needs a deliberate compatibility
+procedure. Retry reads author/editor metadata together from the original event.
+First dispatch and the existing general queue path carry both snapshots, with
+no added daemon command field or copied dispatcher.
+
+Regression evidence includes persisted queue reopen/drain, accepted edit,
+unknown-author/editor handling, malformed metadata rejection, timeline/model
+roles, and command-schema compatibility. The original author-overwrite defect
+was source-confirmed; the stricter malformed-envelope test was observed failing
+before its correction. These controlled tests are distinct from real human
+multi-client acceptance.

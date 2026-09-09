@@ -29,11 +29,13 @@
 
 17. **Directory refresh authority** preserves admitted requests across directory-only invalidations; fresh verified admissions update presentation without rewriting prior snapshots. Targeted authentication revocation and expiry remain enforced.
 
+18. **Edit attribution** preserves the original author and records the latest editor through queued edits, accepted edit/resend, restart, drain, retry, model input, and timeline labels.
+
 ## Exact source receipt
 
 - Upstream: `960255b98ce3dccdcb5754eb67a7f989236602a1`.
 - Materialized package: `bb-app@0.42.0` plus the reviewed downstream queue.
-- Patch queue: seventeen patches in `patches/series`.
+- Patch queue: eighteen patches in `patches/series`.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries
@@ -44,9 +46,13 @@
   captured from the request, validated at acceptance, and stored separately
   from message text. Historical messages without that evidence stay unknown.
 - Queued native input adds one nullable `p6r_authors` column through generated
-  migration `0116_p6r_native_message_authors`. A queue edit captures its editor;
-  draining preserves accepted snapshots, including different people in a
-  grouped request. Retry retains the original request's author evidence.
+  migration `0116_p6r_native_message_authors`. Patch 18 reuses that column,
+  reading legacy author arrays and writing strict author/editor envelopes on
+  edit. It preserves the stored author atomically; an edit without editor
+  evidence clears the prior editor. Corrupt metadata rejects the edit. Drain
+  and retry preserve both roles, including different people in grouped input.
+  Older readers do not understand new envelopes: rolling back below patch 18
+  requires an explicit data compatibility procedure, not just a source swap.
 - Native author context is added only to model-bound input after native command
   recognition. Structured `/compact` reaches the existing command path
   unchanged. This patch adds no daemon command field or protocol requirement;
