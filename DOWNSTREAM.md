@@ -37,11 +37,13 @@
 
 21. **Identity command palette witness** updates the palette count and asserts that Identity is discoverable; production behavior is unchanged.
 
+22. **Identity settings avatar** renders the existing provider presentation avatar with BB’s shared avatar component and initial fallback; no identity or SDK contract changes.
+
 ## Exact source receipt
 
 - Upstream: `960255b98ce3dccdcb5754eb67a7f989236602a1`.
 - Materialized package: `bb-app@0.42.0` plus the reviewed downstream queue.
-- Patch queue: twenty-one patches in `patches/series`.
+- Patch queue: twenty-two patches in `patches/series`.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries
