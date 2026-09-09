@@ -37,7 +37,7 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The eighteen patches are the reviewed first-principles composition previously
+The nineteen patches are the reviewed first-principles composition previously
 verified as an isolated candidate. They establish the selected identity kernel,
 retain the required facet and execution behavior, add consumer witnesses and
 capability-authenticated routes, complete mention targets and sidecar
@@ -48,7 +48,8 @@ include the reviewed Pkl syntax-highlighting change. Patch 16 adds
 preserving upstream command dispatch. Patch 17 keeps directory refresh separate
 from authentication revocation and refreshes presentation on verified admission.
 Patch 18 preserves original authors through edits and records the latest editor
-separately. The queue replays to
+separately. Patch 19 aligns the public contract test expectations with those
+additions. The queue replays to
 the exact tree recorded in `result-tree.lock`; the historical review artifacts
 under `plans/artifacts/` remain supporting evidence rather than a second build
 path.

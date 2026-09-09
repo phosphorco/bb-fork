@@ -31,11 +31,13 @@
 
 18. **Edit attribution** preserves the original author and records the latest editor through queued edits, accepted edit/resend, restart, drain, retry, model input, and timeline labels.
 
+19. **Public contract witnesses** updates the SDK method snapshot and the explicit optional-field allowlist for verified author/editor metadata. No runtime contract changes.
+
 ## Exact source receipt
 
 - Upstream: `960255b98ce3dccdcb5754eb67a7f989236602a1`.
 - Materialized package: `bb-app@0.42.0` plus the reviewed downstream queue.
-- Patch queue: eighteen patches in `patches/series`.
+- Patch queue: nineteen patches in `patches/series`.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries
