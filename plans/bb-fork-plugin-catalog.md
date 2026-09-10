@@ -111,9 +111,9 @@ Evidence: [endpoint implementation](../../plugins/plugins/ntfy/server.ts),
 
 ### Agent Connect
 
-**Fork connection:** Uses capability-authenticated plugin HTTP routes and
-`experimental_threadMessages.send`, supplying a connection-specific external
-subject and nickname. Reads actor fields from thread events to display senders
+**Fork connection:** Uses upstream `auth: "none"` HTTP routes with plugin-owned
+connection-token validation. The shared identity binding supplies external
+contributions with a connection-specific subject and nickname. Reads actor fields from thread events to display senders
 and correlate connected calls with accepted work.
 
 **Value:** A remote connected client can read and contribute to a BB thread,
@@ -122,7 +122,7 @@ rather than looking like the local operator.
 
 Evidence: [server](../../plugins/plugins/agent-connect/server.ts),
 [event correlation](../../plugins/plugins/agent-connect/call-events.ts),
-[capability-route patch](../patches/0031-feat-add-capability-authenticated-plugin-routes.patch).
+[approved transport-mode decision](../../docs/adrs/2026-09-identities-and-multiplayer.md#prefer-upstream-plugin-transport-modes).
 
 ## Indirect connections and shared runtime benefits
 

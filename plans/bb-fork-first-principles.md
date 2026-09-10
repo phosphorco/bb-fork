@@ -496,10 +496,10 @@ Tests that protect this seam, all in fork-owned files:
   source label, and registers it in `p6r_external_actors`. The plugin cannot
   supply a provider id, principal key, plugin id, or source label. Core applies
   the bounds and URL validation from §3.2.
-- Capability-authenticated HTTP routes keep `auth: "capability"`. The plugin
-  verifies its credential before calling the external-send method; core does
-  not claim to verify that credential and does not run the identity resolver
-  on those routes. Route auth and persisted actor kind remain separate.
+- Updated 2026-09-10: plugin-owned connection-token validation uses upstream
+  `auth: "none"`. The fork-specific `capability` mode and its patch are retired;
+  do not preserve an alias. The plugin validates its token before external send,
+  independently of message attribution.
 - Agent Connect's nickname flow maps directly: `externalId` is the connection
   id, `handle` and `displayName` are the nickname. Rosetta Slack moves from
   plain send to `sendAsExternal` with the Slack user as `externalId`.
@@ -643,7 +643,7 @@ ordinary request, and no per-event or per-row roster query.
 | Per-person palette | core routes and roster | deferred; plugin once upstream theme surface settles | 5.5 |
 | Mentions and notify | core server and db | notifications plugin consuming the explicit accepted-event actor payload | 5.3, 5.5 |
 | Recovery mobile | 135k lines inside the monorepo | its own repository consuming the published SDK; snapshot route becomes a plugin route with 5.5 | 5.5 |
-| Agent Connect nicknames | capability routes patch | unchanged plugin using 5.4 | 5.4 |
+| Agent Connect nicknames | upstream `auth: "none"`, plugin token validation | unchanged plugin using 5.4 | 5.4 |
 | Slack forwarding | plain send as local operator | `sendAsExternal` with the Slack user as external id | 5.4 |
 
 The request-bound authored send for plugins is the small core capability
