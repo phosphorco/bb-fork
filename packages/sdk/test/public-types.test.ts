@@ -335,6 +335,7 @@ type ExpectedSystemKey =
   | "config"
   | "executionOptions"
   | "installCliSkills"
+  | "nativeIdentity"
   | "reloadConfig"
   | "transcribeVoice"
   | "updateExperiments"
