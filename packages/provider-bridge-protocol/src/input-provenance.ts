@@ -76,7 +76,10 @@ export function formatPromptInputForProvider(
       );
     }
     if (groupIndex > 0) {
-      formatted.push({ type: "text", text: "\n\n", mentions: [] });
+      // ACP providers delimit adjacent text blocks with a newline when they
+      // serialize them. One explicit newline therefore preserves the intended
+      // blank line between labeled provenance groups without adding a second.
+      formatted.push({ type: "text", text: "\n", mentions: [] });
     }
     const label = sourceLabel(provenance);
     if (label !== null) {

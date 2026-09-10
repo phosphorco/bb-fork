@@ -58,7 +58,7 @@ describe("formatPromptInputForProvider", () => {
         mentions: [],
       },
       input[0],
-      { type: "text", text: "\n\n", mentions: [] },
+      { type: "text", text: "\n", mentions: [] },
       input[2],
     ]);
   });
