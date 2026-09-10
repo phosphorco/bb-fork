@@ -1,0 +1,254 @@
+From b47763d9d580a72ed651f5906088439ba69bc3c0 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 5 Sep 2026 10:47:15 -0400
+Subject: [PATCH] feat(codex): support an explicit fail-closed app-server
+ launcher
+
+---
+ .../skills/builtin-skills/bb-cli/SKILL.md     |  8 +++
+ docs/configuration.md                         | 14 ++++
+ .../src/templates/bb-guide-providers.md       |  8 +++
+ plugins/provider-codex/server.ts              |  1 +
+ .../src/bridge/app-server-launch.test.ts      | 69 +++++++++++++++++++
+ .../src/bridge/app-server-launch.ts           | 37 ++++++++++
+ plugins/provider-codex/src/bridge/bridge.ts   | 15 +---
+ 7 files changed, 139 insertions(+), 13 deletions(-)
+ create mode 100644 plugins/provider-codex/src/bridge/app-server-launch.test.ts
+ create mode 100644 plugins/provider-codex/src/bridge/app-server-launch.ts
+
+diff --git a/apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md b/apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md
+index 017f1243a00dc9bbd077b1e10b3b7d2d026fb589..0df233878b87bfdd5d9acb08fcb329fb9e53b74a 100644
+--- a/apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md
++++ b/apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md
+@@ -56,6 +56,14 @@ message agents, or inspect projects, providers, and environments.
+ 
+ ## App Settings
+ 
++- For an explicit native Codex launcher, use `bb-app env set
++  CODEX_APP_SERVER_EXECUTABLE /absolute/router-command` on the execution host.
++  The selected executable receives `app-server` for sessions and maintenance;
++  missing/invalid selections fail closed instead of falling back to PATH.
++  Unset it for default PATH discovery. Restart the execution host's launcher
++  and daemon after changing it: server refresh and thread stop alone do not
++  update inherited daemon environment. Verify fresh start/resume afterward.
++
+ - `BB_INFERENCE` selects the shared model for server-side helper completions,
+   including thread titles and commit subjects. It defaults to
+   `codex/gpt-5.6-luna`; set an override with
+diff --git a/docs/configuration.md b/docs/configuration.md
+index 1954cb64d1fe1cbe4949a3200bdb72f40523e0cf..430cf95100eea5ee1e178157844526b7f9173154 100644
+--- a/docs/configuration.md
++++ b/docs/configuration.md
+@@ -18,6 +18,20 @@ npx bb-app config refresh
+ 
+ Use `bb-app env` for provider credentials and provider-specific environment:
+ 
++`CODEX_APP_SERVER_EXECUTABLE` selects an absolute executable for all native
++Codex app-server children (sessions, model listing and maintenance). Set it
++with `bb-app env set CODEX_APP_SERVER_EXECUTABLE /absolute/router-command` on
++the execution host, then restart that host's BB launcher and daemon. Server
++configuration refresh and `bb thread stop` alone do not update the daemon's
++inherited environment. This is host-local policy, not a server setting sent to
++remote daemons. After restart, prove fresh start and resume on that host. The
++bridge passes `app-server` as its sole argument. A missing, non-executable,
++empty or relative selection fails closed; it never falls back to PATH. When
++unset, Codex retains its default `codex app-server` PATH lookup. Version-manager
++reshimming cannot change an explicitly selected launcher. This setting does
++not alter account homes, credentials or already-running processes. The
++`BB_CODEX_BRIDGE_APP_SERVER_*` variables remain test-only, not host policy.
++
+ ```bash
+ npx bb-app env set OPENAI_API_KEY <key>
+ npx bb-app env list
+diff --git a/packages/templates/src/templates/bb-guide-providers.md b/packages/templates/src/templates/bb-guide-providers.md
+index 5997248ee55f7be8c44295cbde6f9cc55ac68186..3ebae2c76a789bcaf9aaf7f93b190146e515bfd9 100644
+--- a/packages/templates/src/templates/bb-guide-providers.md
++++ b/packages/templates/src/templates/bb-guide-providers.md
+@@ -9,6 +9,14 @@ Provider commands
+ 
+ Providers are agent backends (e.g., codex, claude-code). Each supports different models.
+ 
++Native Codex host launch policy: `bb-app env set CODEX_APP_SERVER_EXECUTABLE
++/absolute/router-command` selects the app-server launcher independently of
++PATH. It receives `app-server`; missing or invalid selections fail closed.
++Unset the key to restore default PATH discovery. Restart the execution host's
++BB launcher and daemon after changing it; server refresh and thread stop do
++not update inherited daemon environment. Verify fresh start/resume afterward.
++This does not delete conversations or change account homes.
++
+   bb provider list [--machine <id-or-name> | --environment <id>]
+                                           List available providers
+   bb provider models [providerId] [--machine <id-or-name> | --environment <id>]
+diff --git a/plugins/provider-codex/server.ts b/plugins/provider-codex/server.ts
+index a30502e2b4778b7c671312ccbbb871a30651db7b..5370d674f00f313067821db0aea74aa4f5e58b32 100644
+--- a/plugins/provider-codex/server.ts
++++ b/plugins/provider-codex/server.ts
+@@ -31,6 +31,7 @@ export default function plugin(bb: BbPluginApi) {
+     id: "codex",
+     displayName: "Codex",
+     icon: "./icons/codex.svg",
++    experimental_env: { passthrough: ["CODEX_APP_SERVER_EXECUTABLE"] },
+     experimental_strings: {
+       signInHint: "Run `codex` on the machine to sign in.",
+       expiredHint: "Your Codex session expired. Run `codex`, then reload.",
+diff --git a/plugins/provider-codex/src/bridge/app-server-launch.test.ts b/plugins/provider-codex/src/bridge/app-server-launch.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..49db7c89cf83e3f752cc49d8d742f363c4b168eb
+--- /dev/null
++++ b/plugins/provider-codex/src/bridge/app-server-launch.test.ts
+@@ -0,0 +1,69 @@
++import {
++  chmodSync,
++  mkdtempSync,
++  rmSync,
++  symlinkSync,
++  unlinkSync,
++  writeFileSync,
++} from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { afterEach, expect, it } from "vitest";
++import { p6rResolveCodexAppServerLaunch } from "./app-server-launch.js";
++
++const roots: string[] = [];
++afterEach(() => {
++  for (const root of roots.splice(0))
++    rmSync(root, { recursive: true, force: true });
++});
++
++it("selects the stable launcher before and after replacement of the PATH shim", () => {
++  const root = mkdtempSync(join(tmpdir(), "codex-launch-policy-"));
++  roots.push(root);
++  const launcher = join(root, "router-command");
++  const shim = join(root, "codex");
++  writeFileSync(launcher, "#!/bin/sh\nexit 0\n");
++  chmodSync(launcher, 0o700);
++  symlinkSync(launcher, shim);
++  const env = { PATH: root, CODEX_APP_SERVER_EXECUTABLE: launcher };
++  expect(p6rResolveCodexAppServerLaunch(env)).toEqual({
++    command: launcher,
++    args: ["app-server"],
++  });
++  unlinkSync(shim);
++  symlinkSync(process.execPath, shim);
++  expect(p6rResolveCodexAppServerLaunch(env)).toEqual({
++    command: launcher,
++    args: ["app-server"],
++  });
++  unlinkSync(launcher);
++  expect(() => p6rResolveCodexAppServerLaunch(env)).toThrow(
++    "Refusing PATH fallback",
++  );
++});
++
++it("rejects empty, relative, directory and non-executable policy targets", () => {
++  const root = mkdtempSync(join(tmpdir(), "codex-launch-invalid-"));
++  roots.push(root);
++  const file = join(root, "not-executable");
++  writeFileSync(file, "data");
++  chmodSync(file, 0o600);
++  for (const path of ["", "codex", root, file]) {
++    expect(() =>
++      p6rResolveCodexAppServerLaunch({ CODEX_APP_SERVER_EXECUTABLE: path }),
++    ).toThrow();
++  }
++});
++
++it("retains PATH defaults only when host policy is absent", () => {
++  expect(p6rResolveCodexAppServerLaunch({})).toEqual({
++    command: "codex",
++    args: ["app-server"],
++  });
++  expect(
++    p6rResolveCodexAppServerLaunch({
++      BB_CODEX_BRIDGE_APP_SERVER_COMMAND: "fixture",
++      BB_CODEX_BRIDGE_APP_SERVER_ARGS: '["test"]',
++    }),
++  ).toEqual({ command: "fixture", args: ["test"] });
++});
+diff --git a/plugins/provider-codex/src/bridge/app-server-launch.ts b/plugins/provider-codex/src/bridge/app-server-launch.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..5b93b956a42e3b9cc49b013fe52cdf4d966a29cc
+--- /dev/null
++++ b/plugins/provider-codex/src/bridge/app-server-launch.ts
+@@ -0,0 +1,37 @@
++import { accessSync, constants, statSync } from "node:fs";
++import { isAbsolute } from "node:path";
++import { z } from "zod";
++
++/** Host policy, independent of PATH and version-manager shim ownership. */
++const CODEX_APP_SERVER_EXECUTABLE = "CODEX_APP_SERVER_EXECUTABLE";
++
++export function p6rResolveCodexAppServerLaunch(env: NodeJS.ProcessEnv): {
++  command: string;
++  args: string[];
++} {
++  const selected = env[CODEX_APP_SERVER_EXECUTABLE];
++  if (selected !== undefined) {
++    if (!isAbsolute(selected))
++      throw new Error(
++        `${CODEX_APP_SERVER_EXECUTABLE} must be an absolute executable path`,
++      );
++    try {
++      accessSync(selected, constants.X_OK);
++      if (!statSync(selected).isFile()) throw new Error("not a file");
++    } catch (cause) {
++      throw new Error(
++        `Configured Codex app-server launcher is unavailable: ${selected}. Refusing PATH fallback.`,
++        { cause },
++      );
++    }
++    return { command: selected, args: ["app-server"] };
++  }
++  // Existing test-only seam remains isolated from the declared host policy.
++  const command = env.BB_CODEX_BRIDGE_APP_SERVER_COMMAND;
++  if (!command) return { command: "codex", args: ["app-server"] };
++  const rawArgs = env.BB_CODEX_BRIDGE_APP_SERVER_ARGS;
++  return {
++    command,
++    args: rawArgs ? z.array(z.string()).parse(JSON.parse(rawArgs)) : [],
++  };
++}
+diff --git a/plugins/provider-codex/src/bridge/bridge.ts b/plugins/provider-codex/src/bridge/bridge.ts
+index 5fce87ed54d1c22b0f92eacfe7046bde50867ce5..79f3318ef0e3f49da925a4982e0491f948722469 100644
+--- a/plugins/provider-codex/src/bridge/bridge.ts
++++ b/plugins/provider-codex/src/bridge/bridge.ts
+@@ -77,6 +77,7 @@ import {
+   experimental_defineProviderBridge,
+ } from "@get-bb/plugin-sdk/provider-bridge";
+ import { z } from "zod";
++import { p6rResolveCodexAppServerLaunch } from "./app-server-launch.js";
+ import {
+   CODEX_MACOS_PERMISSION_EXTENSION_KIND,
+   summarizeCodexMacOsPermissions,
+@@ -311,10 +312,6 @@ function sendRuntimeRequest(
+ // App-server child launch
+ // ---------------------------------------------------------------------------
+ 
+-/** Test seam for the app-server command; production launches `codex app-server`. */
+-const CODEX_APP_SERVER_COMMAND_ENV = "BB_CODEX_BRIDGE_APP_SERVER_COMMAND";
+-const CODEX_APP_SERVER_ARGS_ENV = "BB_CODEX_BRIDGE_APP_SERVER_ARGS";
+-
+ const CODEX_INITIALIZE_PARAMS = {
+   clientInfo: { name: "bb", version: "1.0.0", title: null },
+   capabilities: { experimentalApi: true },
+@@ -327,15 +324,7 @@ const MISSING_CODEX_CLI_GUIDANCE =
+   "bb could not find the Codex CLI on this machine. Install Codex (https://developers.openai.com/codex/cli) or put `codex` on PATH, then retry.";
+ 
+ function resolveAppServerLaunch(): { command: string; args: string[] } {
+-  const command = process.env[CODEX_APP_SERVER_COMMAND_ENV];
+-  if (!command) {
+-    return { command: "codex", args: ["app-server"] };
+-  }
+-  const rawArgs = process.env[CODEX_APP_SERVER_ARGS_ENV];
+-  if (!rawArgs) {
+-    return { command, args: [] };
+-  }
+-  return { command, args: z.array(z.string()).parse(JSON.parse(rawArgs)) };
++  return p6rResolveCodexAppServerLaunch(process.env);
+ }
+ 
+ /**
+-- 
+2.43.0
+

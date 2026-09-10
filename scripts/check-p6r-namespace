@@ -25,6 +25,9 @@ const diff = git([
   "--",
   ":(glob)**/*.ts",
   ":(glob)**/*.tsx",
+  // Recovery is a separately named application snapshot, not an extension of
+  // upstream's public namespace. Shared server/package edits remain checked.
+  ":(exclude,glob)apps/recovery-mobile/**",
 ]);
 const failures = [];
 const upstreamFiles = new Map();
@@ -200,6 +203,64 @@ const approvedGenericThreadFacetExports = new Set([
   "packages/server-contract/src/api/threads.ts#ThreadFacetParticipantsResponse",
 ]);
 
+// These features are intentionally implemented as generic BB core contracts,
+// rather than as Phosphor-branded extension points. Keep each exception exact
+// by path and symbol so unrelated downstream exports remain quarantined.
+const approvedGenericCoreExports = new Set([
+  "apps/server/src/routes/projects.ts#buildSidebarBootstrapResponse",
+  "apps/server/src/routes/recovery.ts#registerRecoveryRoutes",
+  "apps/server/src/services/threads/thread-facet-query.ts#ThreadExecutionProjectionDetails",
+  "apps/server/src/services/threads/thread-facet-query.ts#buildThreadExecutionProjectionDetails",
+  "apps/server/src/services/threads/thread-facet-query.ts#buildThreadExecutionProjection",
+  "packages/db/src/data/events.ts#ListLastStoredTurnRequestEventsByThreadIdsArgs",
+  "packages/db/src/data/events.ts#listLastStoredTurnRequestEventsByThreadIds",
+  "packages/db/src/data/project-execution-defaults.ts#ProjectExecutionDefaultsProjection",
+  "packages/db/src/data/threads.ts#ThreadExecutionOverrideRow",
+  "packages/db/src/data/threads.ts#ThreadExecutionProjectionRow",
+  "packages/db/src/data/threads.ts#listThreadExecutionProjectionRowsByIds",
+  "packages/db/src/data/threads.ts#listThreadExecutionOverridesByThreadIds",
+  "packages/db/src/data/threads.ts#SetThreadExecutionOverrideBatchInput",
+  "packages/db/src/data/threads.ts#setThreadExecutionOverridesBatch",
+  "packages/sdk/src/areas/recovery.ts#RecoverySnapshotArgs",
+  "packages/sdk/src/areas/recovery.ts#RecoverySnapshotResult",
+  "packages/sdk/src/areas/recovery.ts#RecoveryArea",
+  "packages/sdk/src/areas/recovery.ts#createRecoveryArea",
+  "packages/sdk/src/areas/threads.ts#ExperimentalThreadExecutionPreflightArgs",
+  "packages/sdk/src/areas/threads.ts#ExperimentalThreadExecutionApplyArgs",
+  "packages/sdk/src/areas/threads.ts#ExperimentalThreadExecutionPreflightResponse",
+  "packages/sdk/src/areas/threads.ts#ExperimentalThreadExecutionApplyResponse",
+  "packages/server-contract/src/api/recovery.ts#RECOVERY_SNAPSHOT_CONTRACT_VERSION",
+  "packages/server-contract/src/api/recovery.ts#RECOVERY_SNAPSHOT_MAX_THREAD_COUNT",
+  "packages/server-contract/src/api/recovery.ts#RECOVERY_SNAPSHOT_MAX_SEGMENT_LIMIT",
+  "packages/server-contract/src/api/recovery.ts#recoverySnapshotRequestSchema",
+  "packages/server-contract/src/api/recovery.ts#RecoverySnapshotRequest",
+  "packages/server-contract/src/api/recovery.ts#recoverySnapshotCacheOwnerSchema",
+  "packages/server-contract/src/api/recovery.ts#recoveryTimelineObservationSchema",
+  "packages/server-contract/src/api/recovery.ts#RecoveryTimelineObservation",
+  "packages/server-contract/src/api/recovery.ts#recoverySnapshotUnavailableThreadSchema",
+  "packages/server-contract/src/api/recovery.ts#recoverySnapshotResponseSchema",
+  "packages/server-contract/src/api/recovery.ts#RecoverySnapshotResponse",
+  "packages/server-contract/src/api/threads.ts#experimentalThreadExecutionModelSourceSchema",
+  "packages/server-contract/src/api/threads.ts#experimentalThreadExecutionReasoningSourceSchema",
+  "packages/server-contract/src/api/threads.ts#experimentalThreadExecutionSummarySchema",
+  "packages/server-contract/src/api/threads.ts#ExperimentalThreadExecutionSummary",
+  "packages/server-contract/src/api/threads.ts#EXPERIMENTAL_THREAD_EXECUTION_BATCH_LIMIT",
+  "packages/server-contract/src/api/threads.ts#experimentalThreadExecutionOverridePatchSchema",
+  "packages/server-contract/src/api/threads.ts#ExperimentalThreadExecutionOverridePatch",
+  "packages/server-contract/src/api/threads.ts#experimentalThreadExecutionPreflightRequestSchema",
+  "packages/server-contract/src/api/threads.ts#ExperimentalThreadExecutionPreflightRequest",
+  "packages/server-contract/src/api/threads.ts#experimentalThreadExecutionPreflightResultSchema",
+  "packages/server-contract/src/api/threads.ts#ExperimentalThreadExecutionPreflightResult",
+  "packages/server-contract/src/api/threads.ts#experimentalThreadExecutionPreflightResponseSchema",
+  "packages/server-contract/src/api/threads.ts#ExperimentalThreadExecutionPreflightResponse",
+  "packages/server-contract/src/api/threads.ts#experimentalThreadExecutionApplyRequestSchema",
+  "packages/server-contract/src/api/threads.ts#ExperimentalThreadExecutionApplyRequest",
+  "packages/server-contract/src/api/threads.ts#experimentalThreadExecutionApplyResultSchema",
+  "packages/server-contract/src/api/threads.ts#ExperimentalThreadExecutionApplyResult",
+  "packages/server-contract/src/api/threads.ts#experimentalThreadExecutionApplyResponseSchema",
+  "packages/server-contract/src/api/threads.ts#ExperimentalThreadExecutionApplyResponse",
+]);
+
 function upstreamSource(path) {
   if (upstreamFiles.has(path)) return upstreamFiles.get(path);
   let source = "";
@@ -218,6 +279,10 @@ function upstreamSource(path) {
 
 function approvedGenericThreadFacetExport(path, name) {
   return approvedGenericThreadFacetExports.has(`${path}#${name}`);
+}
+
+function approvedGenericCoreExport(path, name) {
+  return approvedGenericCoreExports.has(`${path}#${name}`);
 }
 
 const forbiddenAddedPatterns = [
@@ -273,6 +338,7 @@ for (const line of diff.split("\n")) {
   const name = declaration[1];
   if (/^(?:p6r|P6r|P6R_|useP6r)/u.test(name)) continue;
   if (approvedGenericThreadFacetExport(file, name)) continue;
+  if (approvedGenericCoreExport(file, name)) continue;
 
   const existedUpstream = new RegExp(
     `export\\s+(?:declare\\s+)?(?:const|function|class|interface|type|enum)\\s+${name}\\b`,

@@ -47,12 +47,15 @@
 43. **Provider-scoped native execution fallback** keeps the existing-thread picker and CLI clear path from reconciling reasoning against a project default owned by another provider.
 44. **Execution contract boundary coverage** records targeted execution-query optionals explicitly and proves zero-target rejection plus one-target acceptance alongside the existing 5,000/5,001 limits.
 45. **Legacy participant projection compatibility** preserves handle/display-name fallback semantics while proving stable projections avoid history materialization and participant-bearing changes refresh incrementally.
+46. **Time-safe execution batch validation** rechecks signed preview expiry after fresh catalog discovery and at the write transaction, while isolating catalog-route resolution failures to their affected threads.
+47. **Recovery cache ownership and durability hardening** scopes native queries and SQLite identities by principal plus server origin, preserves monotonic observations, removes full integrity scans from first-frame startup, serializes the Node transaction witness, validates snapshot responses, and keeps Recovery's inherited mutation surfaces read-only until guarded delivery exists.
+48. **Hidden plugin worker environment reuse** lets server-mediated hidden plugin workers follow a personal thread into its directory-switched unmanaged checkout while preserving the normal workspace boundary for visible and ordinary threads.
 
 ## Exact source receipt
 
 - Upstream: `5205d98a74ed5a22469e521cf1f86b00b8232827`.
 - Materialized package: `bb-app@0.39.0`.
-- Patch queue: forty-five patches in `patches/series`.
+- Patch queue: forty-eight patches in `patches/series`.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries
@@ -123,5 +126,7 @@
   authority; transactional outbox and census reconciliation make reload and
   retry behavior durable.
 - Upstream's removed native side-chat UI is not restored. Identity rendering is integrated into the current native timeline/header/sidebar components and remains compatible with plugin-owned side chat.
+
+Patch 0053 removes a failed resume from the host's live-session registry while preserving its durable provider identity on the server. A later send can reconstruct the conversation instead of being routed to a nonexistent provider session. The regression test also verifies that another healthy thread sharing the provider survives the failure.
 
 The patch queue is the canonical downstream delta. A convenience branch may be regenerated for review, but it is not a release input.

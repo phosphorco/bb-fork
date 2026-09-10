@@ -1,0 +1,2746 @@
+From e80c9db8ffd027b48480b611752d4a4b6ebdbf86 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sun, 30 Aug 2026 09:37:31 -0400
+Subject: [PATCH] fix(recovery-mobile): harden cache ownership and durability
+
+---
+ apps/recovery-mobile/app/dev/diff.tsx         |   4 +-
+ .../e2e/scripts/ci-run-flows.sh               |   8 +-
+ .../src/data/sidebar/sidebar-bootstrap.ts     |  25 +-
+ .../thread-detail/thread-detail-queries.ts    |  67 +++-
+ .../src/persistence/attachment-spike.test.ts  |  88 +++++-
+ .../src/persistence/attachments.ts            |  37 ++-
+ .../src/persistence/contracts.ts              |  16 +-
+ .../src/persistence/migrations.ts             |  30 +-
+ .../src/persistence/native-repository.ts      |  17 +-
+ .../src/persistence/node-sqlite.ts            |  99 +++++-
+ .../src/persistence/persistence-spike.test.ts | 295 ++++++++++++++++--
+ .../persistence/recovery-namespace.test.ts    |  46 +++
+ .../src/persistence/recovery-namespace.ts     |  31 ++
+ .../persistence/recovery-query-key.test.ts    |  21 ++
+ .../src/persistence/recovery-query-key.ts     |  20 ++
+ .../src/persistence/recovery-snapshot.test.ts |  11 +-
+ .../src/persistence/recovery-snapshot.ts      |  21 +-
+ .../src/persistence/repository.ts             | 115 ++++---
+ .../src/persistence/use-recovery-namespace.ts |  31 +-
+ .../use-recovery-query-persistence.ts         |  44 ++-
+ .../sidebar/SidebarActionsProvider.tsx        | 163 ++--------
+ .../src/screens/thread/ThreadDetailScreen.tsx |  52 +--
+ .../thread/actions/ThreadActionsSheet.tsx     | 173 +---------
+ .../thread/prompt-area/ThreadPromptArea.tsx   | 201 +++++-------
+ apps/server/src/routes/recovery.ts            |   6 +-
+ .../public/public-recovery-snapshot.test.ts   |   2 +-
+ packages/sdk/src/areas/recovery.ts            |  27 +-
+ packages/sdk/test/sdk.test.ts                 |  53 +++-
+ 28 files changed, 1042 insertions(+), 661 deletions(-)
+ create mode 100644 apps/recovery-mobile/src/persistence/recovery-namespace.test.ts
+ create mode 100644 apps/recovery-mobile/src/persistence/recovery-namespace.ts
+ create mode 100644 apps/recovery-mobile/src/persistence/recovery-query-key.test.ts
+ create mode 100644 apps/recovery-mobile/src/persistence/recovery-query-key.ts
+
+diff --git a/apps/recovery-mobile/app/dev/diff.tsx b/apps/recovery-mobile/app/dev/diff.tsx
+index 48fba307b522b9eb0ab7b75d76625cbf89358c63..9b6ea734b166a3f667a2d368878e2ca1a03b5e02 100644
+--- a/apps/recovery-mobile/app/dev/diff.tsx
++++ b/apps/recovery-mobile/app/dev/diff.tsx
+@@ -45,8 +45,8 @@ index 1111111..2222222 100644
+ +    return null;
+ +  }
+    const file = parsed.files[0];
+- 	if (!file) {
+- 		return null; // a tab-indented line that is really, really long so the horizontal scroll has something to do
++ \tif (!file) {
++ \t\treturn null; // a tab-indented line that is really, really long so the horizontal scroll has something to do
+ diff --git a/old/name.ts b/new/name.ts
+ similarity index 100%
+ rename from old/name.ts
+diff --git a/apps/recovery-mobile/e2e/scripts/ci-run-flows.sh b/apps/recovery-mobile/e2e/scripts/ci-run-flows.sh
+index ecbbc174d0ba3953eb893cc7f39097e99d10f98e..a9a4bcbf6ac813de3294260d01c4ed244591b1d2 100755
+--- a/apps/recovery-mobile/e2e/scripts/ci-run-flows.sh
++++ b/apps/recovery-mobile/e2e/scripts/ci-run-flows.sh
+@@ -10,9 +10,9 @@
+ #
+ # Default flows (in this order; later ones depend on seeds the earlier ones
+ # leave alone): smoke, phase1-shell, phase4a-timeline, phase3-compose,
+-# phase4b-send, phase6-panel. The script creates the threads the title-based
+-# flows open ("P4b send" idle; "P6 panel thread" with a dirty managed
+-# worktree) through the API first.
++# phase6-panel. Sending is intentionally absent until Recovery's guarded-send
++# contract is implemented. The script creates title-based flow fixtures
++# through the API first.
+ #
+ # Environment: SERVER_URL (default http://127.0.0.1:41999; the flows' own
+ # env blocks point at the same port), MAESTRO_FLAGS (extra `maestro test`
+@@ -37,7 +37,7 @@ ARTIFACTS="${2:?artifacts dir}"
+ shift 2
+ FLOWS=("$@")
+ if [ ${#FLOWS[@]} -eq 0 ]; then
+-  FLOWS=(smoke phase1-shell phase4a-timeline phase3-compose phase4b-send phase6-panel)
++  FLOWS=(smoke phase1-shell phase4a-timeline phase3-compose phase6-panel)
+ fi
+ 
+ export SERVER_URL="${SERVER_URL:-http://127.0.0.1:41999}"
+diff --git a/apps/recovery-mobile/src/data/sidebar/sidebar-bootstrap.ts b/apps/recovery-mobile/src/data/sidebar/sidebar-bootstrap.ts
+index 4a06e1f25eb892462062a55271716c4a3f59f916..023c14004d868704aee04c5f622263c9ead632bc 100644
+--- a/apps/recovery-mobile/src/data/sidebar/sidebar-bootstrap.ts
++++ b/apps/recovery-mobile/src/data/sidebar/sidebar-bootstrap.ts
+@@ -1,5 +1,8 @@
+ import { PERSONAL_PROJECT_ID } from "@bb/domain";
+-import type { SidebarBootstrapResponse } from "@bb/server-contract";
++import {
++  sidebarBootstrapResponseSchema,
++  type SidebarBootstrapResponse,
++} from "@bb/server-contract";
+ import { useQuery } from "@tanstack/react-query";
+ import { useMemo } from "react";
+ import { useProfileClient } from "@/app-shell/ProfilesProvider";
+@@ -7,6 +10,7 @@ import { sidebarNavigationQueryKey } from "@/lib/query/query-keys";
+ import { useRecoveryQueryPersistence } from "@/persistence/use-recovery-query-persistence";
+ import { useRecoveryNamespace } from "@/persistence/use-recovery-namespace";
+ import { RECOVERY_SIDEBAR_RECORD_KEY } from "@/persistence/recovery-snapshot";
++import { recoveryScopedQueryKey } from "@/persistence/recovery-query-key";
+ import { REALTIME_OWNED_STATIC_CACHE_QUERY_POLICY } from "../shared/query-policies";
+ import {
+   useEnvironmentListRealtimeSubscription,
+@@ -30,22 +34,29 @@ export function useSidebarBootstrap(options?: QueryOptions) {
+   const { sdk } = useProfileClient();
+   const namespace = useRecoveryNamespace();
+   const enabled = options?.enabled ?? true;
+-  useThreadListRealtimeSubscription({ enabled });
+-  useProjectListRealtimeSubscription({ enabled });
+-  useEnvironmentListRealtimeSubscription({ enabled });
++  const recoveryEnabled = enabled && namespace !== null;
++  const queryKey = recoveryScopedQueryKey(
++    sidebarNavigationQueryKey(),
++    namespace?.namespaceId ?? null,
++  );
++  useThreadListRealtimeSubscription({ enabled: recoveryEnabled });
++  useProjectListRealtimeSubscription({ enabled: recoveryEnabled });
++  useEnvironmentListRealtimeSubscription({ enabled: recoveryEnabled });
+ 
+   const query = useQuery<SidebarBootstrapResponse>({
+-    queryKey: sidebarNavigationQueryKey(),
++    queryKey,
+     queryFn: ({ signal }) => sdk.projects.sidebarBootstrap({ signal }),
+-    enabled,
++    enabled: recoveryEnabled,
+     ...REALTIME_OWNED_STATIC_CACHE_QUERY_POLICY,
+   });
+ 
+   useRecoveryQueryPersistence({
+     namespace,
+     recordKey: RECOVERY_SIDEBAR_RECORD_KEY,
+-    queryKey: sidebarNavigationQueryKey(),
++    queryKey,
+     data: query.data,
++    revision: 0,
++    schema: sidebarBootstrapResponseSchema,
+   });
+ 
+   return query;
+diff --git a/apps/recovery-mobile/src/data/thread-detail/thread-detail-queries.ts b/apps/recovery-mobile/src/data/thread-detail/thread-detail-queries.ts
+index 8cd30f252688cd610b78d7b5c0b834bba7b2292e..002b9d0ef6cbd72380cb26aa59c8d72c5ddc9f8b 100644
+--- a/apps/recovery-mobile/src/data/thread-detail/thread-detail-queries.ts
++++ b/apps/recovery-mobile/src/data/thread-detail/thread-detail-queries.ts
+@@ -1,16 +1,22 @@
+ import type { ResolvedThreadExecutionOptions } from "@bb/domain";
+-import type {
+-  ThreadListResponse,
+-  ThreadPendingInteractionsResponse,
+-  ThreadQueuedMessageListResponse,
+-  ThreadTimelineResponse,
+-  ThreadWithIncludesResponse,
+-  TimelineTurnSummaryDetailsResponse,
++import {
++  threadTimelineResponseSchema,
++  threadWithIncludesResponseSchema,
++  type ThreadListResponse,
++  type ThreadPendingInteractionsResponse,
++  type ThreadQueuedMessageListResponse,
++  type ThreadTimelineResponse,
++  type ThreadWithIncludesResponse,
++  type TimelineTurnSummaryDetailsResponse,
+ } from "@bb/server-contract";
+ import { useQuery, useQueryClient } from "@tanstack/react-query";
+ import { useProfileClient } from "@/app-shell/ProfilesProvider";
+ import { useRecoveryNamespace } from "@/persistence/use-recovery-namespace";
+ import { useRecoveryQueryPersistence } from "@/persistence/use-recovery-query-persistence";
++import {
++  queryKeyMatchesRecoveryNamespace,
++  recoveryScopedQueryKey,
++} from "@/persistence/recovery-query-key";
+ import {
+   shouldRetryTransientReadQuery,
+   TRANSIENT_READ_RETRY_DELAY_MS,
+@@ -56,11 +62,21 @@ export function useThreadDetailBootstrap(
+   const { sdk } = useProfileClient();
+   const namespace = useRecoveryNamespace();
+   const queryClient = useQueryClient();
+-  const enabled = (options?.enabled ?? true) && Boolean(threadId);
++  const enabled =
++    (options?.enabled ?? true) && Boolean(threadId) && namespace !== null;
++  const namespaceId = namespace?.namespaceId ?? null;
++  const bootstrapQueryKey = recoveryScopedQueryKey(
++    threadDetailBootstrapQueryKey(threadId),
++    namespaceId,
++  );
++  const timelineQueryKey = recoveryScopedQueryKey(
++    threadTimelineQueryKey(threadId),
++    namespaceId,
++  );
+   useThreadDetailRealtimeSubscription(threadId, { enabled });
+ 
+   const query = useQuery<ThreadWithIncludesResponse>({
+-    queryKey: threadDetailBootstrapQueryKey(threadId),
++    queryKey: bootstrapQueryKey,
+     queryFn: async ({ signal }) => {
+       const id = requireEnabledQueryArg({
+         value: threadId,
+@@ -68,12 +84,12 @@ export function useThreadDetailBootstrap(
+         argName: "thread id",
+       });
+       void queryClient.prefetchQuery({
+-        queryKey: threadTimelineQueryKey(id),
++        queryKey: timelineQueryKey,
+         queryFn: ({ signal: timelineSignal }) =>
+           fetchThreadTimelineWindow({
+             fetchTimeline: (args) => sdk.threads.timeline(args),
+             previous: queryClient.getQueryData<ThreadTimelineResponse>(
+-              threadTimelineQueryKey(id),
++              timelineQueryKey,
+             ),
+             signal: timelineSignal,
+             threadId: id,
+@@ -95,8 +111,10 @@ export function useThreadDetailBootstrap(
+   useRecoveryQueryPersistence({
+     namespace,
+     recordKey: `thread-bootstrap:v1:${threadId}`,
+-    queryKey: threadDetailBootstrapQueryKey(threadId),
++    queryKey: bootstrapQueryKey,
+     data: query.data,
++    revision: 0,
++    schema: threadWithIncludesResponseSchema,
+   });
+   return query;
+ }
+@@ -113,11 +131,17 @@ export function useThreadTimeline(threadId: string, options?: QueryOptions) {
+   const { sdk } = useProfileClient();
+   const namespace = useRecoveryNamespace();
+   const queryClient = useQueryClient();
+-  const enabled = (options?.enabled ?? true) && Boolean(threadId);
++  const enabled =
++    (options?.enabled ?? true) && Boolean(threadId) && namespace !== null;
++  const namespaceId = namespace?.namespaceId ?? null;
++  const queryKey = recoveryScopedQueryKey(
++    threadTimelineQueryKey(threadId),
++    namespaceId,
++  );
+   useThreadDetailRealtimeSubscription(threadId, { enabled });
+ 
+   const query = useQuery<ThreadTimelineResponse>({
+-    queryKey: threadTimelineQueryKey(threadId),
++    queryKey,
+     queryFn: ({ signal }) => {
+       const id = requireEnabledQueryArg({
+         value: threadId,
+@@ -127,7 +151,7 @@ export function useThreadTimeline(threadId: string, options?: QueryOptions) {
+       return fetchThreadTimelineWindow({
+         fetchTimeline: (args) => sdk.threads.timeline(args),
+         previous: queryClient.getQueryData<ThreadTimelineResponse>(
+-          threadTimelineQueryKey(id),
++          queryKey,
+         ),
+         signal,
+         threadId: id,
+@@ -140,13 +164,22 @@ export function useThreadTimeline(threadId: string, options?: QueryOptions) {
+     // Keep the previous window on screen across a thread-id change only when
+     // it is the same thread (the key changes otherwise and we start blank).
+     placeholderData: (previousData, previousQuery) =>
+-      previousQuery?.queryKey[1] === threadId ? previousData : undefined,
++      previousQuery?.queryKey[1] === threadId &&
++      namespace !== null &&
++      queryKeyMatchesRecoveryNamespace(
++        previousQuery.queryKey,
++        namespace.namespaceId,
++      )
++        ? previousData
++        : undefined,
+   });
+   useRecoveryQueryPersistence({
+     namespace,
+     recordKey: `thread-timeline-latest:v1:${threadId}`,
+-    queryKey: threadTimelineQueryKey(threadId),
++    queryKey,
+     data: query.data,
++    revision: query.data?.maxSeq ?? 0,
++    schema: threadTimelineResponseSchema,
+   });
+   return query;
+ }
+diff --git a/apps/recovery-mobile/src/persistence/attachment-spike.test.ts b/apps/recovery-mobile/src/persistence/attachment-spike.test.ts
+index ba88d2e2fb2367f42f9127c7baa758beb59d0797..698a3435f1bd1131da2925535df276cab58c6ee0 100644
+--- a/apps/recovery-mobile/src/persistence/attachment-spike.test.ts
++++ b/apps/recovery-mobile/src/persistence/attachment-spike.test.ts
+@@ -52,7 +52,17 @@ class NodeAttachmentFileStore implements AttachmentFileStore {
+   }
+ 
+   async list(path: string): Promise<string[]> {
+-    return readdir(path).then((entries) => entries.map((entry) => join(path, entry)));
++    return readdir(path).then((entries) =>
++      entries.map((entry) => join(path, entry)),
++    );
++  }
++}
++
++class CorruptingAttachmentFileStore extends NodeAttachmentFileStore {
++  override write(path: string, bytes: Uint8Array): Promise<void> {
++    const corrupted = Uint8Array.from(bytes);
++    if (corrupted.length > 0) corrupted[0] = corrupted[0]! ^ 0xff;
++    return super.write(path, corrupted);
+   }
+ }
+ 
+@@ -96,9 +106,9 @@ async function createHarness(): Promise<{
+ 
+ afterEach(async () => {
+   await Promise.all(
+-    temporaryDirectories.splice(0).map((directory) =>
+-      rm(directory, { recursive: true, force: true }),
+-    ),
++    temporaryDirectories
++      .splice(0)
++      .map((directory) => rm(directory, { recursive: true, force: true })),
+   );
+ });
+ 
+@@ -123,13 +133,68 @@ describe("Recovery attachment crash protocol", () => {
+       byteCount: 13,
+       sha256: await sha256(new TextEncoder().encode("durable bytes")),
+     });
+-    await expect(harness.fileStore.exists(payload.finalPath!)).resolves.toBe(true);
++    await expect(harness.fileStore.exists(payload.finalPath!)).resolves.toBe(
++      true,
++    );
+     await expect(harness.repository.listAttachmentPayloads()).resolves.toEqual([
+       payload,
+     ]);
+     await harness.repository.close();
+   });
+ 
++  it("rejects same-length corruption during the staging write", async () => {
++    const harness = await createHarness();
++    await expect(
++      stageAttachmentPayload(
++        harness.repository,
++        new CorruptingAttachmentFileStore(),
++        sha256,
++        {
++          namespaceId: "namespace-a",
++          outboxId: "outbox-a",
++          attachmentId: "attachment-a",
++          bytes: new TextEncoder().encode("durable bytes"),
++          rootPath: harness.rootPath,
++          uniqueSuffix: "attempt-one",
++        },
++      ),
++    ).rejects.toThrow("hash mismatch");
++    await expect(harness.repository.listAttachmentPayloads()).resolves.toEqual(
++      [],
++    );
++    await harness.repository.close();
++  });
++
++  it("preserves a staging file referenced by durable intent", async () => {
++    const harness = await createHarness();
++    const stagingPath = join(harness.rootPath, "staging", "referenced.stage");
++    await harness.fileStore.ensureDirectory(dirname(stagingPath));
++    await harness.fileStore.write(
++      stagingPath,
++      new TextEncoder().encode("pending bytes"),
++    );
++    await harness.repository.putAttachmentPayload({
++      namespaceId: "namespace-a",
++      attachmentId: "attachment-a",
++      outboxId: "outbox-a",
++      state: "staging",
++      stagingPath,
++      finalPath: null,
++      sha256: null,
++      byteCount: 13,
++    });
++    await expect(
++      reconcileAttachmentPayloads(
++        harness.repository,
++        harness.fileStore,
++        sha256,
++        harness.rootPath,
++      ),
++    ).resolves.toMatchObject({ removedStaging: 0, markedUnavailable: 0 });
++    await expect(harness.fileStore.exists(stagingPath)).resolves.toBe(true);
++    await harness.repository.close();
++  });
++
+   it("removes an orphan final after a crash before the database commit", async () => {
+     const harness = await createHarness();
+     await expect(
+@@ -145,7 +210,10 @@ describe("Recovery attachment crash protocol", () => {
+           rootPath: harness.rootPath,
+           uniqueSuffix: "attempt-one",
+         },
+-        { afterMove: async () => Promise.reject(new Error("injected after move")) },
++        {
++          afterMove: async () =>
++            Promise.reject(new Error("injected after move")),
++        },
+       ),
+     ).rejects.toThrow("injected after move");
+ 
+@@ -161,7 +229,9 @@ describe("Recovery attachment crash protocol", () => {
+       removedStaging: 0,
+       removedUnreferenced: 1,
+     });
+-    await expect(harness.repository.listAttachmentPayloads()).resolves.toEqual([]);
++    await expect(harness.repository.listAttachmentPayloads()).resolves.toEqual(
++      [],
++    );
+     await harness.repository.close();
+   });
+ 
+@@ -189,7 +259,9 @@ describe("Recovery attachment crash protocol", () => {
+         harness.rootPath,
+       ),
+     ).resolves.toMatchObject({ markedUnavailable: 1 });
+-    await expect(harness.repository.listAttachmentPayloads()).resolves.toMatchObject([
++    await expect(
++      harness.repository.listAttachmentPayloads(),
++    ).resolves.toMatchObject([
+       { attachmentId: "attachment-a", state: "unavailable" },
+     ]);
+     await expect(
+diff --git a/apps/recovery-mobile/src/persistence/attachments.ts b/apps/recovery-mobile/src/persistence/attachments.ts
+index e8224c42b9bd7c94b5ba156bb86b197852f44905..9c92108a92b593b8806c839e847567f15c399fd8 100644
+--- a/apps/recovery-mobile/src/persistence/attachments.ts
++++ b/apps/recovery-mobile/src/persistence/attachments.ts
+@@ -42,7 +42,9 @@ async function verifyPayload(
+ ): Promise<boolean> {
+   if (!(await fileStore.exists(path))) return false;
+   const bytes = await fileStore.read(path);
+-  return bytes.byteLength === expectedBytes && (await hasher(bytes)) === expectedHash;
++  return (
++    bytes.byteLength === expectedBytes && (await hasher(bytes)) === expectedHash
++  );
+ }
+ 
+ /** Stage, read back, hash, rename, then commit the SQLite reference. */
+@@ -62,24 +64,28 @@ export async function stageAttachmentPayload(
+     stagingDirectory,
+     `${input.attachmentId}-${input.uniqueSuffix}.stage`,
+   );
++  const expectedSha256 = await hasher(input.bytes);
+   await fileStore.write(stagingPath, input.bytes);
+   await hooks.afterWrite?.();
+ 
+   const persistedBytes = await fileStore.read(stagingPath);
+-  const sha256 = await hasher(persistedBytes);
++  const persistedSha256 = await hasher(persistedBytes);
+   if (persistedBytes.byteLength !== input.bytes.byteLength) {
+     throw new Error("Attachment staging byte count mismatch");
+   }
++  if (persistedSha256 !== expectedSha256) {
++    throw new Error("Attachment staging hash mismatch");
++  }
+   await hooks.afterHash?.();
+ 
+-  const finalPath = childPath(payloadDirectory, sha256);
++  const finalPath = childPath(payloadDirectory, expectedSha256);
+   if (await fileStore.exists(finalPath)) {
+     if (
+       !(await verifyPayload(
+         fileStore,
+         hasher,
+         finalPath,
+-        sha256,
++        expectedSha256,
+         persistedBytes.byteLength,
+       ))
+     ) {
+@@ -98,7 +104,7 @@ export async function stageAttachmentPayload(
+     state: "complete",
+     stagingPath: null,
+     finalPath,
+-    sha256,
++    sha256: expectedSha256,
+     byteCount: persistedBytes.byteLength,
+   };
+   await repository.putAttachmentPayload(payload);
+@@ -123,18 +129,32 @@ export async function reconcileAttachmentPayloads(
+   await fileStore.ensureDirectory(stagingDirectory);
+   await fileStore.ensureDirectory(payloadDirectory);
+ 
++  const rows = await repository.listAttachmentPayloads();
++  const referencedStaging = new Set(
++    rows.flatMap((row) => (row.stagingPath ? [row.stagingPath] : [])),
++  );
+   let removedStaging = 0;
+   for (const path of await fileStore.list(stagingDirectory)) {
++    if (referencedStaging.has(path)) continue;
+     await fileStore.remove(path);
+     removedStaging += 1;
+   }
+ 
+-  const rows = await repository.listAttachmentPayloads();
+   const referenced = new Set(
+     rows.flatMap((row) => (row.finalPath ? [row.finalPath] : [])),
+   );
+   let markedUnavailable = 0;
+   for (const row of rows) {
++    if (row.state === "staging") {
++      if (!row.stagingPath || !(await fileStore.exists(row.stagingPath))) {
++        await repository.markAttachmentUnavailable(
++          row.namespaceId,
++          row.attachmentId,
++        );
++        markedUnavailable += 1;
++      }
++      continue;
++    }
+     if (
+       row.state !== "complete" ||
+       !row.finalPath ||
+@@ -148,7 +168,10 @@ export async function reconcileAttachmentPayloads(
+       ))
+     ) {
+       if (row.state === "complete") {
+-        await repository.markAttachmentUnavailable(row.namespaceId, row.attachmentId);
++        await repository.markAttachmentUnavailable(
++          row.namespaceId,
++          row.attachmentId,
++        );
+         markedUnavailable += 1;
+       }
+     }
+diff --git a/apps/recovery-mobile/src/persistence/contracts.ts b/apps/recovery-mobile/src/persistence/contracts.ts
+index c9604f2ebc1d591a303c090802d43b7a8d438c8f..cde8f0e5181155ed2d1d3809f19340672cb6bd1d 100644
+--- a/apps/recovery-mobile/src/persistence/contracts.ts
++++ b/apps/recovery-mobile/src/persistence/contracts.ts
+@@ -8,16 +8,12 @@ export interface SqlRunResult {
+ /** Minimal async surface shared by Expo SQLite and the Node test adapter. */
+ export interface RecoverySqlDatabase {
+   exec(sql: string): Promise<void>;
+-  run(
+-    sql: string,
+-    params?: readonly SqlBindValue[],
+-  ): Promise<SqlRunResult>;
+-  getFirst<T>(
+-    sql: string,
+-    params?: readonly SqlBindValue[],
+-  ): Promise<T | null>;
++  run(sql: string, params?: readonly SqlBindValue[]): Promise<SqlRunResult>;
++  getFirst<T>(sql: string, params?: readonly SqlBindValue[]): Promise<T | null>;
+   getAll<T>(sql: string, params?: readonly SqlBindValue[]): Promise<T[]>;
+-  transaction<T>(operation: (tx: RecoverySqlDatabase) => Promise<T>): Promise<T>;
++  transaction<T>(
++    operation: (tx: RecoverySqlDatabase) => Promise<T>,
++  ): Promise<T>;
+   close(): Promise<void>;
+ }
+ 
+@@ -38,6 +34,8 @@ export interface ProfileIdentityContext {
+   providerId: string | null;
+   subject: string | null;
+   ownerState: RecoveryOwnerState;
++  /** Cached identity may hydrate reads; only live identity may own writes. */
++  source: "cached" | "live";
+   updatedAt: number;
+ }
+ 
+diff --git a/apps/recovery-mobile/src/persistence/migrations.ts b/apps/recovery-mobile/src/persistence/migrations.ts
+index 582691be1ea9746ed1a863876e2b57f7ffd8bd46..6b5f3a0984665b2cf90db4e1a105ce5f1fa89277 100644
+--- a/apps/recovery-mobile/src/persistence/migrations.ts
++++ b/apps/recovery-mobile/src/persistence/migrations.ts
+@@ -1,6 +1,6 @@
+ import type { RecoverySqlDatabase } from "./contracts";
+ 
+-export const RECOVERY_SCHEMA_VERSION = 3;
++export const RECOVERY_SCHEMA_VERSION = 4;
+ 
+ const MIGRATIONS = [
+   {
+@@ -74,6 +74,34 @@ const MIGRATIONS = [
+       );
+     `,
+   },
++  {
++    version: 4,
++    sql: `
++      CREATE TABLE profile_identity_contexts_v4 (
++        profile_id TEXT NOT NULL,
++        server_url TEXT NOT NULL,
++        namespace_id TEXT NOT NULL REFERENCES namespaces(namespace_id) ON DELETE RESTRICT,
++        principal_key TEXT,
++        provider_id TEXT,
++        subject TEXT,
++        owner_state TEXT NOT NULL CHECK(owner_state IN ('resolved', 'read-only')),
++        updated_at INTEGER NOT NULL,
++        PRIMARY KEY(profile_id, server_url)
++      );
++
++      INSERT INTO profile_identity_contexts_v4 (
++        profile_id, server_url, namespace_id, principal_key,
++        provider_id, subject, owner_state, updated_at
++      )
++      SELECT
++        profile_id, server_url, namespace_id, principal_key,
++        provider_id, subject, owner_state, updated_at
++      FROM profile_identity_contexts;
++
++      DROP TABLE profile_identity_contexts;
++      ALTER TABLE profile_identity_contexts_v4 RENAME TO profile_identity_contexts;
++    `,
++  },
+ ] as const;
+ 
+ interface UserVersionRow {
+diff --git a/apps/recovery-mobile/src/persistence/native-repository.ts b/apps/recovery-mobile/src/persistence/native-repository.ts
+index c2141656e8f0e766b2e614d31e04a44a59f5f869..5995631090ec48710ebef1dbfa97ffec1549ba57 100644
+--- a/apps/recovery-mobile/src/persistence/native-repository.ts
++++ b/apps/recovery-mobile/src/persistence/native-repository.ts
+@@ -4,10 +4,21 @@ import { RecoveryRepository } from "./repository";
+ let repositoryPromise: Promise<RecoveryRepository> | null = null;
+ 
+ export function getNativeRecoveryRepository(): Promise<RecoveryRepository> {
+-  repositoryPromise ??= openNativeRecoveryDatabase().then(async (database) => {
++  if (repositoryPromise) return repositoryPromise;
++  const initialization = openNativeRecoveryDatabase().then(async (database) => {
+     const repository = new RecoveryRepository(database);
+-    await repository.initialize();
+-    return repository;
++    try {
++      await repository.initialize();
++      return repository;
++    } catch (error) {
++      await database.close().catch(() => undefined);
++      throw error;
++    }
+   });
++  const retryable = initialization.catch((error: unknown) => {
++    if (repositoryPromise === retryable) repositoryPromise = null;
++    throw error;
++  });
++  repositoryPromise = retryable;
+   return repositoryPromise;
+ }
+diff --git a/apps/recovery-mobile/src/persistence/node-sqlite.ts b/apps/recovery-mobile/src/persistence/node-sqlite.ts
+index 539c7bcbd8f06be12c547464b8d429d2045517a2..6966638590a033d54268289661881eab456235c4 100644
+--- a/apps/recovery-mobile/src/persistence/node-sqlite.ts
++++ b/apps/recovery-mobile/src/persistence/node-sqlite.ts
+@@ -12,7 +12,7 @@ function nodeParams(params: readonly SqlBindValue[]): SQLInputValue[] {
+ 
+ /** Node-only adapter used by Vitest and command-line recovery witnesses. */
+ export class NodeRecoverySqlDatabase implements RecoverySqlDatabase {
+-  private inTransaction = false;
++  private operationTail: Promise<void> = Promise.resolve();
+ 
+   constructor(private readonly database: DatabaseSync) {}
+ 
+@@ -20,6 +20,79 @@ export class NodeRecoverySqlDatabase implements RecoverySqlDatabase {
+     return new NodeRecoverySqlDatabase(new DatabaseSync(path));
+   }
+ 
++  private enqueue<T>(operation: () => T | Promise<T>): Promise<T> {
++    const scheduled = this.operationTail.then(operation, operation);
++    this.operationTail = scheduled.then(
++      () => undefined,
++      () => undefined,
++    );
++    return scheduled;
++  }
++
++  exec(sql: string): Promise<void> {
++    return this.enqueue(() => this.database.exec(sql));
++  }
++
++  async run(
++    sql: string,
++    params: readonly SqlBindValue[] = [],
++  ): Promise<SqlRunResult> {
++    return this.enqueue(() => {
++      const result = this.database.prepare(sql).run(...nodeParams(params));
++      return {
++        changes: Number(result.changes),
++        lastInsertRowId: Number(result.lastInsertRowid),
++      };
++    });
++  }
++
++  async getFirst<T>(
++    sql: string,
++    params: readonly SqlBindValue[] = [],
++  ): Promise<T | null> {
++    return this.enqueue(
++      () =>
++        (this.database.prepare(sql).get(...nodeParams(params)) as
++          | T
++          | undefined) ?? null,
++    );
++  }
++
++  async getAll<T>(
++    sql: string,
++    params: readonly SqlBindValue[] = [],
++  ): Promise<T[]> {
++    return this.enqueue(
++      () => this.database.prepare(sql).all(...nodeParams(params)) as T[],
++    );
++  }
++
++  async transaction<T>(
++    operation: (tx: RecoverySqlDatabase) => Promise<T>,
++  ): Promise<T> {
++    return this.enqueue(async () => {
++      this.database.exec("BEGIN IMMEDIATE");
++      const transaction = new NodeRecoverySqlTransaction(this.database);
++      try {
++        const result = await operation(transaction);
++        this.database.exec("COMMIT");
++        return result;
++      } catch (error) {
++        this.database.exec("ROLLBACK");
++        throw error;
++      }
++    });
++  }
++
++  close(): Promise<void> {
++    return this.enqueue(() => this.database.close());
++  }
++}
++
++/** Transaction-scoped view; nested work belongs to the same atomic unit. */
++class NodeRecoverySqlTransaction implements RecoverySqlDatabase {
++  constructor(private readonly database: DatabaseSync) {}
++
+   async exec(sql: string): Promise<void> {
+     this.database.exec(sql);
+   }
+@@ -39,7 +112,11 @@ export class NodeRecoverySqlDatabase implements RecoverySqlDatabase {
+     sql: string,
+     params: readonly SqlBindValue[] = [],
+   ): Promise<T | null> {
+-    return (this.database.prepare(sql).get(...nodeParams(params)) as T | undefined) ?? null;
++    return (
++      (this.database.prepare(sql).get(...nodeParams(params)) as
++        | T
++        | undefined) ?? null
++    );
+   }
+ 
+   async getAll<T>(
+@@ -49,25 +126,13 @@ export class NodeRecoverySqlDatabase implements RecoverySqlDatabase {
+     return this.database.prepare(sql).all(...nodeParams(params)) as T[];
+   }
+ 
+-  async transaction<T>(
++  transaction<T>(
+     operation: (tx: RecoverySqlDatabase) => Promise<T>,
+   ): Promise<T> {
+-    if (this.inTransaction) return operation(this);
+-    this.database.exec("BEGIN IMMEDIATE");
+-    this.inTransaction = true;
+-    try {
+-      const result = await operation(this);
+-      this.database.exec("COMMIT");
+-      return result;
+-    } catch (error) {
+-      this.database.exec("ROLLBACK");
+-      throw error;
+-    } finally {
+-      this.inTransaction = false;
+-    }
++    return operation(this);
+   }
+ 
+   async close(): Promise<void> {
+-    this.database.close();
++    throw new Error("Cannot close a transaction-scoped Recovery database");
+   }
+ }
+diff --git a/apps/recovery-mobile/src/persistence/persistence-spike.test.ts b/apps/recovery-mobile/src/persistence/persistence-spike.test.ts
+index 632c59e2f628a7afd655a8bd19f929e44c88081f..93fbb8a00f1a4c802500a90d0b7080de8436da5f 100644
+--- a/apps/recovery-mobile/src/persistence/persistence-spike.test.ts
++++ b/apps/recovery-mobile/src/persistence/persistence-spike.test.ts
+@@ -4,7 +4,10 @@ import { join } from "node:path";
+ 
+ import { afterEach, describe, expect, it } from "vitest";
+ 
+-import { migrateRecoveryDatabase, readRecoverySchemaVersion } from "./migrations";
++import {
++  migrateRecoveryDatabase,
++  readRecoverySchemaVersion,
++} from "./migrations";
+ import { NodeRecoverySqlDatabase } from "./node-sqlite";
+ import { RecoveryRepository } from "./repository";
+ 
+@@ -18,9 +21,9 @@ async function temporaryDatabasePath(): Promise<string> {
+ 
+ afterEach(async () => {
+   await Promise.all(
+-    temporaryDirectories.splice(0).map((directory) =>
+-      rm(directory, { recursive: true, force: true }),
+-    ),
++    temporaryDirectories
++      .splice(0)
++      .map((directory) => rm(directory, { recursive: true, force: true })),
+   );
+ });
+ 
+@@ -29,10 +32,11 @@ describe("Recovery SQLite persistence spike", () => {
+     const path = await temporaryDatabasePath();
+     const first = new RecoveryRepository(NodeRecoverySqlDatabase.open(path));
+     await expect(first.initialize()).resolves.toEqual({
+-      integrity: "ok",
++      integrity: "not-checked",
+       journalMode: "wal",
+-      schemaVersion: 3,
++      schemaVersion: 4,
+     });
++    await expect(first.checkIntegrity()).resolves.toBe("ok");
+     await first.ensureNamespace({
+       namespaceId: "server-a/profile-a/principal-a",
+       serverProfileKey: "profile-a",
+@@ -59,12 +63,16 @@ describe("Recovery SQLite persistence spike", () => {
+ 
+     const reopened = new RecoveryRepository(NodeRecoverySqlDatabase.open(path));
+     await expect(reopened.initialize()).resolves.toMatchObject({
+-      integrity: "ok",
++      integrity: "not-checked",
+       journalMode: "wal",
+-      schemaVersion: 3,
++      schemaVersion: 4,
+     });
++    await expect(reopened.checkIntegrity()).resolves.toBe("ok");
+     await expect(
+-      reopened.getObservedRecord("server-a/profile-a/principal-a", "thread:one"),
++      reopened.getObservedRecord(
++        "server-a/profile-a/principal-a",
++        "thread:one",
++      ),
+     ).resolves.toMatchObject({
+       payload: { title: "Cached thread" },
+       revision: 4,
+@@ -94,14 +102,91 @@ describe("Recovery SQLite persistence spike", () => {
+         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'attachment_payloads'",
+       ),
+     ).resolves.toBeNull();
+-    await expect(migrateRecoveryDatabase(database)).resolves.toBe(3);
+-    await expect(migrateRecoveryDatabase(database)).resolves.toBe(3);
++    await expect(migrateRecoveryDatabase(database)).resolves.toBe(4);
++    await expect(migrateRecoveryDatabase(database)).resolves.toBe(4);
++    await database.close();
++  });
++
++  it("migrates version 3 identity rows to origin-scoped keys", async () => {
++    const path = await temporaryDatabasePath();
++    const database = NodeRecoverySqlDatabase.open(path);
++    await expect(
++      migrateRecoveryDatabase(database, {
++        afterDdl: async (version) => {
++          if (version === 4) throw new Error("stop at version 3");
++        },
++      }),
++    ).rejects.toThrow("stop at version 3");
++    await expect(readRecoverySchemaVersion(database)).resolves.toBe(3);
++    await database.run(
++      `INSERT INTO namespaces (
++        namespace_id, server_profile_key, owner_key, owner_state
++      ) VALUES (?, ?, ?, ?)`,
++      ["namespace-a", "server-profile-a", "principal-a", "resolved"],
++    );
++    await database.run(
++      `INSERT INTO profile_identity_contexts (
++        profile_id, server_url, namespace_id, principal_key,
++        provider_id, subject, owner_state, updated_at
++      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
++      [
++        "profile-a",
++        "https://a.example",
++        "namespace-a",
++        "principal-a",
++        "tailnet",
++        "subject-a",
++        "resolved",
++        60,
++      ],
++    );
++    await expect(migrateRecoveryDatabase(database)).resolves.toBe(4);
++    const repository = new RecoveryRepository(database);
++    await expect(
++      repository.getProfileIdentityContext("profile-a", "https://a.example"),
++    ).resolves.toMatchObject({
++      namespaceId: "namespace-a",
++      principalKey: "principal-a",
++    });
++    await repository.close();
++  });
++
++  it("serializes concurrent work outside a rolling-back transaction", async () => {
++    const path = await temporaryDatabasePath();
++    const database = NodeRecoverySqlDatabase.open(path);
++    await database.exec("CREATE TABLE witness (value TEXT NOT NULL)");
++    let releaseFirst!: () => void;
++    const firstCanFinish = new Promise<void>((resolve) => {
++      releaseFirst = resolve;
++    });
++    let firstStarted!: () => void;
++    const firstDidStart = new Promise<void>((resolve) => {
++      firstStarted = resolve;
++    });
++    const first = database.transaction(async (tx) => {
++      await tx.run("INSERT INTO witness (value) VALUES (?)", ["rolled-back"]);
++      firstStarted();
++      await firstCanFinish;
++      throw new Error("injected rollback");
++    });
++    await firstDidStart;
++    const concurrent = database.run("INSERT INTO witness (value) VALUES (?)", [
++      "committed",
++    ]);
++    releaseFirst();
++    await expect(first).rejects.toThrow("injected rollback");
++    await concurrent;
++    await expect(
++      database.getAll<{ value: string }>("SELECT value FROM witness"),
++    ).resolves.toEqual([{ value: "committed" }]);
+     await database.close();
+   });
+ 
+   it("notifies only the committed namespace and record key", async () => {
+     const path = await temporaryDatabasePath();
+-    const repository = new RecoveryRepository(NodeRecoverySqlDatabase.open(path));
++    const repository = new RecoveryRepository(
++      NodeRecoverySqlDatabase.open(path),
++    );
+     await repository.initialize();
+     await repository.ensureNamespace({
+       namespaceId: "namespace-a",
+@@ -153,13 +238,32 @@ describe("Recovery SQLite persistence spike", () => {
+     const path = await temporaryDatabasePath();
+     const first = new RecoveryRepository(NodeRecoverySqlDatabase.open(path));
+     await first.initialize();
+-    await first.ensureNamespace({
+-      namespaceId: '["profile-a","principal-a"]',
+-      serverProfileKey: "profile-a",
+-      ownerKey: "principal-a",
+-      ownerState: "resolved",
+-    });
+-    await first.putProfileIdentityContext({
++    await first.putProfileIdentityContext(
++      {
++        profileId: "profile-a",
++        serverUrl: "https://bb.example.test",
++        namespaceId: '["profile-a","principal-a"]',
++        principalKey: "principal-a",
++        providerId: "tailnet",
++        subject: "subject-a",
++        ownerState: "resolved",
++        source: "live",
++        updatedAt: 50,
++      },
++      {
++        serverProfileKey: '["profile-a","https://bb.example.test"]',
++      },
++    );
++    await first.close();
++
++    const reopened = new RecoveryRepository(NodeRecoverySqlDatabase.open(path));
++    await reopened.initialize();
++    await expect(
++      reopened.getProfileIdentityContext(
++        "profile-a",
++        "https://bb.example.test",
++      ),
++    ).resolves.toEqual({
+       profileId: "profile-a",
+       serverUrl: "https://bb.example.test",
+       namespaceId: '["profile-a","principal-a"]',
+@@ -167,22 +271,161 @@ describe("Recovery SQLite persistence spike", () => {
+       providerId: "tailnet",
+       subject: "subject-a",
+       ownerState: "resolved",
++      source: "cached",
+       updatedAt: 50,
+     });
+-    await first.close();
++    await reopened.close();
++  });
+ 
+-    const reopened = new RecoveryRepository(NodeRecoverySqlDatabase.open(path));
+-    await reopened.initialize();
+-    await expect(reopened.getProfileIdentityContext("profile-a")).resolves.toEqual({
++  it("does not let an older identity response replace a newer principal", async () => {
++    const path = await temporaryDatabasePath();
++    const repository = new RecoveryRepository(
++      NodeRecoverySqlDatabase.open(path),
++    );
++    await repository.initialize();
++    const context = {
+       profileId: "profile-a",
+       serverUrl: "https://bb.example.test",
+-      namespaceId: '["profile-a","principal-a"]',
++      namespaceId: "namespace-b",
++      principalKey: "principal-b",
++      providerId: "tailnet",
++      subject: "subject-b",
++      ownerState: "resolved" as const,
++      source: "live" as const,
++      updatedAt: 60,
++    };
++    await repository.putProfileIdentityContext(context, {
++      serverProfileKey: "server-profile-b",
++    });
++    await repository.putProfileIdentityContext(
++      {
++        ...context,
++        namespaceId: "namespace-a",
++        principalKey: "principal-a",
++        subject: "subject-a",
++        updatedAt: 50,
++      },
++      { serverProfileKey: "server-profile-a" },
++    );
++    await expect(
++      repository.getProfileIdentityContext(
++        "profile-a",
++        "https://bb.example.test",
++      ),
++    ).resolves.toMatchObject({
++      namespaceId: "namespace-b",
++      principalKey: "principal-b",
++      updatedAt: 60,
++    });
++    await repository.close();
++  });
++
++  it("keeps the same local profile isolated across server origins", async () => {
++    const path = await temporaryDatabasePath();
++    const repository = new RecoveryRepository(
++      NodeRecoverySqlDatabase.open(path),
++    );
++    await repository.initialize();
++    const base = {
++      profileId: "profile-a",
+       principalKey: "principal-a",
+       providerId: "tailnet",
+       subject: "subject-a",
++      ownerState: "resolved" as const,
++      source: "live" as const,
++      updatedAt: 60,
++    };
++    await repository.putProfileIdentityContext(
++      {
++        ...base,
++        serverUrl: "https://a.example",
++        namespaceId: "namespace-a",
++      },
++      { serverProfileKey: "server-profile-a" },
++    );
++    await repository.putProfileIdentityContext(
++      {
++        ...base,
++        serverUrl: "https://b.example",
++        namespaceId: "namespace-b",
++      },
++      { serverProfileKey: "server-profile-b" },
++    );
++    await expect(
++      repository.getProfileIdentityContext("profile-a", "https://a.example"),
++    ).resolves.toMatchObject({ namespaceId: "namespace-a" });
++    await expect(
++      repository.getProfileIdentityContext("profile-a", "https://b.example"),
++    ).resolves.toMatchObject({ namespaceId: "namespace-b" });
++    await repository.close();
++  });
++
++  it("rejects record downgrades and notifies only accepted writes", async () => {
++    const path = await temporaryDatabasePath();
++    const repository = new RecoveryRepository(
++      NodeRecoverySqlDatabase.open(path),
++    );
++    await repository.initialize();
++    await repository.ensureNamespace({
++      namespaceId: "namespace-a",
++      serverProfileKey: "profile-a",
++      ownerKey: "principal-a",
+       ownerState: "resolved",
+-      updatedAt: 50,
+     });
+-    await reopened.close();
++    let notifications = 0;
++    repository.subscribeObservedRecord("namespace-a", "timeline", () => {
++      notifications += 1;
++    });
++    await repository.putObservedRecord({
++      namespaceId: "namespace-a",
++      recordKey: "timeline",
++      payload: { head: 8 },
++      revision: 8,
++      updatedAt: 80,
++    });
++    await repository.putObservedRecord({
++      namespaceId: "namespace-a",
++      recordKey: "timeline",
++      payload: { head: 7 },
++      revision: 7,
++      updatedAt: 90,
++    });
++    await expect(
++      repository.getObservedRecord("namespace-a", "timeline"),
++    ).resolves.toMatchObject({ payload: { head: 8 }, revision: 8 });
++    expect(notifications).toBe(1);
++    await repository.close();
++  });
++
++  it("does not let a throwing listener reject a committed write", async () => {
++    const path = await temporaryDatabasePath();
++    const repository = new RecoveryRepository(
++      NodeRecoverySqlDatabase.open(path),
++    );
++    await repository.initialize();
++    await repository.ensureNamespace({
++      namespaceId: "namespace-a",
++      serverProfileKey: "profile-a",
++      ownerKey: "principal-a",
++      ownerState: "resolved",
++    });
++    let laterListenerCalls = 0;
++    repository.subscribeObservedRecord("namespace-a", "record", () => {
++      throw new Error("listener failed");
++    });
++    repository.subscribeObservedRecord("namespace-a", "record", () => {
++      laterListenerCalls += 1;
++    });
++    await expect(
++      repository.putObservedRecord({
++        namespaceId: "namespace-a",
++        recordKey: "record",
++        payload: { durable: true },
++        revision: 1,
++        updatedAt: 1,
++      }),
++    ).resolves.toBeUndefined();
++    expect(laterListenerCalls).toBe(1);
++    await repository.close();
+   });
+ });
+diff --git a/apps/recovery-mobile/src/persistence/recovery-namespace.test.ts b/apps/recovery-mobile/src/persistence/recovery-namespace.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..11f54d2522e5a49bffc76744b367b6a356fbbbfe
+--- /dev/null
++++ b/apps/recovery-mobile/src/persistence/recovery-namespace.test.ts
+@@ -0,0 +1,46 @@
++import { describe, expect, it } from "vitest";
++import {
++  buildRecoveryNamespaceId,
++  buildRecoveryServerProfileKey,
++} from "./recovery-namespace";
++
++describe("Recovery namespace identity", () => {
++  it("separates principals and server origins even when a profile id is reused", () => {
++    const base = {
++      profileId: "profile-a",
++      serverUrl: "https://one.example.test/",
++      principalKey: "principal-a",
++    };
++    expect(buildRecoveryNamespaceId(base)).not.toBe(
++      buildRecoveryNamespaceId({ ...base, principalKey: "principal-b" }),
++    );
++    expect(buildRecoveryNamespaceId(base)).not.toBe(
++      buildRecoveryNamespaceId({
++        ...base,
++        serverUrl: "https://two.example.test",
++      }),
++    );
++    expect(buildRecoveryServerProfileKey(base)).not.toBe(
++      buildRecoveryServerProfileKey({
++        ...base,
++        serverUrl: "https://two.example.test",
++      }),
++    );
++  });
++
++  it("normalizes only an origin's trailing slash", () => {
++    expect(
++      buildRecoveryNamespaceId({
++        profileId: "profile-a",
++        serverUrl: "https://one.example.test/",
++        principalKey: null,
++      }),
++    ).toBe(
++      buildRecoveryNamespaceId({
++        profileId: "profile-a",
++        serverUrl: "https://one.example.test",
++        principalKey: null,
++      }),
++    );
++  });
++});
+diff --git a/apps/recovery-mobile/src/persistence/recovery-namespace.ts b/apps/recovery-mobile/src/persistence/recovery-namespace.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ae6f1b2920b7b6968524a316ceca59708c624469
+--- /dev/null
++++ b/apps/recovery-mobile/src/persistence/recovery-namespace.ts
+@@ -0,0 +1,31 @@
++export interface RecoveryNamespaceIdentity {
++  profileId: string;
++  serverUrl: string;
++  principalKey: string | null;
++}
++
++function normalizedServerUrl(serverUrl: string): string {
++  return serverUrl.trim().replace(/\/+$/u, "");
++}
++
++/** Stable local cache owner. The version prefix permits a later server ID. */
++export function buildRecoveryNamespaceId(
++  identity: RecoveryNamespaceIdentity,
++): string {
++  return JSON.stringify([
++    1,
++    identity.profileId,
++    normalizedServerUrl(identity.serverUrl),
++    identity.principalKey,
++  ]);
++}
++
++/** SQLite uniqueness must distinguish a profile rebound to another origin. */
++export function buildRecoveryServerProfileKey(
++  identity: Pick<RecoveryNamespaceIdentity, "profileId" | "serverUrl">,
++): string {
++  return JSON.stringify([
++    identity.profileId,
++    normalizedServerUrl(identity.serverUrl),
++  ]);
++}
+diff --git a/apps/recovery-mobile/src/persistence/recovery-query-key.test.ts b/apps/recovery-mobile/src/persistence/recovery-query-key.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..8244323c4b227d791b0e29ad24446a16b38f9b0d
+--- /dev/null
++++ b/apps/recovery-mobile/src/persistence/recovery-query-key.test.ts
+@@ -0,0 +1,21 @@
++import { describe, expect, it } from "vitest";
++import {
++  queryKeyMatchesRecoveryNamespace,
++  recoveryScopedQueryKey,
++} from "./recovery-query-key";
++
++describe("Recovery Query keys", () => {
++  it("keeps the ordinary key as an invalidation prefix while fencing owners", () => {
++    const base = ["threadTimeline", "thread-a"] as const;
++    const principalA = recoveryScopedQueryKey(base, "principal-a");
++    const principalB = recoveryScopedQueryKey(base, "principal-b");
++    expect(principalA.slice(0, base.length)).toEqual(base);
++    expect(principalA).not.toEqual(principalB);
++    expect(queryKeyMatchesRecoveryNamespace(principalA, "principal-a")).toBe(
++      true,
++    );
++    expect(queryKeyMatchesRecoveryNamespace(principalA, "principal-b")).toBe(
++      false,
++    );
++  });
++});
+diff --git a/apps/recovery-mobile/src/persistence/recovery-query-key.ts b/apps/recovery-mobile/src/persistence/recovery-query-key.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d57cfbe834589b56a35e2092f5ca73b3b8851a7e
+--- /dev/null
++++ b/apps/recovery-mobile/src/persistence/recovery-query-key.ts
+@@ -0,0 +1,20 @@
++import type { QueryKey } from "@tanstack/react-query";
++
++const RECOVERY_NAMESPACE_MARKER = "recovery-namespace";
++
++export function recoveryScopedQueryKey(
++  queryKey: QueryKey,
++  namespaceId: string | null,
++): QueryKey {
++  return [...queryKey, RECOVERY_NAMESPACE_MARKER, namespaceId];
++}
++
++export function queryKeyMatchesRecoveryNamespace(
++  queryKey: QueryKey,
++  namespaceId: string,
++): boolean {
++  return (
++    queryKey.at(-2) === RECOVERY_NAMESPACE_MARKER &&
++    queryKey.at(-1) === namespaceId
++  );
++}
+diff --git a/apps/recovery-mobile/src/persistence/recovery-snapshot.test.ts b/apps/recovery-mobile/src/persistence/recovery-snapshot.test.ts
+index 280e5cd1b08e9176691fe11cee02111c8bf07ae2..77b99c5e07a3bf83f35eb9b2948650684994f49f 100644
+--- a/apps/recovery-mobile/src/persistence/recovery-snapshot.test.ts
++++ b/apps/recovery-mobile/src/persistence/recovery-snapshot.test.ts
+@@ -42,6 +42,7 @@ const namespace: ProfileIdentityContext = {
+   providerId: "tailnet",
+   subject: "subject-a",
+   ownerState: "resolved",
++  source: "live",
+   updatedAt: 100,
+ };
+ 
+@@ -90,7 +91,10 @@ describe("recovery snapshot ingestion", () => {
+     const repository = await createRepository();
+     await expect(
+       ingestRecoverySnapshot(repository, namespace, snapshot()),
+-    ).resolves.toEqual({ persistedTimelineCount: 1 });
++    ).resolves.toEqual({
++      consistency: "partial",
++      persistedTimelineCount: 1,
++    });
+ 
+     await expect(
+       repository.getObservedRecord(
+@@ -142,7 +146,10 @@ describe("recovery snapshot ingestion", () => {
+         namespace,
+         threadIds: ["thread-coherent"],
+       }),
+-    ).resolves.toEqual({ persistedTimelineCount: 1 });
++    ).resolves.toEqual({
++      consistency: "partial",
++      persistedTimelineCount: 1,
++    });
+     expect(requestedThreadIds).toEqual([["thread-coherent"]]);
+     await repository.close();
+   });
+diff --git a/apps/recovery-mobile/src/persistence/recovery-snapshot.ts b/apps/recovery-mobile/src/persistence/recovery-snapshot.ts
+index 69251495c597d4aca71f0d063000258f7f22e09b..02120411adc8dd50c56b197d4eb854999e5b14ff 100644
+--- a/apps/recovery-mobile/src/persistence/recovery-snapshot.ts
++++ b/apps/recovery-mobile/src/persistence/recovery-snapshot.ts
+@@ -2,6 +2,7 @@ import type { RecoverySnapshotResponse } from "@bb/server-contract";
+ import { RECOVERY_SNAPSHOT_CONTRACT_VERSION } from "@bb/server-contract";
+ import type { BrowserBbSdk } from "@bb/sdk/browser";
+ import type { ObservedRecord, ProfileIdentityContext } from "./contracts";
++import { buildRecoveryServerProfileKey } from "./recovery-namespace";
+ import type { RecoveryRepository } from "./repository";
+ 
+ export const RECOVERY_SIDEBAR_RECORD_KEY = "sidebar-bootstrap:v1";
+@@ -33,11 +34,17 @@ export async function ingestRecoverySnapshot(
+   repository: RecoveryRepository,
+   namespace: ProfileIdentityContext,
+   snapshot: RecoverySnapshotResponse,
+-): Promise<{ persistedTimelineCount: number }> {
++): Promise<{
++  consistency: RecoverySnapshotResponse["consistency"];
++  persistedTimelineCount: number;
++}> {
++  if (namespace.source !== "live") {
++    throw new Error("Recovery snapshot requires a live identity session");
++  }
+   assertMatchingCacheOwner(namespace, snapshot);
+   await repository.ensureNamespace({
+     namespaceId: namespace.namespaceId,
+-    serverProfileKey: namespace.profileId,
++    serverProfileKey: buildRecoveryServerProfileKey(namespace),
+     ownerKey: namespace.principalKey ?? "read-only",
+     ownerState: namespace.ownerState,
+   });
+@@ -73,7 +80,10 @@ export async function ingestRecoverySnapshot(
+     })),
+   ];
+   await repository.putObservedRecords(records);
+-  return { persistedTimelineCount: coherentTimelines.length };
++  return {
++    consistency: snapshot.consistency,
++    persistedTimelineCount: coherentTimelines.length,
++  };
+ }
+ 
+ /** Network-to-SQLite seam for a future foreground/idle refresh scheduler. */
+@@ -83,7 +93,10 @@ export async function refreshRecoverySnapshot(args: {
+   namespace: ProfileIdentityContext;
+   threadIds: string[];
+   signal?: AbortSignal;
+-}): Promise<{ persistedTimelineCount: number }> {
++}): Promise<{
++  consistency: RecoverySnapshotResponse["consistency"];
++  persistedTimelineCount: number;
++}> {
+   const snapshot = await args.sdk.recovery.snapshot({
+     contractVersion: RECOVERY_SNAPSHOT_CONTRACT_VERSION,
+     threadIds: args.threadIds,
+diff --git a/apps/recovery-mobile/src/persistence/repository.ts b/apps/recovery-mobile/src/persistence/repository.ts
+index 8bec544d00d9a45019ad73d2577b42709d174b0b..e1708d0f277455bde8e2db1d0f8ac6e72c9ccb73 100644
+--- a/apps/recovery-mobile/src/persistence/repository.ts
++++ b/apps/recovery-mobile/src/persistence/repository.ts
+@@ -112,6 +112,7 @@ function decodeIdentityContext(
+     providerId: row.provider_id,
+     subject: row.subject,
+     ownerState: row.owner_state,
++    source: "cached",
+     updatedAt: row.updated_at,
+   };
+ }
+@@ -127,22 +128,21 @@ export class RecoveryRepository {
+       "PRAGMA journal_mode = WAL",
+     );
+     const schemaVersion = await migrateRecoveryDatabase(this.db);
+-    const integrity = await this.db.getFirst<IntegrityRow>(
+-      "PRAGMA integrity_check",
+-    );
+-    const integrityResult = integrity?.integrity_check ?? "missing";
+-    if (integrityResult !== "ok") {
+-      throw new Error(
+-        `Recovery database integrity check failed: ${integrityResult}`,
+-      );
+-    }
+     return {
+       journalMode: journal?.journal_mode ?? "unknown",
+-      integrity: integrityResult,
++      integrity: "not-checked",
+       schemaVersion,
+     };
+   }
+ 
++  /** Explicit diagnostic; never put a full-database scan on the boot path. */
++  async checkIntegrity(): Promise<string> {
++    const integrity = await this.db.getFirst<IntegrityRow>(
++      "PRAGMA integrity_check",
++    );
++    return integrity?.integrity_check ?? "missing";
++  }
++
+   async ensureNamespace(namespace: RecoveryNamespace): Promise<void> {
+     await this.db.run(
+       `INSERT INTO namespaces (
+@@ -163,42 +163,61 @@ export class RecoveryRepository {
+ 
+   async putProfileIdentityContext(
+     context: ProfileIdentityContext,
++    options: { serverProfileKey: string },
+   ): Promise<void> {
+-    await this.db.run(
+-      `INSERT INTO profile_identity_contexts (
+-        profile_id, server_url, namespace_id, principal_key,
+-        provider_id, subject, owner_state, updated_at
+-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+-      ON CONFLICT(profile_id) DO UPDATE SET
+-        server_url = excluded.server_url,
+-        namespace_id = excluded.namespace_id,
+-        principal_key = excluded.principal_key,
+-        provider_id = excluded.provider_id,
+-        subject = excluded.subject,
+-        owner_state = excluded.owner_state,
+-        updated_at = excluded.updated_at`,
+-      [
+-        context.profileId,
+-        context.serverUrl,
+-        context.namespaceId,
+-        context.principalKey,
+-        context.providerId,
+-        context.subject,
+-        context.ownerState,
+-        context.updatedAt,
+-      ],
+-    );
++    await this.db.transaction(async (tx) => {
++      await tx.run(
++        `INSERT INTO namespaces (
++          namespace_id, server_profile_key, owner_key, owner_state
++        ) VALUES (?, ?, ?, ?)
++        ON CONFLICT(namespace_id) DO UPDATE SET
++          server_profile_key = excluded.server_profile_key,
++          owner_key = excluded.owner_key,
++          owner_state = excluded.owner_state`,
++        [
++          context.namespaceId,
++          options.serverProfileKey,
++          context.principalKey ?? "read-only",
++          context.ownerState,
++        ],
++      );
++      await tx.run(
++        `INSERT INTO profile_identity_contexts (
++          profile_id, server_url, namespace_id, principal_key,
++          provider_id, subject, owner_state, updated_at
++        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
++        ON CONFLICT(profile_id, server_url) DO UPDATE SET
++          namespace_id = excluded.namespace_id,
++          principal_key = excluded.principal_key,
++          provider_id = excluded.provider_id,
++          subject = excluded.subject,
++          owner_state = excluded.owner_state,
++          updated_at = excluded.updated_at
++        WHERE excluded.updated_at >= profile_identity_contexts.updated_at`,
++        [
++          context.profileId,
++          context.serverUrl,
++          context.namespaceId,
++          context.principalKey,
++          context.providerId,
++          context.subject,
++          context.ownerState,
++          context.updatedAt,
++        ],
++      );
++    });
+   }
+ 
+   async getProfileIdentityContext(
+     profileId: string,
++    serverUrl: string,
+   ): Promise<ProfileIdentityContext | null> {
+     const row = await this.db.getFirst<ProfileIdentityContextRow>(
+       `SELECT profile_id, server_url, namespace_id, principal_key,
+               provider_id, subject, owner_state, updated_at
+        FROM profile_identity_contexts
+-       WHERE profile_id = ?`,
+-      [profileId],
++       WHERE profile_id = ? AND server_url = ?`,
++      [profileId, serverUrl],
+     );
+     return row ? decodeIdentityContext(row) : null;
+   }
+@@ -210,16 +229,22 @@ export class RecoveryRepository {
+   /** Commit a related cache snapshot atomically, then publish keyed updates. */
+   async putObservedRecords(records: readonly ObservedRecord[]): Promise<void> {
+     if (records.length === 0) return;
++    const changedKeys = new Set<string>();
+     await this.db.transaction(async (tx) => {
+       for (const record of records) {
+-        await tx.run(
++        const result = await tx.run(
+           `INSERT INTO observed_records (
+             namespace_id, record_key, payload_json, revision, updated_at
+           ) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(namespace_id, record_key) DO UPDATE SET
+             payload_json = excluded.payload_json,
+             revision = excluded.revision,
+-            updated_at = excluded.updated_at`,
++            updated_at = excluded.updated_at
++          WHERE excluded.revision > observed_records.revision
++             OR (
++               excluded.revision = observed_records.revision
++               AND excluded.updated_at >= observed_records.updated_at
++             )`,
+           [
+             record.namespaceId,
+             record.recordKey,
+@@ -228,11 +253,19 @@ export class RecoveryRepository {
+             record.updatedAt,
+           ],
+         );
++        if (result.changes > 0) {
++          changedKeys.add(observationKey(record.namespaceId, record.recordKey));
++        }
+       }
+     });
+-    for (const record of records) {
+-      const key = observationKey(record.namespaceId, record.recordKey);
+-      for (const listener of this.listeners.get(key) ?? []) listener();
++    for (const key of changedKeys) {
++      for (const listener of this.listeners.get(key) ?? []) {
++        try {
++          listener();
++        } catch {
++          // A UI observer cannot turn a successful durable commit into failure.
++        }
++      }
+     }
+   }
+ 
+diff --git a/apps/recovery-mobile/src/persistence/use-recovery-namespace.ts b/apps/recovery-mobile/src/persistence/use-recovery-namespace.ts
+index f43bd0802a0be7a872d0fc746d1f2156ec97baeb..ac6fe8881cb469d1342c61b544e305af12944ec5 100644
+--- a/apps/recovery-mobile/src/persistence/use-recovery-namespace.ts
++++ b/apps/recovery-mobile/src/persistence/use-recovery-namespace.ts
+@@ -3,10 +3,10 @@ import { useProfiles } from "@/app-shell";
+ import { useSystemConfig } from "@/data/system";
+ import type { ProfileIdentityContext } from "./contracts";
+ import { getNativeRecoveryRepository } from "./native-repository";
+-
+-function buildNamespaceId(profileId: string, principalKey: string | null): string {
+-  return JSON.stringify([profileId, principalKey ?? "read-only"]);
+-}
++import {
++  buildRecoveryNamespaceId,
++  buildRecoveryServerProfileKey,
++} from "./recovery-namespace";
+ 
+ /**
+  * Last server-authored principal for the active profile. Cached context may be
+@@ -22,7 +22,10 @@ export function useRecoveryNamespace(): ProfileIdentityContext | null {
+     if (!activeProfile) return;
+     void getNativeRecoveryRepository()
+       .then((repository) =>
+-        repository.getProfileIdentityContext(activeProfile.id),
++        repository.getProfileIdentityContext(
++          activeProfile.id,
++          activeProfile.serverUrl,
++        ),
+       )
+       .then((context) => {
+         if (cancelled) return;
+@@ -41,14 +44,16 @@ export function useRecoveryNamespace(): ProfileIdentityContext | null {
+     return {
+       profileId: activeProfile.id,
+       serverUrl: activeProfile.serverUrl,
+-      namespaceId: buildNamespaceId(
+-        activeProfile.id,
+-        principal?.p6rPrincipalKey ?? null,
+-      ),
++      namespaceId: buildRecoveryNamespaceId({
++        profileId: activeProfile.id,
++        serverUrl: activeProfile.serverUrl,
++        principalKey: principal?.p6rPrincipalKey ?? null,
++      }),
+       principalKey: principal?.p6rPrincipalKey ?? null,
+       providerId: principal?.p6rProviderId ?? null,
+       subject: principal?.p6rSubject ?? null,
+       ownerState: principal ? "resolved" : "read-only",
++      source: "live",
+       updatedAt: system.dataUpdatedAt,
+     };
+   }, [activeProfile, system.data, system.dataUpdatedAt]);
+@@ -58,13 +63,9 @@ export function useRecoveryNamespace(): ProfileIdentityContext | null {
+     let cancelled = false;
+     void getNativeRecoveryRepository().then(async (repository) => {
+       if (cancelled) return;
+-      await repository.ensureNamespace({
+-        namespaceId: live.namespaceId,
+-        serverProfileKey: live.profileId,
+-        ownerKey: live.principalKey ?? "read-only",
+-        ownerState: live.ownerState,
++      await repository.putProfileIdentityContext(live, {
++        serverProfileKey: buildRecoveryServerProfileKey(live),
+       });
+-      await repository.putProfileIdentityContext(live);
+       if (!cancelled) setCached(live);
+     });
+     return () => {
+diff --git a/apps/recovery-mobile/src/persistence/use-recovery-query-persistence.ts b/apps/recovery-mobile/src/persistence/use-recovery-query-persistence.ts
+index c01946efd77a0a7d7765b8ad1d51ce4d58a4b7c4..0626e3f889cab2a093743c35e0519c8293b59c3b 100644
+--- a/apps/recovery-mobile/src/persistence/use-recovery-query-persistence.ts
++++ b/apps/recovery-mobile/src/persistence/use-recovery-query-persistence.ts
+@@ -1,15 +1,17 @@
+ import { useQueryClient, type QueryKey } from "@tanstack/react-query";
+-import { useEffect } from "react";
++import { useEffect, useRef } from "react";
++import type { ZodType } from "zod";
+ import type { ProfileIdentityContext } from "./contracts";
+ import { getNativeRecoveryRepository } from "./native-repository";
+-
+-const lastScheduledPayloadByRecord = new Map<string, unknown>();
++import { buildRecoveryServerProfileKey } from "./recovery-namespace";
+ 
+ export interface RecoveryQueryPersistenceArgs<T> {
+   namespace: ProfileIdentityContext | null;
+   recordKey: string;
+   queryKey: QueryKey;
+   data: T | undefined;
++  revision: number;
++  schema: ZodType<T>;
+ }
+ 
+ /** Hydrate one Query entry from SQLite, then mirror successful network data. */
+@@ -18,9 +20,15 @@ export function useRecoveryQueryPersistence<T>({
+   recordKey,
+   queryKey,
+   data,
++  revision,
++  schema,
+ }: RecoveryQueryPersistenceArgs<T>): void {
+   const queryClient = useQueryClient();
+   const queryKeyFingerprint = JSON.stringify(queryKey);
++  const lastScheduledRef = useRef<{
++    data: T;
++    scheduledKey: string;
++  } | null>(null);
+ 
+   useEffect(() => {
+     if (!namespace) return;
+@@ -38,23 +46,30 @@ export function useRecoveryQueryPersistence<T>({
+         ) {
+           return;
+         }
+-        queryClient.setQueryData(stableQueryKey, cached.payload);
++        const parsed = schema.safeParse(cached.payload);
++        if (parsed.success)
++          queryClient.setQueryData(stableQueryKey, parsed.data);
+       });
+     return () => {
+       cancelled = true;
+     };
+-  }, [namespace, queryClient, queryKeyFingerprint, recordKey]);
++  }, [namespace, queryClient, queryKeyFingerprint, recordKey, schema]);
+ 
+   useEffect(() => {
+-    if (!namespace || data === undefined) return;
++    if (!namespace || namespace.source !== "live" || data === undefined) return;
+     const scheduledKey = JSON.stringify([namespace.namespaceId, recordKey]);
+-    if (lastScheduledPayloadByRecord.get(scheduledKey) === data) return;
+-    lastScheduledPayloadByRecord.set(scheduledKey, data);
++    if (
++      lastScheduledRef.current?.scheduledKey === scheduledKey &&
++      lastScheduledRef.current.data === data
++    ) {
++      return;
++    }
++    lastScheduledRef.current = { data, scheduledKey };
+     void getNativeRecoveryRepository()
+       .then(async (repository) => {
+         await repository.ensureNamespace({
+           namespaceId: namespace.namespaceId,
+-          serverProfileKey: namespace.profileId,
++          serverProfileKey: buildRecoveryServerProfileKey(namespace),
+           ownerKey: namespace.principalKey ?? "read-only",
+           ownerState: namespace.ownerState,
+         });
+@@ -62,14 +77,17 @@ export function useRecoveryQueryPersistence<T>({
+           namespaceId: namespace.namespaceId,
+           recordKey,
+           payload: data,
+-          revision: 0,
++          revision,
+           updatedAt: Date.now(),
+         });
+       })
+       .catch(() => {
+-        if (lastScheduledPayloadByRecord.get(scheduledKey) === data) {
+-          lastScheduledPayloadByRecord.delete(scheduledKey);
++        if (
++          lastScheduledRef.current?.scheduledKey === scheduledKey &&
++          lastScheduledRef.current.data === data
++        ) {
++          lastScheduledRef.current = null;
+         }
+       });
+-  }, [data, namespace, recordKey]);
++  }, [data, namespace, recordKey, revision]);
+ }
+diff --git a/apps/recovery-mobile/src/screens/sidebar/SidebarActionsProvider.tsx b/apps/recovery-mobile/src/screens/sidebar/SidebarActionsProvider.tsx
+index 0aea19e2fd4a0e2ee9ec9e77371f3d8a2cc97825..995c51f1a02cfe8973f54e9782d8b872a1b59045 100644
+--- a/apps/recovery-mobile/src/screens/sidebar/SidebarActionsProvider.tsx
++++ b/apps/recovery-mobile/src/screens/sidebar/SidebarActionsProvider.tsx
+@@ -1,4 +1,4 @@
+-import { isThreadRead, type SidebarSectionDefinition } from "@bb/client-core";
++import type { SidebarSectionDefinition } from "@bb/client-core";
+ import type { ThreadListEntry } from "@bb/domain";
+ import { BbHttpError } from "@bb/sdk/browser";
+ import { useRouter } from "expo-router";
+@@ -33,16 +33,9 @@ import {
+ } from "@/data/sidebar";
+ import {
+   getThreadDisplayTitle,
+-  useArchiveThread,
+   useDeleteThread,
+-  useMarkThreadRead,
+-  useMarkThreadUnread,
+   useMoveThreadToSection,
+-  usePinThread,
+   useRenameThread,
+-  useThreadChildSummary,
+-  useUnarchiveThread,
+-  useUnpinThread,
+ } from "@/data/threads";
+ import { describeError } from "@/lib/describe-error";
+ import { useTheme } from "@/theme";
+@@ -57,12 +50,7 @@ import {
+   type IconName,
+ } from "@/ui";
+ import { CenteredRow, CheckRow, SheetHeader } from "../shell/sheet-rows";
+-import {
+-  newThreadHref,
+-  newProjectHref,
+-  projectSettingsHref,
+-  threadHref,
+-} from "../shell/hrefs";
++import { newThreadHref, projectSettingsHref, threadHref } from "../shell/hrefs";
+ import { SectionReorderList } from "./SectionReorderList";
+ import { SheetNameForm } from "./SheetNameForm";
+ 
+@@ -125,8 +113,6 @@ export function useSidebarActions(): SidebarActions {
+   return value;
+ }
+ 
+-const ARCHIVE_UNDO_TOAST_DURATION_MS = 8000;
+-
+ const ORGANIZE_OPTIONS: readonly {
+   label: string;
+   mode: SidebarOrganizeMode;
+@@ -247,14 +233,7 @@ export function SidebarActionsProvider({
+ 
+   const renameThread = useRenameThread();
+   const moveThread = useMoveThreadToSection();
+-  const pinThread = usePinThread();
+-  const unpinThread = useUnpinThread();
+-  const archiveThread = useArchiveThread();
+-  const unarchiveThread = useUnarchiveThread();
+   const deleteThread = useDeleteThread();
+-  const childSummary = useThreadChildSummary();
+-  const markRead = useMarkThreadRead();
+-  const markUnread = useMarkThreadUnread();
+   const renameProject = useRenameProject();
+   const deleteProject = useDeleteProject();
+   const createSection = useCreateSection();
+@@ -285,82 +264,41 @@ export function SidebarActionsProvider({
+       openThread: (thread) => navigate(threadHref(thread.id)),
+       createThread: (target) => {
+         if (onCreateThread?.(target)) return;
+-        // Home already sits at the bottom of the stack: navigate (not push)
+-        // returns to it with the new params.
+         router.navigate(newThreadHref(target));
+       },
+-      createProject: () => navigate(newProjectHref()),
++      createProject: () => {
++        toast.info("Project creation is unavailable in BB Recovery");
++      },
+     }),
+     [navigate, onCreateThread, present, router],
+   );
+ 
+-  const unarchiveMany = useCallback(
+-    (threadIds: readonly string[]) => {
+-      for (const id of threadIds) unarchiveThread.mutate({ id });
+-    },
+-    [unarchiveThread],
+-  );
+-
+-  const archiveWithUndo = useCallback(
+-    (thread: ThreadListEntry) => {
+-      archiveThread.mutate(
+-        { id: thread.id },
+-        {
+-          onSuccess: (response) => {
+-            const count = response.archivedThreadIds.length;
+-            const toastId = `thread-archived-${thread.id}`;
+-            toast.success(
+-              count > 1
+-                ? `Archived ${getThreadDisplayTitle(thread)} and ${count - 1} child ${count - 1 === 1 ? "thread" : "threads"}`
+-                : `Archived ${getThreadDisplayTitle(thread)}`,
+-              {
+-                duration: ARCHIVE_UNDO_TOAST_DURATION_MS,
+-                action: {
+-                  label: "Undo",
+-                  onClick: () => {
+-                    toast.dismiss(toastId);
+-                    unarchiveMany(response.archivedThreadIds);
+-                  },
+-                },
+-              },
+-            );
+-          },
+-        },
+-      );
+-    },
+-    [archiveThread, unarchiveMany],
+-  );
+-
+-  const requestDelete = useCallback(
+-    (thread: ThreadListEntry) => {
+-      setState({ kind: "thread-delete", thread, childThreadCount: null });
+-      childSummary.mutateAsync(thread.id).then(
+-        (summary) => {
+-          setState((current) =>
+-            current?.kind === "thread-delete" && current.thread.id === thread.id
+-              ? { ...current, childThreadCount: summary.nonDeletedChildCount }
+-              : current,
+-          );
+-        },
+-        (error: unknown) => {
+-          toast.error("Could not check child threads", {
+-            description: describeError(error),
+-          });
+-          dismiss();
+-        },
+-      );
+-    },
+-    [childSummary, dismiss],
+-  );
+-
+   const renderContent = (): ReactNode => {
+     if (!state) return null;
++    if (
++      [
++        "thread-rename",
++        "thread-move",
++        "thread-delete",
++        "project-menu",
++        "project-rename",
++        "project-remove",
++        "section-menu",
++        "section-rename",
++        "section-create",
++        "section-delete",
++      ].includes(state.kind)
++    ) {
++      return (
++        <SheetHeader
++          title="Read-only in BB Recovery"
++          message="Use the full BB app for server-side changes."
++        />
++      );
++    }
+     switch (state.kind) {
+       case "thread-menu": {
+         const { thread } = state;
+-        const isRead = isThreadRead(thread);
+-        const isPinned = thread.pinnedAt !== null;
+-        const isArchived = thread.archivedAt !== null;
+         const menu: MenuAction[] = [
+           {
+             key: "open",
+@@ -371,55 +309,6 @@ export function SidebarActionsProvider({
+               actions.openThread(thread);
+             },
+           },
+-          {
+-            key: isRead ? "mark-unread" : "mark-read",
+-            label: isRead ? "Mark unread" : "Mark read",
+-            icon: isRead ? "Mail" : "MailOpen",
+-            onPress: () => {
+-              dismiss();
+-              if (isRead) markUnread.mutate(thread.id);
+-              else markRead.mutate(thread.id);
+-            },
+-          },
+-          {
+-            key: isPinned ? "unpin" : "pin",
+-            label: isPinned ? "Unpin" : "Pin",
+-            icon: isPinned ? "PinOff" : "Pin",
+-            onPress: () => {
+-              dismiss();
+-              if (isPinned) unpinThread.mutate({ id: thread.id });
+-              else pinThread.mutate({ id: thread.id });
+-            },
+-          },
+-          {
+-            key: "rename",
+-            label: "Rename",
+-            icon: "Edit",
+-            onPress: () => setState({ kind: "thread-rename", thread }),
+-          },
+-          {
+-            key: "move",
+-            label: "Move to section",
+-            icon: "Layers",
+-            onPress: () => setState({ kind: "thread-move", thread }),
+-          },
+-          {
+-            key: isArchived ? "unarchive" : "archive",
+-            label: isArchived ? "Unarchive" : "Archive",
+-            icon: isArchived ? "ArchiveRestore" : "Archive",
+-            onPress: () => {
+-              dismiss();
+-              if (isArchived) unarchiveThread.mutate({ id: thread.id });
+-              else archiveWithUndo(thread);
+-            },
+-          },
+-          {
+-            key: "delete",
+-            label: "Delete",
+-            icon: "Trash2",
+-            destructive: true,
+-            onPress: () => requestDelete(thread),
+-          },
+         ];
+         return (
+           <>
+diff --git a/apps/recovery-mobile/src/screens/thread/ThreadDetailScreen.tsx b/apps/recovery-mobile/src/screens/thread/ThreadDetailScreen.tsx
+index d656ff0b9fc85fdec588375542b04ba7e5f444bb..bcdeb5ed5b7083369f38ae9a5579c7511f916045 100644
+--- a/apps/recovery-mobile/src/screens/thread/ThreadDetailScreen.tsx
++++ b/apps/recovery-mobile/src/screens/thread/ThreadDetailScreen.tsx
+@@ -49,7 +49,6 @@ import { Screen } from "../shell/Screen";
+ import {
+   ThreadActionsSheet,
+   useThreadActionsSheet,
+-  type ThreadMenuAction,
+ } from "./actions/ThreadActionsSheet";
+ import { ThreadGitActionSheet } from "./actions/ThreadGitActionSheet";
+ import { useMessageActionHandlers } from "./actions/use-message-action-handlers";
+@@ -200,8 +199,6 @@ function ThreadDetailBody({ threadId }: { threadId: string }) {
+   // The workspace panel (Info / Diff / Files / Terminal + synced file tabs):
+   // the header button presents it.
+   const panel = usePanel();
+-  const openPanel = panel.open;
+-  const onOpenPanel = useCallback(() => openPanel(), [openPanel]);
+ 
+   // Context banner (git / PR / parent / children / archived) + the workspace
+   // facts the header git sheet shares with it.
+@@ -226,10 +223,6 @@ function ThreadDetailBody({ threadId }: { threadId: string }) {
+     () => presentThreadMenu("menu"),
+     [presentThreadMenu],
+   );
+-  const openRename = useCallback(
+-    () => presentThreadMenu("rename"),
+-    [presentThreadMenu],
+-  );
+   const handleDeleted = useCallback(() => {
+     if (router.canGoBack()) router.back();
+     else router.replace("/");
+@@ -269,9 +262,7 @@ function ThreadDetailBody({ threadId }: { threadId: string }) {
+   // Long-press message actions: copy (always), quote / edit (composer),
+   // fork (provider permitting), send-to-main (side chats).
+   const messageActions = useMessageActionHandlers({
+-    thread,
+-    quoteIntoComposer: composer.quoteIntoComposer,
+-    editMessage: composer.editSentMessage,
++    thread: undefined,
+   });
+ 
+   const title = thread ? getThreadDisplayTitle(thread) : "Thread";
+@@ -286,34 +277,6 @@ function ThreadDetailBody({ threadId }: { threadId: string }) {
+     host: bootstrap.data?.host ?? null,
+     projectName: projectName ?? null,
+   });
+-  // The "…" menu's first rows: what the old second header row carried.
+-  const menuLeadingActions: ThreadMenuAction[] = [
+-    {
+-      key: "workspace",
+-      label: "Workspace",
+-      icon: "PanelBottom",
+-      onPress: () => {
+-        threadActions.dismiss();
+-        onOpenPanel();
+-      },
+-      testID: "thread-panel-menu-button",
+-    },
+-    ...(gitActions.primaryLabel !== null
+-      ? [
+-          {
+-            key: "git",
+-            label: gitActions.primaryLabel,
+-            icon: "GitBranch" as const,
+-            pending: gitActions.pending,
+-            onPress: () => {
+-              threadActions.dismiss();
+-              gitSheet.present();
+-            },
+-            testID: "thread-git-button",
+-          },
+-        ]
+-      : []),
+-  ];
+   const menuDetail = [
+     ...(childSummary.count > 0
+       ? [
+@@ -356,7 +319,10 @@ function ThreadDetailBody({ threadId }: { threadId: string }) {
+       <>
+         {timelineError && entries.length > 0 ? (
+           <View className="px-4 py-3" testID="thread-timeline-cached-status">
+-            <Text variant="caption" className="text-center text-muted-foreground">
++            <Text
++              variant="caption"
++              className="text-center text-muted-foreground"
++            >
+               Showing cached messages · reconnect to check for newer activity
+             </Text>
+           </View>
+@@ -428,13 +394,13 @@ function ThreadDetailBody({ threadId }: { threadId: string }) {
+               title={title}
+               statusPill={statusPill}
+               childPillLabel={childPillLabel}
+-              onPressTitle={threadReady ? openRename : null}
++              onPressTitle={null}
+             />
+           ),
+           headerRight: () => (
+             <ThreadHeaderActions
+               onOpenActions={threadReady ? openThreadMenu : null}
+-              onOpenPanel={threadReady ? onOpenPanel : null}
++              onOpenPanel={null}
+               panelActive={panel.visible}
+             />
+           ),
+@@ -509,7 +475,6 @@ function ThreadDetailBody({ threadId }: { threadId: string }) {
+             modelFallback={modelFallback}
+             contextWindowUsage={contextWindowUsage}
+             contextChips={contextChips.chips}
+-            onHandoffToNewThread={contextChips.handoffToNewThread}
+           />
+         </OverlayBounds>
+       </KeyboardPaddingView>
+@@ -518,9 +483,6 @@ function ThreadDetailBody({ threadId }: { threadId: string }) {
+           controller={threadActions}
+           thread={thread}
+           onDeleted={handleDeleted}
+-          onHandoffToNewThread={contextChips.handoffToNewThread}
+-          onNewThreadInWorktree={contextChips.newThreadInWorktree}
+-          leadingActions={menuLeadingActions}
+           headerDetail={menuDetail.length > 0 ? menuDetail : null}
+         />
+       ) : null}
+diff --git a/apps/recovery-mobile/src/screens/thread/actions/ThreadActionsSheet.tsx b/apps/recovery-mobile/src/screens/thread/actions/ThreadActionsSheet.tsx
+index e2d92fe5db021ae45a6deb2ad1f1809c9598da0d..1cd86370073b5c3c64ec4c32adbab386bc2098de 100644
+--- a/apps/recovery-mobile/src/screens/thread/actions/ThreadActionsSheet.tsx
++++ b/apps/recovery-mobile/src/screens/thread/actions/ThreadActionsSheet.tsx
+@@ -1,4 +1,3 @@
+-import { isThreadRead } from "@bb/client-core";
+ import type { ThreadResponse } from "@bb/server-contract";
+ import * as Clipboard from "expo-clipboard";
+ import { useCallback, useMemo, useState, type ReactNode } from "react";
+@@ -7,18 +6,10 @@ import { useProfileClient } from "@/app-shell/ProfilesProvider";
+ import { useSidebarBootstrap } from "@/data/sidebar";
+ import {
+   getThreadDisplayTitle,
+-  useArchiveThread,
+   useDeleteThread,
+-  useMarkThreadRead,
+-  useMarkThreadUnread,
+   useMoveThreadToSection,
+-  usePinThread,
+   useRenameThread,
+-  useThreadChildSummary,
+-  useUnarchiveThread,
+-  useUnpinThread,
+ } from "@/data/threads";
+-import { describeError } from "@/lib/describe-error";
+ import { shareThreadLink } from "@/lib/share";
+ import { useTheme } from "@/theme";
+ import {
+@@ -127,35 +118,19 @@ function MenuRows({ actions }: { actions: readonly MenuAction[] }) {
+   );
+ }
+ 
+-const ARCHIVE_UNDO_TOAST_DURATION_MS = 8000;
+-
+ interface ThreadActionsSheetProps {
+   controller: ThreadActionsSheetController;
+   thread: ThreadResponse;
+   /** Called after the thread was deleted (leave the screen). */
+   onDeleted: () => void;
+-  /** "Handoff to new thread": compose seeded with a mention of this thread. */
+-  onHandoffToNewThread: () => void;
+-  /** "New thread in this worktree"; null when the thread has no reusable worktree. */
+-  onNewThreadInWorktree: (() => void) | null;
+-  /**
+-   * Screen-owned rows listed first (workspace panel, the
+-   * git action): the thread screen has no second header, so these live here.
+-   */
+-  leadingActions?: readonly ThreadMenuAction[];
+   /** One-line detail under the title ("project · host · worktree · branch"). */
+   headerDetail?: string | null;
+ }
+ 
+-const EMPTY_LEADING_ACTIONS: readonly ThreadMenuAction[] = [];
+-
+ export function ThreadActionsSheet({
+   controller,
+   thread,
+   onDeleted,
+-  onHandoffToNewThread,
+-  onNewThreadInWorktree,
+-  leadingActions = EMPTY_LEADING_ACTIONS,
+   headerDetail = null,
+ }: ThreadActionsSheetProps) {
+   const { tokens } = useTheme();
+@@ -166,14 +141,7 @@ export function ThreadActionsSheet({
+ 
+   const renameThread = useRenameThread();
+   const moveThread = useMoveThreadToSection();
+-  const pinThread = usePinThread();
+-  const unpinThread = useUnpinThread();
+-  const archiveThread = useArchiveThread();
+-  const unarchiveThread = useUnarchiveThread();
+   const deleteThread = useDeleteThread();
+-  const childSummary = useThreadChildSummary();
+-  const markRead = useMarkThreadRead();
+-  const markUnread = useMarkThreadUnread();
+ 
+   const title = getThreadDisplayTitle(thread);
+   const webUrl = buildThreadWebUrl({
+@@ -182,59 +150,6 @@ export function ThreadActionsSheet({
+     threadId: thread.id,
+   });
+ 
+-  const unarchiveMany = useCallback(
+-    (threadIds: readonly string[]) => {
+-      for (const id of threadIds) unarchiveThread.mutate({ id });
+-    },
+-    [unarchiveThread],
+-  );
+-
+-  const archiveWithUndo = useCallback(() => {
+-    archiveThread.mutate(
+-      { id: thread.id },
+-      {
+-        onSuccess: (response) => {
+-          const count = response.archivedThreadIds.length;
+-          const toastId = `thread-archived-${thread.id}`;
+-          toast.success(
+-            count > 1
+-              ? `Archived ${title} and ${count - 1} child ${count - 1 === 1 ? "thread" : "threads"}`
+-              : `Archived ${title}`,
+-            {
+-              id: toastId,
+-              duration: ARCHIVE_UNDO_TOAST_DURATION_MS,
+-              action: {
+-                label: "Undo",
+-                onClick: () => {
+-                  toast.dismiss(toastId);
+-                  unarchiveMany(response.archivedThreadIds);
+-                },
+-              },
+-            },
+-          );
+-        },
+-      },
+-    );
+-  }, [archiveThread, thread.id, title, unarchiveMany]);
+-
+-  const requestDelete = useCallback(() => {
+-    setState({ view: "delete", childThreadCount: null });
+-    childSummary.mutateAsync(thread.id).then(
+-      (summary) => {
+-        setState({
+-          view: "delete",
+-          childThreadCount: summary.nonDeletedChildCount,
+-        });
+-      },
+-      (error: unknown) => {
+-        toast.error("Could not check child threads", {
+-          description: describeError(error),
+-        });
+-        dismiss();
+-      },
+-    );
+-  }, [childSummary, dismiss, setState, thread.id]);
+-
+   const copyLink = useCallback(() => {
+     void Clipboard.setStringAsync(webUrl)
+       .then(() => toast.success("Link copied"))
+@@ -255,66 +170,17 @@ export function ThreadActionsSheet({
+ 
+   const renderContent = (): ReactNode => {
+     if (!state) return null;
++    if (["rename", "move", "delete"].includes(state.view)) {
++      return (
++        <SheetHeader
++          title="Read-only in BB Recovery"
++          message="Use the full BB app for server-side changes."
++        />
++      );
++    }
+     switch (state.view) {
+       case "menu": {
+-        const isRead = isThreadRead(thread);
+-        const isPinned = thread.pinnedAt !== null;
+-        const isArchived = thread.archivedAt !== null;
+         const menu: MenuAction[] = [
+-          {
+-            key: "handoff",
+-            label: "Handoff to new thread",
+-            icon: "MessageSquarePlus",
+-            onPress: () => {
+-              dismiss();
+-              onHandoffToNewThread();
+-            },
+-          },
+-          ...(onNewThreadInWorktree
+-            ? [
+-                {
+-                  key: "new-thread-in-worktree",
+-                  label: "New thread in this worktree",
+-                  icon: "FolderGit" as const,
+-                  onPress: () => {
+-                    dismiss();
+-                    onNewThreadInWorktree();
+-                  },
+-                },
+-              ]
+-            : []),
+-          {
+-            key: "rename",
+-            label: "Rename",
+-            icon: "Edit",
+-            onPress: () => setState({ view: "rename" }),
+-          },
+-          {
+-            key: isPinned ? "unpin" : "pin",
+-            label: isPinned ? "Unpin" : "Pin",
+-            icon: isPinned ? "PinOff" : "Pin",
+-            onPress: () => {
+-              dismiss();
+-              if (isPinned) unpinThread.mutate({ id: thread.id });
+-              else pinThread.mutate({ id: thread.id });
+-            },
+-          },
+-          {
+-            key: isRead ? "mark-unread" : "mark-read",
+-            label: isRead ? "Mark unread" : "Mark read",
+-            icon: isRead ? "Mail" : "MailOpen",
+-            onPress: () => {
+-              dismiss();
+-              if (isRead) markUnread.mutate(thread.id);
+-              else markRead.mutate(thread.id);
+-            },
+-          },
+-          {
+-            key: "move",
+-            label: "Move to section",
+-            icon: "Layers",
+-            onPress: () => setState({ view: "move" }),
+-          },
+           {
+             key: "copy-link",
+             label: "Copy link",
+@@ -342,33 +208,10 @@ export function ThreadActionsSheet({
+               openInWeb();
+             },
+           },
+-          {
+-            key: isArchived ? "unarchive" : "archive",
+-            label: isArchived ? "Unarchive" : "Archive",
+-            icon: isArchived ? "ArchiveRestore" : "Archive",
+-            onPress: () => {
+-              dismiss();
+-              if (isArchived) unarchiveThread.mutate({ id: thread.id });
+-              else archiveWithUndo();
+-            },
+-          },
+-          {
+-            key: "delete",
+-            label: "Delete",
+-            icon: "Trash2",
+-            destructive: true,
+-            onPress: requestDelete,
+-          },
+         ];
+         return (
+           <>
+             <SheetHeader title={title} message={headerDetail} />
+-            {leadingActions.length > 0 ? (
+-              <>
+-                <MenuRows actions={leadingActions} />
+-                <Separator />
+-              </>
+-            ) : null}
+             <MenuRows actions={menu} />
+           </>
+         );
+diff --git a/apps/recovery-mobile/src/screens/thread/prompt-area/ThreadPromptArea.tsx b/apps/recovery-mobile/src/screens/thread/prompt-area/ThreadPromptArea.tsx
+index 5a20b71983d6661652bab0a61714a1baaccb19ba..dbc1d7627f70194c07c82f2d4cc948b2417d40c7 100644
+--- a/apps/recovery-mobile/src/screens/thread/prompt-area/ThreadPromptArea.tsx
++++ b/apps/recovery-mobile/src/screens/thread/prompt-area/ThreadPromptArea.tsx
+@@ -11,12 +11,11 @@ import type {
+   ThreadResponse,
+   TimelineWorkflowWorkRow,
+ } from "@bb/server-contract";
+-import { useMemo, type RefObject } from "react";
++import type { RefObject } from "react";
+ import { ScrollView, useWindowDimensions, View } from "react-native";
+ import { useSafeAreaInsets } from "react-native-safe-area-context";
+ import { Composer, type ComposerAction, type ComposerHandle } from "@/composer";
+ import type { ChildThreadPendingAttention } from "@/data/interactions";
+-import { useCancelThreadPlan, useClearThreadGoal } from "@/data/thread-runtime";
+ import { useTheme } from "@/theme";
+ import { Button, Icon, Text } from "@/ui";
+ import {
+@@ -25,7 +24,6 @@ import {
+   ThreadPromptChips,
+ } from "../cards/ThreadPromptStackChips";
+ import type { ThreadContextChipsProps } from "../context/ThreadContextChips";
+-import { PendingInteractionBanner } from "../interactions";
+ import { QueuedMessagesList } from "../queue";
+ import type { FollowUpComposerController } from "./use-follow-up-composer";
+ 
+@@ -49,8 +47,6 @@ interface ThreadPromptAreaProps {
+   modelFallback: ThreadTimelineModelFallback | null;
+   contextWindowUsage: ThreadContextWindowUsage | undefined;
+   contextChips: ThreadContextChipsProps;
+-  /** "Handoff to new thread" (compose seeded with a `@thread:` mention). */
+-  onHandoffToNewThread: () => void;
+ }
+ 
+ /** Share of the window the stack + composer may take before the stack scrolls. */
+@@ -61,6 +57,7 @@ const RECOVERY_DRAFT_ONLY_MODE = {
+ } as const;
+ 
+ async function retainRecoveryDraft(): Promise<void> {}
++const RECOVERY_COMPOSER_ACTIONS: readonly ComposerAction[] = [];
+ 
+ /**
+  * The bottom of the thread screen (port of apps/app ThreadDetailPromptArea):
+@@ -92,21 +89,16 @@ export function ThreadPromptArea({
+   modelFallback,
+   contextWindowUsage,
+   contextChips,
+-  onHandoffToNewThread,
+ }: ThreadPromptAreaProps) {
+   const insets = useSafeAreaInsets();
+   const { height: windowHeight } = useWindowDimensions();
+-  const cancelPlan = useCancelThreadPlan();
+-  const clearGoal = useClearThreadGoal();
+   const chipActions = {
+     activePromptMode,
+-    onExitPlanMode: composer.hidden
+-      ? undefined
+-      : () => cancelPlan.mutate(threadId),
+-    isExitPending: cancelPlan.isPending,
++    onExitPlanMode: undefined,
++    isExitPending: false,
+     goal,
+-    onClearGoal: composer.hidden ? undefined : () => clearGoal.mutate(threadId),
+-    isClearPending: clearGoal.isPending,
++    onClearGoal: undefined,
++    isClearPending: false,
+   };
+   const stackChips = {
+     workflows: activeWorkflows,
+@@ -118,21 +110,10 @@ export function ThreadPromptArea({
+     childPendingInteractions,
+     modelFallback,
+   };
+-  const composerActions = useMemo<ComposerAction[]>(
+-    () => [
+-      {
+-        key: "handoff",
+-        label: "Handoff to new thread",
+-        icon: "Sent",
+-        onPress: onHandoffToNewThread,
+-      },
+-    ],
+-    [onHandoffToNewThread],
+-  );
+-
+-  const showBanner = pendingInteraction !== null && !composer.hidden;
++  const hasBlockedInteraction = pendingInteraction !== null && !composer.hidden;
+   // Skip the stack's bottom gap when nothing renders in it.
+   const stackHasContent =
++    hasBlockedInteraction ||
+     hasThreadPromptChips(stackChips) ||
+     (!composer.hidden && queuedMessages.length > 0);
+   return (
+@@ -144,103 +125,83 @@ export function ThreadPromptArea({
+       }}
+       testID="thread-prompt-area"
+     >
+-      {showBanner ? (
++      <>
+         <ScrollView
+           keyboardShouldPersistTaps="handled"
+-          contentContainerStyle={{ gap: 8 }}
+-          testID="thread-prompt-area-banner"
++          style={{ flexGrow: 0, flexShrink: 1 }}
++          contentContainerStyle={{
++            gap: 8,
++            paddingBottom: stackHasContent ? 8 : 0,
++          }}
++          testID="thread-prompt-stack"
+         >
+-          <ThreadPromptChips
+-            {...chipActions}
+-            workflows={[]}
+-            backgroundCommands={[]}
+-            pendingTodos={null}
+-            // Only children that need input: the workspace context would
+-            // crowd the form.
+-            context={{ ...contextChips, layout: { kind: "hidden" } }}
+-            childPendingInteractions={childPendingInteractions}
+-            modelFallback={null}
+-            testID="thread-prompt-area-banner-chips"
+-          />
+-          <PendingInteractionBanner
+-            interaction={pendingInteraction}
+-            threadId={threadId}
+-          />
++          <ThreadPromptChips {...chipActions} {...stackChips} />
++          {hasBlockedInteraction ? (
++            <Text variant="caption" className="px-2 text-muted-foreground">
++              This thread needs input. Respond from the full BB app.
++            </Text>
++          ) : null}
++          {!composer.hidden && queuedMessages.length > 0 ? (
++            <QueuedMessagesList
++              threadId={threadId}
++              queuedMessages={queuedMessages}
++              sendDisabled
++              actionDisabled
++              editingQueuedMessageId={
++                composer.editing?.kind === "queued-message"
++                  ? composer.editing.queuedMessageId
++                  : null
++              }
++              savingQueuedMessageId={composer.savingQueuedMessageId}
++              onEdit={composer.beginQueuedMessageEdit}
++            />
++          ) : null}
+         </ScrollView>
+-      ) : (
+-        <>
+-          <ScrollView
+-            keyboardShouldPersistTaps="handled"
+-            style={{ flexGrow: 0, flexShrink: 1 }}
+-            contentContainerStyle={{
+-              gap: 8,
+-              paddingBottom: stackHasContent ? 8 : 0,
+-            }}
+-            testID="thread-prompt-stack"
+-          >
+-            <ThreadPromptChips {...chipActions} {...stackChips} />
+-            {!composer.hidden && queuedMessages.length > 0 ? (
+-              <QueuedMessagesList
+-                threadId={threadId}
+-                queuedMessages={queuedMessages}
+-                sendDisabled
+-                actionDisabled
+-                editingQueuedMessageId={
+-                  composer.editing?.kind === "queued-message"
+-                    ? composer.editing.queuedMessageId
+-                    : null
+-                }
+-                savingQueuedMessageId={composer.savingQueuedMessageId}
+-                onEdit={composer.beginQueuedMessageEdit}
+-              />
+-            ) : null}
+-          </ScrollView>
+-          {composer.hidden || thread === undefined ? null : (
+-            <View className="gap-1">
+-              <Text variant="caption" className="px-2 text-muted-foreground">
+-                Drafts are saved locally. Guarded delivery is not enabled in
+-                this slice.
+-              </Text>
+-              <Composer
+-                ref={composerRef}
+-                value={composer.value}
+-                onChange={composer.setValue}
+-                attachments={composer.attachments}
+-                onAttachmentsChange={composer.setAttachments}
+-                scope={{
+-                  projectId: thread.projectId,
+-                  threadId,
+-                  environmentId,
+-                  hostId,
+-                  providerId: thread.providerId,
+-                }}
+-                submitMode={RECOVERY_DRAFT_ONLY_MODE}
+-                submitLabel="Guarded send pending"
+-                onSubmit={retainRecoveryDraft}
+-                onPromptStack={() => undefined}
+-                isSubmitting={false}
+-                placeholder="Write a local draft…"
+-                actions={composerActions}
+-                executionControls={composer.executionControls}
+-                header={
+-                  composer.editing ? (
+-                    <EditModeHeader
+-                      kind={composer.editing.kind}
+-                      onCancel={composer.cancelEdit}
+-                    />
+-                  ) : null
+-                }
+-                footerAccessory={
+-                  <ThreadContextWindowIndicator usage={contextWindowUsage} />
+-                }
+-                typeaheadPlacement="above"
+-                collapsible
+-                testID="thread-composer"
+-              />
+-            </View>
+-          )}
+-        </>
+-      )}
++        {composer.hidden || thread === undefined ? null : (
++          <View className="gap-1">
++            <Text variant="caption" className="px-2 text-muted-foreground">
++              Drafts are saved locally. Guarded delivery is not enabled in this
++              slice.
++            </Text>
++            <Composer
++              ref={composerRef}
++              value={composer.value}
++              onChange={composer.setValue}
++              attachments={composer.attachments}
++              onAttachmentsChange={composer.setAttachments}
++              scope={{
++                projectId: thread.projectId,
++                threadId,
++                environmentId,
++                hostId,
++                providerId: thread.providerId,
++              }}
++              submitMode={RECOVERY_DRAFT_ONLY_MODE}
++              submitLabel="Guarded send pending"
++              onSubmit={retainRecoveryDraft}
++              onPromptStack={() => undefined}
++              isSubmitting={false}
++              placeholder="Write a local draft…"
++              actions={RECOVERY_COMPOSER_ACTIONS}
++              executionControls={composer.executionControls}
++              header={
++                composer.editing ? (
++                  <EditModeHeader
++                    kind={composer.editing.kind}
++                    onCancel={composer.cancelEdit}
++                  />
++                ) : null
++              }
++              footerAccessory={
++                <ThreadContextWindowIndicator usage={contextWindowUsage} />
++              }
++              typeaheadPlacement="above"
++              collapsible
++              testID="thread-composer"
++            />
++          </View>
++        )}
++      </>
+     </View>
+   );
+ }
+diff --git a/apps/server/src/routes/recovery.ts b/apps/server/src/routes/recovery.ts
+index 67f100d2cf9d6570c6be4222e5535d123965db21..a8bdce78f98d28bd870eacf776c4dbca68c0ec80 100644
+--- a/apps/server/src/routes/recovery.ts
++++ b/apps/server/src/routes/recovery.ts
+@@ -74,9 +74,9 @@ function buildTimelineObservation(
+     threadId,
+     consistency: observedHeadSequence === headSequence ? "coherent" : "retry",
+     headSequence,
+-    projectionCoverage: timeline.timelinePage.hasOlderRows
+-      ? "windowed"
+-      : "complete",
++    // Pagination cannot prove byte/range completeness: oversized rows and
++    // output previews may still omit authoritative data.
++    projectionCoverage: "windowed",
+     olderCursor: timeline.timelinePage.olderCursor,
+     timeline,
+   };
+diff --git a/apps/server/test/public/public-recovery-snapshot.test.ts b/apps/server/test/public/public-recovery-snapshot.test.ts
+index 3a18bb7a2c25e98ca95f577cf403221efbc3216c..ebe55595d2c50123383091fa67a5bc85a26af506 100644
+--- a/apps/server/test/public/public-recovery-snapshot.test.ts
++++ b/apps/server/test/public/public-recovery-snapshot.test.ts
+@@ -45,7 +45,7 @@ describe("POST /recovery/snapshot", () => {
+         threadId: thread.id,
+         consistency: "coherent",
+         headSequence: 1,
+-        projectionCoverage: "complete",
++        projectionCoverage: "windowed",
+         olderCursor: null,
+       });
+       expect(snapshot.timelines[0]?.timeline.maxSeq).toBe(1);
+diff --git a/packages/sdk/src/areas/recovery.ts b/packages/sdk/src/areas/recovery.ts
+index 3d7de6a42087afa340359a07bb4c16dd9a0e431c..2656df07987a9254ae25f509a12ed761f24d0d0d 100644
+--- a/packages/sdk/src/areas/recovery.ts
++++ b/packages/sdk/src/areas/recovery.ts
+@@ -1,6 +1,7 @@
+-import type {
+-  RecoverySnapshotRequest,
+-  RecoverySnapshotResponse,
++import {
++  recoverySnapshotResponseSchema,
++  type RecoverySnapshotRequest,
++  type RecoverySnapshotResponse,
+ } from "@bb/server-contract";
+ import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
+ 
+@@ -23,16 +24,18 @@ export function createRecoveryArea({
+ }: CreateSdkAreaArgs): RecoveryArea {
+   return {
+     async snapshot(input) {
+-      return transport.readJson(
+-        transport.api.v1.recovery.snapshot.$post(
+-          {
+-            json: {
+-              contractVersion: input.contractVersion,
+-              threadIds: input.threadIds,
+-              timelineSegmentLimit: input.timelineSegmentLimit,
++      return recoverySnapshotResponseSchema.parse(
++        await transport.readJson(
++          transport.api.v1.recovery.snapshot.$post(
++            {
++              json: {
++                contractVersion: input.contractVersion,
++                threadIds: input.threadIds,
++                timelineSegmentLimit: input.timelineSegmentLimit,
++              },
+             },
+-          },
+-          ...signalRequestArgs(input.signal),
++            ...signalRequestArgs(input.signal),
++          ),
+         ),
+       );
+     },
+diff --git a/packages/sdk/test/sdk.test.ts b/packages/sdk/test/sdk.test.ts
+index d44935d51368c7c93aa89e172b98dc26f7001bea..082881253d8070f68181348b5a560a220cf80b04 100644
+--- a/packages/sdk/test/sdk.test.ts
++++ b/packages/sdk/test/sdk.test.ts
+@@ -7,6 +7,7 @@ import {
+   type Environment,
+   type JsonValue,
+ } from "@bb/domain";
++import type { RecoverySnapshotResponse } from "@bb/server-contract";
+ import { createBbSdk } from "../src/core.js";
+ import { createHttpTransport } from "../src/transport-http.js";
+ import { ThreadWaitTimeoutError } from "../src/areas/threads.js";
+@@ -111,7 +112,37 @@ function createFetchQueue(
+ 
+ describe("@bb/sdk", () => {
+   it("requests a bounded recovery snapshot through the typed transport", async () => {
+-    const queue = createFetchQueue([{ body: { ok: true } }]);
++    const snapshot: RecoverySnapshotResponse = {
++      contractVersion: 1,
++      generatedAtMs: 10,
++      consistency: "partial",
++      incompleteReasons: ["sidebar-revision-unavailable"],
++      cacheOwner: {
++        state: "read-only",
++        principalKey: null,
++        actor: null,
++      },
++      sidebar: {
++        sections: [],
++        projects: [],
++        personalProject: {
++          id: "personal",
++          kind: "personal",
++          name: "Personal",
++          gitRemoteUrl: null,
++          createdAt: 1,
++          updatedAt: 1,
++          sources: [],
++          threads: [],
++          defaultExecutionOptions: null,
++        },
++      },
++      timelines: [],
++      unavailableThreads: [],
++    };
++    const queue = createFetchQueue([
++      { body: snapshot as unknown as JsonValue },
++    ]);
+     const sdk = createBbSdk({
+       transport: createHttpTransport({
+         baseUrl: "http://bb.test",
+@@ -126,7 +157,7 @@ describe("@bb/sdk", () => {
+         threadIds: ["thread-a", "thread-b"],
+         timelineSegmentLimit: 20,
+       }),
+-    ).resolves.toEqual({ ok: true });
++    ).resolves.toEqual(snapshot);
+     expect(queue.requests).toEqual([
+       {
+         bodyText: JSON.stringify({
+@@ -140,6 +171,24 @@ describe("@bb/sdk", () => {
+     ]);
+   });
+ 
++  it("rejects a malformed recovery snapshot at the SDK boundary", async () => {
++    const queue = createFetchQueue([{ body: { ok: true } }]);
++    const sdk = createBbSdk({
++      transport: createHttpTransport({
++        baseUrl: "http://bb.test",
++        fetch: queue.fetch,
++        runtime: "node",
++      }),
++    });
++    await expect(
++      sdk.recovery.snapshot({
++        contractVersion: 1,
++        threadIds: [],
++        timelineSegmentLimit: 20,
++      }),
++    ).rejects.toThrow();
++  });
++
+   it("lists, adds, and removes Connect members through the members area", async () => {
+     const member = {
+       p6rUserId: "user-1",
+-- 
+2.43.0
+

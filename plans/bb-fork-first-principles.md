@@ -1,5 +1,10 @@
 # bb-fork from first principles
 
+> Superseded for replacement implementation by the
+> [BB fork master plan](bb-fork-master-plan.md). Retained as revision 3 design
+> history and supporting technical analysis; resolve conflicting recommendations
+> in favor of the master plan.
+
 Status: implementation plan, revision 3 after feasibility and source review.
 Scope: replace the current 51-patch overlay with a fork whose core delta is
 sized to its invariants, and whose maintenance tooling makes each upstream

@@ -1,0 +1,132 @@
+From 51535467f55fe0fc9d68bc3927e3ec4961c96ebe Mon Sep 17 00:00:00 2001
+From: BB <bb@invalid.local>
+Date: Sat, 5 Sep 2026 12:36:12 -0400
+Subject: [PATCH] fix(runtime): forget failed resume sessions before retry
+
+---
+ .../src/runtime.command-contract.test.ts      | 24 +++++++
+ packages/agent-runtime/src/runtime.ts         | 72 +++++++++++--------
+ 2 files changed, 67 insertions(+), 29 deletions(-)
+
+diff --git a/packages/agent-runtime/src/runtime.command-contract.test.ts b/packages/agent-runtime/src/runtime.command-contract.test.ts
+index 41599b852196c9e5cdcb7145f1c62c592da116db..8cea4ffe1e1bc31c1f0176a5829005fb706b7c91 100644
+--- a/packages/agent-runtime/src/runtime.command-contract.test.ts
++++ b/packages/agent-runtime/src/runtime.command-contract.test.ts
+@@ -135,6 +135,30 @@ describe("createAgentRuntime command contracts", () => {
+     }
+   });
+ 
++  it("forgets a failed resume so later sends can reconstruct the same durable thread", async () => {
++    const { record, runtime } = createContractRuntime({
++      launch: { scripted: { failMethods: [
++        { method: "thread/resume", message: "no rollout found", times: 1 },
++      ] } },
++    });
++    try {
++      // Keep the shared provider alive so this test also exercises another
++      // healthy thread surviving the failed resume.
++      await runtime.startThread({ environmentId: "env-1", projectId: "p1",
++        providerId: "fake", threadId: "healthy", options: fullRuntimeOptions });
++      const request = { environmentId: "env-1", projectId: "p1", providerId: "fake",
++        providerThreadId: "prov-retained", threadId: "retry", options: fullRuntimeOptions };
++      await expect(runtime.resumeThread(request)).rejects.toThrow("no rollout found");
++      expect(runtime.hasThread("retry")).toBe(false);
++      expect(runtime.hasThread("healthy")).toBe(true);
++      await expect(runtime.resumeThread(request)).resolves.toEqual({ providerThreadId: "prov-retained" });
++      expect(runtime.hasThread("retry")).toBe(true);
++      expect(record.read().filter((request) => request.method === "thread/resume")).toHaveLength(2);
++    } finally {
++      await runtime.shutdown();
++    }
++  });
++
+   it("passes acp launch specs to the provider for model list, start, and resume", async () => {
+     const { record, runtime } = createContractRuntime();
+ 
+diff --git a/packages/agent-runtime/src/runtime.ts b/packages/agent-runtime/src/runtime.ts
+index 36fdad8d4d63f25c28525459b4720fdc09c8235b..7824a3c89738019748a531261372f058d8f35d7e 100644
+--- a/packages/agent-runtime/src/runtime.ts
++++ b/packages/agent-runtime/src/runtime.ts
+@@ -1882,36 +1882,50 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+             return { providerThreadId: currentProviderThreadId };
+           }
+ 
+-          const result = await sendCommand({
+-            proc,
+-            message: plan,
+-            resultSchema: threadIdentityResultSchema,
+-            recovery: {
+-              providerId,
+-              providerThreadId: adapterCommand.providerThreadId,
+-              threadId,
+-            },
+-          });
+-          const resolvedId =
+-            resolveThreadIdentityResult({ result, threadId }) ??
+-            providerThreadId ??
+-            threadIdentityRegistry.getProviderThreadId(threadId);
+-          if (!resolvedId) {
+-            throw new Error(
+-              `Provider resume did not return a thread id for ${threadId}`,
+-            );
+-          }
+-          recordProviderThreadIdentity(proc, threadId, resolvedId);
+-          updateSessionRestoreCapability(threadId, result.sessionRestorable);
+-          emitAcceptedCommandEvents({
+-            command: adapterCommand,
+-            proc,
+-            providerThreadId: resolvedId,
+-            sourceThreadId: threadId,
+-          });
++          try {
++            const result = await sendCommand({
++              proc,
++              message: plan,
++              resultSchema: threadIdentityResultSchema,
++              recovery: {
++                providerId,
++                providerThreadId: adapterCommand.providerThreadId,
++                threadId,
++              },
++            });
++            const resolvedId =
++              resolveThreadIdentityResult({ result, threadId }) ??
++              providerThreadId ??
++              threadIdentityRegistry.getProviderThreadId(threadId);
++            if (!resolvedId) {
++              throw new Error(
++                `Provider resume did not return a thread id for ${threadId}`,
++              );
++            }
++            recordProviderThreadIdentity(proc, threadId, resolvedId);
++            updateSessionRestoreCapability(threadId, result.sessionRestorable);
++            emitAcceptedCommandEvents({
++              command: adapterCommand,
++              proc,
++              providerThreadId: resolvedId,
++              sourceThreadId: threadId,
++            });
+ 
+-          markHostedProviderSessionIdle(threadId);
+-          return { providerThreadId: resolvedId };
++            markHostedProviderSessionIdle(threadId);
++            return { providerThreadId: resolvedId };
++          } catch (resumeError) {
++            // A durable identity is not a live session. Failed construction
++            // must not make hasThread skip the next on-use resume attempt.
++            forgetThreadRuntimeStateForProviderState(proc.identity, threadId);
++            try {
++              await releaseIdleProviderProcess(proc);
++            } catch (shutdownError) {
++              options.onStderr?.(
++                `Failed to stop the provider after thread "${threadId}" resume failed: ${shutdownError instanceof Error ? shutdownError.message : String(shutdownError)}`,
++              );
++            }
++            throw resumeError;
++          }
+         },
+       });
+     },
+-- 
+2.43.0
+

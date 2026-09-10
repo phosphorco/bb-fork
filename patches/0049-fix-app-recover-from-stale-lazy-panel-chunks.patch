@@ -1,0 +1,168 @@
+From b607d260c81516ab88d35996ef4e43f4975b78de Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Mon, 31 Aug 2026 13:45:03 -0400
+Subject: [PATCH] fix(app): recover from stale lazy panel chunks
+
+---
+ apps/app/src/components/AppErrorBoundary.tsx |  2 +
+ apps/app/src/lib/chunk-load-recovery.test.ts | 62 ++++++++++++++++++++
+ apps/app/src/lib/chunk-load-recovery.ts      | 60 +++++++++++++++++++
+ 3 files changed, 124 insertions(+)
+ create mode 100644 apps/app/src/lib/chunk-load-recovery.test.ts
+ create mode 100644 apps/app/src/lib/chunk-load-recovery.ts
+
+diff --git a/apps/app/src/components/AppErrorBoundary.tsx b/apps/app/src/components/AppErrorBoundary.tsx
+index 0d92ba9610786866252edd8929f4b7e6385d49e7..df6057f0e27a942c4d45c2f5e9876408203ff47d 100644
+--- a/apps/app/src/components/AppErrorBoundary.tsx
++++ b/apps/app/src/components/AppErrorBoundary.tsx
+@@ -1,4 +1,5 @@
+ import { Component, type ErrorInfo, type ReactNode } from "react";
++import { p6rRecoverFromStaleDynamicImport } from "../lib/chunk-load-recovery";
+ 
+ /**
+  * The last boundary above the router.
+@@ -37,6 +38,7 @@ export class AppErrorBoundary extends Component<
+     // The component stack is the part a screenshot of the console never has,
+     // and the part that names the subtree at fault.
+     console.error("[bb] the app crashed", error, info.componentStack);
++    p6rRecoverFromStaleDynamicImport(error);
+   }
+ 
+   override render(): ReactNode {
+diff --git a/apps/app/src/lib/chunk-load-recovery.test.ts b/apps/app/src/lib/chunk-load-recovery.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..18b92c915fdc4b46b7a01d6af6b19e3f35ceb69c
+--- /dev/null
++++ b/apps/app/src/lib/chunk-load-recovery.test.ts
+@@ -0,0 +1,62 @@
++import { describe, expect, it, vi } from "vitest";
++import {
++  p6rIsDynamicImportError,
++  p6rRecoverFromStaleDynamicImport,
++} from "./chunk-load-recovery";
++
++function storage(): Pick<Storage, "getItem" | "setItem"> {
++  const values = new Map<string, string>();
++  return {
++    getItem: (key) => values.get(key) ?? null,
++    setItem: (key, value) => {
++      values.set(key, value);
++    },
++  };
++}
++
++describe("stale dynamic-import recovery", () => {
++  it("recognizes browser dynamic-import failures", () => {
++    expect(
++      p6rIsDynamicImportError(
++        new TypeError("Failed to fetch dynamically imported module: /assets/x.js"),
++      ),
++    ).toBe(true);
++    expect(
++      p6rIsDynamicImportError(new TypeError("Importing a module script failed.")),
++    ).toBe(true);
++    expect(p6rIsDynamicImportError(new Error("terminal creation failed"))).toBe(
++      false,
++    );
++  });
++
++  it("reloads once and suppresses an immediate retry", () => {
++    const reload = vi.fn();
++    const environment = {
++      now: () => 1_000,
++      reload,
++      storage: storage(),
++    };
++    const error = new TypeError("Failed to fetch dynamically imported module");
++
++    expect(p6rRecoverFromStaleDynamicImport(error, environment)).toBe(true);
++    expect(reload).toHaveBeenCalledOnce();
++    expect(p6rRecoverFromStaleDynamicImport(error, environment)).toBe(false);
++    expect(reload).toHaveBeenCalledOnce();
++  });
++
++  it("allows a later retry after the cooldown", () => {
++    const reload = vi.fn();
++    let now = 1_000;
++    const environment = {
++      now: () => now,
++      reload,
++      storage: storage(),
++    };
++    const error = new TypeError("error loading dynamically imported module");
++
++    expect(p6rRecoverFromStaleDynamicImport(error, environment)).toBe(true);
++    now += 30_000;
++    expect(p6rRecoverFromStaleDynamicImport(error, environment)).toBe(true);
++    expect(reload).toHaveBeenCalledTimes(2);
++  });
++});
+diff --git a/apps/app/src/lib/chunk-load-recovery.ts b/apps/app/src/lib/chunk-load-recovery.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..01952ce9241d1354b0293d3f2e3a3b26bcaeadbb
+--- /dev/null
++++ b/apps/app/src/lib/chunk-load-recovery.ts
+@@ -0,0 +1,60 @@
++const STALE_CHUNK_RELOAD_KEY = "bb.staleChunkReloadAt";
++const STALE_CHUNK_RELOAD_COOLDOWN_MS = 30_000;
++
++/**
++ * Browsers keep an already-open SPA on its old JavaScript graph while a
++ * deployment replaces immutable hashed assets. If a later `import()` asks for
++ * one of those removed chunks, React.lazy rejects and the error boundary would
++ * otherwise turn a recoverable stale tab into a stopped app.
++ */
++export function p6rIsDynamicImportError(error: unknown): boolean {
++  return (
++    error instanceof Error &&
++    /failed to fetch dynamically imported module|error loading dynamically imported module|importing a module script failed/iu.test(
++      error.message,
++    )
++  );
++}
++
++interface ChunkLoadRecoveryEnvironment {
++  now?: () => number;
++  reload?: () => void;
++  storage?: Pick<Storage, "getItem" | "setItem">;
++}
++
++/**
++ * Reload once for a stale dynamic chunk. The cooldown prevents a deployment
++ * that is still missing the asset from causing an infinite reload loop.
++ * Returns true only when this call claimed the reload attempt.
++ */
++export function p6rRecoverFromStaleDynamicImport(
++  error: unknown,
++  environment: ChunkLoadRecoveryEnvironment = {},
++): boolean {
++  if (!p6rIsDynamicImportError(error)) return false;
++
++  const now = environment.now ?? Date.now;
++  const reload = environment.reload ?? (() => window.location.reload());
++  let storage: Pick<Storage, "getItem" | "setItem">;
++  try {
++    storage = environment.storage ?? window.sessionStorage;
++    const lastAttemptRaw = storage.getItem(STALE_CHUNK_RELOAD_KEY);
++    const lastAttempt =
++      lastAttemptRaw === null ? null : Number(lastAttemptRaw);
++    if (
++      lastAttempt !== null &&
++      Number.isFinite(lastAttempt) &&
++      now() - lastAttempt < STALE_CHUNK_RELOAD_COOLDOWN_MS
++    ) {
++      return false;
++    }
++    storage.setItem(STALE_CHUNK_RELOAD_KEY, String(now()));
++    reload();
++    return true;
++  } catch {
++    // Private browsing or a disabled storage implementation must not turn
++    // recovery into an unbounded reload loop. The normal error boundary will
++    // still show its manual Reload action.
++    return false;
++  }
++}
+-- 
+2.43.0
+

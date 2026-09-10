@@ -1,0 +1,43 @@
+amends "workbench:plan"
+
+meta {
+  title = "Adopt the BB 0.42 identity-first fork"
+  goal = "Promote the exact tested BB 0.42 candidate to Rosetta's normal runtime and restore compatible plugin loading."
+}
+
+local receipt = new Action {
+  id = "candidate-receipt"
+  owner = "ubuntu"
+  outcome = "Freeze the reviewed proof candidate as a committed and pushed downstream source receipt."
+  grant { "fork/build/proof-bb/**"; "fork/patches/**"; "fork/*.lock"; "fork/scripts/**" }
+  oracle = module.mechanical("git -C fork/build/proof-bb status --porcelain | test -z \"$(cat)\" && git -C fork/build/proof-bb rev-parse HEAD")
+}
+
+local core = new Action {
+  id = "candidate-verification"
+  owner = "ubuntu"
+  outcome = "Build, typecheck, test, and verify the immutable candidate composition."
+  grant { "fork/build/proof-bb/**"; "fork/patches/**"; "fork/*.lock" }
+  needs { module.produced(receipt); module.verified(receipt) }
+  oracle = module.mechanical("cd fork/build/proof-bb && pnpm typecheck && pnpm test && pnpm build")
+}
+
+local workspaceReceipt = new Action {
+  id = "workspace-receipt"
+  owner = "ubuntu"
+  outcome = "Commit and push the workspace receipt naming the exact tested fork and plugin revisions."
+  grant { ".gitmodules"; "fork"; "plugins"; "community-plugins"; "bin/**" }
+  needs { module.produced(core); module.verified(core) }
+  oracle = module.mechanical("./bin/check --role staging")
+}
+
+local deploy = new Action {
+  id = "normal-cutover"
+  owner = "ubuntu"
+  outcome = "Deploy the pinned workspace composition through the normal-host migration and first-write gates, then verify the Thread Progress plugin loads."
+  grant { "/home/ubuntu/.config/systemd/user/bb.service"; "/home/ubuntu/.bb/**"; "fork/build/bb/**" }
+  needs { module.produced(workspaceReceipt); module.verified(workspaceReceipt) }
+  oracle = module.mechanical("bb status && bb plugin list | grep -E '^thread-progress@.*running'")
+}
+
+nodes { receipt; core; workspaceReceipt; deploy }

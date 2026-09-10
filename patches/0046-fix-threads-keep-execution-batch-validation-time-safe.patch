@@ -1,0 +1,358 @@
+From f40b504ed2a363239b99ed3057ae2c89bce73cc8 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sun, 30 Aug 2026 09:35:32 -0400
+Subject: [PATCH] fix(threads): keep execution batch validation time-safe
+
+---
+ .../threads/thread-execution-batch.ts         |  98 +++++++++---
+ .../threads/thread-execution-batch.test.ts    | 146 +++++++++++++++++-
+ 2 files changed, 220 insertions(+), 24 deletions(-)
+
+diff --git a/apps/server/src/services/threads/thread-execution-batch.ts b/apps/server/src/services/threads/thread-execution-batch.ts
+index 76e8b8691..be8b6a91c 100644
+--- a/apps/server/src/services/threads/thread-execution-batch.ts
++++ b/apps/server/src/services/threads/thread-execution-batch.ts
+@@ -64,6 +64,11 @@ interface CatalogResult {
+   route: CatalogRoute;
+ }
+ 
++interface LoadedCatalogs {
++  catalogsByRouteKey: Map<string, CatalogResult>;
++  routesByThreadId: Map<string, CatalogRoute>;
++}
++
+ class ThreadExecutionWriteConflictError extends Error {}
+ 
+ function digest(value: string): string {
+@@ -163,7 +168,7 @@ function decodeApplyToken(
+     const parsed = applyTokenPayloadSchema.safeParse(
+       JSON.parse(Buffer.from(body, "base64url").toString("utf8")),
+     );
+-    if (!parsed.success || parsed.data.expiresAt < Date.now()) return null;
++    if (!parsed.success || parsed.data.expiresAt <= Date.now()) return null;
+     return parsed.data;
+   } catch {
+     return null;
+@@ -193,28 +198,40 @@ async function loadCatalogs(
+   deps: LoggedWorkSessionDeps,
+   threads: readonly ThreadExecutionProjectionRow[],
+   { fresh = false }: { fresh?: boolean } = {},
+-): Promise<Map<string, CatalogResult>> {
++): Promise<LoadedCatalogs> {
+   const routes = new Map<string, CatalogRoute>();
++  const routesByThreadId = new Map<string, CatalogRoute>();
+   for (const thread of threads) {
+-    const route = resolveCatalogRoute(deps, thread);
+-    routes.set(route.key, route);
++    try {
++      const route = resolveCatalogRoute(deps, thread);
++      routes.set(route.key, route);
++      routesByThreadId.set(thread.threadId, route);
++    } catch (error) {
++      deps.logger.warn(
++        { error, providerId: thread.providerId, threadId: thread.threadId },
++        "Failed to resolve an execution override catalog route",
++      );
++    }
+   }
+   if (routes.size > MAX_CATALOG_ROUTES) {
+     deps.logger.warn(
+       { routeCount: routes.size, routeLimit: MAX_CATALOG_ROUTES },
+       "Execution batch exceeds the catalog route limit",
+     );
+-    return new Map(
+-      [...routes].map(([key, route]) => [
+-        key,
+-        {
+-          error: "catalog-unavailable" as const,
+-          fingerprint: null,
+-          models: [],
+-          route,
+-        },
+-      ]),
+-    );
++    return {
++      routesByThreadId,
++      catalogsByRouteKey: new Map(
++        [...routes].map(([key, route]) => [
++          key,
++          {
++            error: "catalog-unavailable" as const,
++            fingerprint: null,
++            models: [],
++            route,
++          },
++        ]),
++      ),
++    };
+   }
+   const loaded = await mapWithConcurrency(
+     [...routes.values()],
+@@ -269,7 +286,7 @@ async function loadCatalogs(
+       }
+     },
+   );
+-  return new Map(loaded);
++  return { catalogsByRouteKey: new Map(loaded), routesByThreadId };
+ }
+ 
+ function projectionInputs(rows: readonly ThreadExecutionProjectionRow[]) {
+@@ -319,7 +336,10 @@ export async function preflightThreadExecutionOverrides(
+     const summary = summaries.get(threadId);
+     return row && summary?.witness === witness ? [row] : [];
+   });
+-  const catalogs = await loadCatalogs(deps, candidates);
++  const { catalogsByRouteKey, routesByThreadId } = await loadCatalogs(
++    deps,
++    candidates,
++  );
+   const signingKey = getOrCreateThreadFacetCursorSigningKey(deps.db);
+   const expiresAt = Date.now() + APPLY_TOKEN_TTL_MS;
+ 
+@@ -338,9 +358,15 @@ export async function preflightThreadExecutionOverrides(
+       if (current.witness !== item.witness) {
+         return { status: "stale" as const, threadId: item.threadId, current };
+       }
+-      const route = resolveCatalogRoute(deps, row);
+-      const catalog = catalogs.get(route.key);
+-      if (!catalog || catalog.error !== null || catalog.fingerprint === null) {
++      const route = routesByThreadId.get(item.threadId);
++      const catalog =
++        route == null ? undefined : catalogsByRouteKey.get(route.key);
++      if (
++        !route ||
++        !catalog ||
++        catalog.error !== null ||
++        catalog.fingerprint === null
++      ) {
+         return {
+           status: "unavailable" as const,
+           threadId: item.threadId,
+@@ -456,7 +482,11 @@ export async function applyPreflightedThreadExecutionOverrides(
+   );
+   // Apply bypasses the picker memo so a retirement or capability change on
+   // the same daemon session invalidates the signed preflight token.
+-  const catalogs = await loadCatalogs(deps, initialRows, { fresh: true });
++  const { catalogsByRouteKey, routesByThreadId } = await loadCatalogs(
++    deps,
++    initialRows,
++    { fresh: true },
++  );
+   const preclassified = new Map<
+     string,
+     ExperimentalThreadExecutionApplyResponse["results"][number]
+@@ -471,6 +501,15 @@ export async function applyPreflightedThreadExecutionOverrides(
+       });
+       continue;
+     }
++    if (payload.expiresAt <= Date.now()) {
++      preclassified.set(item.threadId, {
++        status: "rejected",
++        threadId: item.threadId,
++        reason: "invalid-token",
++        retryable: false,
++      });
++      continue;
++    }
+     const row = initialRowsById.get(item.threadId);
+     if (!row) {
+       preclassified.set(item.threadId, {
+@@ -481,9 +520,11 @@ export async function applyPreflightedThreadExecutionOverrides(
+       });
+       continue;
+     }
+-    const route = resolveCatalogRoute(deps, row);
+-    const catalog = catalogs.get(route.key);
++    const route = routesByThreadId.get(item.threadId);
++    const catalog =
++      route == null ? undefined : catalogsByRouteKey.get(route.key);
+     if (
++      !route ||
+       !routeMatchesToken(route, payload) ||
+       !catalog ||
+       catalog.error !== null ||
+@@ -525,6 +566,17 @@ export async function applyPreflightedThreadExecutionOverrides(
+         >();
+         const writes = [];
+         for (const { item, payload } of candidates) {
++          if (payload.expiresAt <= Date.now()) {
++            const result = {
++              status: "rejected",
++              threadId: item.threadId,
++              reason: "invalid-token",
++              retryable: false,
++            } as const;
++            results.set(item.threadId, result);
++            transactionIndependentResults.set(item.threadId, result);
++            continue;
++          }
+           const row = rowsById.get(item.threadId);
+           const current = summaries.get(item.threadId);
+           if (!row || !current) {
+diff --git a/apps/server/test/services/threads/thread-execution-batch.test.ts b/apps/server/test/services/threads/thread-execution-batch.test.ts
+index 99d81919f..ef1bf5ed7 100644
+--- a/apps/server/test/services/threads/thread-execution-batch.test.ts
++++ b/apps/server/test/services/threads/thread-execution-batch.test.ts
+@@ -5,7 +5,7 @@ import {
+   updateThread,
+   upsertProjectExecutionDefaults,
+ } from "@bb/db";
+-import { describe, expect, it } from "vitest";
++import { describe, expect, it, vi } from "vitest";
+ import {
+   applyPreflightedThreadExecutionOverrides,
+   preflightThreadExecutionOverrides,
+@@ -546,6 +546,150 @@ describe("thread execution override batches", () => {
+     });
+   });
+ 
++  it("rejects a token that expires while the fresh catalog is loading", async () => {
++    await withTestHarness(async (harness) => {
++      const { host, session } = seedHostSession(harness.deps, {
++        id: "host-execution-batch-expiry",
++      });
++      const { project } = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/thread-execution-batch-expiry",
++      });
++      const environment = seedEnvironment(harness.deps, {
++        hostId: host.id,
++        projectId: project.id,
++        path: "/tmp/thread-execution-batch-expiry",
++      });
++      const thread = seedThread(harness.deps, {
++        environmentId: environment.id,
++        projectId: project.id,
++        providerId: "claude-code",
++      });
++      setThreadExecutionOverride(harness.db, {
++        threadId: thread.id,
++        modelOverride: "claude-fable-5",
++      });
++      const now = 1_800_000_000_000;
++      vi.useFakeTimers();
++      vi.setSystemTime(now);
++      let catalogLoads = 0;
++      registerHostRpcResponder(harness, {
++        hostId: host.id,
++        sessionId: session.id,
++        handle: (request) => {
++          if (request.command.type !== "provider.list_models") {
++            throw new Error(`Unexpected RPC command ${request.command.type}`);
++          }
++          catalogLoads += 1;
++          if (catalogLoads === 2) vi.setSystemTime(now + 5 * 60 * 1_000);
++          return {
++            ok: true,
++            result: {
++              models: [
++                availableModelFixture({ model: "claude-fable-5" }),
++                availableModelFixture({ model: "claude-opus-5" }),
++              ],
++              selectedOnlyModels: [],
++            },
++          };
++        },
++      });
++      try {
++        const current = executeThreadFacetQuery(harness.deps, {
++          actor: null,
++          request: {
++            scope: { projectId: project.id },
++            filters: [],
++            pageSize: 10,
++            experimental_includeExecution: true,
++          },
++        }).threads[0]?.experimental_execution;
++        if (!current) throw new Error("Expected execution projection");
++        const preflight = await preflightThreadExecutionOverrides(
++          harness.deps,
++          {
++            items: [
++              {
++                threadId: thread.id,
++                witness: current.witness,
++                patch: { model: "claude-opus-5" },
++              },
++            ],
++          },
++        );
++        const ready = preflight.results[0];
++        if (ready?.status !== "ready") throw new Error("Expected ready result");
++
++        const applied = await applyPreflightedThreadExecutionOverrides(
++          harness.deps,
++          { items: [{ threadId: thread.id, applyToken: ready.applyToken }] },
++        );
++
++        expect(applied.results).toEqual([
++          {
++            status: "rejected",
++            threadId: thread.id,
++            reason: "invalid-token",
++            retryable: false,
++          },
++        ]);
++        expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({
++          modelOverride: "claude-fable-5",
++          reasoningLevelOverride: null,
++        });
++      } finally {
++        vi.useRealTimers();
++      }
++    });
++  });
++
++  it("keeps a missing primary-host route local to its thread", async () => {
++    await withTestHarness(async (harness) => {
++      const { host, session } = seedHostSession(harness.deps, {
++        id: "host-execution-batch-disconnected",
++      });
++      harness.hub.unregisterDaemon(session.id);
++      const { project } = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/thread-execution-batch-no-primary",
++      });
++      const thread = seedThread(harness.deps, {
++        projectId: project.id,
++        providerId: "claude-code",
++      });
++      const current = executeThreadFacetQuery(harness.deps, {
++        actor: null,
++        request: {
++          scope: { projectId: project.id },
++          filters: [],
++          pageSize: 10,
++          experimental_includeExecution: true,
++        },
++      }).threads[0]?.experimental_execution;
++      if (!current) throw new Error("Expected execution projection");
++
++      await expect(
++        preflightThreadExecutionOverrides(harness.deps, {
++          items: [
++            {
++              threadId: thread.id,
++              witness: current.witness,
++              patch: { model: "claude-opus-5" },
++            },
++          ],
++        }),
++      ).resolves.toMatchObject({
++        results: [
++          {
++            status: "unavailable",
++            threadId: thread.id,
++            reason: "catalog-unavailable",
++          },
++        ],
++      });
++    });
++  });
++
+   it("rejects more than 100 unique catalog routes without probing providers", async () => {
+     await withTestHarness(async (harness) => {
+       const { host, session } = seedHostSession(harness.deps, {
+-- 
+2.43.0
+
