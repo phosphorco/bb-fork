@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 9914959f966a4fa863896eb815d8b8bebc747b18 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
-Subject: [PATCH 10/13] fix(auth): enforce the reviewed admission boundary
+Subject: [PATCH 09/16] fix(auth): enforce the reviewed admission boundary
 
 ---
  apps/server/src/routes/plugins.ts             |  13 +-
@@ -39,10 +39,10 @@ index 89866e8e1c92e78f2c09ab1a38c4ec4360da79f7..3bdeb74f65920441ef4ba9da93fe1f1c
      return context.json({ ok: true, result: outcome.result });
    });
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
-index 7c1c98d3008d25c89f244f69e83f0c9bea65731c..0ffa1dbcc7717938c78b35080d51fd23bef160c6 100644
+index 39de8a8b532d3479e1ed37f430c889733a0d6f7c..a387bd65823d3cc55f8fd22df0f9c7968176192f 100644
 --- a/apps/server/src/server.ts
 +++ b/apps/server/src/server.ts
-@@ -639,6 +639,9 @@ export function createApp(
+@@ -648,6 +648,9 @@ export function createApp(
        forwardRpc: (input) => pluginService.forwardP6rRpc(input),
      },
      now: Date.now,
@@ -105,10 +105,10 @@ index e12c37017be619900f53676753b9ea30d1d4758e..8ba2bcaff79b8eef666531fbe76bb391
        if (captured.ok) { const session = snapshotSession(trusted.session); requests.set(input.request, { scope: captured.scope, session }); scopeSessions.set(captured.scope, session); scopeRequests.set(captured.scope, input.request); }
        return captured;
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index 62b5fd39d898351d7551ae6fffd5357b8be7def4..b77386ca82aedb18181dbce61a92ec8de9bd09e6 100644
+index 898bffad8c939ea078cd0e4180f1ba29cb5796af..c67e21df6584f69a94c2892870940eac499ec68b 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
-@@ -135,7 +135,10 @@ import { createPluginRegistration } from "./plugin-registration.js";
+@@ -137,7 +137,10 @@ import { createPluginRegistration } from "./plugin-registration.js";
  import { createPluginRuntime, forgetMutableRoot } from "./plugin-runtime.js";
  import { createPluginUpdates } from "./plugin-updates.js";
  import { retainP6rHttpResponse } from "./plugin-p6r-http.js";
@@ -120,7 +120,7 @@ index 62b5fd39d898351d7551ae6fffd5357b8be7def4..b77386ca82aedb18181dbce61a92ec8d
  import type { P6rInvocationScope } from "../p6r/invocation-registry.js";
  
  import { pluginUpdateCheckEntrySchema } from "./plugin-service-internal.js";
-@@ -469,6 +472,26 @@ function rpcBoundaryFailure(
+@@ -477,6 +480,26 @@ function rpcBoundaryFailure(
    });
  }
  
@@ -147,7 +147,7 @@ index 62b5fd39d898351d7551ae6fffd5357b8be7def4..b77386ca82aedb18181dbce61a92ec8d
  async function validateRpcValue(
    schema: StandardSchemaV1,
    value: unknown,
-@@ -2132,7 +2155,14 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2157,7 +2180,14 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
              routeClass: binding.routeClass,
            });
            if (!capture.ok) {
@@ -163,7 +163,7 @@ index 62b5fd39d898351d7551ae6fffd5357b8be7def4..b77386ca82aedb18181dbce61a92ec8d
            }
            const abort = () => capture.scope.release();
            context.req.raw.signal.addEventListener("abort", abort, {
-@@ -2245,10 +2275,8 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2270,10 +2300,8 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
            routeClass: binding.routeClass,
          });
          if (!capture.ok) {
@@ -610,5 +610,5 @@ index 46d2345ebb06af1299254b9b98815468bb42d55b..f2b9f804af8971ad75329344baabf519
  
  /** Structured RPC failure returned as `{ ok: false, error }`. */
 -- 
-2.34.1
+2.53.0
 

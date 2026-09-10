@@ -12,7 +12,7 @@
 
 This is a thin, auditable deployment overlay for [get-bb/bb](https://github.com/get-bb/bb). It does not carry a second copy of upstream source and it does not treat a long-lived Git branch as the release definition.
 
-The current base is exact upstream commit `960255b98ce3dccdcb5754eb67a7f989236602a1` (`Prepare bb-app 0.42.0 (#3106)`). The lock records a reviewed source receipt rather than a moving branch or inferred release tag.
+The current base is exact upstream commit `10bacbc0fb1ead6c1f1a728b395bdb1f60e52f93` (`Skip pnpm install in env setup when node_modules already matches (#3433)`, bb-app 0.42.1). The lock records a reviewed source receipt rather than a moving branch or inferred release tag.
 
 The deployable source is exactly:
 
@@ -64,7 +64,8 @@ extension. Their SDK sends and explicit queues carry a presentation hint so
 core preserves the producer frames without adding a synthetic machine wrapper.
 The hint is not a credential. Accepted producer input survives normal queue and
 retry handling; ordinary native requests retain person or machine attribution.
-This adds no public SDK export, storage field, or additional patch.
+This adds one optional public experimental protocol member, with no new storage
+field or additional patch.
 
 This queue is the current implementation candidate for the trusted shared
 deployment. The supported source replay is the authoring and verification path;

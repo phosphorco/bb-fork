@@ -44,11 +44,18 @@
     validation plumbing. Provider enrichment remains bounded; durable history,
     receipts, queue/retry semantics and independent access controls remain.
 
+17. **Tailnet provider auto-selection** chooses the installed Tailnet identity
+    provider when the configured Serve-owned host matches, while preserving
+    explicit boundary configuration and machine fallback.
+
 ## Exact source receipt
 
-- Upstream: `960255b98ce3dccdcb5754eb67a7f989236602a1`.
-- Materialized package: `bb-app@0.42.0` plus the reviewed downstream queue.
-- Patch queue: fifteen patches (stable numbers 1–16, excluding retired patch 4) in `patches/series`; this queue is the current implementation candidate, while running deployments may remain on earlier historical compositions until root-owned integration and activation.
+- Upstream: `10bacbc0fb1ead6c1f1a728b395bdb1f60e52f93`.
+- Materialized package: `bb-app@0.42.1` plus the reviewed downstream queue.
+- Patch queue: sixteen patches (stable numbers 1–17, excluding retired patch 4)
+  in `patches/series`; this queue is the current implementation candidate, while
+  running deployments may remain on earlier historical compositions until root-owned
+  integration and activation.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries
@@ -65,7 +72,7 @@
   native work. Accepted snapshots remain separate from message text; historical
   unknown messages remain unknown.
 - Queued native input uses the existing nullable `p6r_authors` column and
-  generated migration `0116_p6r_native_message_authors`. Consolidated patch 16
+  generated migration `0116_p6r_downstream_schema`. Consolidated patch 16
   reads legacy author arrays and author/editor envelopes, adding machine actors
   without a new column. Edits preserve original authors atomically; corrupt
   metadata rejects the edit. Drain and retry preserve roles across grouped input.

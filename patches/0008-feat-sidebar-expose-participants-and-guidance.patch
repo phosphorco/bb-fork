@@ -1,29 +1,31 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 0c0081a603e1ba12a2c73d93122f9e5970f056ef Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
-Subject: [PATCH] feat(sidebar): expose participants and guidance
+Subject: [PATCH 07/16] feat(sidebar): expose participants and guidance
 
 ---
  .../src/lib/plugin-sidebar-threads.test.ts    | 22 +++++++
  apps/app/src/lib/plugin-sidebar-threads.ts    |  1 +
- .../bb-plugin-authoring/SKILL.md              |  3 +
  .../identity-and-native-projections.md        | 64 +++++++++++++++++++
  .../threads/thread-runtime-display.ts         | 14 ++++
- .../threads/thread-runtime-display.test.ts    | 49 +++++++++++++-
+ .../threads/thread-runtime-display.test.ts    | 44 +++++++++++++
  docs/api_to_audit.md                          | 16 +++++
  packages/db/src/data/thread-facets.ts         | 13 ++--
  packages/domain/src/thread.ts                 |  7 ++
  packages/plugin-api-map/src/surfaces.ts       |  3 +
  .../src/__tests__/frontend-exports.test.ts    |  9 ++-
  packages/plugin-sdk/src/app-contract.ts       |  9 +++
- 12 files changed, 203 insertions(+), 7 deletions(-)
+ .../skills/bb-plugin-authoring/SKILL.md       |  3 +
+ .../identity-and-native-projections.md        | 64 +++++++++++++++++++
+ 13 files changed, 263 insertions(+), 6 deletions(-)
  create mode 100644 apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/identity-and-native-projections.md
+ create mode 100644 plugins/bb-guide/skills/bb-plugin-authoring/references/identity-and-native-projections.md
 
 diff --git a/apps/app/src/lib/plugin-sidebar-threads.test.ts b/apps/app/src/lib/plugin-sidebar-threads.test.ts
-index df5236c433694607ecc81cc70610c6d04f3c9316..37887eb392f1528cf158917507bbaad106b3fb0a 100644
+index f87ad6c2f004d351f6fa8065e2e75948cf49e887..694a6be745c444906309e28d0466f7ac1907a05b 100644
 --- a/apps/app/src/lib/plugin-sidebar-threads.test.ts
 +++ b/apps/app/src/lib/plugin-sidebar-threads.test.ts
-@@ -144,6 +144,28 @@ describe("toPluginSidebarThread", () => {
+@@ -146,6 +146,28 @@ describe("toPluginSidebarThread", () => {
      expect(toPluginSidebarThread(makeThread()).providerId).toBe("codex");
    });
  
@@ -53,7 +55,7 @@ index df5236c433694607ecc81cc70610c6d04f3c9316..37887eb392f1528cf158917507bbaad1
      const mapped = toPluginSidebarThread(
        makeThread({ environmentHostId: "host_1" }),
 diff --git a/apps/app/src/lib/plugin-sidebar-threads.ts b/apps/app/src/lib/plugin-sidebar-threads.ts
-index b1759d1004cb57fdccf0c623af0232cc2475e3c2..32d0b80c0d260440b797415461dbd36f365c4ac1 100644
+index 750827a3b1b3bff654feaaa4c023a2c279e5bcaf..f332395457181abbc7d612ac9d4067ac6b6ab40d 100644
 --- a/apps/app/src/lib/plugin-sidebar-threads.ts
 +++ b/apps/app/src/lib/plugin-sidebar-threads.ts
 @@ -61,6 +61,7 @@ export function toPluginSidebarThread(
@@ -64,17 +66,6 @@ index b1759d1004cb57fdccf0c623af0232cc2475e3c2..32d0b80c0d260440b797415461dbd36f
      isUnread: !isThreadRead(entry),
      isPinned: entry.pinnedAt !== null,
      isArchived: entry.archivedAt !== null,
-diff --git a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
-index 239463ff0613dbc438b2df8c5d3c36c60e274e20..9c19638ece587440ddda461f1757b38c1f24ff42 100644
---- a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
-+++ b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
-@@ -98,3 +98,6 @@ the same change.
- Confirm the backend contract, frontend contract, manifest, generated bundle,
- and live behavior that the change affects. Use focused tests for failure-prone
- policy and lifecycle behavior.
-+
-+For optional fork identity, native facets/participant projection, and plugin-owned
-+token validation, read [Identity and native projections](references/identity-and-native-projections.md).
 diff --git a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/identity-and-native-projections.md b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/identity-and-native-projections.md
 new file mode 100644
 index 0000000000000000000000000000000000000000..73aeabc7d61ece16d96543d7c7511891c2efde0a
@@ -146,7 +137,7 @@ index 0000000000000000000000000000000000000000..73aeabc7d61ece16d96543d7c7511891
 +- `P6rParticipantProfile`
 +- `P6rPluginRequestContext`
 diff --git a/apps/server/src/services/threads/thread-runtime-display.ts b/apps/server/src/services/threads/thread-runtime-display.ts
-index 9e6df09c45400ef09ef7b0c2da3a7ce83dca7f74..56eb4a8d18d01679211203376be1ad5701ac9620 100644
+index 8f8c9b3e05efc2399f9df5c962ec11cd4deb3c10..8f281b32692a95bd5314a90356b6572400f68611 100644
 --- a/apps/server/src/services/threads/thread-runtime-display.ts
 +++ b/apps/server/src/services/threads/thread-runtime-display.ts
 @@ -4,6 +4,7 @@ import {
@@ -157,7 +148,7 @@ index 9e6df09c45400ef09ef7b0c2da3a7ce83dca7f74..56eb4a8d18d01679211203376be1ad57
    listLatestSessionsForHosts,
    listOpenTurnInputAcceptedRowsByThreadIds,
    listStoredClientTurnRequestRowsByKeys,
-@@ -86,6 +87,7 @@ interface ToThreadListEntryResponseFromLatestSessionArgs {
+@@ -87,6 +88,7 @@ interface ToThreadListEntryResponseFromLatestSessionArgs {
    latestSession: HostDaemonSessionRow | null;
    now?: number;
    queuedWork: ThreadQueuedWork;
@@ -165,7 +156,7 @@ index 9e6df09c45400ef09ef7b0c2da3a7ce83dca7f74..56eb4a8d18d01679211203376be1ad57
    thread: ThreadWithPendingInteractionState;
  }
  
-@@ -565,6 +567,10 @@ export function toThreadListEntryResponses(
+@@ -566,6 +568,10 @@ export function toThreadListEntryResponses(
      deps,
      args.threads,
    );
@@ -176,7 +167,7 @@ index 9e6df09c45400ef09ef7b0c2da3a7ce83dca7f74..56eb4a8d18d01679211203376be1ad57
    return args.threads.map((thread) => {
      return toThreadListEntryResponseFromLatestSession({
        activity: activityByThreadId.get(thread.id) ?? EMPTY_THREAD_ACTIVITY,
-@@ -577,6 +583,13 @@ export function toThreadListEntryResponses(
+@@ -578,6 +584,13 @@ export function toThreadListEntryResponses(
            ? null
            : (latestSessionByHostId.get(thread.environmentHostId) ?? null),
        now: args.now,
@@ -190,19 +181,19 @@ index 9e6df09c45400ef09ef7b0c2da3a7ce83dca7f74..56eb4a8d18d01679211203376be1ad57
        thread,
      });
    });
-@@ -597,6 +610,7 @@ function toThreadListEntryResponseFromLatestSession(
-     environmentWorkspaceDisplayKind:
-       args.thread.environmentWorkspaceDisplayKind,
+@@ -603,6 +616,7 @@ function toThreadListEntryResponseFromLatestSession(
+       isWorktree: args.thread.environmentIsWorktree,
+     }),
      hasPendingInteraction: args.thread.hasPendingInteraction,
 +    p6rParticipants: args.p6rParticipants,
      runtime: resolveThreadRuntimeStateFromLatestSession({
        environmentHostId: args.thread.environmentHostId,
        hostConnected: args.hostConnected,
 diff --git a/apps/server/test/services/threads/thread-runtime-display.test.ts b/apps/server/test/services/threads/thread-runtime-display.test.ts
-index cf23baf732d9bb27f3f7598f32c7ffe1d042f05c..66e377b148561bad0c027e789545b70ea57cc2f1 100644
+index 101515edc2e4229ebf5e226cd54b8d85346b5bc4..b30d5bf8e7679ec955e0d9fdb1e1d9e0b7045054 100644
 --- a/apps/server/test/services/threads/thread-runtime-display.test.ts
 +++ b/apps/server/test/services/threads/thread-runtime-display.test.ts
-@@ -14,6 +14,7 @@ import {
+@@ -15,6 +15,7 @@ import {
    migrate,
    noopNotifier,
    openSession,
@@ -210,7 +201,7 @@ index cf23baf732d9bb27f3f7598f32c7ffe1d042f05c..66e377b148561bad0c027e789545b70e
    setQueuedThreadMessageFailureReason,
    upsertHost,
    type DbConnection,
-@@ -401,6 +402,49 @@ describe("thread runtime display", () => {
+@@ -443,6 +444,49 @@ describe("thread runtime display", () => {
      ] satisfies ThreadRuntimeState[]);
    });
  
@@ -260,23 +251,11 @@ index cf23baf732d9bb27f3f7598f32c7ffe1d042f05c..66e377b148561bad0c027e789545b70e
    it("reports each thread's queued work, with a failure outranking a wait", () => {
      const { db, hostId, hub } = setup();
      const empty = createThreadWithEnvironment({ db, hostId, status: "idle" });
-@@ -441,7 +485,10 @@ describe("thread runtime display", () => {
-       {
-         now: 1_000,
-         threads: [empty.thread, waiting.thread, failed.thread].map((thread) =>
--          createThreadListEntry({ environmentHostId: hostId, thread: { ...thread, pinSortKey: null } }),
-+          createThreadListEntry({
-+            environmentHostId: hostId,
-+            thread: { ...thread, pinSortKey: null },
-+          }),
-         ),
-       },
-     );
 diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
-index cade31bf550fa6ef3deb74e952d5872ba327e7d1..10f67921fd9e9ed72d28a963578245f8af944d8f 100644
+index aee3f33ee713e0da9578e22c0f976ba58adfc13e..4be2bac613cdaa9f0d4540d434c070989cfeca55 100644
 --- a/docs/api_to_audit.md
 +++ b/docs/api_to_audit.md
-@@ -2338,3 +2338,19 @@ not select a fallback actor.
+@@ -2567,3 +2567,19 @@ not select a fallback actor.
  Audit provider prepare/publish/retire, ingress ownership, credential selection,
  revocation/deadlines, durable operation finality and exact request/tool linkage.
  Ordinary native UI attribution and presence are separate capabilities.
@@ -321,10 +300,10 @@ index 741625deacd2a17c86d9af5223d3165b3e8d27b7..bb9084fb7992c98565a4fecca1256d31
    return result;
  }
 diff --git a/packages/domain/src/thread.ts b/packages/domain/src/thread.ts
-index f8d239b44bd9dd4deb75db0cc0d08f74677f8256..38b777f705c4c681c5d51b54f0ae8cd7e7b042bd 100644
+index 10d6620d1346659c751a67a3a306caf7c94a948f..ffdd3b93aed59ed46dcd12989702327eefe2965c 100644
 --- a/packages/domain/src/thread.ts
 +++ b/packages/domain/src/thread.ts
-@@ -431,6 +431,12 @@ export const threadQueuedWorkValues = ["none", "waiting", "failed"] as const;
+@@ -433,6 +433,12 @@ export const threadQueuedWorkValues = ["none", "waiting", "failed"] as const;
  export const threadQueuedWorkSchema = z.enum(threadQueuedWorkValues);
  export type ThreadQueuedWork = z.infer<typeof threadQueuedWorkSchema>;
  
@@ -337,15 +316,15 @@ index f8d239b44bd9dd4deb75db0cc0d08f74677f8256..38b777f705c4c681c5d51b54f0ae8cd7
  export const threadListEntrySchema = threadWithRuntimeSchema.extend({
    activity: threadActivityStateSchema,
    queuedWork: threadQueuedWorkSchema,
-@@ -440,5 +446,6 @@ export const threadListEntrySchema = threadWithRuntimeSchema.extend({
-   environmentName: z.string().nullable(),
-   environmentBranchName: z.string().nullable(),
+@@ -445,5 +451,6 @@ export const threadListEntrySchema = threadWithRuntimeSchema.extend({
+   environmentProviderId: z.string().nullable(),
+   environmentIsWorktree: z.boolean().nullable(),
    environmentWorkspaceDisplayKind: environmentWorkspaceDisplayKindSchema,
 +  p6rParticipants: z.array(threadListP6rParticipantSchema).optional(),
  });
  export type ThreadListEntry = z.infer<typeof threadListEntrySchema>;
 diff --git a/packages/plugin-api-map/src/surfaces.ts b/packages/plugin-api-map/src/surfaces.ts
-index 5dc1e282a9e8a69473593fce2a6e6e321c77b517..1818949d23e0c69306cbd3708119d9a6f07e240b 100644
+index 67e7550dad0154cd116ad8f3ff9beb194810472a..0712ac4c838213214a75369d9aae883dd1872f1b 100644
 --- a/packages/plugin-api-map/src/surfaces.ts
 +++ b/packages/plugin-api-map/src/surfaces.ts
 @@ -110,6 +110,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
@@ -356,7 +335,7 @@ index 5dc1e282a9e8a69473593fce2a6e6e321c77b517..1818949d23e0c69306cbd3708119d9a6
          ],
          experimental: true,
        },
-@@ -650,6 +651,8 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+@@ -658,6 +659,8 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
          apiSymbols: [
            "PluginRpc",
            "PluginHttp",
@@ -391,10 +370,10 @@ index b025fb20b762a9dba43de87c2a62a5ae34d7c08c..7bf0635c8098981a7896da3461e10bc2
      const declarations = await readFile(
        new URL("../../bundled-types/bb-plugin-sdk-app.d.ts", import.meta.url),
 diff --git a/packages/plugin-sdk/src/app-contract.ts b/packages/plugin-sdk/src/app-contract.ts
-index edd4ff9165156deef4c4a7aba7355c50ec60cfc0..d3355c80cbaef24a07fbd2f0327b572d814ee4c9 100644
+index 238f5309a8ba09eeaa439a570a56bb525dcd35bc..94a332e52c77c82f863fb5db9fd85a2ddbff113a 100644
 --- a/packages/plugin-sdk/src/app-contract.ts
 +++ b/packages/plugin-sdk/src/app-contract.ts
-@@ -842,6 +842,8 @@ export interface PluginSidebarThread {
+@@ -835,6 +835,8 @@ export interface PluginSidebarThread {
     */
    indicatorLabel: string | null;
  
@@ -417,6 +396,87 @@ index edd4ff9165156deef4c4a7aba7355c50ec60cfc0..d3355c80cbaef24a07fbd2f0327b572d
  /**
   * The pull request for a thread's branch, narrowed to what a sidebar row
   * needs. `attention` is bb's rolled-up "does this need you" signal, so a row
+diff --git a/plugins/bb-guide/skills/bb-plugin-authoring/SKILL.md b/plugins/bb-guide/skills/bb-plugin-authoring/SKILL.md
+index d6748ed71d7d213a5464bd7ce38d3da87bf3d654..bec5f54cf1f809ba077e86c84ac265566bfc498d 100644
+--- a/plugins/bb-guide/skills/bb-plugin-authoring/SKILL.md
++++ b/plugins/bb-guide/skills/bb-plugin-authoring/SKILL.md
+@@ -98,3 +98,6 @@ the same change.
+ Confirm the backend contract, frontend contract, manifest, generated bundle,
+ and live behavior that the change affects. Use focused tests for failure-prone
+ policy and lifecycle behavior.
++
++For optional fork identity, native facets/participant projection, and plugin-owned
++token validation, read [Identity and native projections](references/identity-and-native-projections.md).
+diff --git a/plugins/bb-guide/skills/bb-plugin-authoring/references/identity-and-native-projections.md b/plugins/bb-guide/skills/bb-plugin-authoring/references/identity-and-native-projections.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..73aeabc7d61ece16d96543d7c7511891c2efde0a
+--- /dev/null
++++ b/plugins/bb-guide/skills/bb-plugin-authoring/references/identity-and-native-projections.md
+@@ -0,0 +1,64 @@
++# Identity and native projections
++
++These optional fork extensions keep request authority in the host. Use the
++public `@phosphorco/bb-identity/bb` binding for identity-aware features; declare
++that package dependency explicitly. Read its installed entry declarations.
++
++`bb.experimental_p6rIdentity` supplies generation-bound provider registration,
++issued invocation scopes, directory records, and retained acceptance/history.
++An absent extension is baseline capability absence. A configured provider that
++rejects or becomes unavailable must not select a fallback person. Persist an
++operation before dispatch and reconcile its exact receipt after uncertainty.
++Do not manufacture actors, request scopes, or provider keys in a feature.
++
++`bb.experimental_facets` owns declared thread facets, census targets and
++readiness. Complete the host-issued census and discharge replacement targets
++before declaring readiness. Native participant keys belong to the host's
++persisted projection, including verified contribution authors and separately
++verified mention targets. They are not a claim about the current viewer.
++`PluginMentionProviderRegistration.resolve().experimental_target` is only a
++selector for a person in the resolver plugin's active provider; the host derives
++and freezes the canonical identity and presentation.
++
++`P6rParticipantProfile` is the optional sidebar presentation shape carried in
++`PluginSidebarThread.p6rParticipants`. Reuse the supplied list data; do not add a
++per-row directory or participant RPC. Older hosts may omit the projection.
++
++`bb.experimental_p6rRoutes` builds canonical thread links. The optional HTTP
++`P6rPluginRequestContext.experimental_p6rExternalOrigin` is configured public
++origin or direct request origin, solely for presentation. It contains no actor
++or principal, and forwarded headers must not be treated as authority.
++
++Use upstream `auth: "none"` when a plugin route validates its own connection
++token in the handler. Registration and method/path matching do not authenticate
++the caller or issue an identity; no additional fork auth mode is needed.
++
++## Additional public symbols
++
++Use this index to locate the exact contracts in the generated SDK declarations.
++It describes the selected host; a version number alone does not establish that
++another host implements these optional extensions.
++
++- `ExperimentalP6rAcceptanceRequest`
++- `ExperimentalP6rAcceptanceSource`
++- `ExperimentalP6rForkRequestHandle`
++- `ExperimentalP6rIdentityProtocol`
++- `ExperimentalP6rInvocationContext`
++- `ExperimentalP6rInvocationRegistration`
++- `ExperimentalP6rInvocationRouteClass`
++- `ExperimentalP6rInvocationScope`
++- `ExperimentalP6rInvocationValidity`
++- `ExperimentalP6rProviderRegistration`
++- `ExperimentalP6rRequestHandle`
++- `ExperimentalP6rResult`
++- `ExperimentalPluginMentionTargetSelector`
++- `ExperimentalThreadFacetCardinality`
++- `ExperimentalThreadFacetHandle`
++- `ExperimentalThreadFacetReplacement`
++- `ExperimentalThreadFacetTarget`
++- `ExperimentalThreadFacetTargetGrant`
++- `ExperimentalThreadFacetTargetPage`
++- `ExperimentalThreadFacets`
++- `P6rExperimentalPluginRoutes`
++- `P6rParticipantProfile`
++- `P6rPluginRequestContext`
 -- 
-2.34.1
+2.53.0
 
