@@ -30,6 +30,10 @@ import type {
 import type { HostSharedPortCoordinator } from "../../ws/host-shared-ports.js";
 import type { ProviderRegistryService } from "../providers/provider-registry.js";
 import type { PluginHostArtifactRegistry } from "./plugin-host-artifact-registry.js";
+import type { P6rIdentityService } from "../p6r/identity-protocol.js";
+import type { P6rInvocationIngress } from "../p6r/invocation-registry.js";
+import type { P6rProviderRegistry } from "../p6r/provider-contract.js";
+import type { P6rPluginDispatch } from "./plugin-p6r-dispatch.js";
 export type {
   PluginHandlerStats,
   PluginRuntimeStatus,
@@ -55,6 +59,7 @@ export interface LoadedPlugin {
   manifest: PluginManifest;
   handle: PluginApiHandle;
   services: ServiceRuntime[];
+  hostArtifact: PluginHostArtifactSnapshot | null;
 }
 
 export interface PluginHostArtifactSnapshot {
@@ -66,6 +71,11 @@ export interface PluginHostArtifactSnapshot {
 
 export interface PluginServiceDeps {
   db: DbConnection;
+  createSdkFetch?: (origin: {
+    readonly pluginId: string;
+    readonly generation: string;
+    readonly lifetime: AbortSignal;
+  }) => typeof fetch;
   sharedPorts?: Pick<
     HostSharedPortCoordinator,
     | "declareSharedPorts"
@@ -77,6 +87,13 @@ export interface PluginServiceDeps {
     hostId: string,
   ) => Promise<HostDaemonConnectTunnelIdentity>;
   providerRegistry?: ProviderRegistryService;
+  p6rIdentity?: P6rIdentityService;
+  p6rDispatch?: P6rPluginDispatch;
+  p6rProviderRegistry?: P6rProviderRegistry;
+  onP6rPluginPublishedForTest?: (input: {
+    readonly generation: string;
+    readonly pluginId: string;
+  }) => void;
   pluginHostArtifacts?: PluginHostArtifactRegistry;
   aiServices: AiServiceRegistry;
   onSettingsChanged?: (pluginId: string) => void;
@@ -152,6 +169,11 @@ export interface PluginServiceDeps {
     pluginId: string;
     generation: string;
   }) => Promise<void>;
+}
+
+export interface PluginRpcInvocationContext {
+  readonly ingress: P6rInvocationIngress;
+  readonly request: object;
 }
 
 export interface PluginAgentToolContribution {

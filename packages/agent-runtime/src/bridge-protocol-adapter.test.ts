@@ -267,7 +267,32 @@ describe("options mapping", () => {
       type: "turn/start",
       threadId: "thr_1",
       providerThreadId: "p_1",
-      input: [{ type: "text", text: "hi", mentions: [] }],
+      input: [
+        { type: "text", text: "hi", mentions: [] },
+        { type: "text", text: "\n\n", mentions: [] },
+        { type: "localFile", path: "/tmp/brief.pdf", name: "brief.pdf" },
+      ],
+      inputGroups: [
+        [{ type: "text", text: "hi", mentions: [] }],
+        [{ type: "localFile", path: "/tmp/brief.pdf", name: "brief.pdf" }],
+      ],
+      provenanceGroups: [
+        {
+          groupIndex: 0,
+          sources: [
+            {
+              sourceKind: "contribution",
+              sourceIndex: 0,
+              contributionId: "p6r-contribution:one",
+              attribution: {
+                author: { kind: "system", reason: "plugin-sdk" },
+                latestEditor: null,
+              },
+            },
+          ],
+        },
+        { groupIndex: 1, sources: [] },
+      ],
       clientRequestId: "creq_abcdefghjk",
       options: {
         ...fullModeOptions,
@@ -288,6 +313,29 @@ describe("options mapping", () => {
             memoryEnabled: false,
           },
         },
+        inputGroups: [
+          [{ type: "text", text: "hi", mentions: [] }],
+          [
+            {
+              type: "localFile",
+              path: "/tmp/brief.pdf",
+              name: "brief.pdf",
+            },
+          ],
+        ],
+        provenanceGroups: [
+          {
+            groupIndex: 0,
+            sources: [
+              {
+                sourceKind: "contribution",
+                sourceIndex: 0,
+                contributionId: "p6r-contribution:one",
+              },
+            ],
+          },
+          { groupIndex: 1, sources: [] },
+        ],
       },
     });
     const options = (plan as { params: { options: Record<string, unknown> } })

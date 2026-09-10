@@ -263,6 +263,7 @@ interface BuildClientUserMessageArgs {
   decoded: ClientTurnRequestedEvent;
   idSuffix?: string;
   input: ReadonlyArray<PromptInput>;
+  inputGroupIndex: number;
   meta: EventMeta;
   requestStatus: EventProjectionTurnRequest["status"];
 }
@@ -272,6 +273,7 @@ function buildClientUserMessage({
   decoded,
   idSuffix,
   input,
+  inputGroupIndex,
   meta,
   requestStatus,
 }: BuildClientUserMessageArgs): EventProjectionUserMessage {
@@ -288,6 +290,7 @@ function buildClientUserMessage({
     requestStatus,
     acceptedClientRequest,
   );
+  turnRequest.source = { requestId: decoded.requestId, inputGroupIndex };
   const rowMeta =
     acceptedClientRequest && turnRequest.kind === "steer"
       ? acceptedClientRequest.meta
@@ -351,7 +354,7 @@ export function parseUsersFromClientRequest(
 
   const groups = decoded.inputGroups ?? [decoded.input];
   const messages: EventProjectionUserMessage[] = [];
-  for (const input of groups) {
+  for (const [inputGroupIndex, input] of groups.entries()) {
     const parsedInput = parsePromptInput(input);
     if (!parsedInput) continue;
     const visibleMessageIndex = messages.length;
@@ -361,6 +364,7 @@ export function parseUsersFromClientRequest(
         decoded,
         idSuffix: clientUserMessageIdSuffix(visibleMessageIndex),
         input,
+        inputGroupIndex,
         meta,
         requestStatus: acceptedClientRequest ? "accepted" : "pending",
       }),
@@ -385,7 +389,7 @@ export function parsePendingSteersFromClientRequest(
 
   const groups = decoded.inputGroups ?? [decoded.input];
   const messages: EventProjectionUserMessage[] = [];
-  for (const input of groups) {
+  for (const [inputGroupIndex, input] of groups.entries()) {
     if (!parsePromptInput(input)) continue;
     const visibleMessageIndex = messages.length;
     messages.push(
@@ -393,6 +397,7 @@ export function parsePendingSteersFromClientRequest(
         decoded,
         idSuffix: clientUserMessageIdSuffix(visibleMessageIndex),
         input,
+        inputGroupIndex,
         meta,
         requestStatus: "pending",
       }),
@@ -422,7 +427,7 @@ export function parseAcceptedSteersFromClientRequest(
 
   const groups = decoded.inputGroups ?? [decoded.input];
   const messages: EventProjectionUserMessage[] = [];
-  for (const input of groups) {
+  for (const [inputGroupIndex, input] of groups.entries()) {
     if (!parsePromptInput(input)) continue;
     const visibleMessageIndex = messages.length;
     messages.push(
@@ -431,6 +436,7 @@ export function parseAcceptedSteersFromClientRequest(
         decoded,
         idSuffix: clientUserMessageIdSuffix(visibleMessageIndex),
         input,
+        inputGroupIndex,
         meta,
         requestStatus: "accepted",
       }),
@@ -452,7 +458,7 @@ export function parseRejectedUsersFromClientRequest(
 
   const groups = decoded.inputGroups ?? [decoded.input];
   const messages: EventProjectionUserMessage[] = [];
-  for (const input of groups) {
+  for (const [inputGroupIndex, input] of groups.entries()) {
     if (!parsePromptInput(input)) continue;
     const visibleMessageIndex = messages.length;
     messages.push(
@@ -460,6 +466,7 @@ export function parseRejectedUsersFromClientRequest(
         decoded,
         idSuffix: clientUserMessageIdSuffix(visibleMessageIndex),
         input,
+        inputGroupIndex,
         meta,
         requestStatus: "rejected",
       }),

@@ -722,6 +722,120 @@ describe("createAgentRuntime lifecycle", () => {
   });
 
   describe("turn execution and thread commands", () => {
+    it("delivers aligned immutable provenance groups to the provider bridge unchanged", async () => {
+      const record = createScriptedEchoRequestRecord();
+      const runtime = createScriptedEchoRuntime({
+        runtime: {
+          workspacePath: tmpDir,
+          env: record.env,
+          onEvent: () => undefined,
+        },
+      });
+
+      await runtime.startThread({
+        environmentId: "env-1",
+        threadId: "t1",
+        projectId: "p1",
+        providerId: "fake",
+        options: fullRuntimeOptions,
+      });
+      await runtime.runTurn({
+        clientRequestId: "creq_222222223q",
+        threadId: "t1",
+        input: [
+          promptTextInput({ text: "from a person" }),
+          promptTextInput({ text: "\n\n" }),
+          {
+            type: "localFile",
+            path: "/tmp/brief.pdf",
+            name: "brief.pdf",
+            mimeType: "application/pdf",
+          },
+        ],
+        inputGroups: [
+          [promptTextInput({ text: "from a person" })],
+          [
+            {
+              type: "localFile",
+              path: "/tmp/brief.pdf",
+              name: "brief.pdf",
+              mimeType: "application/pdf",
+            },
+          ],
+        ],
+        provenanceGroups: [
+          {
+            groupIndex: 0,
+            sources: [
+              {
+                sourceKind: "contribution",
+                sourceIndex: 0,
+                contributionId: "p6r-contribution:person",
+                attribution: {
+                  author: {
+                    kind: "person",
+                    actor: {
+                      evidence: "provider-verified",
+                      identity: {
+                        kind: "person",
+                        key: "p6r:person:one",
+                        issuer: "tailscale",
+                        subject: "one",
+                      },
+                      presentation: {
+                        displayName: "One",
+                        handle: "one",
+                        avatarUrl: null,
+                      },
+                    },
+                  },
+                  latestEditor: null,
+                },
+              },
+            ],
+          },
+          { groupIndex: 1, sources: [] },
+        ],
+        options: fullRuntimeOptions,
+      });
+
+      expect(record.last("turn/start")?.params).toMatchObject({
+        inputGroups: [
+          [promptTextInput({ text: "from a person" })],
+          [
+            {
+              type: "localFile",
+              path: "/tmp/brief.pdf",
+              name: "brief.pdf",
+              mimeType: "application/pdf",
+            },
+          ],
+        ],
+        provenanceGroups: [
+          {
+            groupIndex: 0,
+            sources: [
+              {
+                sourceKind: "contribution",
+                sourceIndex: 0,
+                contributionId: "p6r-contribution:person",
+                attribution: {
+                  author: {
+                    kind: "person",
+                    actor: {
+                      identity: { key: "p6r:person:one" },
+                    },
+                  },
+                },
+              },
+            ],
+          },
+          { groupIndex: 1, sources: [] },
+        ],
+      });
+      await runtime.shutdown();
+    });
+
     it("runs a turn and receives turn/started + turn/completed events", async () => {
       const events: ThreadEvent[] = [];
       const runtime = createScriptedEchoRuntime({

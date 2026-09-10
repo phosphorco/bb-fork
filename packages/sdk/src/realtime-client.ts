@@ -451,6 +451,7 @@ export class BbRealtimeClient implements BbRealtime {
     };
 
     socket.onerror = () => {
+      socket.onerror = null;
       socket.close();
     };
 

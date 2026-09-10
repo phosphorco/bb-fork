@@ -42,6 +42,18 @@ describe("resolveThreadExecutionOverrideUpdate", () => {
     ).toThrow(/not available in this thread's claude-code model catalog/);
   });
 
+  it("rejects an ambiguous model catalog entry", () => {
+    expect(() =>
+      resolveThreadExecutionOverrideUpdate(registry, {
+        existing: EMPTY,
+        patch: { model: "claude-opus-4-8" },
+        models: [OPUS, OPUS],
+        providerId: "claude-code",
+        fallbackModel: null,
+      }),
+    ).toThrow(/ambiguous/);
+  });
+
   it("accepts an explicit reasoning level supported by the target model", () => {
     expect(
       resolveThreadExecutionOverrideUpdate(registry, {
@@ -142,6 +154,18 @@ describe("resolveThreadExecutionOverrideUpdate", () => {
         fallbackModel: "claude-opus-4-8",
       }),
     ).toEqual({ modelOverride: null, reasoningLevelOverride: "xhigh" });
+  });
+
+  it("rejects an ambiguous fallback model catalog entry", () => {
+    expect(() =>
+      resolveThreadExecutionOverrideUpdate(registry, {
+        existing: EMPTY,
+        patch: { reasoningLevel: "high" },
+        models: [OPUS, OPUS],
+        providerId: "claude-code",
+        fallbackModel: "claude-opus-4-8",
+      }),
+    ).toThrow(/ambiguous/);
   });
 
   it("leaves an unspecified field unchanged", () => {

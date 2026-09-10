@@ -6,6 +6,7 @@ import {
   type DbConnection,
   type DbNotifier,
   type DbQueryConnection,
+  type DbTransaction,
   type QueuedThreadMessageRow,
 } from "@bb/db";
 import type {
@@ -63,6 +64,10 @@ export interface RecordQueuedMessageWaitArgs {
    * send is queued for the first time.
    */
   claimed: readonly ClaimedQueuedThreadMessageRow[] | null;
+  onCreateInTransaction?: (input: {
+    readonly queuedMessage: QueuedThreadMessageRow;
+    readonly tx: DbTransaction;
+  }) => void;
 }
 
 /**
@@ -88,8 +93,8 @@ export function recordQueuedMessageWait(
 
   if (leadClaim === undefined) {
     row = deps.db.transaction(
-      (tx) =>
-        createQueuedThreadMessageInTransaction(tx, {
+      (tx) => {
+        const created = createQueuedThreadMessageInTransaction(tx, {
           threadId: args.thread.id,
           content: args.message.input,
           senderThreadId: args.message.senderThreadId,
@@ -101,7 +106,10 @@ export function recordQueuedMessageWait(
           sendAt: args.sendAt,
           payload: args.message.payload,
           systemNotice: args.message.systemNotice,
-        }),
+        });
+        args.onCreateInTransaction?.({ queuedMessage: created, tx });
+        return created;
+      },
       { behavior: "immediate" },
     );
   } else {

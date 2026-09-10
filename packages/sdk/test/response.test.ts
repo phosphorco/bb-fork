@@ -338,6 +338,26 @@ describe("readJsonResponse()", () => {
 });
 
 describe("createRequestTimeoutFetch()", () => {
+  it("keeps cancellation and complete request data with an injected transport", async () => {
+    const controller = new AbortController();
+    let observed: Request | undefined;
+    const transport = createRequestTimeoutFetch({
+      timeoutMs: 1_000,
+      fetch: async (input, init) => {
+        observed = new Request(input, init);
+        expect(observed.method).toBe("POST");
+        expect(await observed.text()).toBe('{"mode":"auto","input":[]}');
+        return new Response('{"ok":true}', { headers: { "content-type": "application/json" } });
+      },
+    });
+    const response = await transport("http://server/api/v1/threads/t/send", {
+      method: "POST", body: '{"mode":"auto","input":[]}', signal: controller.signal,
+    });
+    expect(await response.json()).toEqual({ ok: true });
+    controller.abort();
+    expect(observed?.signal.aborted).toBe(true);
+  });
+
   it("times out hung API requests", async () => {
     await expectPendingFetchTimeout({
       timeoutMs: SHORT_TIMEOUT_MS,

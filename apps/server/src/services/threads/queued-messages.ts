@@ -14,8 +14,12 @@ import {
   type QueuedThreadMessageGroupClaimPolicy,
   type QueuedThreadMessageGroupEligibility,
 } from "@bb/db";
-import { queuedMessageSystemNoticeSchema } from "@bb/domain";
+import {
+  promptInputSchema,
+  queuedMessageSystemNoticeSchema,
+} from "@bb/domain";
 import type {
+  JsonValue,
   PromptInput,
   QueuedMessageWaitingOn,
   Thread,
@@ -85,6 +89,15 @@ import {
 } from "../lib/lifecycle-api-errors.js";
 import { validatePromptAttachmentReferences } from "../projects/attachments.js";
 import { requestQueuedMessageDispatch } from "./queued-message-dispatch.js";
+import {
+  promoteP6rNativeQueuedWritesInTransaction,
+  promoteP6rQueuedOperationInTransaction,
+  p6rNativeQueuedWriteReservation,
+  p6rQueuedOperationReservation,
+  reserveP6rNativeQueuedWriteInTransaction,
+  type P6rNativeWriteOrigin,
+} from "../p6r/sidecar-store.js";
+import { appendThreadProvisionRequestInTransaction } from "./thread-provisioning.js";
 import {
   ThreadContextClearInProgressError,
   withThreadSendGuard,
@@ -167,6 +180,7 @@ async function requireReadyQueuedMessageEnvironment(
 
 export interface CreateQueuedMessageForThreadArgs {
   payload: CreateQueuedMessageRequest;
+  p6rNativeWriteOrigin?: P6rNativeWriteOrigin | null;
   thread: Thread;
 }
 
@@ -237,6 +251,15 @@ export async function createQueuedMessageForThread(
           payload: { kind: "inline" },
           systemNotice: null,
         });
+        if (args.p6rNativeWriteOrigin !== undefined) {
+          reserveP6rNativeQueuedWriteInTransaction(tx, {
+            acceptedAt: Date.now(),
+            input: payload.input as unknown as JsonValue,
+            origin: args.p6rNativeWriteOrigin,
+            queuedMessageId: queuedMessage.id,
+            threadId: thread.id,
+          });
+        }
         return { currentThread, providerThreadId, queuedMessage };
       },
       { behavior: "immediate" },
@@ -560,6 +583,13 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
         threadId: thread.id,
         type: "client/turn/requested",
       });
+      promoteP6rNativeQueuedWritesInTransaction(tx, {
+        attemptId: `p6r-native-attempt:${request.requestId}`,
+        inputGroups: inputGroups as unknown as readonly JsonValue[],
+        nativeRequestId: request.requestId,
+        queuedMessageIds: args.queuedMessages.map((queuedMessage) => queuedMessage.id),
+        threadId: thread.id,
+      });
       recordAcceptedPromptHistoryEntry(
         { db: tx },
         {
@@ -686,6 +716,87 @@ async function sendClaimedQueuedMessageForThread(
   );
   const input = groupedInputForRuntime(inputGroups);
   const lead = args.queuedMessages[0]!;
+  const p6rReservation = p6rQueuedOperationReservation(deps.db, lead.id);
+  const hasNativeQueuedAttribution = args.queuedMessages.some(
+    (queuedMessage) =>
+      p6rNativeQueuedWriteReservation(deps.db, queuedMessage.id) !== null,
+  );
+  if (p6rReservation !== null && hasNativeQueuedAttribution) {
+    throw new Error(
+      "P6r external and ordinary native queue attribution cannot share a dispatch",
+    );
+  }
+  const p6rQueuedInput = p6rReservation === null || !Array.isArray(p6rReservation.input)
+    ? null
+    : p6rReservation.input.map((value) => promptInputSchema.safeParse(value));
+  if (
+    p6rReservation !== null &&
+    (p6rQueuedInput === null ||
+      p6rQueuedInput.some((value) => !value.success) ||
+      inputGroups.length !== 1 ||
+      JSON.stringify(inputGroups[0]) !== JSON.stringify(p6rQueuedInput.map((value) => value.data)))
+  ) {
+    throw new ApiError(
+      409,
+      "p6r_queued_operation_input_mismatch",
+      "Queued P6r operation input no longer matches its immutable receipt",
+    );
+  }
+  const p6rCommit: Pick<Parameters<typeof attemptDispatch>[1], "pendingStartCommit" | "queuedAfterAppendInTransaction"> = p6rReservation === null
+    ? !hasNativeQueuedAttribution
+      ? {}
+      : {
+          pendingStartCommit: ({ provision, tx }) => {
+            const request = appendThreadProvisionRequestInTransaction(tx, provision);
+            promoteP6rNativeQueuedWritesInTransaction(tx, {
+              attemptId: `p6r-native-attempt:${request.clientRequestId}`,
+              inputGroups: [input as unknown as JsonValue],
+              nativeRequestId: request.clientRequestId,
+              queuedMessageIds: args.queuedMessages.map(
+                (queuedMessage) => queuedMessage.id,
+              ),
+              threadId: args.thread.id,
+            });
+            return request;
+          },
+          queuedAfterAppendInTransaction: ({ inputGroups, request, tx }) => {
+            promoteP6rNativeQueuedWritesInTransaction(tx, {
+              attemptId: `p6r-native-attempt:${request.requestId}`,
+              inputGroups: inputGroups as unknown as readonly JsonValue[],
+              nativeRequestId: request.requestId,
+              queuedMessageIds: args.queuedMessages.map(
+                (queuedMessage) => queuedMessage.id,
+              ),
+              threadId: args.thread.id,
+            });
+          },
+        }
+    : {
+        pendingStartCommit: ({ provision, tx }) => {
+          const request = appendThreadProvisionRequestInTransaction(tx, provision);
+          const promoted = promoteP6rQueuedOperationInTransaction(tx, {
+            acceptedAt: Date.now(),
+            nativeRequestId: request.clientRequestId,
+            queuedMessageId: lead.id,
+            requestSequence: request.requestSequence,
+            retentionDeadline: p6rReservation.receipt.retentionDeadline,
+            threadId: args.thread.id,
+          });
+          if (promoted === null) throw new Error("P6r queued operation reservation disappeared during admission");
+          return request;
+        },
+        queuedAfterAppendInTransaction: ({ request, tx }) => {
+          const promoted = promoteP6rQueuedOperationInTransaction(tx, {
+            acceptedAt: Date.now(),
+            nativeRequestId: request.requestId,
+            queuedMessageId: lead.id,
+            requestSequence: request.sequence,
+            retentionDeadline: p6rReservation.receipt.retentionDeadline,
+            threadId: args.thread.id,
+          });
+          if (promoted === null) throw new Error("P6r queued operation reservation disappeared during dispatch");
+        },
+      };
   const outcome = await attemptDispatch(deps, {
     thread: args.thread,
     payload: {
@@ -715,6 +826,7 @@ async function sendClaimedQueuedMessageForThread(
     originPluginId: null,
     startedOnBehalfOf: null,
     trigger: "auto-dispatch",
+    ...p6rCommit,
   });
   if (args.sendNow && args.mode !== "steer" && outcome.kind === "queued") {
     // "Send now" overrides every plugin wait and the row's own schedule, but

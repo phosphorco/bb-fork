@@ -199,6 +199,115 @@ describe("plugin background services", () => {
     }
   });
 
+  it("keeps successor interactions available while predecessor cleanup drains", async () => {
+    const interactionWaiters: Array<{
+      readonly resolve: (value: { outcome: "cancelled"; reason: "request-aborted" }) => void;
+      readonly signal: AbortSignal | undefined;
+    }> = [];
+    const requestPluginInteraction = vi.fn((args: { signal?: AbortSignal }) =>
+      new Promise<{ outcome: "cancelled"; reason: "request-aborted" }>(
+        (resolve) => {
+          interactionWaiters.push({ resolve, signal: args.signal });
+          args.signal?.addEventListener(
+            "abort",
+            () => resolve({ outcome: "cancelled", reason: "request-aborted" }),
+            { once: true },
+          );
+        },
+      ),
+    );
+    const interruptPluginInteractions = vi.fn(() => []);
+    let publications = 0;
+    let publishedSuccessor: (() => void) | undefined;
+    const successorPublished = new Promise<void>((resolve) => {
+      publishedSuccessor = resolve;
+    });
+    const local = createPluginService({
+      aiServices: createAiServiceRegistry(),
+      appVersion: "0.9.0",
+      dataDir: join(workDir, "data-successor-interaction"),
+      db,
+      hub: {
+        getDaemonSessionIdForHost: () => null,
+        notifyPluginSignal: () => 0,
+        notifySystem: () => {},
+      },
+      loadTimeoutMs: 2_000,
+      logger,
+      onP6rPluginPublishedForTest: () => {
+        publications += 1;
+        if (publications === 2) publishedSuccessor?.();
+      },
+      pendingInteractions: {
+        interruptPluginInteractions,
+        requestPluginInteraction,
+        setPluginDirectory: () => {},
+      },
+      telemetry: createNoopTelemetryService(),
+    });
+    try {
+      const rootDir = await writePlugin(workDir, {
+        name: "bb-plugin-successor-interaction",
+        serverSource: `
+          export default function plugin(bb: any) {
+            bb.onDispose(() => new Promise<void>((resolve) => {
+              (globalThis as any).__releaseSuccessorPredecessor = resolve;
+            }));
+          }
+        `,
+      });
+      await local.installPath(rootDir);
+      const predecessor = local.getApi("successor-interaction");
+      if (predecessor === undefined) throw new Error("expected predecessor API");
+      const oldPending = predecessor.ui.requestInput({
+        payload: null,
+        rendererId: "form",
+        threadId: "thread-old",
+        title: "Old form",
+      });
+      await writeFile(
+        join(rootDir, "server.ts"),
+        `export default function plugin() {}`,
+      );
+
+      const reloading = local.reload("successor-interaction");
+      await successorPublished;
+      const api = local.getApi("successor-interaction");
+      if (api === undefined) throw new Error("expected published successor API");
+      await expect(oldPending).resolves.toEqual({
+        outcome: "cancelled",
+        reason: "request-aborted",
+      });
+      const successorPending = api.ui.requestInput({
+        payload: null,
+        rendererId: "form",
+        threadId: "thread-successor",
+        title: "Successor form",
+      });
+      const successorWaiter = interactionWaiters[1];
+      expect(successorWaiter?.signal?.aborted).toBe(false);
+      expect(interruptPluginInteractions).not.toHaveBeenCalled();
+      const release = globals.__releaseSuccessorPredecessor as
+        | (() => void)
+        | undefined;
+      if (release === undefined) throw new Error("expected predecessor cleanup");
+      release();
+      await reloading;
+      expect(requestPluginInteraction).toHaveBeenCalledTimes(2);
+      expect(interruptPluginInteractions).not.toHaveBeenCalled();
+      successorWaiter?.resolve({
+        outcome: "cancelled",
+        reason: "request-aborted",
+      });
+      await expect(successorPending).resolves.toEqual({
+        outcome: "cancelled",
+        reason: "request-aborted",
+      });
+    } finally {
+      await local.stop();
+    }
+  });
+
   it("serializes concurrent reloads so a slow-stopping service never double-starts", async () => {
     const local = createPluginService({
       aiServices: createAiServiceRegistry(),
@@ -257,7 +366,7 @@ describe("plugin background services", () => {
     }
   });
 
-  it("marks the plugin degraded when a service ignores its abort", async () => {
+  it("keeps a published successor active when predecessor cleanup hangs", async () => {
     const rootDir = await writePlugin(workDir, {
       name: "bb-plugin-stubborn",
       serverSource: `
@@ -272,11 +381,21 @@ describe("plugin background services", () => {
       `,
     });
     await service.installPath(rootDir);
+    await writeFile(
+      join(rootDir, "server.ts"),
+      `
+        export default function plugin() {
+          (globalThis as any).__stubbornSuccessor = true;
+        }
+      `,
+    );
     const outcome = await service.reload("stubborn");
     const entry = service.list().find((p) => p.id === "stubborn");
     expect(entry?.status).toBe("degraded");
     expect(entry?.statusDetail).toContain("service socket did not stop");
-    expect(service.getApi("stubborn")).toBeUndefined();
+    expect(service.getApi("stubborn")).toBeDefined();
+    expect(service.getApi("stubborn")).not.toBeUndefined();
+    expect(globals.__stubbornSuccessor).toBe(true);
     expect(outcome).toEqual({
       ok: false,
       error: 'plugin "stubborn" reload failed: service socket did not stop',
@@ -288,6 +407,7 @@ describe("plugin background services", () => {
       "degraded",
     );
     expect(again.ok).toBe(false);
+    expect(service.getApi("stubborn")).toBeDefined();
   });
 
   it("reports a failed reload that kept the previous instance", async () => {

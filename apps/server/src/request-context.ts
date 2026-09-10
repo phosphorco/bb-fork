@@ -8,6 +8,7 @@ import {
 import type { Context } from "hono";
 
 export const TRUSTED_REMOTE_ADDRESS_CONTEXT_KEY = "bbTrustedRemoteAddress";
+export const TRUSTED_P6R_LINEAGE_CONTEXT_KEY = "bbTrustedP6rLineage";
 const GATE_AUTH_HEADER_NAME = "x-bb-gate-auth";
 const GATE_MACHINE_ID_HEADER_NAME = "x-bb-gate-machine-id";
 type GateAuthKind = "machine" | "session";
@@ -20,9 +21,14 @@ interface TrustedRemoteAddressReader {
   get(key: typeof TRUSTED_REMOTE_ADDRESS_CONTEXT_KEY): string | undefined;
 }
 
+interface TrustedP6rLineageReader {
+  get(key: typeof TRUSTED_P6R_LINEAGE_CONTEXT_KEY): string | undefined;
+}
+
 declare module "hono" {
   interface ContextVariableMap {
     [TRUSTED_REMOTE_ADDRESS_CONTEXT_KEY]: string | undefined;
+    [TRUSTED_P6R_LINEAGE_CONTEXT_KEY]: string | undefined;
   }
 }
 
@@ -41,6 +47,19 @@ export function getTrustedRemoteAddress(
   context: TrustedRemoteAddressReader,
 ): string | undefined {
   return context.get(TRUSTED_REMOTE_ADDRESS_CONTEXT_KEY);
+}
+
+export function getTrustedP6rLineage(
+  context: TrustedP6rLineageReader,
+): string | undefined {
+  return context.get(TRUSTED_P6R_LINEAGE_CONTEXT_KEY);
+}
+
+export function setTrustedP6rLineage(
+  context: Context,
+  lineage: string | undefined,
+): void {
+  context.set(TRUSTED_P6R_LINEAGE_CONTEXT_KEY, lineage);
 }
 
 export function getGateAuthKind(

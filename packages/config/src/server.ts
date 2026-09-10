@@ -21,6 +21,7 @@ import {
   BB_INFERENCE_FALLBACK_ENV,
   BB_INFERENCE_ENV,
   BB_MARKETPLACE_URL_ENV,
+  BB_P6R_IDENTITY_BOUNDARY_ENV,
   BB_POSTHOG_API_KEY_ENV,
   BB_SERVER_BIND_HOST_ENV,
   BB_SERVER_LAUNCH_ID_ENV,
@@ -60,12 +61,37 @@ export interface ServerConfig
   BB_INFERENCE_FALLBACK: string;
   BB_POSTHOG_API_KEY: string;
   BB_MARKETPLACE_URL: string;
+  BB_P6R_IDENTITY_BOUNDARY: P6rIdentityBoundaryConfig | null;
   BB_SERVER_BIND_HOST: ServerBindHost;
   BB_SERVER_LAUNCH_ID?: string;
   BB_TELEMETRY: boolean;
   BB_TRANSCRIPTION: string;
   OPENAI_API_KEY: string;
   featureFlags: FeatureFlags;
+}
+
+export interface P6rIdentityBoundaryConfig {
+  readonly configuration: {
+    readonly boundaryId: string;
+    readonly credentials: readonly {
+      readonly field: string;
+      readonly name: string;
+      readonly source: "header" | "cookie";
+    }[];
+    readonly ingressIds: readonly string[];
+    readonly pluginId: string;
+    readonly resolver: {
+      readonly maxSessionAgeMs: number;
+      readonly timeoutMs: number;
+    };
+    readonly version: 1;
+  };
+  readonly trustedIngresses: readonly {
+    readonly authenticatedPeer: string | null;
+    readonly id: string;
+    readonly kind: "owned-proxy" | "local";
+    readonly remoteAddresses: readonly string[];
+  }[];
 }
 
 type LoadServerConfigArgs = LoadCommonConfigArgs;
@@ -157,6 +183,12 @@ export function loadServerConfig(
       context: loader.context,
       defaultValue: DEFAULT_BB_MARKETPLACE_URL,
       definition: BB_MARKETPLACE_URL_ENV,
+      env: loader.env,
+    }),
+    BB_P6R_IDENTITY_BOUNDARY: readEnvVarWithDefault({
+      context: loader.context,
+      defaultValue: null,
+      definition: BB_P6R_IDENTITY_BOUNDARY_ENV,
       env: loader.env,
     }),
     BB_POSTHOG_API_KEY: readEnvVarWithDefault({

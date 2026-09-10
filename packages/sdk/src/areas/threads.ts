@@ -32,6 +32,13 @@ import type {
   ThreadCountQuery,
   ThreadCountResponse,
   ThreadListResponse,
+  ThreadFacetParticipantsResponse,
+  ThreadFacetQueryRequest,
+  ThreadFacetQueryResponse,
+  ExperimentalThreadExecutionPreflightRequest,
+  ExperimentalThreadExecutionPreflightResponse as ExperimentalThreadExecutionPreflightWireResponse,
+  ExperimentalThreadExecutionApplyRequest,
+  ExperimentalThreadExecutionApplyResponse as ExperimentalThreadExecutionApplyWireResponse,
   ThreadRunningResponse,
   ThreadOpenResponse,
   ThreadPaneAction,
@@ -94,6 +101,32 @@ export interface ThreadListArgs {
   unsectioned?: boolean;
 }
 
+export interface ThreadFacetQueryArgs {
+  cursor?: string;
+  filters?: ThreadFacetQueryRequest["filters"];
+  order?: ThreadFacetQueryRequest["order"];
+  pageSize?: number;
+  scope?: ThreadFacetQueryRequest["scope"];
+  experimental_includeExecution?: boolean;
+  signal?: AbortSignal;
+}
+
+export interface ThreadFacetParticipantsArgs {
+  cursor?: string;
+  pageSize?: number;
+  signal?: AbortSignal;
+  threadId: string;
+}
+
+export type ExperimentalThreadExecutionPreflightArgs =
+  ExperimentalThreadExecutionPreflightRequest & { signal?: AbortSignal };
+export type ExperimentalThreadExecutionApplyArgs =
+  ExperimentalThreadExecutionApplyRequest & { signal?: AbortSignal };
+export type ExperimentalThreadExecutionPreflightResponse =
+  ExperimentalThreadExecutionPreflightWireResponse;
+export type ExperimentalThreadExecutionApplyResponse =
+  ExperimentalThreadExecutionApplyWireResponse;
+
 export interface ThreadSearchArgs extends ThreadSearchQuery {
   signal?: AbortSignal;
 }
@@ -155,6 +188,8 @@ export type ThreadCountResult = ThreadCountResponse;
  */
 export type ThreadRunningResult = ThreadRunningResponse;
 export type ThreadListResult = ThreadListResponse;
+export type ThreadFacetQueryResult = ThreadFacetQueryResponse;
+export type ThreadFacetParticipantsResult = ThreadFacetParticipantsResponse;
 export type ThreadSearchResult = ThreadSearchResponse;
 export type ThreadResolveMentionsResult = ResolveThreadMentionsResponse;
 export interface ThreadOutputResponse {
@@ -201,7 +236,8 @@ export type ThreadStorageFilesResult = ThreadStorageFileListResponse;
 export type ThreadStorageLocationResult = ThreadStorageLocationResponse;
 export type ThreadStoragePathsResult = ThreadStoragePathListResponse;
 export type ThreadChildSummaryResult = ThreadChildSummaryResponse;
-export type ThreadDefaultExecutionOptionsResult = ResolvedThreadExecutionOptions | null;
+export type ThreadDefaultExecutionOptionsResult =
+  ResolvedThreadExecutionOptions | null;
 export type ThreadConversationOutlineResult = ThreadConversationOutlineResponse;
 export type ThreadTimelineTurnSummaryDetailsResult =
   TimelineTurnSummaryDetailsResponse;
@@ -546,6 +582,16 @@ export interface ThreadsArea {
   queue: ThreadQueueArea;
   interactions: ThreadInteractionsArea;
   list(args?: ThreadListArgs): Promise<ThreadListResult>;
+  queryFacets(args?: ThreadFacetQueryArgs): Promise<ThreadFacetQueryResult>;
+  experimental_preflightExecutionOverrides(
+    args: ExperimentalThreadExecutionPreflightArgs,
+  ): Promise<ExperimentalThreadExecutionPreflightResponse>;
+  experimental_applyExecutionOverrides(
+    args: ExperimentalThreadExecutionApplyArgs,
+  ): Promise<ExperimentalThreadExecutionApplyResponse>;
+  facetParticipants(
+    args: ThreadFacetParticipantsArgs,
+  ): Promise<ThreadFacetParticipantsResult>;
   listRunning(args?: { signal?: AbortSignal }): Promise<ThreadRunningResult>;
   markRead(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
   markUnread(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
@@ -1122,6 +1168,60 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
         transport.api.v1.threads.$get(
           { query: listQuery(input) },
           ...signalRequestArgs(input?.signal),
+        ),
+      );
+    },
+    async queryFacets(input) {
+      return transport.readJson(
+        transport.api.v1.threads["facet-query"].$post(
+          {
+            json: {
+              scope: input?.scope ?? {},
+              filters: input?.filters ?? [],
+              pageSize: input?.pageSize ?? 50,
+              ...(input?.order === undefined ? {} : { order: input.order }),
+              ...(input?.cursor === undefined ? {} : { cursor: input.cursor }),
+              ...(input?.experimental_includeExecution === undefined
+                ? {}
+                : {
+                    experimental_includeExecution:
+                      input.experimental_includeExecution,
+                  }),
+            },
+          },
+          ...signalRequestArgs(input?.signal),
+        ),
+      );
+    },
+    async experimental_preflightExecutionOverrides(input) {
+      return transport.readJson(
+        transport.api.v1.threads["execution-overrides"].preflight.$post(
+          { json: { items: input.items } },
+          ...signalRequestArgs(input.signal),
+        ),
+      );
+    },
+    async experimental_applyExecutionOverrides(input) {
+      return transport.readJson(
+        transport.api.v1.threads["execution-overrides"].apply.$post(
+          { json: { items: input.items } },
+          ...signalRequestArgs(input.signal),
+        ),
+      );
+    },
+    async facetParticipants(input) {
+      return transport.readJson(
+        transport.api.v1.threads[":id"]["facet-participants"].$get(
+          {
+            param: { id: input.threadId },
+            query: {
+              ...(input.pageSize === undefined
+                ? {}
+                : { pageSize: String(input.pageSize) }),
+              ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+            },
+          },
+          ...signalRequestArgs(input.signal),
         ),
       );
     },

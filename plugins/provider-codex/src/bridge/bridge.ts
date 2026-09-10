@@ -5,7 +5,6 @@ import {
   isStandaloneBuiltinCompactCommand,
   approvalInteractionOutcomeSchema,
   type DynamicTool,
-  type PromptInput,
   type ThreadDelta,
   sanitizeInheritedChildProcessEnv,
   BRIDGE_INBOUND_REQUEST_METHODS,
@@ -48,6 +47,7 @@ import {
   type ProviderRecoveryHint,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { z } from "zod";
+import { formatPromptInputForProvider } from "@bb/provider-bridge-protocol";
 import {
   CODEX_MACOS_PERMISSION_EXTENSION_KIND,
   summarizeCodexMacOsPermissions,
@@ -1442,7 +1442,11 @@ async function handleTurnStart(
     return;
   }
 
-  const input: PromptInput[] = params.input;
+  const input = formatPromptInputForProvider(
+    params.input,
+    params.inputGroups,
+    params.provenanceGroups,
+  );
   const decoded = decodeCodexOptions(params.options);
 
   const prepared = session.translator.prepareTurnStart({
@@ -1451,7 +1455,7 @@ async function handleTurnStart(
   });
 
   try {
-    if (isStandaloneBuiltinCompactCommand(input)) {
+    if (isStandaloneBuiltinCompactCommand(params.input)) {
       await connection.request({
         method: "thread/compact/start",
         params: { threadId: codexThreadId },
@@ -1522,7 +1526,13 @@ async function handleTurnSteer(
       params: {
         threadId: session.codexThreadId,
         expectedTurnId: params.expectedTurnId,
-        input: toCodexUserInput(params.input),
+        input: toCodexUserInput(
+          formatPromptInputForProvider(
+            params.input,
+            params.inputGroups,
+            params.provenanceGroups,
+          ),
+        ),
       },
       resultSchema: ignoredChildResultSchema,
       timeoutMs: CHILD_REQUEST_TIMEOUT_MS,

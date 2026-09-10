@@ -8,6 +8,7 @@ import type { Hono } from "hono";
 import type { AppDeps } from "../types.js";
 import { ApiError } from "../errors.js";
 import { requireThreadEnvironment } from "../services/lib/entity-lookup.js";
+import { getServerP6rToolCorrelationRegistry } from "../services/p6r/tool-correlation-registry.js";
 import {
   findPluginAgentTool,
   invokePluginAgentTool,
@@ -67,37 +68,72 @@ export function registerInternalToolCallRoutes(app: Hono, deps: AppDeps): void {
         );
       }
 
+      const correlation = getServerP6rToolCorrelationRegistry().begin({
+        callId: payload.callId,
+        providerThreadId: payload.providerThreadId,
+        sessionId: payload.sessionId,
+        threadId: payload.threadId,
+        turnId: payload.turnId,
+      });
+      const settle = (
+        response: ToolCallResponse,
+        outcome: "failed" | "succeeded" | "unsupported" = response.success
+          ? "succeeded"
+          : "failed",
+      ): ToolCallResponse => {
+        correlation.settle(outcome);
+        return response;
+      };
+
       if (payload.tool === UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME) {
         return context.json(
-          await handleUpdateEnvironmentDirectoryToolCall(deps, {
-            currentEnvironment: environment,
-            input: payload.arguments,
-            thread,
-            turnId: payload.turnId,
-          }),
+          settle(
+            await handleUpdateEnvironmentDirectoryToolCall(deps, {
+              currentEnvironment: environment,
+              input: payload.arguments,
+              thread,
+              turnId: payload.turnId,
+            }),
+          ),
         );
       }
 
       const pluginTool = findPluginAgentTool(payload.tool);
       if (pluginTool) {
+        const pluginContext = {
+          threadId: thread.id,
+          projectId: thread.projectId,
+          signal: context.req.raw.signal,
+        };
+        getServerP6rToolCorrelationRegistry().bindContext(
+          pluginContext,
+          correlation.correlation.call,
+        );
         return streamToolCallResponse(
           invokePluginAgentTool(pluginTool, {
             input: payload.arguments,
-            ctx: {
-              threadId: thread.id,
-              projectId: thread.projectId,
-              signal: context.req.raw.signal,
+            ctx: pluginContext,
+          }).then(
+            settle,
+            (error: unknown) => {
+              correlation.settle("failed");
+              throw error;
             },
-          }),
+          ),
         );
       }
 
-      return context.json({
-        success: false,
-        contentItems: [
-          { type: "inputText", text: `Unsupported tool: ${payload.tool}` },
-        ],
-      });
+      return context.json(
+        settle(
+          {
+            success: false,
+            contentItems: [
+              { type: "inputText", text: `Unsupported tool: ${payload.tool}` },
+            ],
+          },
+          "unsupported",
+        ),
+      );
     },
   );
 }

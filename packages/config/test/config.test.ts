@@ -327,6 +327,74 @@ describe("consumer-specific config", () => {
     ).toBe("launch-123");
   });
 
+  it("loads an explicit P6R identity boundary without credential values", () => {
+    const serverConfig = loadServerConfig({
+      env: createServerRuntimeEnv({
+        BB_P6R_IDENTITY_BOUNDARY: JSON.stringify({
+          configuration: {
+            boundaryId: "proof-boundary",
+            credentials: [
+              { field: "x-proof-assertion", name: "assertion", source: "header" },
+            ],
+            ingressIds: ["proof-local"],
+            pluginId: "identity-provider",
+            resolver: { maxSessionAgeMs: 60_000, timeoutMs: 5_000 },
+            version: 1,
+          },
+          trustedIngresses: [
+            {
+              authenticatedPeer: "proof-client",
+              id: "proof-local",
+              kind: "local",
+              remoteAddresses: ["127.0.0.1"],
+            },
+          ],
+        }),
+      }),
+    });
+
+    expect(serverConfig.BB_P6R_IDENTITY_BOUNDARY).toEqual({
+      configuration: {
+        boundaryId: "proof-boundary",
+        credentials: [
+          { field: "x-proof-assertion", name: "assertion", source: "header" },
+        ],
+        ingressIds: ["proof-local"],
+        pluginId: "identity-provider",
+        resolver: { maxSessionAgeMs: 60_000, timeoutMs: 5_000 },
+        version: 1,
+      },
+      trustedIngresses: [
+        {
+          authenticatedPeer: "proof-client",
+          id: "proof-local",
+          kind: "local",
+          remoteAddresses: ["127.0.0.1"],
+        },
+      ],
+    });
+  });
+
+  it("rejects malformed configured P6R identity boundaries", () => {
+    expect(() =>
+      loadServerConfig({
+        env: createServerRuntimeEnv({
+          BB_P6R_IDENTITY_BOUNDARY: "not-json",
+        }),
+      }),
+    ).toThrow("BB_P6R_IDENTITY_BOUNDARY must be valid JSON");
+    expect(() =>
+      loadServerConfig({
+        env: createServerRuntimeEnv({
+          BB_P6R_IDENTITY_BOUNDARY: JSON.stringify({
+            configuration: { version: 1 },
+            trustedIngresses: [],
+          }),
+        }),
+      }),
+    ).toThrow("BB_P6R_IDENTITY_BOUNDARY.configuration.resolver must be an object");
+  });
+
   it("defaults the server bind host to loopback", () => {
     const serverConfig = loadServerConfig({
       env: createServerRuntimeEnv({

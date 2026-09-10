@@ -248,6 +248,9 @@ export async function startThread(
       ...(staged.inputGroups !== undefined
         ? { inputGroups: staged.inputGroups }
         : {}),
+      ...(command.provenanceGroups !== undefined
+        ? { provenanceGroups: command.provenanceGroups }
+        : {}),
       options: command.options,
       instructions: command.instructions,
       dynamicTools: command.dynamicTools,
@@ -350,6 +353,9 @@ async function runSubmittedTurn(
     ...(command.inputGroups !== undefined
       ? { inputGroups: command.inputGroups }
       : {}),
+    ...(command.provenanceGroups !== undefined
+      ? { provenanceGroups: command.provenanceGroups }
+      : {}),
     clientRequestId: command.requestId,
     options: command.options,
     contributedEnv: command.resumeContext.contributedEnv,
@@ -372,6 +378,9 @@ async function steerSubmittedTurn(
       input: command.input,
       ...(command.inputGroups !== undefined
         ? { inputGroups: command.inputGroups }
+        : {}),
+      ...(command.provenanceGroups !== undefined
+        ? { provenanceGroups: command.provenanceGroups }
         : {}),
       clientRequestId: command.requestId,
       options: command.options,

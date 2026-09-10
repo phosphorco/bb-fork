@@ -1561,6 +1561,76 @@ describe("acp bridge", () => {
     expect(agentMessageTexts()).toContain("echo:hello there");
   });
 
+  it("delivers frozen external-source labels to the native provider prompt", async () => {
+    const promptLog = join(workspaceDir, "attributed-prompt-log.jsonl");
+    const { providerThreadId } = await startThread({
+      envVars: { FAKE_ACP_PROMPT_LOG: promptLog },
+    });
+    const turnId = sendTurnRequest("turn/start", providerThreadId, {
+      input: [
+        { type: "text", text: "from Slack", mentions: [] },
+        { type: "text", text: "\n\n", mentions: [] },
+        { type: "text", text: "from a system hook", mentions: [] },
+      ],
+      inputGroups: [
+        [{ type: "text", text: "from Slack", mentions: [] }],
+        [{ type: "text", text: "from a system hook", mentions: [] }],
+      ],
+      provenanceGroups: [
+        {
+          groupIndex: 0,
+          sources: [
+            {
+              sourceKind: "contribution",
+              sourceIndex: 0,
+              contributionId: "p6r-contribution:slack",
+              attribution: {
+                author: {
+                  kind: "external",
+                  actor: {
+                    evidence: "integration-asserted",
+                    identity: {
+                      kind: "external",
+                      key: "p6r-external:v1:slack",
+                      pluginId: "rosetta-slack",
+                      subject: "U123",
+                    },
+                    presentation: {
+                      displayName: "Ada",
+                      handle: "ada",
+                      avatarUrl: null,
+                    },
+                  },
+                },
+                latestEditor: null,
+              },
+            },
+          ],
+        },
+        {
+          groupIndex: 1,
+          sources: [
+            {
+              sourceKind: "contribution",
+              sourceIndex: 0,
+              contributionId: null,
+              attribution: {
+                author: { kind: "system", reason: "plugin-sdk" },
+                latestEditor: null,
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    await waitForResponse(turnId);
+    await waitForFileWithRealTimer(promptLog);
+    expect(loggedPrompts(promptLog)).toEqual([
+      '[BB input source: external source "rosetta-slack"]\nfrom Slack\n\n\n[BB input source: system "plugin-sdk"]\nfrom a system hook',
+    ]);
+  });
+
   it("authenticates ACP sessions with cached tokens when advertised", async () => {
     const { providerThreadId } = await startThread({
       envVars: { FAKE_ACP_AUTH_METHODS: "cached_token" },

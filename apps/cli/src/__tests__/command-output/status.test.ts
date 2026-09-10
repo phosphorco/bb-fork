@@ -16,6 +16,12 @@ describe("bb status command output", () => {
   const register: CommandRegistrar = (program) =>
     registerStatusCommand(program, () => "http://server");
 
+  it("reports native identity availability without inventing an actor", async () => {
+    stubServerApi({ "v1.system.native-identity.$get": async () => ({ status: "unsupported" }) });
+    await runCommand(["status", "--identity", "--json"], register);
+    expect(collectLogPayloads(vi.mocked(console.log))).toContain(JSON.stringify({ status: "unsupported" }, null, 2));
+  });
+
   it("bb status prints project/thread context", async () => {
     vi.stubEnv("BB_PROJECT_ID", "proj-1");
     vi.stubEnv("BB_THREAD_ID", "thread-1");

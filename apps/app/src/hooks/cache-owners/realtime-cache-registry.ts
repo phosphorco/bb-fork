@@ -411,6 +411,10 @@ export const REALTIME_THREAD_CHANGE_REGISTRY = {
     flush: "debounced",
     dirty: [markThreadDetailQueryStale, markThreadListQueriesStale],
   },
+  "execution-options-changed": {
+    flush: "immediate",
+    dirty: [dirtyThreadDefaultExecutionOptionsQueries],
+  },
   "order-changed": {
     flush: "debounced",
     dirty: [dirtyRootOrderThreadListQueries],

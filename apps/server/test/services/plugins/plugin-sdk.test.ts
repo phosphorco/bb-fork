@@ -374,6 +374,85 @@ describe("plugin bb.sdk bind gate", () => {
     expect(service.getApi("atomic-shares")).toBe(previousApi);
     expect(sharedPorts.replaceDeclarationsForOwner).not.toHaveBeenCalled();
   });
+
+  it("keeps the predecessor live when a factory-successful candidate cannot activate", async () => {
+    const rootDir = await writePlugin(workDir, {
+      name: "bb-plugin-activation-rollback",
+      serverSource: `
+        export default function plugin(bb: any) {
+          bb.hosts.declareSharedPorts("host-1", [3000]);
+        }
+      `,
+    });
+    await service.installPath(rootDir);
+    const predecessor = requireApi(service, "activation-rollback");
+
+    await writeFile(
+      join(rootDir, "server.ts"),
+      `
+        export default function plugin(bb: any) {
+          bb.hosts.declareSharedPorts("host-1", [4000]);
+          bb.onDispose(() => ((globalThis as any).__activationRollbackDisposed = true));
+        }
+      `,
+    );
+    sharedPorts.replaceDeclarationsForOwner.mockImplementationOnce(() => {
+      throw new Error("candidate shared-port activation failed");
+    });
+
+    await service.reload("activation-rollback");
+
+    expect(service.getApi("activation-rollback")).toBe(predecessor);
+    expect(
+      service
+        .list()
+        .find((entry) => entry.id === "activation-rollback")?.status,
+    ).toBe("running");
+    expect((globalThis as Record<string, unknown>).__activationRollbackDisposed).toBe(
+      true,
+    );
+    predecessor.hosts.declareSharedPorts("host-1", [3001]);
+    expect(sharedPorts.declareSharedPorts).toHaveBeenCalledWith({
+      ownerId: "activation-rollback",
+      hostId: "host-1",
+      ports: [3001],
+    });
+  });
+
+  it("retires the predecessor host artifact without clearing the published successor", async () => {
+    const rootDir = await writePlugin(workDir, {
+      name: "bb-plugin-generation-owned-host-artifact",
+      serverSource: `export default function plugin() {}`,
+      hostSource: `
+        const schema = { "~standard": { validate(value) { return { value }; } } };
+        export default { experimental_apiVersion: 1, contract: {}, handlers: {}, marker: "v1" };
+      `,
+    });
+    await service.installPath(rootDir);
+    const predecessor = pluginHostArtifacts.get("generation-owned-host-artifact");
+    expect(predecessor).toBeDefined();
+    disposePluginHost.mockClear();
+
+    await writeFile(
+      join(rootDir, "host.ts"),
+      `
+        const schema = { "~standard": { validate(value) { return { value }; } } };
+        export default { experimental_apiVersion: 1, contract: {}, handlers: {}, marker: "v2" };
+      `,
+    );
+    await service.reload("generation-owned-host-artifact");
+
+    const successor = pluginHostArtifacts.get("generation-owned-host-artifact");
+    expect(successor).toBeDefined();
+    expect(successor?.generation).not.toBe(predecessor?.generation);
+    expect(disposePluginHost).toHaveBeenCalledWith({
+      pluginId: "generation-owned-host-artifact",
+      generation: predecessor?.generation,
+    });
+    expect(pluginHostArtifacts.get("generation-owned-host-artifact")).toBe(
+      successor,
+    );
+  });
 });
 
 describe("plugin bb.sdk against a running server", () => {

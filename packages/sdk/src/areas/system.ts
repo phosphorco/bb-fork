@@ -8,6 +8,7 @@ import type {
   SystemAttentionResponse,
   SystemConfigReloadResponse,
   SystemConfigResponse,
+  SystemNativeIdentityStatusResponse,
   SystemExecutionOptionsQuery,
   SystemExecutionOptionsResponse,
   SystemCliSkillsStatusResponse,
@@ -73,6 +74,7 @@ export type SystemProviderStatesResult = SystemProviderStatesResponse;
 export type SystemVersionResult = SystemVersionResponse;
 
 export interface SystemArea {
+  nativeIdentity(args?: { signal?: AbortSignal }): Promise<SystemNativeIdentityStatusResponse>;
   attention(args?: SystemAttentionArgs): Promise<SystemAttentionResult>;
   config(args?: SystemConfigArgs): Promise<SystemConfigResult>;
   executionOptions(
@@ -111,6 +113,9 @@ function versionQuery(args: SystemVersionArgs | undefined): SystemVersionQuery {
 export function createSystemArea(args: CreateSdkAreaArgs): SystemArea {
   const { transport } = args;
   return {
+    async nativeIdentity(input) {
+      return transport.readJson(transport.api.v1.system["native-identity"].$get({}, ...signalRequestArgs(input?.signal)));
+    },
     async attention(input) {
       return transport.readJson(
         transport.api.v1.system.attention.$get(

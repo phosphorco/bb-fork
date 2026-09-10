@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
@@ -835,6 +835,10 @@ export function registerPluginRoutes(
       method,
       lookup.value,
       input,
+      {
+        ingress: { requestId: randomUUID(), transport: "http" },
+        request: context,
+      },
     );
     if (!outcome.ok) {
       return context.json(

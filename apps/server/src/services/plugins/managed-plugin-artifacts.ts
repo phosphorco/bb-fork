@@ -78,6 +78,8 @@ export interface RegisterInstalledArgs extends InstallRegistrationIdentity {
   activeArtifactId?: string;
   preparedManifest?: PluginManifest;
   beforePersist?: () => Promise<void>;
+  initiallyEnabled?: boolean;
+  afterPersist?: (manifest: PluginManifest) => Promise<void>;
 }
 
 export interface InstallContext {
@@ -87,6 +89,11 @@ export interface InstallContext {
   npmRegistry?: string;
   expectedNpmVersion?: string;
   expectedNpmIntegrity?: string;
+}
+
+export interface NpmInstallOptions {
+  initiallyEnabled?: boolean;
+  afterPersist?: (manifest: PluginManifest) => Promise<void>;
 }
 
 interface ActivateManagedUpdateArgs {
@@ -914,6 +921,7 @@ export function createManagedPluginArtifacts(
     parsed: Extract<ReturnType<typeof parsePluginSource>, { kind: "npm" }>,
     source: string,
     context: InstallContext = directInstallContext,
+    options: NpmInstallOptions = {},
   ): Promise<PluginListEntry> {
     const registryProbe = join(deps.dataDir, "plugins", "npm", ".registry");
     await mkdir(registryProbe, { recursive: true });
@@ -1015,6 +1023,8 @@ export function createManagedPluginArtifacts(
             refuseEngineMismatch: true,
             validated: true,
             activeArtifactId: existingArtifact.id,
+            initiallyEnabled: options.initiallyEnabled,
+            afterPersist: options.afterPersist,
           });
         }
       }
@@ -1102,6 +1112,8 @@ export function createManagedPluginArtifacts(
           validated: true,
           activeArtifactId: artifact.id,
           preparedManifest: manifest,
+          initiallyEnabled: options.initiallyEnabled,
+          afterPersist: options.afterPersist,
           beforePersist: async () => {
             await promoteImmutableDir({
               stagingDir: stagingPrefix,

@@ -36,6 +36,7 @@ interface StatusPayload {
 
 interface StatusCommandOptions {
   json?: boolean;
+  identity?: boolean;
 }
 
 type ResolveServerUrl = () => string;
@@ -50,8 +51,15 @@ export function registerStatusCommand(
     .command("status")
     .description("Show current context")
     .option("--json", "Print machine-readable JSON output")
+    .option("--identity", "Show the native identity admitted for this request")
     .action(
       action(async (opts: StatusCommandOptions) => {
+        if (opts.identity) {
+          const identity = await createCliBbSdk(getUrl()).system.nativeIdentity();
+          if (opts.json) outputJson(opts, identity);
+          else console.log(identity.status === "ready" ? identity.actor.presentation.displayName : `Identity: ${identity.status}`);
+          return;
+        }
         const context = getContext();
 
         const payload: StatusPayload = {

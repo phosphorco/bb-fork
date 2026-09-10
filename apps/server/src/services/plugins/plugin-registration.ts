@@ -352,10 +352,11 @@ export function createPluginRegistration(context: PluginRegistrationContext) {
           activeArtifactId: args.activeArtifactId ?? null,
           rootDir: args.rootDir,
           version: manifest.version,
-          enabled: movedFrom?.enabled ?? true,
+          enabled: args.initiallyEnabled ?? movedFrom?.enabled ?? true,
         });
         const row = getInstalledPlugin(deps.db, manifest.id);
-        if (row) {
+        await args.afterPersist?.(manifest);
+        if (row?.enabled) {
           await loadOne(row);
         }
         if (movedFrom !== undefined) {
@@ -372,7 +373,7 @@ export function createPluginRegistration(context: PluginRegistrationContext) {
           restoreRegistration(movedFrom);
         }
         const previous = getInstalledPlugin(deps.db, manifest.id);
-        if (previous) {
+        if (previous?.enabled) {
           await loadOne(previous);
         }
         throw error;

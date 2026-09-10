@@ -7,6 +7,8 @@ import {
   listRunningThreads,
   setThreadPendingStartContext,
   type ClaimedQueuedThreadMessageRow,
+  type DbTransaction,
+  type QueuedThreadMessageRow,
   type RunningThreadRow,
 } from "@bb/db";
 import {
@@ -53,8 +55,10 @@ import { getActiveTurnId, isManualCompactionActive } from "./thread-events.js";
 import { requireThreadCommandEnvironment } from "./thread-command-environment.js";
 import {
   advanceThreadProvisioning,
+  type PreappendedThreadProvisionRequest,
   requestThreadProvision,
   scheduleThreadProvisioningAdvance,
+  type ThreadProvisionRequestArgs,
 } from "./thread-provisioning.js";
 import {
   threadForkDescriptorSchema,
@@ -72,6 +76,7 @@ import {
   ensureThreadIsWritable,
   resolveMessageSenderThreadId,
   sendThreadMessage,
+  type SendThreadMessageTransactionCommit,
   type SendThreadMessageTransactionPreflight,
 } from "./thread-send.js";
 import type { TurnRequestRetryMarker } from "./thread-events.js";
@@ -193,6 +198,20 @@ export interface DispatchAttemptArgs {
   startedOnBehalfOf: StartedOnBehalfOf | null;
   /** Execution defaults resolved by creation, which the thread row lacks. */
   executionDefaults?: Parameters<typeof buildExecutionOptions>[2];
+  pendingStartCommit?: (
+    input: {
+      readonly provision: ThreadProvisionRequestArgs;
+      readonly tx: DbTransaction;
+    },
+  ) => PreappendedThreadProvisionRequest;
+  queueReservation?: (
+    input: {
+      readonly queuedMessage: QueuedThreadMessageRow;
+      readonly tx: DbTransaction;
+    },
+  ) => void;
+  queuedAfterAppendInTransaction?: SendThreadMessageTransactionCommit;
+  queuedBeforeAppendInTransaction?: SendThreadMessageTransactionPreflight;
   trigger: "auto-dispatch" | "user";
 }
 
@@ -304,6 +323,9 @@ async function runDispatchAttempt(
       waitingOn,
       sendAt,
       claimed,
+      ...(claimed === null && args.queueReservation !== undefined
+        ? { onCreateInTransaction: args.queueReservation }
+        : {}),
     });
     if (entry === null) {
       // The row vanished under a re-queue (the user deleted it). Nothing is
@@ -450,6 +472,7 @@ async function runDispatchAttempt(
                 claimed,
                 payload: resolvedPayload,
                 respectManualStopPause,
+                pendingStartCommit: args.pendingStartCommit,
                 startContext: args.startContext ?? null,
                 thread,
               });
@@ -483,6 +506,7 @@ async function runDispatchAttempt(
           claimed,
           payload: resolvedPayload,
           respectManualStopPause,
+          pendingStartCommit: args.pendingStartCommit,
           startContext: args.startContext ?? null,
           thread,
         });
@@ -507,14 +531,22 @@ async function runDispatchAttempt(
     thread,
     trigger: args.trigger,
     ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
-    ...(claimed === null
+    ...(args.queuedAfterAppendInTransaction === undefined
+      ? {}
+      : { afterAppendInTransaction: args.queuedAfterAppendInTransaction }),
+    ...(claimed === null && args.queuedBeforeAppendInTransaction === undefined
       ? {}
       : {
-          beforeAppendInTransaction: consumeClaimedRows(
-            claimed,
-            thread.id,
-            respectManualStopPause,
-          ),
+          beforeAppendInTransaction: ({ tx }) => {
+            args.queuedBeforeAppendInTransaction?.({ tx });
+            if (claimed !== null) {
+              consumeClaimedRows(
+                claimed,
+                thread.id,
+                respectManualStopPause,
+              )({ tx });
+            }
+          },
         }),
   });
   if (claimed !== null) {
@@ -577,6 +609,7 @@ function consumeClaimedRows(
 interface AdmitPendingThreadArgs {
   claimed: ClaimedQueuedThreadMessageRow[] | null;
   payload: SendMessageRequest & { inputGroups?: PromptInput[][] };
+  pendingStartCommit?: DispatchAttemptArgs["pendingStartCommit"];
   respectManualStopPause: boolean;
   /** Creation's own record; null on a re-attempt, which reads it back. */
   startContext: PendingThreadStartContext | null;
@@ -591,6 +624,7 @@ interface PendingThreadAdmission {
   claimedRow: ClaimedQueuedThreadMessageRow | null;
   execution: Awaited<ReturnType<typeof buildExecutionOptions>>;
   input: PromptInput[];
+  preappendedRequest: PreappendedThreadProvisionRequest | null;
   startContext: PendingThreadStartContext;
   startingThread: Thread;
 }
@@ -641,7 +675,20 @@ async function admitPendingThread(
   const execution = await buildExecutionOptions(deps, args.payload, {
     threadId: args.thread.id,
   });
+  const provision: ThreadProvisionRequestArgs = {
+    environmentIntent: startContext.environmentIntent,
+    execution,
+    fork: startContext.fork,
+    input: args.payload.input,
+    ...(startContext.providerInput === undefined
+      ? {}
+      : { providerInput: startContext.providerInput }),
+    startedOnBehalfOf: startContext.startedOnBehalfOf,
+    thread: args.thread,
+    titleProvided: startContext.titleProvided,
+  };
   const claimedRow = args.claimed?.[0] ?? null;
+  let preappendedRequest: PreappendedThreadProvisionRequest | null = null;
   let startingThread: Thread | null;
   try {
     startingThread = deps.db.transaction(
@@ -650,6 +697,7 @@ async function admitPendingThread(
         // flip that loses to a concurrent attempt rolls the consumption back,
         // so the row stays claimed for the caller to hand back rather than
         // being deleted under a message that never dispatched.
+        preappendedRequest = args.pendingStartCommit?.({ provision, tx }) ?? null;
         if (args.claimed !== null && args.claimed.length > 0) {
           consumeClaimedRows(
             args.claimed,
@@ -696,6 +744,7 @@ async function admitPendingThread(
     claimedRow,
     execution,
     input: args.payload.input,
+    preappendedRequest,
     startContext,
     startingThread,
   };
@@ -724,6 +773,9 @@ async function launchAdmittedThread(
       : {}),
     startedOnBehalfOf: startContext.startedOnBehalfOf,
     titleProvided: startContext.titleProvided,
+    ...(admission.preappendedRequest === null
+      ? {}
+      : { preappendedRequest: admission.preappendedRequest }),
   });
   if (claimedRow !== null) {
     settleQueueRowDispatched({ row: claimedRow });

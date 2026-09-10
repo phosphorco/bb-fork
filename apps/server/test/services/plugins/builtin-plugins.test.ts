@@ -764,6 +764,24 @@ describe("builtin plugin reconciliation", () => {
     });
     await service.start();
     expect(globals.__hotBuiltinServerVersion).toBe("before");
+    const predecessor = service.getApi("hot-server");
+
+    await writeFile(
+      join(mutableRoot, "server.ts"),
+      'export default function plugin() { throw new Error("watch candidate failed"); }\n',
+    );
+    let failureDeadline = Date.now() + 20_000;
+    while (
+      !(
+        service.list()[0]?.status === "running" &&
+        service.list()[0]?.statusDetail?.includes("watch candidate failed")
+      ) &&
+      Date.now() < failureDeadline
+    ) {
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+    }
+    expect(service.getApi("hot-server")).toBe(predecessor);
+    expect(service.list()[0]?.statusDetail).toContain("watch candidate failed");
 
     await writeFile(
       join(mutableRoot, "server.ts"),

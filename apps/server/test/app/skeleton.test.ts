@@ -261,6 +261,47 @@ describe("server skeleton", () => {
     db.$client.close();
   });
 
+  it("applies p6r sidecar migrations once across database restarts", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "bb-server-p6r-sidecar-"));
+    const dbPath = join(dataDir, "bb.db");
+    try {
+      const initial = initDb(dbPath);
+      try {
+        expect(
+          initial.$client
+            .prepare<[], { readonly count: number }>(
+              "SELECT COUNT(*) AS count FROM __p6r_migrations",
+            )
+            .get()?.count,
+        ).toBe(1);
+        expect(
+          initial.$client
+            .prepare(
+              "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'p6r_contributions'",
+            )
+            .get(),
+        ).toEqual({ name: "p6r_contributions" });
+      } finally {
+        initial.$client.close();
+      }
+
+      const restarted = initDb(dbPath);
+      try {
+        expect(
+          restarted.$client
+            .prepare<[], { readonly count: number }>(
+              "SELECT COUNT(*) AS count FROM __p6r_migrations",
+            )
+            .get()?.count,
+        ).toBe(1);
+      } finally {
+        restarted.$client.close();
+      }
+    } finally {
+      rmSync(dataDir, { force: true, recursive: true });
+    }
+  });
+
   it("ensures the personal project without pinning execution defaults", () => {
     const db = initDb(":memory:");
     try {

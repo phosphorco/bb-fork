@@ -26,6 +26,9 @@ import {
   threadTimelineModelFallbackSchema,
   threadTimelinePendingTodosSchema,
   threadEventTypeValues,
+  threadFacetOwnerStateSchema,
+  threadFacetQueryRequestSchema,
+  threadFacetTypeIdSchema,
   threadVisibilitySchema,
   threadWithRuntimeSchema,
 } from "@bb/domain";
@@ -369,6 +372,329 @@ export type SendQueuedMessageResponse = z.infer<
 
 export const threadListResponseSchema = z.array(threadListEntrySchema);
 export type ThreadListResponse = z.infer<typeof threadListResponseSchema>;
+
+export const experimentalThreadExecutionModelSourceSchema = z.enum([
+  "thread-override",
+  "last-turn",
+  "project-default",
+  "builtin-default",
+  "unresolved",
+]);
+export const experimentalThreadExecutionReasoningSourceSchema = z.enum([
+  "thread-override",
+  "last-turn",
+  "project-default",
+  "builtin-default",
+  "unresolved",
+]);
+
+const experimentalThreadExecutionSummaryBaseSchema = z
+  .object({
+    providerId: z.string().min(1),
+    catalogDependsOnWorkspace: z.boolean(),
+    projectId: z.string().min(1),
+    environmentId: z.string().min(1).nullable(),
+    hostId: z.string().min(1).nullable(),
+    workspacePath: z.string().min(1).nullable(),
+    effectiveReasoningLevel: reasoningLevelSchema.nullable(),
+    modelOverride: z.string().min(1).nullable(),
+    reasoningLevelOverride: reasoningLevelSchema.nullable(),
+    reasoningSource: experimentalThreadExecutionReasoningSourceSchema,
+    latestRequestSequence: z.number().int().nonnegative().nullable(),
+    witness: z.string().regex(/^[a-f0-9]{64}$/u),
+  })
+  .strict();
+
+export const experimentalThreadExecutionSummarySchema = z.discriminatedUnion(
+  "state",
+  [
+    experimentalThreadExecutionSummaryBaseSchema.extend({
+      state: z.literal("resolved"),
+      effectiveModel: z.string().min(1),
+      modelSource: experimentalThreadExecutionModelSourceSchema.exclude([
+        "unresolved",
+      ]),
+    }),
+    experimentalThreadExecutionSummaryBaseSchema.extend({
+      state: z.literal("unresolved"),
+      effectiveModel: z.null(),
+      modelSource: z.literal("unresolved"),
+      issue: z.enum(["missing-model", "malformed-history"]),
+    }),
+  ],
+);
+export type ExperimentalThreadExecutionSummary = z.infer<
+  typeof experimentalThreadExecutionSummarySchema
+>;
+
+export const EXPERIMENTAL_THREAD_EXECUTION_BATCH_LIMIT = 5_000;
+
+export const experimentalThreadExecutionOverridePatchSchema = z
+  .object({
+    model: z.string().min(1).nullable().optional(),
+    reasoningLevel: reasoningLevelSchema.nullable().optional(),
+  })
+  .strict()
+  .refine(
+    (patch) => "model" in patch || "reasoningLevel" in patch,
+    "At least one execution override field is required",
+  );
+export type ExperimentalThreadExecutionOverridePatch = z.infer<
+  typeof experimentalThreadExecutionOverridePatchSchema
+>;
+
+export const experimentalThreadExecutionPreflightRequestSchema = z
+  .object({
+    items: z
+      .array(
+        z
+          .object({
+            threadId: rawThreadIdSchema,
+            witness: z.string().regex(/^[a-f0-9]{64}$/u),
+            patch: experimentalThreadExecutionOverridePatchSchema,
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(EXPERIMENTAL_THREAD_EXECUTION_BATCH_LIMIT),
+  })
+  .strict()
+  .superRefine((request, ctx) => {
+    const seen = new Set<string>();
+    request.items.forEach(({ threadId }, index) => {
+      if (seen.has(threadId)) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Each thread may appear only once",
+          path: ["items", index, "threadId"],
+        });
+      }
+      seen.add(threadId);
+    });
+  });
+export type ExperimentalThreadExecutionPreflightRequest = z.infer<
+  typeof experimentalThreadExecutionPreflightRequestSchema
+>;
+
+const experimentalThreadExecutionUnavailableReasonSchema = z.enum([
+  "thread-not-found",
+  "unresolved-execution",
+  "catalog-unavailable",
+  "invalid-target",
+]);
+
+export const experimentalThreadExecutionPreflightResultSchema =
+  z.discriminatedUnion("status", [
+    z
+      .object({
+        status: z.literal("ready"),
+        threadId: rawThreadIdSchema,
+        current: experimentalThreadExecutionSummarySchema,
+        nextModelOverride: z.string().min(1).nullable(),
+        nextReasoningLevelOverride: reasoningLevelSchema.nullable(),
+        nextEffectiveModel: z.string().min(1).nullable(),
+        nextEffectiveReasoningLevel: reasoningLevelSchema.nullable(),
+        unchanged: z.boolean(),
+        applyToken: z.string().min(1).max(4096),
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal("stale"),
+        threadId: rawThreadIdSchema,
+        current: experimentalThreadExecutionSummarySchema,
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal("unavailable"),
+        threadId: rawThreadIdSchema,
+        reason: experimentalThreadExecutionUnavailableReasonSchema,
+        message: z.string().min(1),
+        current: experimentalThreadExecutionSummarySchema.optional(),
+      })
+      .strict(),
+  ]);
+export type ExperimentalThreadExecutionPreflightResult = z.infer<
+  typeof experimentalThreadExecutionPreflightResultSchema
+>;
+
+export const experimentalThreadExecutionPreflightResponseSchema = z
+  .object({
+    results: z.array(experimentalThreadExecutionPreflightResultSchema),
+  })
+  .strict();
+export type ExperimentalThreadExecutionPreflightResponse = z.infer<
+  typeof experimentalThreadExecutionPreflightResponseSchema
+>;
+
+export const experimentalThreadExecutionApplyRequestSchema = z
+  .object({
+    items: z
+      .array(
+        z
+          .object({
+            threadId: rawThreadIdSchema,
+            applyToken: z.string().min(1).max(4096),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(EXPERIMENTAL_THREAD_EXECUTION_BATCH_LIMIT),
+  })
+  .strict()
+  .superRefine((request, ctx) => {
+    const seen = new Set<string>();
+    request.items.forEach(({ threadId }, index) => {
+      if (seen.has(threadId)) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Each thread may appear only once",
+          path: ["items", index, "threadId"],
+        });
+      }
+      seen.add(threadId);
+    });
+  });
+export type ExperimentalThreadExecutionApplyRequest = z.infer<
+  typeof experimentalThreadExecutionApplyRequestSchema
+>;
+
+export const experimentalThreadExecutionApplyResultSchema =
+  z.discriminatedUnion("status", [
+    z
+      .object({
+        status: z.enum(["applied", "unchanged"]),
+        threadId: rawThreadIdSchema,
+        finalModelOverride: z.string().min(1).nullable(),
+        finalReasoningLevelOverride: reasoningLevelSchema.nullable(),
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal("stale"),
+        threadId: rawThreadIdSchema,
+        current: experimentalThreadExecutionSummarySchema,
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal("rejected"),
+        threadId: rawThreadIdSchema,
+        reason: z.enum([
+          "invalid-token",
+          "thread-not-found",
+          "catalog-changed",
+        ]),
+        retryable: z.boolean(),
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal("failed"),
+        threadId: rawThreadIdSchema,
+        reason: z.enum(["write-conflict", "transaction-failed"]),
+        retryable: z.boolean(),
+      })
+      .strict(),
+  ]);
+export type ExperimentalThreadExecutionApplyResult = z.infer<
+  typeof experimentalThreadExecutionApplyResultSchema
+>;
+
+export const experimentalThreadExecutionApplyResponseSchema = z
+  .object({
+    results: z.array(experimentalThreadExecutionApplyResultSchema),
+  })
+  .strict();
+export type ExperimentalThreadExecutionApplyResponse = z.infer<
+  typeof experimentalThreadExecutionApplyResponseSchema
+>;
+
+export const threadFacetParticipantSummarySchema = z
+  .object({
+    totalCount: z.number().int().nonnegative(),
+    profiles: z
+      .array(
+        z
+          .object({
+            p6rPrincipalKey: z.string().min(1),
+            p6rIdentityKind: z.enum(["external", "person"]),
+            p6rDisplayName: z.string().min(1),
+            p6rImageUrl: z.string().min(1).nullable(),
+          })
+          .strict(),
+      )
+      .max(3),
+    nextCursor: z.string().max(4096).nullable(),
+  })
+  .strict();
+export type ThreadFacetParticipantSummary = z.infer<
+  typeof threadFacetParticipantSummarySchema
+>;
+
+export const threadFacetQueryThreadSchema = threadListEntrySchema.extend({
+  participantSummary: threadFacetParticipantSummarySchema,
+  experimental_execution: experimentalThreadExecutionSummarySchema.optional(),
+});
+export type ThreadFacetQueryThread = z.infer<
+  typeof threadFacetQueryThreadSchema
+>;
+
+export { threadFacetQueryRequestSchema };
+export type ThreadFacetQueryRequest = z.infer<
+  typeof threadFacetQueryRequestSchema
+>;
+
+export const threadFacetQueryResponseSchema = z
+  .object({
+    threads: z.array(threadFacetQueryThreadSchema),
+    nextCursor: z.string().max(4096).nullable(),
+    facetStates: z
+      .array(
+        z
+          .object({
+            typeId: threadFacetTypeIdSchema,
+            ownerState: threadFacetOwnerStateSchema,
+          })
+          .strict(),
+      )
+      .max(5),
+  })
+  .strict();
+export type ThreadFacetQueryResponse = z.infer<
+  typeof threadFacetQueryResponseSchema
+>;
+
+export const threadFacetParticipantsQuerySchema = z
+  .object({
+    pageSize: z.string().regex(/^\d+$/u).optional(),
+    cursor: z.string().max(4096).optional(),
+  })
+  .strict();
+export type ThreadFacetParticipantsQuery = z.infer<
+  typeof threadFacetParticipantsQuerySchema
+>;
+
+export const threadFacetParticipantsResponseSchema = z
+  .object({
+    totalCount: z.number().int().nonnegative(),
+    profiles: z.array(
+      z
+        .object({
+          p6rPrincipalKey: z.string().min(1),
+          p6rIdentityKind: z.enum(["external", "person"]),
+          p6rDisplayName: z.string().min(1),
+          p6rImageUrl: z.string().min(1).nullable(),
+        })
+        .strict(),
+    ),
+    nextCursor: z.string().max(4096).nullable(),
+  })
+  .strict();
+export type ThreadFacetParticipantsResponse = z.infer<
+  typeof threadFacetParticipantsResponseSchema
+>;
 
 export const THREAD_MENTION_RESOLVE_MAX_IDS = 32;
 

@@ -49,6 +49,10 @@ import {
 } from "../internal/host-policy.js";
 import type {
   BbPluginApi,
+  ExperimentalThreadFacetCardinality,
+  ExperimentalThreadFacetHandle,
+  ExperimentalThreadFacetTargetGrant,
+  ExperimentalThreadFacets,
   PluginAgentConfiguration,
   PluginAgentConfigurationContext,
   PluginAgentToolContext,
@@ -2098,6 +2102,25 @@ function createFakePluginHostInternal(
     },
   };
 
+  const experimental_facets: ExperimentalThreadFacets = {
+    target() {
+      return Object.freeze({}) as ExperimentalThreadFacetTargetGrant;
+    },
+    declare<
+      const Cardinality extends ExperimentalThreadFacetCardinality,
+      const Members extends readonly string[],
+    >(): ExperimentalThreadFacetHandle<Cardinality, Members[number]> {
+      return {
+        async replace() {},
+        async clear() {},
+        async listPriorTargets() {
+          return { targets: [], nextCursor: null };
+        },
+        async markReady() {},
+      };
+    },
+  };
+
   const bb: BbPluginApi = {
     pluginId,
     log,
@@ -2117,6 +2140,7 @@ function createFakePluginHostInternal(
     server,
     hosts,
     experimental_aiServices,
+    experimental_facets,
     get sdk() {
       assertLive();
       return sdk;

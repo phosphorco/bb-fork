@@ -92,6 +92,61 @@ async function hasBinary(command: string): Promise<boolean> {
   }
 }
 
+async function createNpmRegistry(args: {
+  name: string;
+  version: string;
+  tarball: Buffer;
+}): Promise<{
+  registry: string;
+  integrity: string;
+  close(): Promise<void>;
+}> {
+  const integrity = `sha512-${createHash("sha512").update(args.tarball).digest("base64")}`;
+  const server = createServer((request, response) => {
+    const url = request.url ?? "";
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    if (url === "/package.tgz") {
+      response.writeHead(200, { "content-type": "application/octet-stream" });
+      response.end(args.tarball);
+      return;
+    }
+    if (decodeURIComponent(url) === `/${args.name}`) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          name: args.name,
+          "dist-tags": { latest: args.version },
+          versions: {
+            [args.version]: {
+              name: args.name,
+              version: args.version,
+              dist: {
+                tarball: `${origin}/package.tgz`,
+                shasum: createHash("sha1").update(args.tarball).digest("hex"),
+                integrity,
+              },
+            },
+          },
+        }),
+      );
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise<void>((resolvePromise) =>
+    server.listen(0, "127.0.0.1", () => resolvePromise()),
+  );
+  return {
+    registry: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    integrity,
+    close: () =>
+      new Promise<void>((resolvePromise) =>
+        server.close(() => resolvePromise()),
+      ),
+  };
+}
+
 const [hasGit, hasNpm] = await Promise.all([
   hasBinary("git"),
   hasBinary("npm"),
@@ -1636,7 +1691,146 @@ describe("plugin install flows", () => {
     });
   });
 
+  it("rejects unsafe staged settings before materializing an npm artifact", async () => {
+    const input = {
+      source: "npm:@acme/bb-plugin-staged@1.0.0",
+      pluginId: "staged",
+      npmRegistry: "http://127.0.0.1:9",
+      expectedNpmVersion: "1.0.0",
+      expectedNpmIntegrity: "sha512-test",
+    };
+
+    await expect(
+      service.stageNpmInstall({
+        ...input,
+        preActivationSettings: {
+          descriptors: {
+            token: { type: "string", label: "Token", secret: true },
+          },
+          values: { token: "secret" },
+        },
+      }),
+    ).rejects.toThrowError(/cannot include secrets/);
+    await expect(
+      service.stageNpmInstall({
+        ...input,
+        preActivationSettings: {
+          descriptors: { enabled: { type: "boolean", label: "Enabled" } },
+          values: { enabled: true, extra: true },
+        },
+      }),
+    ).rejects.toThrowError(/exactly the declared keys/);
+    await expect(
+      service.stageNpmInstall({
+        ...input,
+        preActivationSettings: {
+          descriptors: { enabled: { type: "boolean", label: "Enabled" } },
+          values: { enabled: "yes" },
+        },
+      }),
+    ).rejects.toThrowError(/expects a boolean/);
+    expect(materializationCount).toBe(0);
+  });
+
+  it("refuses staging over an existing running registration without disposing it", async () => {
+    const rootDir = join(workDir, "existing-staged-plugin");
+    await writePluginFixture(rootDir, { name: "bb-plugin-staged" });
+    const installed = await service.installPath(rootDir);
+    expect(installed.status).toBe("running");
+    expect(service.isPluginLoaded("staged")).toBe(true);
+
+    await expect(
+      service.stageNpmInstall({
+        source: "npm:@acme/bb-plugin-staged@1.0.0",
+        pluginId: "staged",
+        npmRegistry: "http://127.0.0.1:9",
+        expectedNpmVersion: "1.0.0",
+        expectedNpmIntegrity: "sha512-test",
+        preActivationSettings: { descriptors: {}, values: {} },
+      }),
+    ).rejects.toThrowError(/refuses existing plugin "staged"/);
+
+    expect(service.isPluginLoaded("staged")).toBe(true);
+    expect(getInstalledPlugin(db, "staged")?.rootDir).toBe(rootDir);
+
+    await service.setEnabled("staged", false);
+    expect(service.isPluginLoaded("staged")).toBe(false);
+    await expect(
+      service.stageNpmInstall({
+        source: "npm:@acme/bb-plugin-staged@1.0.0",
+        pluginId: "staged",
+        npmRegistry: "http://127.0.0.1:9",
+        expectedNpmVersion: "1.0.0",
+        expectedNpmIntegrity: "sha512-test",
+        preActivationSettings: { descriptors: {}, values: {} },
+      }),
+    ).rejects.toThrowError(/refuses existing plugin "staged"/);
+    expect(service.isPluginLoaded("staged")).toBe(false);
+    expect(getInstalledPlugin(db, "staged")).toMatchObject({
+      enabled: false,
+      rootDir,
+    });
+  });
+
   describe.skipIf(!hasNpm)("npm sources", () => {
+    it("keeps a failed staged settings write disabled and requires explicit removal before retry", async () => {
+      const name = "@acme/bb-plugin-stage-persistence";
+      const version = "0.1.0";
+      const fixtureDir = join(workDir, "stage-persistence-fixture");
+      await writePluginFixture(fixtureDir, { name, version });
+      const packDir = join(workDir, "stage-persistence-pack");
+      await mkdir(packDir, { recursive: true });
+      await run("npm", ["pack", "--pack-destination", packDir], {
+        cwd: fixtureDir,
+      });
+      const [tarballName] = await readdir(packDir);
+      if (tarballName === undefined) {
+        throw new Error("npm pack produced no tarball");
+      }
+      const registry = await createNpmRegistry({
+        name,
+        version,
+        tarball: await readFile(join(packDir, tarballName)),
+      });
+      const previousUserConfig = process.env.NPM_CONFIG_USERCONFIG;
+      const npmConfig = join(workDir, "stage-persistence-npmrc");
+      await writeFile(
+        npmConfig,
+        `@acme:registry=${registry.registry}\nregistry=https://registry.npmjs.org\n`,
+      );
+      process.env.NPM_CONFIG_USERCONFIG = npmConfig;
+      afterArtifactPromoted = async () => {
+        db.$client.exec("DROP TABLE plugin_settings");
+      };
+      const input = {
+        source: `npm:${name}@${version}`,
+        pluginId: "stage-persistence",
+        expectedNpmVersion: version,
+        expectedNpmIntegrity: registry.integrity,
+        preActivationSettings: {
+          descriptors: { enabled: { type: "boolean", label: "Enabled" } },
+          values: { enabled: false },
+        },
+      };
+      try {
+        await expect(service.stageNpmInstall(input)).rejects.toThrowError(
+          /remains disabled\. Remove it before staging again: .*plugin_settings/u,
+        );
+        expect(getInstalledPlugin(db, "stage-persistence")?.enabled).toBe(false);
+        expect(service.isPluginLoaded("stage-persistence")).toBe(false);
+        await expect(service.stageNpmInstall(input)).rejects.toThrowError(
+          /refuses existing plugin "stage-persistence"/u,
+        );
+      } finally {
+        if (previousUserConfig === undefined) {
+          delete process.env.NPM_CONFIG_USERCONFIG;
+        } else {
+          process.env.NPM_CONFIG_USERCONFIG = previousUserConfig;
+        }
+        await registry.close();
+      }
+    });
+
     it(
       "installs a scoped package into the immutable cache and retains it on removal",
       { timeout: 120_000 },

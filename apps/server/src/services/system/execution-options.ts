@@ -43,6 +43,7 @@ interface BuildModelLoadErrorArgs {
 
 interface ResolveSystemProviderModelsArgs {
   cwd?: string;
+  fresh?: boolean;
   hostId: string;
   providerId: string;
 }
@@ -201,9 +202,7 @@ async function listInstalledPluginProviderInfos(
                 bridgeLaunch,
               },
             });
-            return (
-              result.supported && result.health.status !== "not_installed"
-            );
+            return result.supported && result.health.status !== "not_installed";
           })();
         if (cached === undefined) {
           deps.providerRegistry.rememberInstalled(cacheKey, installed);
@@ -302,6 +301,7 @@ export async function resolveSystemProviderModels(
 
   const result = await loadSystemProviderModels(deps, {
     ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
+    ...(args.fresh === undefined ? {} : { fresh: args.fresh }),
     hostId: args.hostId,
     provider,
   });
@@ -521,10 +521,12 @@ async function loadSystemProviderModels(
   deps: LoggedWorkSessionDeps,
   {
     cwd,
+    fresh,
     hostId,
     provider,
   }: {
     cwd?: string;
+    fresh?: boolean;
     hostId: string;
     provider: ProviderInfo;
   },
@@ -547,7 +549,7 @@ async function loadSystemProviderModels(
   try {
     const { models, selectedOnlyModels } = await listProviderModelsMemoized(
       deps,
-      { command, hostId },
+      { command, fresh, hostId },
     );
     return {
       models,
@@ -591,7 +593,15 @@ type ProviderListModelsCommand = Extract<
 
 async function listProviderModelsMemoized(
   deps: LoggedWorkSessionDeps,
-  { command, hostId }: { command: ProviderListModelsCommand; hostId: string },
+  {
+    command,
+    fresh,
+    hostId,
+  }: {
+    command: ProviderListModelsCommand;
+    fresh?: boolean;
+    hostId: string;
+  },
 ): Promise<ProviderModelListMemoValue> {
   const probe = (): Promise<ProviderModelListMemoValue> =>
     callHostRetryableOnlineRpc(deps, {
@@ -600,7 +610,7 @@ async function listProviderModelsMemoized(
       command,
     });
   const daemonSessionId = deps.hub.getDaemonSessionIdForHost(hostId);
-  if (daemonSessionId === null) {
+  if (fresh === true || daemonSessionId === null) {
     return probe();
   }
   const memoKey = JSON.stringify([

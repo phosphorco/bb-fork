@@ -9,8 +9,11 @@ import {
   countNonDeletedAssignedChildThreads,
   getThread,
   getThreadExecutionOverride,
+  listThreadExecutionOverridesByThreadIds,
+  listThreadExecutionProjectionRowsByIds,
   hasActiveThreadAttention,
   setThreadExecutionOverride,
+  setThreadExecutionOverridesBatch,
   hasPendingThreadShutdownInEnvironment,
   listHostThreadIds,
   listActiveVisiblePinnedThreadRoots,
@@ -19,6 +22,7 @@ import {
   listThreads,
   listThreadsWithPendingInteractionStateForProjects,
   listThreadsWithPendingInteractionState,
+  listThreadsWithPendingInteractionStateByIds,
   updateThread,
   deleteThread,
   archiveThread,
@@ -296,6 +300,121 @@ describe("threads", () => {
       modelOverride: null,
       reasoningLevelOverride: null,
     });
+  });
+
+  it("hydrates non-deleted threads by unordered id selection", () => {
+    const { db, project } = setup();
+    const visible = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "codex",
+    });
+    const deleted = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "codex",
+    });
+    markThreadDeleted(db, noopNotifier, { threadId: deleted.id });
+
+    const result = listThreadsWithPendingInteractionStateByIds(db, [
+      deleted.id,
+      visible.id,
+      visible.id,
+    ]);
+
+    expect(result.map((thread) => thread.id)).toEqual([visible.id]);
+  });
+
+  it("uses execution revisions and compare-and-set batches for overrides", () => {
+    const { db, project } = setup();
+    const first = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "claude-code",
+    });
+    const second = createThread(db, noopNotifier, {
+      projectId: project.id,
+      providerId: "claude-code",
+    });
+
+    expect(listThreadExecutionProjectionRowsByIds(db, [first.id, second.id]))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          threadId: first.id,
+          executionRevision: 0,
+          modelOverride: null,
+          reasoningLevelOverride: null,
+        }),
+        expect.objectContaining({
+          threadId: second.id,
+          executionRevision: 0,
+          modelOverride: null,
+          reasoningLevelOverride: null,
+        }),
+      ]));
+    expect(listThreadExecutionOverridesByThreadIds(db, [first.id, second.id]))
+      .toEqual(new Map([
+        [first.id, {
+          threadId: first.id,
+          executionRevision: 0,
+          modelOverride: null,
+          reasoningLevelOverride: null,
+        }],
+        [second.id, {
+          threadId: second.id,
+          executionRevision: 0,
+          modelOverride: null,
+          reasoningLevelOverride: null,
+        }],
+      ]));
+
+    updateThread(db, noopNotifier, first.id, { title: "ordinary update" });
+    expect(listThreadExecutionProjectionRowsByIds(db, [first.id])[0])
+      .toMatchObject({ executionRevision: 0 });
+
+    setThreadExecutionOverride(db, {
+      threadId: first.id,
+      modelOverride: "claude-opus-4-8",
+      reasoningLevelOverride: "high",
+    });
+    const current = listThreadExecutionProjectionRowsByIds(db, [first.id])[0];
+    expect(current).toMatchObject({
+      executionRevision: 1,
+      modelOverride: "claude-opus-4-8",
+      reasoningLevelOverride: "high",
+    });
+
+    const changed = setThreadExecutionOverridesBatch(db, [
+      {
+        threadId: first.id,
+        expectedExecutionRevision: current.executionRevision,
+        expectedModelOverride: current.modelOverride,
+        expectedReasoningLevelOverride: current.reasoningLevelOverride,
+        modelOverride: "claude-sonnet-4-5",
+        reasoningLevelOverride: "max",
+      },
+      {
+        threadId: second.id,
+        expectedExecutionRevision: 1,
+        expectedModelOverride: null,
+        expectedReasoningLevelOverride: null,
+        modelOverride: "claude-haiku-4-5",
+        reasoningLevelOverride: "low",
+      },
+    ]);
+    expect(changed).toEqual(new Set([first.id]));
+    expect(listThreadExecutionProjectionRowsByIds(db, [first.id, second.id]))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          threadId: first.id,
+          executionRevision: 2,
+          modelOverride: "claude-sonnet-4-5",
+          reasoningLevelOverride: "max",
+        }),
+        expect.objectContaining({
+          threadId: second.id,
+          executionRevision: 0,
+          modelOverride: null,
+          reasoningLevelOverride: null,
+        }),
+      ]));
   });
 
   it("pins and unpins threads with durable pin order keys", () => {

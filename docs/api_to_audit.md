@@ -1,5 +1,61 @@
 # APIs To Audit
 
+## `bb.experimental_facets`
+
+**What it does.** Lets a plugin declare a bounded, shared-thread facet and
+write its projection only for opaque native thread targets issued by its own
+SDK reads. A declaration becomes queryable only after its owner marks a full
+census ready; replacement and disposal make the prior generation unavailable
+rather than presenting stale membership as current. Core participant facets
+are host-owned projections of accepted native authorship and keep the native
+principal key opaque.
+
+**Audit before stabilizing.**
+
+1. Confirm the target grant cannot be recreated from a thread id, copied to a
+   different plugin, or retained after reload.
+2. Confirm participant filters run only after a bounded durable projection
+   catch-up, never treating a missing snapshot as an absent participant.
+3. Confirm each cursor is signed, scoped to the exact query and request
+   identity, and never reveals a thread outside its original list scope.
+4. Confirm a plugin's replacement census moves through `reconciling` and that
+   unavailable or incomplete generations remain explicit in query results.
+5. Confirm person and external native evidence remain distinct while relative
+   server avatar paths are preserved as presentation data.
+
+## `bb.experimental_p6rIdentity`
+
+**What it does.** Exposes an optional, structural enhanced-host capability to
+an identity feature. Its `bindInvocation` method stages a generation-bound
+handler and returns the only handler BB may install. When BB dispatches an
+admitted request, that returned handler receives a fresh, host-issued
+invocation scope beside the trusted request context. The protocol also carries
+the host-owned operations that an identity feature adapts for request opening,
+acceptance, forwarding, provenance, history, providers, and invalidation.
+Its `instanceId` is a persisted storage-scoped host namespace that is stable
+across plugin generations and is safe to use before a request session exists.
+The core boundary deliberately leaves those product values opaque; the owning
+feature validates and models them.
+
+**Audit before stabilizing.**
+
+1. Confirm every HTTP, RPC, WebSocket, agent-tool, background, and CLI ingress
+   binds a route class from server-established evidence rather than a payload
+   claim, and never supplies an invented person.
+2. Confirm complete staged routing and registration snapshots become visible
+   through one callback-free boundary before callbacks, abort signals, or
+   observers run; a failed candidate must retain the predecessor's active
+   routing and clean only candidate-owned resources.
+3. Confirm `openRequest` returns the exact host-issued scope for that request,
+   and that acceptance and forwarding validate both the original scope and
+   destination generation without retracting accepted work after expiry.
+4. Confirm provider disposal removes only its exact registration/generation;
+   it must not retire unrelated plugin resources or trigger singleton fallback
+   when an identity-capable host is merely unavailable.
+5. Confirm provider readiness is optional, bounded, generation-fenced, and
+   limited to configuration/resource checks; it must not resolve an actor or
+   promise remote availability.
+
 ## `bb.http.experimental_websocket`
 
 **What it does.** Registers an exact-path WebSocket upgrade in the plugin's

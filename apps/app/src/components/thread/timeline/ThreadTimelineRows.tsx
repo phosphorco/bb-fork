@@ -998,6 +998,7 @@ const ConversationRowContent = memo(function ConversationRowContent({
       : undefined;
     return (
       <ConversationMessageContent
+        attribution={row.attribution}
         attachments={row.attachments}
         originKind={originKind}
         initiator={row.initiator}

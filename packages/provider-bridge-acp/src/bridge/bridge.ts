@@ -9,6 +9,7 @@ import {
   BRIDGE_INBOUND_REQUEST_METHODS,
   BRIDGE_JSON_RPC_ERRORS,
   BRIDGE_NOTIFICATION_METHODS,
+  formatPromptInputForProvider,
   PROVIDER_BRIDGE_PROTOCOL_VERSION,
   THREAD_DELTA_GRAMMAR_V3,
   THREAD_DELTA_NOTIFICATION_METHOD,
@@ -2601,7 +2602,11 @@ async function handleRequest(
       }
       const pending: AcpPendingTurnInput = {
         clientRequestId: params.clientRequestId,
-        input: params.input,
+        input: formatPromptInputForProvider(
+          params.input,
+          params.inputGroups,
+          params.provenanceGroups,
+        ),
         requestId: request.id,
       };
       if (isStandaloneBuiltinCompactCommand(params.input)) {
@@ -2628,7 +2633,11 @@ async function handleRequest(
       }
       session.queuedInputs.push({
         clientRequestId: params.clientRequestId,
-        input: params.input,
+        input: formatPromptInputForProvider(
+          params.input,
+          params.inputGroups,
+          params.provenanceGroups,
+        ),
         requestId: null,
       });
       requestSteerCancel(session);

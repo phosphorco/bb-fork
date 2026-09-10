@@ -35,7 +35,7 @@ import {
 } from "@bb/plugin-build";
 import { PluginHostArtifactRegistry } from "./plugin-host-artifact-registry.js";
 import { getPluginBuildToolchain } from "./build-toolchain.js";
-import { createNodeBbSdk, type BbSdk } from "@bb/sdk";
+import { createNodeBbSdk, createRequestTimeoutFetch, DEFAULT_BB_REQUEST_TIMEOUT_MS, type BbSdk } from "@bb/sdk";
 import { experimental_aiServicesHostContract } from "@get-bb/plugin-sdk/ai-services";
 import {
   getInstalledPlugin,
@@ -74,6 +74,7 @@ import {
   createPluginApi,
   isNeedsConfigurationError,
   type BbPluginApi,
+  type PluginApiHandle,
   type PluginThreadEventName,
   type PluginThreadEventPayloads,
 } from "./plugin-api.js";
@@ -86,6 +87,7 @@ import type {
   PluginWireLookup,
   ServiceRuntime,
 } from "./plugin-service-internal.js";
+import type { P6rPreparedProvider } from "../p6r/provider-contract.js";
 import { runEventLoopWork } from "../system/event-loop-work.js";
 
 const pluginSdkRuntimePath = join(
@@ -115,11 +117,11 @@ export function pluginSdkAliasFor(runtimePath: string): Record<string, string> {
   };
 }
 
-const pluginSdkAlias: Record<string, string> | undefined = existsSync(
-  pluginSdkRuntimePath,
-)
-  ? pluginSdkAliasFor(pluginSdkRuntimePath)
-  : undefined;
+const pluginSdkAlias = pluginSdkAliasFor(
+  existsSync(pluginSdkRuntimePath)
+    ? pluginSdkRuntimePath
+    : createRequire(import.meta.url).resolve(PLUGIN_SDK_SPECIFIER),
+);
 
 interface MutableRoot {
   id: number;
@@ -309,6 +311,11 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     deps.serviceRestartBaseMs ?? DEFAULT_SERVICE_RESTART_BASE_MS;
 
   const loaded = new Map<string, LoadedPlugin>();
+  const lastLoadPublished = new Map<string, boolean>();
+  const interactionLifetimes = new WeakMap<
+    PluginApiHandle,
+    AbortController
+  >();
   deps.pendingInteractions?.setPluginDirectory({
     isLoaded: (pluginId) => loaded.has(pluginId),
   });
@@ -320,7 +327,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
   const withArtifactLock = createKeyedLock();
   const withPluginOperationLock = createKeyedLock();
   const REGISTRATION_MUTATION_KEY = "plugin-registration-mutations";
-  const disposingPluginIds = new Set<string>();
+  const disposingHandles = new Set<PluginApiHandle>();
   const builtinSourceWatchers: FSWatcher[] = [];
   const ownedRootUrls = new Set<string>();
 
@@ -1220,7 +1227,38 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     return `service ${[...hung].join(", ")} did not stop`;
   }
 
+  async function disposeCandidateHandle(
+    id: string,
+    handle: PluginApiHandle,
+  ): Promise<void> {
+    try {
+      interactionLifetimes.get(handle)?.abort();
+      handle.retireP6rIdentity();
+      for (const hook of [...handle.disposeHooks].reverse()) {
+        try {
+          await hook();
+        } catch (error) {
+          logger.warn(
+            `plugin ${id} candidate dispose hook failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      for (const database of handle.databaseHandles.splice(0)) {
+        try {
+          database.close();
+        } catch (error) {
+          logger.warn(
+            `plugin ${id} candidate database close failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+    } finally {
+      handle.invalidate();
+    }
+  }
+
   async function loadOne(row: InstalledPluginRow): Promise<string | null> {
+    lastLoadPublished.set(row.id, false);
     await populateIdentity(row);
     if (!row.enabled) {
       setStatus(row.id, "disabled");
@@ -1294,12 +1332,35 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     const settingsDescriptorsRef: { current: PluginSettingDescriptors } = {
       current: {},
     };
-    const handle = createPluginApi({
+    const p6rGeneration = randomUUID();
+    const p6rCandidate = deps.p6rIdentity?.forPluginGeneration(
+      row.id,
+      p6rGeneration,
+      new AbortController().signal,
+    );
+    const interactionLifetime = new AbortController();
+    const internalFetch = deps.createSdkFetch?.({
+      pluginId: row.id, generation: p6rGeneration, lifetime: interactionLifetime.signal,
+    });
+    let scopedSdk: { baseUrl: string; sdk: BbSdk } | undefined;
+    let handle!: PluginApiHandle;
+    handle = createPluginApi({
       pluginId: row.id,
       logger: deps.logger,
       db: deps.db,
       dataDir: deps.dataDir,
-      getSdk: () => boundSdk,
+      getSdk: () => {
+        if (internalFetch === undefined || boundLoopbackBaseUrl === undefined) return boundSdk;
+        if (scopedSdk?.baseUrl !== boundLoopbackBaseUrl) {
+          scopedSdk = {
+            baseUrl: boundLoopbackBaseUrl,
+            sdk: createNodeBbSdk({ baseUrl: boundLoopbackBaseUrl,
+              fetch: createRequestTimeoutFetch({ timeoutMs: DEFAULT_BB_REQUEST_TIMEOUT_MS, fetch: internalFetch }),
+            }),
+          };
+        }
+        return scopedSdk.sdk;
+      },
       getAppUrl: deps.getAppUrl ?? (() => null),
       getLoopbackBaseUrl: () => boundLoopbackBaseUrl,
       publishSignal: (channel, payload) => {
@@ -1325,12 +1386,17 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
         if (!deps.pendingInteractions) {
           throw new Error("Plugin interactions are unavailable in this host");
         }
-        if (disposingPluginIds.has(row.id)) {
+        if (disposingHandles.has(handle)) {
           throw new Error(`plugin "${row.id}" is disposing`);
         }
+        const signal =
+          args.signal === undefined
+            ? interactionLifetime.signal
+            : AbortSignal.any([args.signal, interactionLifetime.signal]);
         return deps.pendingInteractions.requestPluginInteraction({
           ...args,
           pluginId: row.id,
+          signal,
         });
       },
       ensureSharedPortTunnel: (hostId) => {
@@ -1441,6 +1507,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
           hostArtifact: hostArtifactCandidate,
           hostArtifactProblem,
         }),
+      ...(p6rCandidate === undefined ? {} : { p6rIdentity: p6rCandidate }),
       isProviderIdTaken: (providerId) => {
         if (!deps.providerRegistry) {
           throw new Error("the provider registry is unavailable in this host");
@@ -1449,6 +1516,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
         return existing !== null && existing.pluginId !== row.id;
       },
     });
+    interactionLifetimes.set(handle, interactionLifetime);
     settingsDescriptorsRef.current = handle.settings.descriptors;
     let rollbackGeneration: (() => void) | undefined;
     if (row.sourceKind === "path" || row.sourceKind === "builtin") {
@@ -1458,7 +1526,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     try {
       const jiti = createJiti(import.meta.url, {
         moduleCache: false,
-        ...(pluginSdkAlias === undefined ? {} : { alias: pluginSdkAlias }),
+        alias: pluginSdkAlias,
       });
       const mod = (await jiti.import(
         await resolveServerEntry(row, manifest),
@@ -1477,12 +1545,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       );
     } catch (error) {
       rollbackGeneration?.();
-      for (const database of handle.databaseHandles.splice(0)) {
-        try {
-          database.close();
-        } catch {}
-      }
-      handle.invalidate();
+      await disposeCandidateHandle(row.id, handle);
       let message = error instanceof Error ? error.message : String(error);
       if (/ERR_DLOPEN_FAILED|\.node/.test(message)) {
         message += " (native dependencies are not supported in BB plugins)";
@@ -1513,19 +1576,19 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
           error instanceof Error ? error.message : String(error)
         }`;
       }
-      for (const database of handle.databaseHandles.splice(0)) {
-        try {
-          database.close();
-        } catch {}
-      }
-      handle.invalidate();
+      await disposeCandidateHandle(row.id, handle);
       setStatus(row.id, "error", hostArtifactProblem);
       logger.warn(`plugin ${row.id} failed to load: ${hostArtifactProblem}`);
       return hostArtifactProblem;
     }
+    const preparedP6rProvider =
+      p6rCandidate === undefined
+        ? null
+        : deps.p6rIdentity?.preparedProvider(row.id, p6rGeneration) ?? null;
     const plugin: LoadedPlugin = {
       manifest,
       handle,
+      hostArtifact: hostArtifactCandidate,
       services: handle.backgroundServices.map((record) => ({
         record,
         state: "stopped" as const,
@@ -1537,30 +1600,88 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
         disposed: false,
       })),
     };
-    if (previous !== undefined) {
-      await disposePluginInstance(row.id, previous);
-      const hungAfterDispose = hungServices.get(row.id);
-      if (hungAfterDispose !== undefined && hungAfterDispose.size > 0) {
-        loaded.delete(row.id);
-        deps.sharedPorts?.clearDeclarationsForOwner(row.id);
-        for (const database of handle.databaseHandles.splice(0)) {
-          try {
-            database.close();
-          } catch {}
-        }
-        handle.invalidate();
-        return hungServicesDetail(hungAfterDispose);
+    const priorNeedsConfiguration = needsConfiguration.get(row.id);
+    const priorAgentToolProblem = agentToolProblems.get(row.id);
+    needsConfiguration.delete(row.id);
+    agentToolProblems.delete(row.id);
+    try {
+      handle.activate();
+    } catch (error) {
+      rollbackGeneration?.();
+      await disposeCandidateHandle(row.id, handle);
+      if (priorNeedsConfiguration !== undefined) {
+        needsConfiguration.set(row.id, priorNeedsConfiguration);
       }
+      if (priorAgentToolProblem !== undefined) {
+        agentToolProblems.set(row.id, priorAgentToolProblem);
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      if (previous !== undefined) {
+        setStatus(row.id, "running", `reload failed: ${message}`);
+      } else {
+        setStatus(row.id, "error", message);
+      }
+      logger.warn(
+        `plugin ${row.id} failed to activate candidate: ${statuses.get(row.id)?.detail}`,
+      );
+      return previous !== undefined
+        ? `${message} (${PREVIOUS_INSTANCE_KEPT})`
+        : message;
     }
-    disposeUnavailableProviderRegistrations(row.id);
+
+    let publishedP6rProvider: {
+      active: P6rPreparedProvider;
+      predecessor: P6rPreparedProvider | null;
+    } | null = null;
+    if (preparedP6rProvider !== null) {
+      const registry = deps.p6rProviderRegistry;
+      if (registry === undefined) {
+        rollbackGeneration?.();
+        await disposeCandidateHandle(row.id, handle);
+        return failBeforeFactory(
+          "error",
+          "P6r provider staging is unavailable in this host",
+        );
+      }
+      const published = registry.publish(preparedP6rProvider);
+      if (!published.ok) {
+        rollbackGeneration?.();
+        await disposeCandidateHandle(row.id, handle);
+        return failBeforeFactory("error", published.error.message);
+      }
+      publishedP6rProvider = published.value;
+    }
+
     loaded.set(row.id, plugin);
     appBundles.set(row.id, appBundleCandidate.snapshot);
     if (hostArtifactCandidate === null) hostArtifacts.delete(row.id);
     else hostArtifacts.set(row.id, hostArtifactCandidate);
     brandingAssets.set(row.id, brandingAssetCandidate);
-    needsConfiguration.delete(row.id);
-    agentToolProblems.delete(row.id);
-    handle.activate();
+    handle.activateP6rIdentity();
+    lastLoadPublished.set(row.id, true);
+    deps.onP6rPluginPublishedForTest?.({
+      generation: p6rGeneration,
+      pluginId: row.id,
+    });
+    if (publishedP6rProvider !== null) {
+      deps.p6rProviderRegistry?.notifyPublished(publishedP6rProvider.active);
+      if (publishedP6rProvider.predecessor !== null) {
+        deps.p6rProviderRegistry?.retire(publishedP6rProvider.predecessor);
+      }
+    }
+    disposeUnavailableProviderRegistrations(row.id);
+    let predecessorCleanupProblem: string | null = null;
+    if (previous !== undefined) {
+      await disposePluginInstance(row.id, previous, false);
+      const hungAfterDispose = hungServices.get(row.id);
+      if (hungAfterDispose !== undefined && hungAfterDispose.size > 0) {
+        const detail = hungServicesDetail(hungAfterDispose);
+        predecessorCleanupProblem = detail;
+        logger.warn(
+          `plugin ${row.id} predecessor cleanup is incomplete; kept successor active: ${detail}`,
+        );
+      }
+    }
     const now = Date.now();
     prunePluginSchedules(
       deps.db,
@@ -1580,28 +1701,32 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     }
     if (!needsConfiguration.has(row.id)) {
       const details = [
+        predecessorCleanupProblem,
         agentToolProblems.get(row.id),
         appBundleCandidate.problem,
       ].filter((detail): detail is string => typeof detail === "string");
       setStatus(
         row.id,
-        "running",
+        predecessorCleanupProblem === null ? "running" : "degraded",
         details.length > 0 ? details.join("; ") : null,
       );
     }
     logger.info(`plugin ${row.id}@${manifest.version} loaded`);
-    return null;
+    return predecessorCleanupProblem;
   }
 
   async function disposePluginInstance(
     id: string,
     plugin: LoadedPlugin,
+    finalDisposal: boolean,
   ): Promise<void> {
-    disposingPluginIds.add(id);
+    disposingHandles.add(plugin.handle);
     try {
+      interactionLifetimes.get(plugin.handle)?.abort();
+      plugin.handle.retireP6rIdentity();
       plugin.handle.closeWebSockets();
-      const hostArtifact = hostArtifacts.get(id);
-      if (hostArtifact !== undefined && deps.disposePluginHost) {
+      const hostArtifact = plugin.hostArtifact;
+      if (hostArtifact !== null && deps.disposePluginHost) {
         try {
           await deps.disposePluginHost({
             pluginId: id,
@@ -1613,12 +1738,14 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
           );
         }
       }
-      try {
-        deps.pendingInteractions?.interruptPluginInteractions(id);
-      } catch (error) {
-        logger.warn(
-          `plugin ${id} interaction cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
+      if (finalDisposal) {
+        try {
+          deps.pendingInteractions?.interruptPluginInteractions(id);
+        } catch (error) {
+          logger.warn(
+            `plugin ${id} interaction cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
       }
       await stopServices(id, plugin);
       for (const hook of [...plugin.handle.disposeHooks].reverse()) {
@@ -1642,7 +1769,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       }
     } finally {
       plugin.handle.invalidate();
-      disposingPluginIds.delete(id);
+      disposingHandles.delete(plugin.handle);
     }
   }
 
@@ -1651,8 +1778,10 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     const plugin = loaded.get(id);
     if (!plugin) return;
     loaded.delete(id);
-    await disposePluginInstance(id, plugin);
-    hostArtifacts.delete(id);
+    await disposePluginInstance(id, plugin, true);
+    if (hostArtifacts.get(id) === plugin.hostArtifact) {
+      hostArtifacts.delete(id);
+    }
     deps.sharedPorts?.clearDeclarationsForOwner(id);
   }
 
@@ -1726,6 +1855,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     identities,
     isPackagedBuiltinEntry,
     loadAll,
+    lastLoadPublished: (id: string) => lastLoadPublished.get(id) === true,
     loaded,
     loadOne,
     brandingAssets,

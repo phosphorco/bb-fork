@@ -6,6 +6,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -17,6 +18,10 @@ import { resolvePluginBuildToolchain } from "./toolchain.js";
 
 function testToolchain() {
   return resolvePluginBuildToolchain(join(tmpdir(), "bb-toolchain-unused"));
+}
+
+function sha256(contents: string | Uint8Array): string {
+  return createHash("sha256").update(contents).digest("hex");
 }
 
 describe("plugin server build", () => {
@@ -65,14 +70,97 @@ describe("plugin server build", () => {
       ].join("\n"),
     );
 
-    const { jsPath } = await buildPluginServer(
+    const { jsPath, receiptPath } = await buildPluginServer(
       dir,
       "0.0.0-test",
       await testToolchain(),
     );
 
+    expect(jsPath).toBe(join(dir, "dist", "server.js"));
     const bundle = await readFile(jsPath, "utf8");
     expect(bundle).toContain('from "@bb/plugin-sdk"');
+    const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+    expect(receipt.inputs.esbuildExternalImports).toEqual([
+      "@bb/plugin-sdk",
+    ]);
+  });
+
+  it("writes an explicit output directory without touching the canonical dist", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bb-plugin-server-output-"));
+    tempDirs.push(dir);
+    const canonicalDist = join(dir, "dist");
+    const sentinelPath = join(canonicalDist, "sentinel.bin");
+    const sentinel = Buffer.from([0, 1, 2, 3, 255]);
+    const outputDir = join(dir, "proof-artifacts");
+    await mkdir(canonicalDist, { recursive: true });
+    await writeFile(sentinelPath, sentinel);
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({
+        name: "bb-plugin-server-output-fixture",
+        version: "0.0.0",
+        bb: {
+          name: "Server output fixture",
+          description: "Verifies an explicit artifact output directory.",
+          branding: { icon: "Zap" },
+          server: "./server.ts",
+        },
+      }),
+    );
+    await writeFile(
+      join(dir, "server.ts"),
+      "export default function plugin() {}\n",
+    );
+
+    const result = await buildPluginServer(
+      dir,
+      "0.0.0-test",
+      await testToolchain(),
+      { outputDir },
+    );
+
+    expect(result).toEqual({
+      jsPath: join(outputDir, "server.js"),
+      mapPath: join(outputDir, "server.js.map"),
+      metaPath: join(outputDir, "server.meta.json"),
+      receiptPath: join(outputDir, "server.receipt.json"),
+    });
+    await expect(readFile(result.jsPath, "utf8")).resolves.toContain(
+      "function plugin",
+    );
+    await expect(readFile(result.mapPath, "utf8")).resolves.toContain(
+      '"version": 3',
+    );
+    await expect(readFile(result.metaPath, "utf8")).resolves.toContain(
+      '"pluginId": "server-output-fixture"',
+    );
+    const receiptBytes = await readFile(result.receiptPath, "utf8");
+    const receipt = JSON.parse(receiptBytes);
+    expect(receipt).toMatchObject({
+      formatVersion: 1,
+      kind: "plugin-server-build",
+      inputs: {
+        esbuild: expect.arrayContaining([
+          expect.objectContaining({ path: "server.ts" }),
+        ]),
+      },
+    });
+    expect(receipt.outputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "proof-artifacts/server.js",
+          sha256: sha256(await readFile(result.jsPath)),
+        }),
+      ]),
+    );
+    const rebuilt = await buildPluginServer(
+      dir,
+      "0.0.0-test",
+      await testToolchain(),
+      { outputDir },
+    );
+    expect(await readFile(rebuilt.receiptPath, "utf8")).toBe(receiptBytes);
+    expect(await readFile(sentinelPath)).toEqual(sentinel);
   });
 
   describe("SDK subpath imports", () => {

@@ -56,6 +56,7 @@ interface PluginActivationContext {
   withLifecycleLock: <T>(id: string, fn: () => Promise<T>) => Promise<T>;
   disposeOne: (id: string) => Promise<void>;
   loadOne: (row: InstalledPluginRow) => Promise<string | null>;
+  lastLoadPublished: (id: string) => boolean;
   restoreRegistration: (row: InstalledPluginRow) => void;
   provenanceForRow: (row: InstalledPluginRow) => PluginProvenance;
   registrationMatchesForActivation: (
@@ -87,6 +88,7 @@ export function createPluginActivation(context: PluginActivationContext) {
     withLifecycleLock,
     disposeOne,
     loadOne,
+    lastLoadPublished,
     restoreRegistration,
     provenanceForRow,
     registrationMatchesForActivation,
@@ -213,7 +215,6 @@ export function createPluginActivation(context: PluginActivationContext) {
           `plugin "${args.row.id}" registration changed during update`,
         );
       }
-      await disposeOne(args.row.id);
       const snapshotNow = now();
       let snapshot: Awaited<ReturnType<typeof createPluginStateSnapshotOnDisk>>;
       try {
@@ -228,11 +229,10 @@ export function createPluginActivation(context: PluginActivationContext) {
           previousRegistration: args.row,
         });
       } catch (error) {
-        const previous = getInstalledPlugin(deps.db, args.row.id);
-        if (previous) await loadOne(previous);
         throw error;
       }
       let pointerWritten = false;
+      let predecessorRetained = false;
       try {
         await args.beforePersist?.();
         const beforeWrite = getInstalledPlugin(deps.db, args.row.id);
@@ -259,7 +259,11 @@ export function createPluginActivation(context: PluginActivationContext) {
         pointerWritten = true;
         const current = getInstalledPlugin(deps.db, args.row.id);
         stabilizingPluginIds.add(args.row.id);
-        if (current) await loadOne(current);
+        const loadProblem = current ? await loadOne(current) : null;
+        if (loadProblem !== null) {
+          predecessorRetained = !lastLoadPublished(args.row.id);
+          throw new Error(loadProblem);
+        }
         const immediate = statuses.get(args.row.id);
         if (immediate?.status === "error") {
           throw new Error(immediate.detail ?? "plugin failed to load");
@@ -303,11 +307,26 @@ export function createPluginActivation(context: PluginActivationContext) {
         }
       } catch (error) {
         if (!pointerWritten) {
-          const previous = getInstalledPlugin(deps.db, args.row.id);
-          if (previous) await loadOne(previous);
           throw error;
         }
         const detail = error instanceof Error ? error.message : String(error);
+        if (predecessorRetained) {
+          restoreRegistration(args.row);
+          if (
+            !setInstalledPluginLastFailure(deps.db, args.row.id, {
+              version: candidateVersion,
+              detail,
+              at: now(),
+            })
+          ) {
+            throw new Error(
+              `plugin "${args.row.id}" disappeared while retaining its predecessor`,
+            );
+          }
+          throw new PluginActivationRolledBackError(
+            `activation of ${args.manifest.version} failed before publication: ${detail}; the previous generation remains active`,
+          );
+        }
         if (
           !setPluginStateSnapshotRollbackPending(deps.db, snapshot.id, {
             candidateVersion,

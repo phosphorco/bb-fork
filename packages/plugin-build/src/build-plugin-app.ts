@@ -10,8 +10,20 @@ import {
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { derivePluginId } from "@bb/domain";
 import type { Metafile, Plugin } from "esbuild";
+import {
+  deterministicJson,
+  receiptExistingFiles,
+  receiptFile,
+  receiptMetafileInputs,
+  receiptOutput,
+  receiptToolchain,
+  receiptVirtualInput,
+  sha256,
+  type BuildReceiptFile,
+} from "./build-receipt.js";
 import {
   PLUGIN_THEME_CSS,
   TW_ANIMATE_CSS,
@@ -38,6 +50,18 @@ export {
 
 const SHARED_UI_ICON_MODULE_SUFFIX = "/shared-ui/src/components/ui/icon";
 const SHARED_UI_SOURCE_IMPORTER = /[\\/]shared-ui[\\/]src[\\/]/;
+const GENERATED_THEME_SOURCE = fileURLToPath(
+  new URL("./generated/plugin-theme.generated.ts", import.meta.url),
+);
+const GENERATED_RUNTIME_EXPORT_MANIFEST_SOURCE = fileURLToPath(
+  new URL("./generated/runtime-export-manifest.generated.ts", import.meta.url),
+);
+const RUNTIME_SHIMS_SOURCE = fileURLToPath(
+  new URL("./runtime-shims.mjs", import.meta.url),
+);
+const BUILD_SDK_MANIFEST = fileURLToPath(
+  new URL("../../plugin-sdk/package.json", import.meta.url),
+);
 
 export function isSharedUiIconRelativeImport(
   importPath: string,
@@ -167,6 +191,11 @@ type ScannerSource = {
   negated: boolean;
 };
 
+type DependencyTailwindSource = ScannerSource & {
+  packageName: string;
+  packageJsonPath: string;
+};
+
 function readDependencyNames(pkg: Record<string, unknown>): string[] {
   const names = new Set<string>();
   for (const field of ["dependencies", "devDependencies"] as const) {
@@ -240,10 +269,10 @@ async function packageJsonPathForDirectDependency(
 
 async function readDependencyTailwindSources(
   rootDir: string,
-): Promise<ScannerSource[]> {
+): Promise<DependencyTailwindSource[]> {
   const rootPackageJsonPath = join(rootDir, "package.json");
   const rootPackageJson = await readPackageJson(rootPackageJsonPath);
-  const sources: ScannerSource[] = [];
+  const sources: DependencyTailwindSource[] = [];
 
   for (const packageName of readDependencyNames(rootPackageJson)) {
     const packageJsonPath = await packageJsonPathForDirectDependency(
@@ -259,7 +288,7 @@ async function readDependencyTailwindSources(
     for (const rawPattern of patterns) {
       const negated = rawPattern.startsWith("!");
       const pattern = negated ? rawPattern.slice(1) : rawPattern;
-      sources.push({ base, pattern, negated });
+      sources.push({ base, pattern, negated, packageName, packageJsonPath });
     }
   }
 
@@ -301,11 +330,29 @@ async function readPluginAppConfig(rootDir: string): Promise<PluginAppConfig> {
 
 async function buildTailwindCss(
   rootDir: string,
+  outputDir: string,
   pluginId: string,
   toolchain: PluginBuildToolchain,
-  dependencySources: ScannerSource[],
+  dependencySources: DependencyTailwindSource[],
   bundledInputs: ReadonlySet<string>,
-): Promise<string> {
+): Promise<{
+  css: string;
+  receipt: {
+    ownPatterns: ScannerSource[];
+    ownFiles: BuildReceiptFile[];
+    dependencySources: Array<{
+      packageName: string;
+      manifest: BuildReceiptFile;
+      base: string;
+      pattern: string;
+      negated: boolean;
+    }>;
+    dependencyFiles: BuildReceiptFile[];
+    bundledDependencyFiles: BuildReceiptFile[];
+    compilerDependencies: BuildReceiptFile[];
+    generatedInputs: ReturnType<typeof receiptVirtualInput>[];
+  };
+}> {
   const [{ compile }, { Scanner }] = await Promise.all([
     import(toolchain.tailwindNode) as Promise<
       typeof import("@tailwindcss/node")
@@ -324,9 +371,10 @@ async function buildTailwindCss(
     `}`,
     ``,
   ].join("\n");
+  const compilerDependencyPaths = new Set<string>();
   const compiler = await compile(input, {
     base: rootDir,
-    onDependency: () => {},
+    onDependency: (filePath) => compilerDependencyPaths.add(filePath),
     customCssResolver: async (id) => {
       if (id !== "tailwindcss" && !id.startsWith("tailwindcss/")) {
         return undefined;
@@ -340,25 +388,35 @@ async function buildTailwindCss(
   const ownScanner = new Scanner({
     sources: [
       { base: rootDir, pattern: "**/*", negated: false },
-      { base: join(rootDir, "dist"), pattern: "**/*", negated: true },
+      { base: outputDir, pattern: "**/*", negated: true },
       { base: join(rootDir, "node_modules"), pattern: "**/*", negated: true },
     ],
   });
+  const ownFiles = await receiptExistingFiles(rootDir, ownScanner.files);
   const candidates = new Set(ownScanner.scan());
+  const dependencyReceiptSources = [] as Array<{
+    packageName: string;
+    manifest: BuildReceiptFile;
+    base: string;
+    pattern: string;
+    negated: boolean;
+  }>;
+  let dependencyFiles: BuildReceiptFile[] = [];
+  let bundledDependencyFiles: BuildReceiptFile[] = [];
 
   if (dependencySources.length > 0) {
+    const scanner = new Scanner({ sources: dependencySources });
+    const scannerFiles = scanner.files;
     const dependencyFileIdentities = await Promise.all(
-      new Scanner({ sources: dependencySources }).files.map((file) =>
-        realpath(file),
-      ),
+      scannerFiles.map((file) => realpath(file)),
     );
-    const bundledDependencyFiles = [
+    const bundledDependencyFilePaths = [
       ...new Set(
         dependencyFileIdentities.filter((file) => bundledInputs.has(file)),
       ),
     ];
     const contents = await Promise.all(
-      bundledDependencyFiles.map(async (file) => ({
+      bundledDependencyFilePaths.map(async (file) => ({
         content: await readFile(file, "utf8"),
         extension: extname(file).slice(1),
       })),
@@ -366,11 +424,51 @@ async function buildTailwindCss(
     for (const candidate of new Scanner({ sources: [] }).scanFiles(contents)) {
       candidates.add(candidate);
     }
+    dependencyFiles = await receiptExistingFiles(rootDir, scannerFiles);
+    bundledDependencyFiles = await receiptExistingFiles(
+      rootDir,
+      bundledDependencyFilePaths,
+    );
+    for (const source of dependencySources) {
+      dependencyReceiptSources.push({
+        packageName: source.packageName,
+        manifest: await receiptFile(rootDir, source.packageJsonPath),
+        base: source.base,
+        pattern: source.pattern,
+        negated: source.negated,
+      });
+    }
   }
-  return scopePluginUtilities(
-    compiler.build([...candidates]),
-    pluginScopeRoots(pluginId),
-  );
+  return {
+    css: scopePluginUtilities(
+      compiler.build([...candidates]),
+      pluginScopeRoots(pluginId),
+    ),
+    receipt: {
+      ownPatterns: [
+        { base: rootDir, pattern: "**/*", negated: false },
+        { base: outputDir, pattern: "**/*", negated: true },
+        { base: join(rootDir, "node_modules"), pattern: "**/*", negated: true },
+      ],
+      ownFiles,
+      dependencySources: dependencyReceiptSources.sort(
+        (left, right) =>
+          left.packageName.localeCompare(right.packageName) ||
+          left.pattern.localeCompare(right.pattern),
+      ),
+      dependencyFiles,
+      bundledDependencyFiles,
+      compilerDependencies: await receiptExistingFiles(
+        rootDir,
+        [...compilerDependencyPaths],
+      ),
+      generatedInputs: [
+        receiptVirtualInput("tailwind-input.css", input),
+        receiptVirtualInput("generated/plugin-theme", PLUGIN_THEME_CSS),
+        receiptVirtualInput("generated/tw-animate", TW_ANIMATE_CSS),
+      ],
+    },
+  };
 }
 
 async function bundledInputPaths(
@@ -389,37 +487,42 @@ async function bundledInputPaths(
   return paths;
 }
 
-interface PluginAppBuildResult {
+export interface PluginAppBuildResult {
   jsPath: string;
   cssPath: string;
   metaPath: string;
+  receiptPath: string;
 }
 
-interface PluginAppBuildOptions {
-  minify: boolean;
+export interface PluginAppBuildOptions {
+  minify?: boolean;
+  outputDir?: string;
 }
 
 export async function buildPluginApp(
   rootDir: string,
   bbVersion: string,
   toolchain: PluginBuildToolchain,
-  options: PluginAppBuildOptions = { minify: true },
+  options: PluginAppBuildOptions = {},
 ): Promise<PluginAppBuildResult> {
   const { appEntry, packageName, pluginVersion } =
     await readPluginAppConfig(rootDir);
   const pluginId = derivePluginId(packageName);
   const dependencySources = await readDependencyTailwindSources(rootDir);
-  const distDir = join(rootDir, "dist");
+  const distDir = options.outputDir ?? join(rootDir, "dist");
+  const minify = options.minify ?? true;
   await mkdir(distDir, { recursive: true });
   const jsPath = join(distDir, "app.js");
   const cssPath = join(distDir, "app.css");
   const metaPath = join(distDir, "app.meta.json");
+  const receiptPath = join(distDir, "app.receipt.json");
 
   const stageDir = await mkdtemp(join(distDir, ".stage-"));
   try {
     const stagedJsPath = join(stageDir, "app.js");
     const stagedCssPath = join(stageDir, "app.css");
     const stagedMetaPath = join(stageDir, "app.meta.json");
+    const stagedReceiptPath = join(stageDir, "app.receipt.json");
 
     const esbuild = (await import(
       toolchain.esbuild
@@ -429,11 +532,11 @@ export async function buildPluginApp(
       outfile: stagedJsPath,
       absWorkingDir: rootDir,
       bundle: true,
-      metafile: dependencySources.length > 0,
+      metafile: true,
       format: "esm",
       platform: "browser",
       target: "es2022",
-      minify: options.minify,
+      minify,
       legalComments: "none",
       jsx: "automatic",
       jsxDev: false,
@@ -451,29 +554,25 @@ export async function buildPluginApp(
     } catch (error) {
       if (!isRecord(error) || error.code !== "ENOENT") throw error;
     }
-    let bundledInputs: ReadonlySet<string> = new Set();
-    if (dependencySources.length > 0) {
-      if (bundle.metafile === undefined) {
-        throw new Error(
-          "esbuild did not return the metafile required for dependency Tailwind scanning",
-        );
-      }
-      bundledInputs = await bundledInputPaths(bundle.metafile, rootDir);
+    if (bundle.metafile === undefined) {
+      throw new Error("esbuild did not return the app build metafile");
     }
-    const tailwindCss = (
-      await buildTailwindCss(
-        rootDir,
-        pluginId,
-        toolchain,
-        dependencySources,
-        bundledInputs,
-      )
-    ).trimEnd();
+    const esbuildInputs = await receiptMetafileInputs(rootDir, bundle.metafile);
+    const bundledInputs = await bundledInputPaths(bundle.metafile, rootDir);
+    const tailwind = await buildTailwindCss(
+      rootDir,
+      distDir,
+      pluginId,
+      toolchain,
+      dependencySources,
+      bundledInputs,
+    );
+    const tailwindCss = tailwind.css.trimEnd();
     const { optimize } = (await import(
       toolchain.tailwindNode
     )) as typeof import("@tailwindcss/node");
     const css = optimize(`${tailwindCss}\n${authoredCss}`, {
-      minify: options.minify,
+      minify,
     }).code;
     await writeFile(stagedCssPath, css);
     await writeFile(
@@ -484,12 +583,79 @@ export async function buildPluginApp(
         2,
       ) + "\n",
     );
+    const outputFiles = await Promise.all([
+      receiptOutput(rootDir, jsPath, stagedJsPath),
+      receiptOutput(rootDir, cssPath, stagedCssPath),
+      receiptOutput(rootDir, metaPath, stagedMetaPath),
+    ]);
+    await writeFile(
+      stagedReceiptPath,
+      deterministicJson({
+        formatVersion: 1,
+        kind: "plugin-app-build",
+        configuration: {
+          entry: await receiptFile(rootDir, appEntry),
+          packageManifest: await receiptFile(rootDir, join(rootDir, "package.json")),
+          packageName,
+          pluginVersion,
+          bbVersion,
+          pluginId,
+          format: "esm",
+          platform: "browser",
+          target: "es2022",
+          minify,
+          jsx: "automatic",
+          jsxDev: false,
+          define: {
+            "process.env.NODE_ENV": "production",
+            __BB_PLUGIN_ID__: pluginId,
+          },
+          runtimeExportManifestSha256: sha256(JSON.stringify(RUNTIME_EXPORT_MANIFEST)),
+        },
+        inputs: {
+          esbuild: esbuildInputs,
+          authoredCss: esbuildInputs.filter(
+            (input) => input.path.endsWith(".css"),
+          ),
+          tailwind: tailwind.receipt,
+          runtimeShims: [
+            receiptVirtualInput(
+              "generated/runtime-export-manifest",
+              JSON.stringify(RUNTIME_EXPORT_MANIFEST),
+            ),
+            receiptVirtualInput(
+              "runtime-slot-map",
+              JSON.stringify(RUNTIME_SLOT_BY_SPECIFIER),
+            ),
+          ],
+          generatedSources: await receiptExistingFiles(rootDir, [
+            GENERATED_THEME_SOURCE,
+            GENERATED_RUNTIME_EXPORT_MANIFEST_SOURCE,
+            RUNTIME_SHIMS_SOURCE,
+          ]),
+          sdkManifests: await receiptExistingFiles(rootDir, [
+            BUILD_SDK_MANIFEST,
+            join(rootDir, "node_modules", "@get-bb", "plugin-sdk", "package.json"),
+            join(rootDir, "node_modules", "@bb", "plugin-sdk", "package.json"),
+          ]),
+          externalManifests: await receiptExistingFiles(
+            rootDir,
+            Object.keys(RUNTIME_SLOT_BY_SPECIFIER).map((specifier) =>
+              join(rootDir, "node_modules", specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1).join("/"), "package.json"),
+            ),
+          ),
+          toolchain: await receiptToolchain(rootDir, toolchain),
+        },
+        outputs: outputFiles,
+      }),
+    );
 
     await rename(stagedJsPath, jsPath);
     await rename(stagedCssPath, cssPath);
     await rename(stagedMetaPath, metaPath);
+    await rename(stagedReceiptPath, receiptPath);
   } finally {
     await rm(stageDir, { recursive: true, force: true });
   }
-  return { jsPath, cssPath, metaPath };
+  return { jsPath, cssPath, metaPath, receiptPath };
 }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { nativeInputAttributionSchema } from "./native-attribution.js";
 import {
   backgroundTaskStatusSchema,
   backgroundTaskUsageSchema,
@@ -98,6 +99,12 @@ export const timelineConversationTurnRequestStatusValues = [
   "rejected",
 ] as const;
 export const timelineConversationTurnRequestSchema = z.object({
+  source: z
+    .object({
+      requestId: z.string().min(1),
+      inputGroupIndex: z.number().int().nonnegative(),
+    })
+    .optional(),
   isGrouped: z.boolean(),
   kind: z.enum(timelineConversationTurnRequestKindValues),
   status: z.enum(timelineConversationTurnRequestStatusValues),
@@ -121,6 +128,7 @@ export const timelineUserConversationRowSchema =
     systemMessageSubject: systemMessageSubjectSchema.nullable(),
     turnRequest: timelineConversationTurnRequestSchema,
     mentions: z.array(promptTextMentionSchema),
+    attribution: z.array(nativeInputAttributionSchema).optional(),
   });
 export type TimelineUserConversationRow = z.infer<
   typeof timelineUserConversationRowSchema

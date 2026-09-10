@@ -3,6 +3,7 @@ import type {
   DynamicTool,
   InstructionMode,
   JsonObject,
+  NativeInputProvenanceGroup,
   PromptInput,
   PromptMode,
   ReasoningLevel,
@@ -87,6 +88,7 @@ export type AdapterCommand =
       providerThreadId: string;
       input: PromptInput[];
       inputGroups?: PromptInput[][];
+      provenanceGroups?: NativeInputProvenanceGroup[];
       clientRequestId: ClientTurnRequestId;
       options: ProviderExecutionContext;
     }
@@ -97,6 +99,7 @@ export type AdapterCommand =
       expectedTurnId: string;
       input: PromptInput[];
       inputGroups?: PromptInput[][];
+      provenanceGroups?: NativeInputProvenanceGroup[];
       clientRequestId: ClientTurnRequestId;
       options: ProviderExecutionContext;
     }

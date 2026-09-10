@@ -5,7 +5,7 @@ import type {
   ReasoningLevel,
   ServiceTier,
 } from "@bb/domain";
-import type { DbConnection } from "../connection.js";
+import type { DbConnection, DbQueryConnection } from "../connection.js";
 import { projectExecutionDefaults } from "../schema.js";
 
 export interface GetProjectExecutionDefaultsArgs {
@@ -26,7 +26,7 @@ export interface UpsertProjectExecutionDefaultsArgs extends GetProjectExecutionD
 }
 
 export function getProjectExecutionDefaults(
-  db: DbConnection,
+  db: DbQueryConnection,
   args: GetProjectExecutionDefaultsArgs,
 ): ProjectExecutionDefaults | null {
   const row = db
@@ -45,7 +45,7 @@ export function getProjectExecutionDefaults(
 }
 
 export function listProjectExecutionDefaultsByProjectIds(
-  db: DbConnection,
+  db: DbQueryConnection,
   args: ListProjectExecutionDefaultsByProjectIdsArgs,
 ): Map<string, ProjectExecutionDefaults> {
   const byProjectId = new Map<string, ProjectExecutionDefaults>();

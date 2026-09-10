@@ -1,6 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, expectTypeOf, it } from "vitest";
-import type { BbPluginApi } from "../index.js";
+import type {
+  BbPluginApi,
+  ExperimentalP6rAcceptanceRequest,
+  ExperimentalP6rIdentityProtocol,
+  ExperimentalP6rInvocationContext,
+  ExperimentalP6rInvocationScope,
+} from "../index.js";
 
 type ExpectedBbPluginApiKey =
   | "agents"
@@ -8,7 +14,9 @@ type ExpectedBbPluginApiKey =
   | "cli"
   | "events"
   | "experimental_aiServices"
+  | "experimental_facets"
   | "experimental_hooks"
+  | "experimental_p6rIdentity"
   | "hosts"
   | "http"
   | "log"
@@ -32,6 +40,13 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
   "PluginAiServiceDeclaration",
   "PluginAiServiceKind",
   "PluginAiServices",
+  "ExperimentalThreadFacetCardinality",
+  "ExperimentalThreadFacetHandle",
+  "ExperimentalThreadFacetReplacement",
+  "ExperimentalThreadFacets",
+  "ExperimentalThreadFacetTarget",
+  "ExperimentalThreadFacetTargetGrant",
+  "ExperimentalThreadFacetTargetPage",
   "PluginAgentConfiguration",
   "PluginAgentConfigurationContext",
   "PluginAgentToolContentPart",
@@ -180,6 +195,28 @@ function rootExportNames(
 describe("backend plugin SDK public surface", () => {
   it("snapshots every BbPluginApi root member", () => {
     expectTypeOf<keyof BbPluginApi>().toEqualTypeOf<ExpectedBbPluginApiKey>();
+  });
+
+  it("exposes the optional enhanced identity protocol without product models", () => {
+    expectTypeOf<
+      BbPluginApi["experimental_p6rIdentity"]
+    >().toEqualTypeOf<ExperimentalP6rIdentityProtocol | undefined>();
+    expectTypeOf<ExperimentalP6rIdentityProtocol["instanceId"]>().toEqualTypeOf<string>();
+    expectTypeOf<
+      ExperimentalP6rInvocationContext<{ readonly requestId: string }>["scope"]
+    >().toEqualTypeOf<ExperimentalP6rInvocationScope>();
+    expectTypeOf<
+      ExperimentalP6rAcceptanceRequest<
+        { readonly body: string },
+        { readonly subject: string }
+      >["source"]
+    >().toEqualTypeOf<
+      | { readonly kind: "scope"; readonly scope: ExperimentalP6rInvocationScope }
+      | {
+          readonly kind: "external";
+          readonly author: { readonly subject: string };
+        }
+    >();
   });
 
   it("keeps every backend contract export in the root declaration bundle", async () => {

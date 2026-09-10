@@ -6,6 +6,8 @@ import {
   type SystemMessageKind,
   type SystemMessageSubject,
   type Thread,
+  type ThreadChangeKind,
+  type ThreadChangeMetadata,
   type ThreadTurnInitiator,
   type TurnRequestTarget,
 } from "@bb/domain";
@@ -44,7 +46,7 @@ import { applyLoggedThreadLifecycleEvent } from "./lifecycle-outcome.js";
 import { runtimeErrorLogFields } from "../lib/error-log-fields.js";
 import { recordAcceptedPromptHistoryEntry } from "../prompt-history.js";
 
-interface RequestThreadProvisionArgs {
+export interface ThreadProvisionRequestArgs {
   environmentIntent: ThreadProvisionEnvironmentIntent;
   execution: ResolvedThreadExecutionOptions;
   fork: ThreadForkDescriptor | null;
@@ -53,6 +55,13 @@ interface RequestThreadProvisionArgs {
   startedOnBehalfOf: StartedOnBehalfOf | null;
   thread: Thread;
   titleProvided: boolean;
+}
+
+export interface PreappendedThreadProvisionRequest {
+  readonly clientRequestId: ReturnType<typeof createClientTurnRequestId>;
+  readonly notificationChanges: readonly ThreadChangeKind[];
+  readonly notificationMetadata: ThreadChangeMetadata;
+  readonly requestSequence: number;
 }
 
 interface RequestThreadReprovisionArgs {
@@ -210,33 +219,88 @@ async function startThreadIfEnvironmentReady(
   });
 }
 
+export function appendThreadProvisionRequestInTransaction(
+  tx: DbTransaction,
+  args: ThreadProvisionRequestArgs,
+): PreappendedThreadProvisionRequest {
+  const initiator: ThreadTurnInitiator =
+    args.startedOnBehalfOf?.initiator ?? "user";
+  const senderThreadId = args.startedOnBehalfOf?.senderThreadId ?? null;
+  const target: TurnRequestTarget = { kind: "thread-start" };
+  const request = appendPreparedClientTurnRequestedEventWithNotificationInTransaction(
+    tx,
+    {
+      threadId: args.thread.id,
+      environmentId: args.thread.environmentId,
+      type: "client/turn/requested",
+      input: args.input,
+      execution: args.execution,
+      initiator,
+      senderThreadId,
+      requestMethod: "thread/start",
+      source: "spawn",
+      target,
+      requestId: createClientTurnRequestId(),
+    },
+  );
+  recordAcceptedPromptHistoryEntry(
+    { db: tx },
+    {
+      thread: args.thread,
+      input: args.input,
+      initiator,
+      target,
+      requestSequence: request.sequence,
+    },
+  );
+  return {
+    clientRequestId: request.requestId,
+    notificationChanges: request.notificationChanges,
+    notificationMetadata: request.notificationMetadata,
+    requestSequence: request.sequence,
+  };
+}
+
 export function requestThreadProvision(
   deps: Pick<AppDeps, "db" | "hub">,
-  args: RequestThreadProvisionArgs,
+  args: ThreadProvisionRequestArgs & {
+    readonly preappendedRequest?: PreappendedThreadProvisionRequest;
+  },
 ): ThreadProvisionContext {
   const initiator: ThreadTurnInitiator =
     args.startedOnBehalfOf?.initiator ?? "user";
   const senderThreadId = args.startedOnBehalfOf?.senderThreadId ?? null;
   const target: TurnRequestTarget = { kind: "thread-start" };
-  const request = appendClientTurnEvent(deps, {
-    threadId: args.thread.id,
-    environmentId: args.thread.environmentId,
-    type: "client/turn/requested",
-    input: args.input,
-    execution: args.execution,
-    initiator,
-    senderThreadId,
-    requestMethod: "thread/start",
-    source: "spawn",
-    target,
-  });
-  recordAcceptedPromptHistoryEntry(deps, {
-    thread: args.thread,
-    input: args.input,
-    initiator,
-    target,
-    requestSequence: request.sequence,
-  });
+  const preappended = args.preappendedRequest;
+  const request = preappended === undefined
+    ? appendClientTurnEvent(deps, {
+        threadId: args.thread.id,
+        environmentId: args.thread.environmentId,
+        type: "client/turn/requested",
+        input: args.input,
+        execution: args.execution,
+        initiator,
+        senderThreadId,
+        requestMethod: "thread/start",
+        source: "spawn",
+        target,
+      })
+    : { requestId: preappended.clientRequestId, sequence: preappended.requestSequence };
+  if (preappended !== undefined) {
+    deps.hub.notifyThread(
+      args.thread.id,
+      [...preappended.notificationChanges],
+      preappended.notificationMetadata,
+    );
+  } else {
+    recordAcceptedPromptHistoryEntry(deps, {
+      thread: args.thread,
+      input: args.input,
+      initiator,
+      target,
+      requestSequence: request.sequence,
+    });
+  }
   appendClientTurnEvent(deps, {
     threadId: args.thread.id,
     environmentId: args.thread.environmentId,

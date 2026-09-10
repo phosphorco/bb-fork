@@ -1,11 +1,17 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { CronExpressionParser } from "cron-parser";
 import {
   deletePluginKvValue,
+  activatePluginThreadFacetDeclarations,
   getPluginKvValue,
+  listPriorThreadFacetSnapshotTargets,
+  markThreadFacetOwnerGenerationReady,
+  markThreadFacetOwnerGenerationUnavailable,
+  recordThreadFacetCensusExhausted,
+  replaceThreadFacetRelationsInGeneration,
   listPluginKvKeys,
   setPluginKvValue,
   type DbConnection,
@@ -43,6 +49,12 @@ import type {
   PluginMentionTrigger,
   PluginAiServiceDeclaration,
   PluginAiServices,
+  ExperimentalP6rIdentityProtocol,
+  ExperimentalThreadFacetCardinality,
+  ExperimentalThreadFacetHandle,
+  ExperimentalThreadFacetTarget,
+  ExperimentalThreadFacetTargetGrant,
+  ExperimentalThreadFacets,
   PluginProviderDeclaration,
   ExperimentalPluginProviderEnvContext,
   ExperimentalPluginProviderEnvEntry,
@@ -264,7 +276,9 @@ export interface PluginApiHandle {
   agentConfigurationProvider: PluginAgentConfigurationProvider | null;
   instructionProvider: PluginInstructionProvider | null;
   mentionProviders: PluginMentionProviderRecord[];
+  activateP6rIdentity(): void;
   activate(): void;
+  retireP6rIdentity(): void;
   closeWebSockets(): void;
   invalidate(): void;
 }
@@ -304,7 +318,34 @@ export type PluginProviderEnvHealthResolver = (
   | null
   | Promise<ExperimentalPluginProviderEnvHealth | null>;
 
-function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): BbSdk {
+interface ThreadFacetTargetRecord {
+  thread: ExperimentalThreadFacetTarget;
+  threadId: string;
+}
+
+interface StagedThreadFacet {
+  active: { generation: number; typeId: import("@bb/domain").ThreadFacetTypeId } | null;
+  censusInFlight: boolean;
+  cursorPositions: Map<string, string>;
+  declaration: {
+    assignmentScope: "shared-thread";
+    cardinality: ExperimentalThreadFacetCardinality;
+    localName: string;
+    memberKind: "enum";
+    members: readonly string[];
+  };
+  expectedCursor: string | null | undefined;
+}
+
+interface ThreadFacetGrantRecord extends ThreadFacetTargetRecord {}
+
+function wrapSdkForPlugin(
+  sdk: BbSdk,
+  pluginId: string,
+  registerThreadFacetTarget: <T extends ExperimentalThreadFacetTarget>(
+    thread: T,
+  ) => T,
+): BbSdk {
   return {
     ...sdk,
     threads: {
@@ -328,6 +369,12 @@ function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): BbSdk {
             ? { originPluginId: args.originPluginId ?? pluginId }
             : {}),
         });
+      },
+      async get(args) {
+        return registerThreadFacetTarget(await sdk.threads.get(args));
+      },
+      async list(args) {
+        return (await sdk.threads.list(args)).map(registerThreadFacetTarget);
       },
     },
   };
@@ -478,6 +525,11 @@ export function createPluginApi(options: {
     serviceId: string,
   ) => AiServiceHostBinding<PluginHostArtifactSnapshot>;
   assertProviderRegistrable: (providerId: string) => void;
+  p6rIdentity?: {
+    readonly protocol: ExperimentalP6rIdentityProtocol;
+    activate(): void;
+    retire(): void;
+  };
 }): PluginApiHandle {
   const {
     pluginId,
@@ -504,15 +556,21 @@ export function createPluginApi(options: {
     registerAiService,
     isProviderIdTaken,
     assertProviderRegistrable,
+    p6rIdentity,
     isAiServiceIdTaken,
     assertAiServiceRegistrable,
   } = options;
   let invalidated = false;
   let activated = false;
+  let facetAuthorityRevoked = false;
+  let facetsCommitted = false;
   let wrappedSdk: BbSdk | undefined;
   let pendingNeedsConfiguration: string | null = null;
   const pendingAgentToolProblems: string[] = [];
   const pendingSharedPorts = new Map<string, readonly number[]>();
+  const stagedThreadFacets: StagedThreadFacet[] = [];
+  const threadFacetGrants = new WeakMap<object, ThreadFacetGrantRecord>();
+  const threadFacetTargets = new WeakMap<object, ThreadFacetTargetRecord>();
   const disposeHooks: Array<() => void | Promise<void>> = [];
   const settingsRecord: PluginApiHandle["settings"] = {
     descriptors: {},
@@ -544,6 +602,149 @@ export function createPluginApi(options: {
 
   function assertLive(): void {
     if (invalidated) throw new PluginContextStaleError(pluginId);
+  }
+
+  function refuseThreadFacetCapability(): never {
+    throw new Error("Native thread facet capability is unavailable");
+  }
+
+  function assertFacetAuthorityLive(): void {
+    assertLive();
+    if (facetAuthorityRevoked) refuseThreadFacetCapability();
+  }
+
+  function registerThreadFacetTarget<T extends ExperimentalThreadFacetTarget>(
+    thread: T,
+  ): T {
+    threadFacetTargets.set(thread, { thread, threadId: thread.id });
+    return thread;
+  }
+
+  function activeFacet(staged: StagedThreadFacet): {
+    generation: number;
+    typeId: import("@bb/domain").ThreadFacetTypeId;
+  } {
+    assertFacetAuthorityLive();
+    if (staged.active === null) refuseThreadFacetCapability();
+    return staged.active;
+  }
+
+  function grantRecord(target: ExperimentalThreadFacetTargetGrant): ThreadFacetGrantRecord {
+    assertFacetAuthorityLive();
+    const grant = threadFacetGrants.get(target);
+    if (grant === undefined) refuseThreadFacetCapability();
+    const current = threadFacetTargets.get(grant.thread);
+    if (current !== grant || grant.thread.id !== grant.threadId) refuseThreadFacetCapability();
+    return grant;
+  }
+
+  async function facetOperation<T>(operation: () => T | Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch {
+      return refuseThreadFacetCapability();
+    }
+  }
+
+  function facetHandle<
+    Cardinality extends ExperimentalThreadFacetCardinality,
+    Member extends string,
+  >(staged: StagedThreadFacet): ExperimentalThreadFacetHandle<Cardinality, Member> {
+    return {
+      replace(target, members) {
+        return facetOperation(() => {
+          const active = activeFacet(staged);
+          const grant = grantRecord(target);
+          replaceThreadFacetRelationsInGeneration(db, { ...active, threadId: grant.threadId, members });
+        });
+      },
+      clear(target) {
+        return facetOperation(() => {
+          const active = activeFacet(staged);
+          const grant = grantRecord(target);
+          replaceThreadFacetRelationsInGeneration(db, { ...active, threadId: grant.threadId, members: [] });
+        });
+      },
+      listPriorTargets(args) {
+        return facetOperation(async () => {
+          if (staged.censusInFlight) refuseThreadFacetCapability();
+          staged.censusInFlight = true;
+          try {
+            const active = activeFacet(staged);
+            const supplied = args?.cursor;
+            if (staged.expectedCursor === null || supplied !== staged.expectedCursor) refuseThreadFacetCapability();
+            const pageSize = args?.pageSize ?? 50;
+            if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) refuseThreadFacetCapability();
+            const afterThreadId = supplied === undefined ? undefined : staged.cursorPositions.get(supplied);
+            if (supplied !== undefined && afterThreadId === undefined) refuseThreadFacetCapability();
+            const page = listPriorThreadFacetSnapshotTargets(db, { ...active, limit: pageSize, ...(afterThreadId === undefined ? {} : { afterThreadId }) });
+            const sdk = getSdk();
+            if (sdk === undefined) refuseThreadFacetCapability();
+            const targets: ExperimentalThreadFacetTarget[] = [];
+            for (const threadId of page.threadIds) targets.push(registerThreadFacetTarget(await sdk.threads.get({ threadId })));
+            if (page.nextAfterThreadId === null) {
+              recordThreadFacetCensusExhausted(db, active);
+              staged.expectedCursor = null;
+              if (supplied !== undefined) staged.cursorPositions.delete(supplied);
+              return { targets, nextCursor: null };
+            }
+            const nextCursor = randomUUID();
+            staged.cursorPositions.set(nextCursor, page.nextAfterThreadId);
+            staged.expectedCursor = nextCursor;
+            if (supplied !== undefined) staged.cursorPositions.delete(supplied);
+            return { targets, nextCursor };
+          } finally {
+            staged.censusInFlight = false;
+          }
+        });
+      },
+      markReady() {
+        return facetOperation(() => markThreadFacetOwnerGenerationReady(db, activeFacet(staged)));
+      },
+    };
+  }
+
+  const experimental_facets: ExperimentalThreadFacets = {
+    target(thread) {
+      assertFacetAuthorityLive();
+      const target = threadFacetTargets.get(thread);
+      if (target === undefined || target.thread.id !== target.threadId) refuseThreadFacetCapability();
+      const grant = Object.freeze({}) as ExperimentalThreadFacetTargetGrant;
+      threadFacetGrants.set(grant, target);
+      return grant;
+    },
+    declare(declaration) {
+      assertFacetAuthorityLive();
+      if (facetsCommitted) refuseThreadFacetCapability();
+      const staged: StagedThreadFacet = {
+        declaration: {
+          assignmentScope: declaration.assignmentScope,
+          cardinality: declaration.cardinality,
+          localName: declaration.localName,
+          memberKind: declaration.memberKind,
+          members: [...declaration.members],
+        },
+        active: null,
+        censusInFlight: false,
+        cursorPositions: new Map(),
+        expectedCursor: undefined,
+      };
+      stagedThreadFacets.push(staged);
+      return facetHandle(staged);
+    },
+  };
+
+  function revokeThreadFacetAuthority(): void {
+    if (facetAuthorityRevoked) return;
+    facetAuthorityRevoked = true;
+    for (const staged of stagedThreadFacets) {
+      if (staged.active === null) continue;
+      try {
+        markThreadFacetOwnerGenerationUnavailable(db, staged.active);
+      } catch (error) {
+        logger.warn(`plugin ${pluginId} thread facet revocation failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   }
 
   const prefix = `[plugin:${pluginId}]`;
@@ -1524,6 +1725,10 @@ export function createPluginApi(options: {
     server,
     hosts,
     experimental_aiServices,
+    experimental_facets,
+    ...(p6rIdentity === undefined
+      ? {}
+      : { experimental_p6rIdentity: p6rIdentity.protocol }),
     get sdk(): BbSdk {
       assertLive();
       const sdk = getSdk();
@@ -1533,7 +1738,7 @@ export function createPluginApi(options: {
             "use it inside handlers, services, or timers, not at factory load time",
         );
       }
-      wrappedSdk ??= wrapSdkForPlugin(sdk, pluginId);
+      wrappedSdk ??= wrapSdkForPlugin(sdk, pluginId, registerThreadFacetTarget);
       return wrappedSdk;
     },
     onDispose(hook) {
@@ -1568,6 +1773,10 @@ export function createPluginApi(options: {
       return instructionProvider;
     },
     mentionProviders,
+    activateP6rIdentity() {
+      assertLive();
+      p6rIdentity?.activate();
+    },
     activate() {
       if (activated) return;
       assertLive();
@@ -1576,6 +1785,19 @@ export function createPluginApi(options: {
       );
       providerRegistrations.flush();
       aiServiceRegistrations.flush();
+      const activatedFacets = activatePluginThreadFacetDeclarations(db, {
+        ownerPluginId: pluginId,
+        declarations: stagedThreadFacets.map(({ declaration }) => declaration),
+      });
+      if (activatedFacets.length !== stagedThreadFacets.length) {
+        throw new Error("Thread facet declarations did not activate completely");
+      }
+      for (const [index, active] of activatedFacets.entries()) {
+        const staged = stagedThreadFacets[index];
+        if (staged === undefined) throw new Error("Missing staged thread facet");
+        staged.active = { generation: active.generation, typeId: active.declaration.typeId };
+      }
+      facetsCommitted = true;
       activated = true;
       const cliWarning = cliRecord.registration
         ? pluginCliCollisionWarning(pluginId, cliRecord.registration.name)
@@ -1590,6 +1812,9 @@ export function createPluginApi(options: {
         reportNeedsConfiguration(pendingNeedsConfiguration);
         pendingNeedsConfiguration = null;
       }
+    },
+    retireP6rIdentity() {
+      p6rIdentity?.retire();
     },
     closeWebSockets() {
       for (const route of websocketRoutes) {
@@ -1607,6 +1832,7 @@ export function createPluginApi(options: {
       }
     },
     invalidate() {
+      revokeThreadFacetAuthority();
       invalidated = true;
     },
   };

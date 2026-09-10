@@ -1,4 +1,6 @@
 import { watch } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { retainP6rHttpResponse } from "./plugin-p6r-http.js";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -38,6 +40,7 @@ import {
   PLUGIN_AGENT_TOOL_PARAMETERS_MAX_BYTES,
   RESERVED_AGENT_TOOL_NAMES,
   adoptHttpRouteResponse,
+  registerSettingDescriptors,
   validatePluginProviderEnvEntries,
 } from "@get-bb/plugin-sdk/internal/host-policy";
 import {
@@ -133,6 +136,8 @@ import type { PluginHookProvider } from "./plugin-hook-registry.js";
 import { createPluginRegistration } from "./plugin-registration.js";
 import { createPluginRuntime, forgetMutableRoot } from "./plugin-runtime.js";
 import { createPluginUpdates } from "./plugin-updates.js";
+import type { P6rJson } from "../p6r/identity-protocol.js";
+import type { P6rInvocationScope } from "../p6r/invocation-registry.js";
 
 import { pluginUpdateCheckEntrySchema } from "./plugin-service-internal.js";
 import type {
@@ -153,6 +158,7 @@ import type {
   PluginResolvedAgentConfiguration,
   PluginResolvedProviderEnv,
   PluginResolvedProviderEnvHealth,
+  PluginRpcInvocationContext,
 } from "./plugin-service-internal.js";
 export type {
   PluginAgentToolContribution,
@@ -170,6 +176,20 @@ export interface PluginSkillRootContribution {
 export type PluginReloadOutcome =
   | { ok: true; plugins: PluginListEntry[] }
   | { ok: false; error: string; plugins: PluginListEntry[] };
+
+export interface PluginPreActivationSettings {
+  descriptors: Record<string, unknown>;
+  values: Record<string, unknown>;
+}
+
+export interface StageNpmPluginArgs {
+  source: string;
+  pluginId: string;
+  npmRegistry?: string;
+  expectedNpmVersion: string;
+  expectedNpmIntegrity: string;
+  preActivationSettings: PluginPreActivationSettings;
+}
 
 export function dispatchPluginSourceWatchChange(
   handleChange: (relativePath: string) => void,
@@ -199,6 +219,7 @@ export interface PluginService {
     source: string,
     selection: PluginSourceSelection,
   ): Promise<PluginListEntry>;
+  stageNpmInstall(args: StageNpmPluginArgs): Promise<PluginListEntry>;
   installOfficialPlugin(name: string): Promise<PluginListEntry>;
   installCatalogPlugin(args: {
     marketplace: string;
@@ -313,9 +334,21 @@ export interface PluginService {
     method: string,
     handler: PluginRpcHandler,
     input: unknown,
+    context?: PluginRpcInvocationContext,
   ): Promise<
     { ok: true; result: JsonValue } | { ok: false; error: PluginRpcError }
   >;
+  forwardP6rRpc(args: {
+    destination: { method: string; pluginId: string };
+    deriveScope: (destinationGeneration: string) =>
+      | {
+          request: object;
+          release(): void;
+          scope: P6rInvocationScope;
+        }
+      | null;
+    input: P6rJson;
+  }): Promise<P6rJson>;
   httpToken(
     id: string,
     options?: { rotate?: boolean },
@@ -885,6 +918,38 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       return () => clearTimeout(timer);
     });
 
+  function validatePreActivationSettings(
+    input: PluginPreActivationSettings,
+  ) {
+    const descriptors = registerSettingDescriptors({}, input.descriptors);
+    const descriptorKeys = Object.keys(descriptors).sort();
+    const valueKeys = Object.keys(input.values).sort();
+    if (JSON.stringify(descriptorKeys) !== JSON.stringify(valueKeys)) {
+      throw new PluginSettingsValidationError(
+        "pre-activation settings must supply exactly the declared keys",
+      );
+    }
+    if (
+      Object.values(descriptors).some(
+        (descriptor) => descriptor.type === "string" && descriptor.secret,
+      )
+    ) {
+      throw new PluginSettingsValidationError(
+        "pre-activation settings cannot include secrets",
+      );
+    }
+    if (Object.values(input.values).some((value) => value === null)) {
+      throw new PluginSettingsValidationError(
+        "pre-activation settings cannot unset a declared value",
+      );
+    }
+    const errors = validatePluginSettingsUpdate(descriptors, input.values);
+    if (errors.length > 0) {
+      throw new PluginSettingsValidationError(errors.join("; "));
+    }
+    return descriptors;
+  }
+
   const HTTP_TOKEN_FILE = ".http-token";
 
   const {
@@ -910,6 +975,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     listPluginHooks,
     isPackagedBuiltinEntry,
     loadAll,
+    lastLoadPublished,
     loaded,
     loadOne,
     brandingAssets,
@@ -980,6 +1046,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     withLifecycleLock,
     disposeOne,
     loadOne,
+    lastLoadPublished,
     restoreRegistration,
     provenanceForRow,
     registrationMatchesForActivation,
@@ -1666,7 +1733,6 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
               const problem = await withLifecycleLock(row.id, async () => {
                 const current = getInstalledPlugin(deps.db, row.id);
                 if (current === undefined) return null;
-                await disposeOne(row.id);
                 return loadOne(current);
               });
               await syncCliSkill();
@@ -1718,6 +1784,64 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
         if (parsed.kind === "builtin") return installBuiltinSource(parsed);
         refuseBuiltinShadow(derivePluginId(parsed.name));
         return installNpmSource(parsed, source);
+      });
+    },
+
+    async stageNpmInstall(args) {
+      return withPluginOperationLock(REGISTRATION_MUTATION_KEY, async () => {
+        if (getInstalledPlugin(deps.db, args.pluginId) !== undefined) {
+          throw new Error(
+            `staged install refuses existing plugin "${args.pluginId}"; remove it before staging again`,
+          );
+        }
+        const parsed = parsePluginSource(args.source);
+        if (parsed.kind !== "npm") {
+          throw new Error("staged install requires an npm: source");
+        }
+        const descriptors = validatePreActivationSettings(
+          args.preActivationSettings,
+        );
+        try {
+          return await installNpmSource(
+            parsed,
+            args.source,
+            {
+              provenance: { kind: "direct" },
+              expectedPluginId: args.pluginId,
+              ...(args.npmRegistry === undefined
+                ? {}
+                : { npmRegistry: args.npmRegistry }),
+              expectedNpmVersion: args.expectedNpmVersion,
+              expectedNpmIntegrity: args.expectedNpmIntegrity,
+            },
+            {
+              initiallyEnabled: false,
+              afterPersist: async (manifest) => {
+                if (manifest.id !== args.pluginId) {
+                  throw new Error(
+                    `staged install resolved plugin "${manifest.id}" instead of "${args.pluginId}"`,
+                  );
+                }
+                await writePluginSettingsUpdate({
+                  db: deps.db,
+                  dataDir: deps.dataDir,
+                  pluginId: manifest.id,
+                  descriptors,
+                  values: args.preActivationSettings.values,
+                });
+              },
+            },
+          );
+        } catch (error) {
+          const staged = getInstalledPlugin(deps.db, args.pluginId);
+          if (staged?.enabled === false) {
+            const detail = error instanceof Error ? error.message : String(error);
+            throw new Error(
+              `staged settings persistence failed; plugin "${args.pluginId}" remains disabled. Remove it before staging again: ${detail}`,
+            );
+          }
+          throw error;
+        }
       });
     },
 
@@ -2043,7 +2167,6 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
           const row = getInstalledPlugin(deps.db, id);
           if (row) {
             await withLifecycleLock(id, async () => {
-              await disposeOne(id);
               await loadOne(row);
             });
             notifyPluginsChanged();
@@ -2077,8 +2200,38 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
         id,
         `http ${route.method} ${route.path}`,
         async () => {
-          const response = await route.handler(context);
-          return adoptHttpRouteResponse(response);
+          const dispatch = deps.p6rDispatch;
+          const binding = dispatch?.bindingFor(route.handler);
+          if (binding === undefined) return adoptHttpRouteResponse(await route.handler(context));
+          if (binding.pluginId !== id || dispatch === undefined || deps.p6rIdentity === undefined) {
+            throw new Error("P6r HTTP invocation context is unavailable");
+          }
+          const capture = await deps.p6rIdentity.captureInvocation({
+            generation: binding.generation,
+            ingress: { requestId: randomUUID(), transport: "http" },
+            pluginId: id,
+            request: context,
+            routeClass: binding.routeClass,
+          });
+          if (!capture.ok) throw new Error("P6r HTTP invocation scope is unavailable");
+          const abort = () => capture.scope.release();
+          context.req.raw.signal.addEventListener("abort", abort, { once: true });
+          capture.scope.signal.addEventListener("abort", () => context.req.raw.signal.removeEventListener("abort", abort), { once: true });
+          if (context.req.raw.signal.aborted) {
+            abort();
+            throw new Error("P6r HTTP request is aborted");
+          }
+          try {
+            const response = await dispatch.runWithInvocation(
+              route.handler,
+              { request: context, scope: capture.scope },
+              () => route.handler(context),
+            );
+            return retainP6rHttpResponse(adoptHttpRouteResponse(response), capture.scope);
+          } catch (cause) {
+            capture.scope.release();
+            throw cause;
+          }
         },
       );
       if (outcome.ok) return outcome.value;
@@ -2126,14 +2279,58 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       await invokeWrapped(id, `websocket ${route.path} ${event}`, run);
     },
 
-    async invokeRpcHandler(id, method, handler, input) {
+    async invokeRpcHandler(id, method, handler, input, context) {
       const outcome = await invokeWrapped(id, `rpc ${method}`, async () => {
         const parsedInput = await validateRpcValue(
           handler.inputSchema,
           input,
           "input",
         );
-        const result = await handler.handler(parsedInput as never);
+        const p6rDispatch = deps.p6rDispatch;
+        const binding = p6rDispatch?.bindingFor(handler.handler);
+        if (binding === undefined) {
+          const result = await handler.handler(parsedInput as never);
+          const parsedOutput = await validateRpcValue(
+            handler.outputSchema,
+            result,
+            "output",
+          );
+          return normalizeRpcJsonResult(parsedOutput);
+        }
+        if (
+          binding.pluginId !== id ||
+          context === undefined ||
+          deps.p6rIdentity === undefined ||
+          p6rDispatch === undefined
+        ) {
+          throw new PluginRpcBoundaryError({
+            code: "handler_error",
+            message: "P6r invocation context is unavailable",
+          });
+        }
+        const capture = await deps.p6rIdentity.captureInvocation({
+          generation: binding.generation,
+          ingress: context.ingress,
+          pluginId: id,
+          request: context.request,
+          routeClass: binding.routeClass,
+        });
+        if (!capture.ok) {
+          throw new PluginRpcBoundaryError({
+            code: "handler_error",
+            message: "P6r invocation scope is unavailable",
+          });
+        }
+        let result: unknown;
+        try {
+          result = await p6rDispatch.runWithInvocation(
+            handler.handler,
+            { request: context.request, scope: capture.scope },
+            () => handler.handler(parsedInput as never),
+          );
+        } finally {
+          capture.scope.release();
+        }
         const parsedOutput = await validateRpcValue(
           handler.outputSchema,
           result,
@@ -2149,6 +2346,59 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
         ok: false,
         error: { code: "handler_error", message: outcome.error },
       };
+    },
+
+    async forwardP6rRpc(args) {
+      const target = loaded.get(args.destination.pluginId);
+      if (target === undefined) {
+        throw new Error("P6r forwarding destination is unavailable");
+      }
+      const handler = target.handle.rpcHandlers.get(args.destination.method);
+      if (handler === undefined) {
+        throw new Error("P6r forwarding destination method is unavailable");
+      }
+      const dispatch = deps.p6rDispatch;
+      const binding = dispatch?.bindingFor(handler.handler);
+      if (
+        dispatch === undefined ||
+        binding === undefined ||
+        binding.pluginId !== args.destination.pluginId
+      ) {
+        throw new Error("P6r forwarding destination is not an active binding");
+      }
+      const parsedInput = await validateRpcValue(
+        handler.inputSchema,
+        args.input,
+        "input",
+      );
+      const derived = args.deriveScope(binding.generation);
+      if (derived === null) {
+        throw new Error("P6r forwarding source or destination is unavailable");
+      }
+      let outcome: Awaited<ReturnType<typeof invokeWrapped>>;
+      try {
+        outcome = await invokeWrapped(
+          args.destination.pluginId,
+          `p6r forward ${args.destination.method}`,
+          () =>
+            dispatch.runWithInvocation(
+              handler.handler,
+              { request: derived.request, scope: derived.scope },
+              () => handler.handler(parsedInput as never),
+            ),
+        );
+      } finally {
+        derived.release();
+      }
+      if (!outcome.ok) {
+        throw new Error(outcome.error);
+      }
+      const parsedOutput = await validateRpcValue(
+        handler.outputSchema,
+        outcome.value,
+        "output",
+      );
+      return normalizeRpcJsonResult(parsedOutput);
     },
 
     async httpToken(id, options) {

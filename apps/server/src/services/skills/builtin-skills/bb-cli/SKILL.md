@@ -12,6 +12,7 @@ IDs, machines, workspaces, providers, or models.
 
 ```sh
 bb status --json
+bb status --identity --json
 ```
 
 Use JSON when command output controls later work. Use human output for quick

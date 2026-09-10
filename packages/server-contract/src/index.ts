@@ -62,3 +62,6 @@ export type {
   UnsubscribeMessage,
   JsonValue,
 } from "@bb/domain";
+
+export * from "./native-attribution.js";
+export * from "./native-presence.js";

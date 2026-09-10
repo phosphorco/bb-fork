@@ -377,6 +377,17 @@ function formatConversationRequestLabel(
   return "steer";
 }
 
+function formatConversationAttribution(row: TimelineConversationViewRow): string | null {
+  if (row.role !== "user" || !row.attribution?.some(({ author }) => author.kind === "person" || author.kind === "external")) return null;
+  return row.attribution.map(({ author, latestEditor }) => {
+    if (author.kind !== "person" && author.kind !== "external") return author.kind === "unknown" ? "Unknown source" : author.kind;
+    const source = author.kind === "external" ? ` via ${author.actor.identity.pluginId}` : "";
+    const edited = latestEditor !== null && (latestEditor.identity.kind !== author.actor.identity.kind || latestEditor.identity.key !== author.actor.identity.key)
+      ? `; edited by ${latestEditor.presentation.displayName}` : "";
+    return `${author.actor.presentation.displayName}${source}${edited}`;
+  }).join(" · ");
+}
+
 function formatRow(
   row: ThreadTimelineViewRow,
   context: TimelineTextFormatContext,
@@ -385,6 +396,7 @@ function formatRow(
     case "conversation":
       return [
         rowHeader(row.role === "user" ? "User" : "Assistant", context),
+        formatConversationAttribution(row),
         row.text,
         formatConversationRequestLabel(row),
       ]

@@ -153,6 +153,151 @@ function parseHostTypeValue(args: EnvVarParseArgs): HostType | undefined {
   return parsedHostType.data;
 }
 
+function p6rRecord(value: unknown, name: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${name} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function p6rString(value: unknown, name: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${name} must be a non-empty string`);
+  }
+  return value;
+}
+
+function p6rPositiveInteger(value: unknown, name: string): number {
+  if (!Number.isInteger(value) || typeof value !== "number" || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return value;
+}
+
+function p6rStrings(value: unknown, name: string): readonly string[] {
+  if (!Array.isArray(value)) throw new Error(`${name} must be an array`);
+  return value.map((item, index) => p6rString(item, `${name}[${index}]`));
+}
+
+function parseP6rIdentityBoundaryEnvValue(args: EnvVarParseArgs): {
+  readonly configuration: {
+    readonly boundaryId: string;
+    readonly credentials: readonly {
+      readonly field: string;
+      readonly name: string;
+      readonly source: "header" | "cookie";
+    }[];
+    readonly ingressIds: readonly string[];
+    readonly pluginId: string;
+    readonly resolver: { readonly maxSessionAgeMs: number; readonly timeoutMs: number };
+    readonly version: 1;
+  };
+  readonly trustedIngresses: readonly {
+    readonly authenticatedPeer: string | null;
+    readonly id: string;
+    readonly kind: "owned-proxy" | "local";
+    readonly remoteAddresses: readonly string[];
+  }[];
+} {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(args.value);
+  } catch {
+    throw new Error(`${args.name} must be valid JSON`);
+  }
+  const root = p6rRecord(parsed, args.name);
+  const configuration = p6rRecord(root.configuration, `${args.name}.configuration`);
+  if (configuration.version !== 1) {
+    throw new Error(`${args.name}.configuration.version must be 1`);
+  }
+  const resolver = p6rRecord(
+    configuration.resolver,
+    `${args.name}.configuration.resolver`,
+  );
+  if (!Array.isArray(configuration.credentials)) {
+    throw new Error(`${args.name}.configuration.credentials must be an array`);
+  }
+  const credentials = configuration.credentials.map((value, index) => {
+    const credential = p6rRecord(
+      value,
+      `${args.name}.configuration.credentials[${index}]`,
+    );
+    const source = credential.source;
+    if (source !== "header" && source !== "cookie") {
+      throw new Error(
+        `${args.name}.configuration.credentials[${index}].source must be header or cookie`,
+      );
+    }
+    return {
+      field: p6rString(
+        credential.field,
+        `${args.name}.configuration.credentials[${index}].field`,
+      ),
+      name: p6rString(
+        credential.name,
+        `${args.name}.configuration.credentials[${index}].name`,
+      ),
+      source,
+    } as const;
+  });
+  if (!Array.isArray(root.trustedIngresses)) {
+    throw new Error(`${args.name}.trustedIngresses must be an array`);
+  }
+  const trustedIngresses = root.trustedIngresses.map((value, index) => {
+    const ingress = p6rRecord(value, `${args.name}.trustedIngresses[${index}]`);
+    const kind = ingress.kind;
+    if (kind !== "owned-proxy" && kind !== "local") {
+      throw new Error(
+        `${args.name}.trustedIngresses[${index}].kind must be owned-proxy or local`,
+      );
+    }
+    const authenticatedPeer = ingress.authenticatedPeer;
+    if (authenticatedPeer !== null && typeof authenticatedPeer !== "string") {
+      throw new Error(
+        `${args.name}.trustedIngresses[${index}].authenticatedPeer must be a string or null`,
+      );
+    }
+    return {
+      authenticatedPeer,
+      id: p6rString(ingress.id, `${args.name}.trustedIngresses[${index}].id`),
+      kind,
+      remoteAddresses: p6rStrings(
+        ingress.remoteAddresses,
+        `${args.name}.trustedIngresses[${index}].remoteAddresses`,
+      ),
+    } as const;
+  });
+  return {
+    configuration: {
+      boundaryId: p6rString(
+        configuration.boundaryId,
+        `${args.name}.configuration.boundaryId`,
+      ),
+      credentials,
+      ingressIds: p6rStrings(
+        configuration.ingressIds,
+        `${args.name}.configuration.ingressIds`,
+      ),
+      pluginId: p6rString(
+        configuration.pluginId,
+        `${args.name}.configuration.pluginId`,
+      ),
+      resolver: {
+        maxSessionAgeMs: p6rPositiveInteger(
+          resolver.maxSessionAgeMs,
+          `${args.name}.configuration.resolver.maxSessionAgeMs`,
+        ),
+        timeoutMs: p6rPositiveInteger(
+          resolver.timeoutMs,
+          `${args.name}.configuration.resolver.timeoutMs`,
+        ),
+      },
+      version: 1,
+    },
+    trustedIngresses,
+  };
+}
+
 export const BB_LOG_LEVEL_ENV = defineEnvVar<string>({
   description: "Log level: trace, debug, info, warn, error, fatal",
   name: "BB_LOG_LEVEL",
@@ -195,6 +340,13 @@ export const BB_SERVER_LAUNCH_ID_ENV = defineEnvVar<string>({
     "Internal per-spawn identity the bb-app launcher hands its server child. The server echoes it on /health so the launcher can tell its own child apart from another bb server that already owns the port.",
   name: "BB_SERVER_LAUNCH_ID",
   parse: parseNonEmptyStringEnvValue,
+});
+
+export const BB_P6R_IDENTITY_BOUNDARY_ENV = defineEnvVar<ReturnType<typeof parseP6rIdentityBoundaryEnvValue>>({
+  description:
+    "Startup-only operator-selected P6R identity provider boundary and trusted ingress mapping. Changing it requires a server restart.",
+  name: "BB_P6R_IDENTITY_BOUNDARY",
+  parse: parseP6rIdentityBoundaryEnvValue,
 });
 
 export const BB_APP_SURFACE_ENV = defineEnvVar<AppSurface>({

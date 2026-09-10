@@ -59,7 +59,15 @@ import {
 import { assertValidParentThread } from "../../services/threads/thread-parent.js";
 import { handleThreadOwnershipChange } from "../../services/threads/thread-ownership.js";
 import { applyThreadExecutionOverride } from "../../services/threads/thread-execution-override.js";
+import {
+  applyPreflightedThreadExecutionOverrides,
+  preflightThreadExecutionOverrides,
+} from "../../services/threads/thread-execution-batch.js";
 import { emitPluginThreadDeleted } from "../../services/plugins/plugin-thread-events.js";
+import {
+  executeThreadFacetParticipantPage,
+  executeThreadFacetQuery,
+} from "../../services/threads/thread-facet-query.js";
 
 function parseThreadIncludes(query: ThreadGetQuery): Set<ThreadIncludeOption> {
   const includes = new Set<ThreadIncludeOption>();
@@ -296,6 +304,32 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     return context.json(
       toThreadListEntryResponses(deps, { threads }) satisfies ThreadListEntry[],
     );
+  });
+
+  post(routes.facetQuery, (context, payload) => {
+    return context.json(executeThreadFacetQuery(deps, { request: payload }));
+  });
+
+  post(routes.experimentalExecutionPreflight, async (context, payload) => {
+    return context.json(await preflightThreadExecutionOverrides(deps, payload));
+  });
+
+  post(routes.experimentalExecutionApply, async (context, payload) => {
+    return context.json(
+      await applyPreflightedThreadExecutionOverrides(deps, payload),
+    );
+  });
+
+  get(routes.facetParticipants, (context, query) => {
+    const pageSize = parseOptionalInteger(query.pageSize, "pageSize") ?? 50;
+    if (pageSize < 1 || pageSize > 100) {
+      throw new ApiError(400, "invalid_request", "pageSize must be between 1 and 100");
+    }
+    return context.json(executeThreadFacetParticipantPage(deps, {
+      threadId: context.req.param("id"),
+      pageSize,
+      ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+    }));
   });
 
   get(routes.search, (context, query) => {

@@ -68,6 +68,12 @@ export interface CreateQueuedThreadMessageInput {
 }
 
 export interface UpdateQueuedThreadMessageInput {
+  /** Runs in the same CAS transaction after the content row is updated. */
+  afterUpdateInTransaction?: (input: {
+    readonly previous: QueuedThreadMessageRow;
+    readonly queuedMessage: QueuedThreadMessageRow;
+    readonly tx: DbTransaction;
+  }) => void;
   content: PromptInput[];
   expectedUpdatedAt: number;
   id: string;
@@ -650,6 +656,11 @@ export function updateQueuedThreadMessage(
       if (!queuedMessage) {
         return { kind: "not_found" };
       }
+      input.afterUpdateInTransaction?.({
+        previous: existing,
+        queuedMessage,
+        tx,
+      });
       return { kind: "updated", queuedMessage };
     },
     { behavior: "immediate" },
@@ -1921,11 +1932,18 @@ export function deleteQueuedThreadMessage(
   db: DbConnection,
   notifier: DbNotifier,
   id: string,
+  options?: {
+    readonly beforeDeleteInTransaction?: (input: {
+      readonly queuedMessage: QueuedThreadMessageRow;
+      readonly tx: DbTransaction;
+    }) => void;
+  },
 ) {
   const existing = db.transaction(
     (tx) => {
       const existing = getQueuedThreadMessage(tx, id);
       if (!existing) return null;
+      options?.beforeDeleteInTransaction?.({ queuedMessage: existing, tx });
       clearPreviousQueuedMessageGroupEdgeInTransaction(tx, existing);
       tx.delete(queuedThreadMessages)
         .where(eq(queuedThreadMessages.id, id))

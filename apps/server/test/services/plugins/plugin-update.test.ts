@@ -608,7 +608,53 @@ describe("plugin update service and routes", () => {
     ).toMatchObject({ id: "updater", version: "1.0.0", status: "running" });
   }, 60_000);
 
-  it("finishes an interrupted rollback before loading plugins after restart", async () => {
+  it("keeps predecessor state written after the snapshot when a candidate fails before publication", async () => {
+    const predecessor = service.getApi("updater");
+    if (predecessor === undefined) throw new Error("missing predecessor API");
+    let allowCandidateFailure!: () => void;
+    const candidateGate = new Promise<void>((resolvePromise) => {
+      allowCandidateFailure = resolvePromise;
+    });
+    let candidateStarted!: () => void;
+    const started = new Promise<void>((resolvePromise) => {
+      candidateStarted = resolvePromise;
+    });
+    vi.stubGlobal("__bbP6rCandidateGate", candidateGate);
+    vi.stubGlobal("__bbP6rCandidateStarted", candidateStarted);
+    const previousRegistration = getInstalledPluginRegistration(db, "updater");
+
+    await commitPlugin(
+      repo,
+      "1.1.0",
+      undefined,
+      `
+        export default async function plugin() {
+          (globalThis as any).__bbP6rCandidateStarted();
+          await (globalThis as any).__bbP6rCandidateGate;
+          throw new Error("candidate failed before publication");
+        }
+      `,
+    );
+    const update = service.applyUpdate("updater");
+    await started;
+    await predecessor.storage.kv.set("survives-candidate", "written-live");
+    allowCandidateFailure();
+
+    await expect(update).resolves.toMatchObject({
+      ok: true,
+      result: { applied: false, outcome: "rolled-back" },
+    });
+    expect(getPluginKvValue(db, "updater", "survives-candidate")).toBe(
+      JSON.stringify("written-live"),
+    );
+    expect(service.getApi("updater")).toBe(predecessor);
+    expect(getInstalledPluginRegistration(db, "updater")).toMatchObject({
+      activeArtifactId: previousRegistration?.activeArtifactId,
+      gitResolvedCommit: previousRegistration?.gitResolvedCommit,
+    });
+  }, 60_000);
+
+  it("does not restore a stale snapshot when a predecessor survives candidate failure", async () => {
     const pluginDir = join(workDir, "data", "plugins", "updater");
     const databasePath = join(pluginDir, "data.db");
     const secretPath = join(pluginDir, "secrets", "token");
@@ -664,9 +710,6 @@ describe("plugin update service and routes", () => {
       dataDir: join(workDir, "data"),
       appVersion: "1.0.0",
       stabilizationWindowMs: 0,
-      afterPluginRollbackStateRestored: async () => {
-        throw new Error("simulated process exit during rollback");
-      },
     });
     await service.start();
     upsertPluginSchedule(db, {
@@ -675,17 +718,16 @@ describe("plugin update service and routes", () => {
       cron: "0 * * * *",
       nextRunAt: 4321,
     });
-    await expect(service.applyUpdate("updater")).rejects.toThrow(
-      "simulated process exit during rollback",
-    );
+    await expect(service.applyUpdate("updater")).resolves.toMatchObject({
+      ok: true,
+      result: { applied: false, outcome: "rolled-back" },
+    });
     expect(getInstalledPluginRegistration(db, "updater")).toMatchObject({
-      version: "1.1.0",
-      activeArtifactId: expect.not.stringMatching(
-        oldRegistration.activeArtifactId,
-      ),
+      version: oldRegistration.version,
+      activeArtifactId: oldRegistration.activeArtifactId,
     });
     expect(listPluginStateSnapshots(db, "updater")).toMatchObject([
-      { status: "restoring", fromArtifactId: oldRegistration.activeArtifactId },
+      { status: "ready", fromArtifactId: oldRegistration.activeArtifactId },
     ]);
 
     await service.stop();
@@ -716,21 +758,19 @@ describe("plugin update service and routes", () => {
     const restored = new Database(databasePath, { readonly: true });
     expect(
       restored.prepare("SELECT value FROM restart_state").pluck().get(),
-    ).toBe("old-db");
+    ).toBe("new-db");
     restored.close();
     expect(getPluginKvValue(db, "updater", "restart-cursor")).toBe(
-      JSON.stringify("old-kv"),
+      JSON.stringify("new-kv"),
     );
     expect(getPluginSettingsValues(db, "updater")).toEqual({
       restartMode: JSON.stringify("old-setting"),
     });
-    expect(listPluginSchedules(db, "updater")).toMatchObject([
-      { name: "restart-sync", cron: "0 * * * *", nextRunAt: 4321 },
-    ]);
-    expect(await readFile(secretPath, "utf8")).toBe("restart-secret");
+    expect(listPluginSchedules(db, "updater")).toEqual([]);
+    expect(await readFile(secretPath, "utf8")).toBe("changed-secret");
     await stat(oldArtifact.path);
     expect(listPluginStateSnapshots(db, "updater")).toMatchObject([
-      { status: "restored" },
+      { status: "ready" },
     ]);
   }, 60_000);
 

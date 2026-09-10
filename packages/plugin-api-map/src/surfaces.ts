@@ -556,7 +556,14 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
       },
       {
         title: "Data & platform",
-        surfaceIds: ["storage", "bb-sdk", "ai-services", "host-components"],
+        surfaceIds: [
+          "storage",
+          "bb-sdk",
+          "ai-services",
+          "thread-facets",
+          "p6r-identity",
+          "host-components",
+        ],
       },
       {
         title: "Confidence",
@@ -797,6 +804,41 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
         ],
         apiSymbols: ["PluginAiServices", "PluginAiServiceDeclaration"],
         firstParty: ["Codex provider"],
+        experimental: true,
+      },
+      {
+        id: "thread-facets",
+        tagline: "Bounded native thread projections",
+        title: "Thread facets",
+        summary:
+          "Declares a plugin-owned shared-thread projection and writes values only for targets the host issued to that plugin. With this, a plugin can:",
+        bullets: [
+          "Project a small, typed thread classification without inventing a second thread identity domain",
+          "Census existing threads before marking a generation ready for filtering and ordering",
+          "Make a replacement or disabled generation visibly reconciling or unavailable instead of returning stale membership",
+        ],
+        apiSymbols: ["ExperimentalThreadFacets", "ExperimentalThreadFacetHandle"],
+        firstParty: ["Thread Progress"],
+        experimental: true,
+      },
+      {
+        id: "p6r-identity",
+        tagline: "Host-issued identity request leases",
+        title: "Enhanced identity host",
+        summary:
+          "Lets an identity feature discover an optional host capability that binds handlers to fresh request leases. With this, a plugin can:",
+        bullets: [
+          "Receive an immutable host-issued invocation scope only when BB dispatches an admitted request",
+          "Read a stable persisted host namespace before opening a request",
+          "Keep an older plugin generation active while a staged replacement fails",
+          "Forward or accept work through a scope whose lifecycle the host validates",
+        ],
+        apiSymbols: [
+          "ExperimentalP6rIdentityProtocol",
+          "ExperimentalP6rInvocationContext",
+          "ExperimentalP6rInvocationRegistration",
+          "ExperimentalP6rInvocationScope",
+        ],
         experimental: true,
       },
       {

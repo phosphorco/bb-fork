@@ -668,6 +668,8 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
     "thread.start.fork names a checkpoint only when the clone should stop at an earlier source turn; absent means clone the session tip.",
   "hostDaemonCommandSchema.inputGroups":
     "thread.start and turn.submit omit inputGroups for ordinary single user-message turns; presence preserves grouped user messages within one turn.",
+  "hostDaemonCommandSchema.provenanceGroups":
+    "thread.start and turn.submit omit provenanceGroups when no frozen source evidence is available; when present it is aligned exactly to inputGroups.",
   "hostDaemonCommandSchema.disallowedTools":
     "thread runtime context may omit provider-specific built-in tool removals for providers that do not need them.",
   "hostDaemonCommandSchema.options.promptMode":
@@ -942,7 +944,7 @@ const CONTRIBUTED_ENV = [
 
 describe("host-daemon command schemas", () => {
   it("uses the current host-daemon protocol version", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(180);
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(181);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });
 
@@ -2023,6 +2025,93 @@ describe("host-daemon command schemas", () => {
     expect(() => hostDaemonCommandSchema.parse(turnSubmitCommand)).toThrow(
       /flattened inputGroups/u,
     );
+  });
+
+  it("requires provenance groups to retain every input group and its order", () => {
+    const command = {
+      type: "turn.submit",
+      bridgeLaunch: BRIDGE_LAUNCH,
+      environmentId: "env_123",
+      threadId: "thr_123",
+      requestId: CLIENT_REQUEST_ID,
+      input: [
+        { type: "text", text: "first", mentions: [] },
+        { type: "text", text: "\n\n", mentions: [] },
+        { type: "localFile", path: "/tmp/brief.pdf", name: "brief.pdf" },
+      ],
+      inputGroups: [
+        [{ type: "text", text: "first", mentions: [] }],
+        [{ type: "localFile", path: "/tmp/brief.pdf", name: "brief.pdf" }],
+      ],
+      provenanceGroups: [
+        {
+          groupIndex: 0,
+          sources: [
+            {
+              sourceKind: "contribution",
+              sourceIndex: 0,
+              contributionId: "p6r-contribution:one",
+              attribution: {
+                author: { kind: "system", reason: "plugin-sdk" },
+                latestEditor: null,
+              },
+            },
+          ],
+        },
+        { groupIndex: 1, sources: [] },
+      ],
+      options: {
+        model: "gpt-5",
+        serviceTier: "default",
+        reasoningLevel: "medium",
+        providerOptions: {},
+        permissionMode: "full",
+        permissionScope: "full",
+        approvalReviewer: null,
+        permissionEscalation: null,
+      },
+      resumeContext: {
+        bridgeLaunch: BRIDGE_LAUNCH,
+        workspaceContext: {
+          workspacePath: "/tmp/workspace",
+          workspaceProvisionType: "unmanaged",
+        },
+        projectId: "proj_123",
+        providerId: "codex",
+        providerThreadId: "provider_123",
+        instructions: "Be a helpful coding agent.",
+        dynamicTools: [],
+        contributedEnv: [],
+        injectedSkillSources: [],
+        instructionMode: "append",
+      },
+      target: { mode: "start" },
+    };
+
+    expect(hostDaemonCommandSchema.parse(command)).toMatchObject({
+      provenanceGroups: command.provenanceGroups,
+    });
+    expect(() =>
+      hostDaemonCommandSchema.parse({
+        ...command,
+        provenanceGroups: [command.provenanceGroups[0]!],
+      }),
+    ).toThrow(/align with inputGroups/u);
+    expect(() =>
+      hostDaemonCommandSchema.parse({
+        ...command,
+        provenanceGroups: [
+          { ...command.provenanceGroups[0]!, groupIndex: 1 },
+          command.provenanceGroups[1]!,
+        ],
+      }),
+    ).toThrow(/preserve inputGroups order/u);
+    expect(() =>
+      hostDaemonCommandSchema.parse({
+        ...command,
+        inputGroups: undefined,
+      }),
+    ).toThrow(/requires inputGroups/u);
   });
 
   it("round-trips a provider's declared launch spec on provider.list_models, thread.start, and turn.submit", () => {

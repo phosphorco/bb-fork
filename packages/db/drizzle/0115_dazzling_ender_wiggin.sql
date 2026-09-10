@@ -1,0 +1,1 @@
+ALTER TABLE `thread_facet_principal_profiles` ADD `identity_kind` text DEFAULT 'person' NOT NULL;

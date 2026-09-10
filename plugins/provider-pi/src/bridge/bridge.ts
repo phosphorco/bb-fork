@@ -43,6 +43,7 @@ import {
   type ThreadDelta,
   type ThreadEventContextWindowUsage,
 } from "@get-bb/plugin-sdk/provider-bridge";
+import { formatPromptInputForProvider } from "@bb/provider-bridge-protocol";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { createPiDeltaTranslator } from "../delta-translation.js";
 import {
@@ -1063,7 +1064,13 @@ async function handleTurnStart(
     sendResult(id, { threadId: params.threadId });
     return;
   }
-  const { text, images } = extractInput(params.input);
+  const { text, images } = extractInput(
+    formatPromptInputForProvider(
+      params.input,
+      params.inputGroups,
+      params.provenanceGroups,
+    ),
+  );
   if (!text && images.length === 0) {
     sendError(id, BRIDGE_JSON_RPC_ERRORS.INVALID_PARAMS, "Missing input text");
     return;
@@ -1090,7 +1097,13 @@ async function handleTurnSteer(
     sendError(id, -32000, "No active pi session");
     return;
   }
-  const { text, images } = extractInput(params.input);
+  const { text, images } = extractInput(
+    formatPromptInputForProvider(
+      params.input,
+      params.inputGroups,
+      params.provenanceGroups,
+    ),
+  );
   if (!text && images.length === 0) {
     sendError(id, BRIDGE_JSON_RPC_ERRORS.INVALID_PARAMS, "Missing input text");
     return;

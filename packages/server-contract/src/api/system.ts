@@ -1,3 +1,4 @@
+import { nativePersonActorSchema as systemNativeIdentityActorSchema } from "@bb/domain";
 import { rejectMultipleWorkspaceSelectors } from "./shared.js";
 import { z } from "zod";
 import {
@@ -142,6 +143,25 @@ export const systemConfigResponseSchema = z.object({
   dataDir: z.string(),
 });
 export type SystemConfigResponse = z.infer<typeof systemConfigResponseSchema>;
+
+export { nativePersonActorSchema as systemNativeIdentityActorSchema } from "@bb/domain";
+
+export const systemNativeIdentityStatusResponseSchema = z.discriminatedUnion(
+  "status",
+  [
+    z.object({
+      actor: systemNativeIdentityActorSchema,
+      revision: z.string(),
+      status: z.literal("ready"),
+    }),
+    z.object({ status: z.literal("unsupported") }),
+    z.object({ status: z.literal("unauthenticated") }),
+    z.object({ status: z.literal("unavailable") }),
+  ],
+);
+export type SystemNativeIdentityStatusResponse = z.infer<
+  typeof systemNativeIdentityStatusResponseSchema
+>;
 
 export const systemAttentionResponseSchema = z.object({
   hasAttention: z.boolean(),

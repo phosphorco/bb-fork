@@ -81,6 +81,7 @@ type SendThreadMessagePayload = SendMessageRequest & {
 };
 
 interface SendThreadMessageArgs {
+  afterAppendInTransaction?: SendThreadMessageTransactionCommit;
   beforeAppendInTransaction?: SendThreadMessageTransactionPreflight;
   /**
    * Present only when this send re-submits a failed turn. Marks the turn event
@@ -117,6 +118,13 @@ interface SendThreadMessageTransactionPreflightArgs {
   tx: DbTransaction;
 }
 
+interface SendThreadMessageTransactionCommitArgs {
+  /** Exact provider-facing groups after local context preparation. */
+  inputGroups: readonly PromptInput[][];
+  request: Pick<AppendedClientTurnRequestWithNotification, "requestId" | "sequence">;
+  tx: DbTransaction;
+}
+
 interface SendThreadMessageQueueRequestArgs {
   requestEventSequence: number;
   tx: DbTransaction;
@@ -130,6 +138,10 @@ export interface SendThreadMessageTransactionPreflight {
   (args: SendThreadMessageTransactionPreflightArgs): void;
 }
 
+export interface SendThreadMessageTransactionCommit {
+  (args: SendThreadMessageTransactionCommitArgs): void;
+}
+
 interface SendThreadMessageQueueRequest {
   (
     args: SendThreadMessageQueueRequestArgs,
@@ -137,6 +149,7 @@ interface SendThreadMessageQueueRequest {
 }
 
 interface AppendAndQueueSendThreadMessageArgs {
+  afterAppendInTransaction?: SendThreadMessageTransactionCommit;
   /** Retry provenance; absent for an original dispatch. */
   retryOf?: TurnRequestRetryMarker;
   beforeAppendInTransaction?: SendThreadMessageTransactionPreflight;
@@ -337,6 +350,7 @@ function captureUserMessageSentTelemetry(
 }
 
 function appendAndQueueSendThreadMessageInTransaction({
+  afterAppendInTransaction,
   retryOf,
   beforeAppendInTransaction,
   db,
@@ -374,6 +388,11 @@ function appendAndQueueSendThreadMessageInTransaction({
             requestId,
           },
         );
+      afterAppendInTransaction?.({
+        inputGroups: inputGroups ?? [input],
+        request: appended,
+        tx,
+      });
       recordAcceptedPromptHistoryEntry(
         { db: tx },
         {
@@ -481,6 +500,17 @@ async function sendThreadMessageWithoutContextClear(
         threadId: thread.id,
       });
     }
+  };
+  const afterAppendInTransaction: SendThreadMessageTransactionCommit = ({
+    inputGroups: committedInputGroups,
+    request,
+    tx,
+  }) => {
+    args.afterAppendInTransaction?.({
+      inputGroups: committedInputGroups,
+      request,
+      tx,
+    });
   };
   await validatePromptAttachmentReferences({
     dataDir: deps.config.dataDir,
@@ -600,6 +630,7 @@ async function sendThreadMessageWithoutContextClear(
         }
       : await prepareReadyThreadTurnCommand(deps, commandArgs);
     const queuedRequest = appendAndQueueSendThreadMessageInTransaction({
+      afterAppendInTransaction,
       ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
       beforeAppendInTransaction: ({ tx }) => {
         beforeAppendInTransaction({ tx });
@@ -693,6 +724,7 @@ async function sendThreadMessageWithoutContextClear(
     requestId,
   });
   const queuedRequest = appendAndQueueSendThreadMessageInTransaction({
+    afterAppendInTransaction,
     ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
     beforeAppendInTransaction,
     db: deps.db,

@@ -12,6 +12,7 @@ import type {
   AcceptedDaemonEvent,
   AppendDaemonEventInput,
   AppendDaemonEventsResult,
+  DbQueryConnection,
 } from "@bb/db";
 import {
   hostDaemonEventBatchRequestSchema,
@@ -57,6 +58,7 @@ import {
 import { getAuthenticatedDaemon } from "./auth.js";
 import { validateExtensionPayloads } from "./extension-payloads.js";
 import { validatePresentationIcons } from "./presentation-icons.js";
+import { linkP6rNativeTurnForRequest } from "../services/p6r/sidecar-store.js";
 
 interface ToStoredEventArgs {
   envelope: HostDaemonEventEnvelope;
@@ -317,6 +319,27 @@ function notifyInsertedEventThreads(
         ? { backgroundActivityChanged: true }
         : {}),
       eventTypes: Array.from(eventTypes),
+    });
+  }
+}
+
+function linkP6rAcceptedInputTurns(
+  db: DbQueryConnection,
+  events: readonly HostDaemonEventEnvelope[],
+  insertedEventIndexes: readonly number[],
+): void {
+  for (const index of insertedEventIndexes) {
+    const envelope = events[index];
+    if (envelope === undefined || envelope.event.type !== "turn/input/accepted") {
+      continue;
+    }
+    linkP6rNativeTurnForRequest(db, {
+      nativeRequestId: envelope.event.clientRequestId,
+      threadId: envelope.threadId,
+      turnId: requireThreadEventScopeTurnId({
+        scope: envelope.event.scope,
+        type: envelope.event.type,
+      }),
     });
   }
 }
@@ -956,7 +979,11 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
       let appendResult: AppendDaemonEventsResult;
       try {
         appendResult = deps.db.transaction(
-          (tx) => appendDaemonEventsInTransaction(tx, eventInputs),
+          (tx) => {
+            const result = appendDaemonEventsInTransaction(tx, eventInputs);
+            linkP6rAcceptedInputTurns(tx, postableEvents, result.insertedInputIndexes);
+            return result;
+          },
           { behavior: "immediate" },
         );
       } catch (error) {

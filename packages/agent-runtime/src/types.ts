@@ -5,6 +5,7 @@ import type {
   DynamicTool,
   InstructionMode,
   JsonObject,
+  NativeInputProvenanceGroup,
   PendingInteractionCreate,
   PendingInteractionResolution,
   PromptInput,
@@ -125,6 +126,7 @@ export interface StartThreadArgs {
   clientRequestId?: ClientTurnRequestId;
   input?: PromptInput[];
   inputGroups?: PromptInput[][];
+  provenanceGroups?: NativeInputProvenanceGroup[];
   options: AgentRuntimeExecutionOptions;
   instructions?: string;
   dynamicTools?: DynamicTool[];
@@ -188,6 +190,7 @@ export interface RunTurnArgs {
   threadId: string;
   input: PromptInput[];
   inputGroups?: PromptInput[][];
+  provenanceGroups?: NativeInputProvenanceGroup[];
   clientRequestId: ClientTurnRequestId;
   options: AgentRuntimeExecutionOptions;
   contributedEnv?: readonly AgentRuntimeContributedEnvEntry[];
@@ -199,6 +202,7 @@ export interface SteerTurnArgs {
   expectedTurnId: string;
   input: PromptInput[];
   inputGroups?: PromptInput[][];
+  provenanceGroups?: NativeInputProvenanceGroup[];
   clientRequestId: ClientTurnRequestId;
   options: AgentRuntimeExecutionOptions;
   contributedEnv?: readonly AgentRuntimeContributedEnvEntry[];

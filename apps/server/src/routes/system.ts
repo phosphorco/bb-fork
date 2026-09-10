@@ -52,6 +52,7 @@ import {
 } from "../services/skills/global-skill-install.js";
 import { DEFAULT_APP_KEYBINDINGS } from "../services/system/app-keybindings.js";
 import { resolvePrimaryHostId } from "../services/hosts/primary-host.js";
+import type { P6rNativeHttpIdentityAdmission } from "../services/p6r/native-http-admission.js";
 
 interface SystemConfigRequest {
   url: string;
@@ -100,6 +101,7 @@ export function registerSystemRoutes(
   app: Hono,
   deps: ServerAppDeps,
   pluginService: PluginService,
+  nativeIdentity?: P6rNativeHttpIdentityAdmission,
 ): void {
   const { get, post, put } = typedRoutes<PublicApiSchema>(app, {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
@@ -196,6 +198,14 @@ export function registerSystemRoutes(
     const serverUrl = resolveSystemServerUrl(context.req, deps.config);
     return context.json(await buildSystemConfigResponse(serverUrl));
   });
+
+  get(routes.nativeIdentity, async (context) =>
+    context.json(
+      nativeIdentity === undefined
+        ? { status: "unsupported" as const }
+        : await nativeIdentity.current(context),
+    ),
+  );
 
   put(routes.generalSettings, (context, payload) => {
     setAppSettings(deps.db, payload);

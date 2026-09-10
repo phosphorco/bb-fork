@@ -8,6 +8,17 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  deterministicJson,
+  receiptExistingFiles,
+  receiptMetafileExternalImports,
+  receiptFile,
+  receiptMetafileInputs,
+  receiptOutput,
+  receiptToolchain,
+  sha256,
+} from "./build-receipt.js";
 import { createPluginArtifactMeta } from "./plugin-artifact-meta.js";
 import { isRecord, validatePluginBuildManifest } from "./plugin-manifest.js";
 import {
@@ -22,6 +33,10 @@ import {
 } from "./toolchain.js";
 
 const PLUGIN_SDK_SPECIFIER = "@get-bb/plugin-sdk";
+
+const BUILD_SDK_MANIFEST = fileURLToPath(
+  new URL("../../plugin-sdk/package.json", import.meta.url),
+);
 
 const LEGACY_PLUGIN_SDK_SPECIFIER = "@bb/plugin-sdk";
 
@@ -111,41 +126,51 @@ async function readPluginServerConfig(
   };
 }
 
-interface PluginServerBuildResult {
+export interface PluginServerBuildResult {
   jsPath: string;
   mapPath: string;
   metaPath: string;
+  receiptPath: string;
+}
+
+export interface PluginServerBuildOptions {
+  outputDir?: string;
 }
 
 export async function buildPluginServer(
   rootDir: string,
   bbVersion: string,
   toolchain: PluginBuildToolchain,
+  options: PluginServerBuildOptions = {},
 ): Promise<PluginServerBuildResult> {
   const { serverEntry, packageName, pluginVersion } =
     await readPluginServerConfig(rootDir);
-  const distDir = join(rootDir, "dist");
+  const distDir = options.outputDir ?? join(rootDir, "dist");
   await mkdir(distDir, { recursive: true });
   const jsPath = join(distDir, "server.js");
   const mapPath = join(distDir, "server.js.map");
   const metaPath = join(distDir, "server.meta.json");
+  const receiptPath = join(distDir, "server.receipt.json");
 
   const stageDir = await mkdtemp(join(distDir, ".stage-"));
   try {
     const stagedJsPath = join(stageDir, "server.js");
     const stagedMetaPath = join(stageDir, "server.meta.json");
+    const stagedReceiptPath = join(stageDir, "server.receipt.json");
 
     const esbuild = (await import(
       toolchain.esbuild
     )) as typeof import("esbuild");
-    await esbuild.build({
+    const bundle = await esbuild.build({
       entryPoints: [serverEntry],
       outfile: stagedJsPath,
+      absWorkingDir: rootDir,
       bundle: true,
       format: "esm",
       platform: "node",
       target: "node22",
       sourcemap: true,
+      metafile: true,
       banner: { js: NODE_ESM_REQUIRE_BANNER },
       external: PLUGIN_SERVER_EXTERNALS.filter(
         (specifier) => !PLUGIN_SDK_ROOT_FILTER.test(specifier),
@@ -200,11 +225,62 @@ export async function buildPluginServer(
       ) + "\n",
     );
 
+    if (bundle.metafile === undefined) {
+      throw new Error("esbuild did not return the server build metafile");
+    }
+    const outputFiles = await Promise.all([
+      receiptOutput(rootDir, jsPath, stagedJsPath),
+      receiptOutput(rootDir, mapPath, join(stageDir, "server.js.map")),
+      receiptOutput(rootDir, metaPath, stagedMetaPath),
+    ]);
+    const externalManifests = await receiptExistingFiles(
+      rootDir,
+      PLUGIN_SERVER_EXTERNALS.map((specifier) =>
+        join(rootDir, "node_modules", specifier, "package.json"),
+      ),
+    );
+    await writeFile(
+      stagedReceiptPath,
+      deterministicJson({
+        formatVersion: 1,
+        kind: "plugin-server-build",
+        configuration: {
+          entry: await receiptFile(rootDir, serverEntry),
+          packageManifest: await receiptFile(rootDir, join(rootDir, "package.json")),
+          packageName,
+          pluginVersion,
+          bbVersion,
+          format: "esm",
+          platform: "node",
+          target: "node22",
+          sourcemap: true,
+          banner: NODE_ESM_REQUIRE_BANNER,
+          bannerSha256: sha256(NODE_ESM_REQUIRE_BANNER),
+          externals: [...PLUGIN_SERVER_EXTERNALS],
+        },
+        inputs: {
+          esbuild: await receiptMetafileInputs(rootDir, bundle.metafile),
+          esbuildExternalImports: receiptMetafileExternalImports(
+            bundle.metafile,
+          ),
+          sdkManifests: await receiptExistingFiles(rootDir, [
+            BUILD_SDK_MANIFEST,
+            join(rootDir, "node_modules", "@get-bb", "plugin-sdk", "package.json"),
+            join(rootDir, "node_modules", "@bb", "plugin-sdk", "package.json"),
+          ]),
+          externalManifests,
+          toolchain: await receiptToolchain(rootDir, toolchain),
+        },
+        outputs: outputFiles,
+      }),
+    );
+
     await rename(stagedJsPath, jsPath);
     await rename(join(stageDir, "server.js.map"), mapPath);
     await rename(stagedMetaPath, metaPath);
+    await rename(stagedReceiptPath, receiptPath);
   } finally {
     await rm(stageDir, { recursive: true, force: true });
   }
-  return { jsPath, mapPath, metaPath };
+  return { jsPath, mapPath, metaPath, receiptPath };
 }

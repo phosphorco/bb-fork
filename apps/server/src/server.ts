@@ -4,7 +4,8 @@ import { readFile, stat } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
+import { getCookie } from "hono/cookie";
 import { terminalWebSocketQuerySchema } from "@bb/server-contract";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
@@ -43,6 +44,8 @@ import {
 } from "./internal/auth.js";
 import {
   captureTrustedRemoteAddress,
+  getTrustedP6rLineage,
+  getTrustedRemoteAddress,
   resolveRequestAppSurface,
 } from "./request-context.js";
 import { runEventLoopWork } from "./services/system/event-loop-work.js";
@@ -82,6 +85,23 @@ import {
   callPluginHostRpc,
   disposePluginHostWorkers,
 } from "./services/plugins/plugin-host-rpc.js";
+import { createP6rInvocationRegistry } from "./services/p6r/invocation-registry.js";
+import { createP6rIdentityService } from "./services/p6r/identity-protocol.js";
+import { createP6rNativeHttpIdentityAdmission } from "./services/p6r/native-http-admission.js";
+import { createP6rNativePresenceService } from "./services/p6r/native-presence.js";
+import { createP6rNativeAcceptance } from "./services/p6r/native-acceptance.js";
+import { createP6rProviderRegistry } from "./services/p6r/provider-registry.js";
+import { createP6rProviderAdmission } from "./services/p6r/provider-admission.js";
+import { createP6rNativeWebSocketIdentityAdmission } from "./services/p6r/native-websocket-admission.js";
+import { initializeP6rInstanceNamespace } from "./services/p6r/sidecar-store.js";
+import {
+  createP6rBrowserLineage,
+  installP6rBrowserLineageMiddleware,
+  installP6rNativeHttpLineageMiddleware,
+  P6R_NATIVE_HTTP_LINEAGE_COOKIE,
+} from "./services/p6r/browser-lineage.js";
+import { createP6rPluginDispatch } from "./services/plugins/plugin-p6r-dispatch.js";
+import { registerNativePresenceWebSocket } from "./ws/native-presence-protocol.js";
 
 const PLUGIN_WIRE_HTTP_PATH = /^\/api\/v1\/plugins\/[^/]+\/http(?:\/|$)/u;
 import { rankAcceptedAssetEncodings } from "./asset-content-encoding.js";
@@ -90,6 +110,21 @@ import { apiJsonCompression } from "./api-response-compression.js";
 type CloseWebSockets = () => Promise<void>;
 type NodeWebSocketServer = ReturnType<typeof createNodeWebSocket>["wss"];
 type WebSocketCloseError = Error | undefined;
+
+function p6rHonoContext(request: object): Context | null {
+  const candidate = request as {
+    readonly get?: unknown;
+    readonly req?: { readonly method?: unknown; readonly url?: unknown };
+  };
+  if (
+    typeof candidate.get !== "function" ||
+    typeof candidate.req?.method !== "string" ||
+    typeof candidate.req.url !== "string"
+  ) {
+    return null;
+  }
+  return request as Context;
+}
 
 interface ServerApp {
   app: Hono;
@@ -413,6 +448,10 @@ export function createApp(
   const { injectWebSocket, upgradeWebSocket, wss } = createNodeWebSocket({
     app,
   });
+  const p6rNativeLineage = createP6rBrowserLineage({
+    cookieName: P6R_NATIVE_HTTP_LINEAGE_COOKIE,
+    cookiePath: "/",
+  });
   const slowApiRequestLogThresholdMs =
     options?.slowApiRequestLogThresholdMs ?? SLOW_API_REQUEST_LOG_THRESHOLD_MS;
   const bbAppArtifactService =
@@ -426,6 +465,18 @@ export function createApp(
     captureTrustedRemoteAddress(context);
     return runWithTelemetryAppSurface(resolveRequestAppSurface(context), next);
   });
+  if (
+    deps.config.p6rIdentityBoundary !== null &&
+    deps.config.p6rIdentityBoundary !== undefined
+  ) {
+    installP6rBrowserLineageMiddleware(app, {
+      boundary: deps.config.p6rIdentityBoundary,
+    });
+    installP6rNativeHttpLineageMiddleware(app, {
+      boundary: deps.config.p6rIdentityBoundary,
+      lineage: p6rNativeLineage,
+    });
+  }
   app.use("*", async (context, next) => {
     const path = context.req.path;
     if (!path.startsWith("/api/v1/") && !path.startsWith("/internal/")) {
@@ -547,7 +598,119 @@ export function createApp(
     }
     return next();
   });
-  const pluginService = createPluginService({
+  const p6rDispatch = createP6rPluginDispatch();
+  const p6rProviderRegistry = createP6rProviderRegistry({ now: Date.now });
+  const p6rInstanceId = initializeP6rInstanceNamespace(deps.db);
+  const p6rAdmission = createP6rProviderAdmission({
+    configured: () =>
+      deps.config.p6rIdentityBoundary !== null &&
+      deps.config.p6rIdentityBoundary !== undefined,
+    ingressFacts: ({ request, transport }) => {
+      const context = p6rHonoContext(request);
+      const boundary = deps.config.p6rIdentityBoundary ?? null;
+      const remoteAddress =
+        context === null ? undefined : getTrustedRemoteAddress(context);
+      const trustedIngress = boundary?.trustedIngresses.find(
+        (candidate) =>
+          candidate.remoteAddresses.includes(remoteAddress ?? "") &&
+          (transport === "http" || transport === "websocket"),
+      );
+      if (context === null || trustedIngress === undefined) return null;
+      return {
+        authenticatedPeer: trustedIngress.authenticatedPeer,
+        id: trustedIngress.id,
+        kind: trustedIngress.kind,
+        lineage: getTrustedP6rLineage(context) ?? null,
+      };
+    },
+    instanceId: p6rInstanceId,
+    now: Date.now,
+    providerRegistry: p6rProviderRegistry,
+    requestFacts: (request) => {
+      const context = p6rHonoContext(request);
+      if (context === null) return null;
+      const url = new URL(context.req.url);
+      return {
+        authority: url.host,
+        cookie: (name) => getCookie(context, name) ?? null,
+        header: (name) => context.req.header(name) ?? null,
+        method: context.req.method,
+        pathname: context.req.path,
+        receivedAt: Date.now(),
+        transport:
+          context.req.header("upgrade")?.toLowerCase() === "websocket"
+            ? "websocket"
+            : "http",
+      };
+    },
+    selectedConfiguration: () =>
+      (deps.config.p6rIdentityBoundary ?? null)?.configuration ?? null,
+  });
+  const p6rNativeHttpIdentity = createP6rNativeHttpIdentityAdmission({
+    providerAdmission: p6rAdmission,
+  });
+  const internalSdkRequests = new WeakMap<
+    Request,
+    {
+      pluginId: string;
+      generation: string;
+      lifetime: AbortSignal;
+    }
+  >();
+  const nativeRequestAdmission: import("./services/p6r/native-http-admission.js").P6rNativeRequestAdmissionReader =
+    async (context) => {
+      const internal = internalSdkRequests.get(context.req.raw);
+      if (internal === undefined) return p6rNativeHttpIdentity.admit(context);
+      return {
+        status: "internal",
+        pluginId: internal.pluginId,
+        generation: internal.generation,
+        validate: () =>
+          internal.lifetime.aborted
+            ? { ok: false, code: "expired" }
+            : { ok: true },
+      };
+    };
+  let pluginService: PluginService;
+  const p6rIdentity = createP6rIdentityService({
+    activateBindings: (generation) => p6rDispatch.activateBindings(generation),
+    bindInvocation: (input) => p6rDispatch.bindInvocation(input),
+    db: deps.db,
+    instanceId: p6rInstanceId,
+    invocationRegistry: createP6rInvocationRegistry(),
+    providerConfiguration: p6rAdmission.providerConfiguration,
+    providerRegistry: p6rProviderRegistry,
+    native: {
+      accept: createP6rNativeAcceptance({
+        deps,
+        now: Date.now,
+        retentionMs: 30 * 24 * 60 * 60 * 1_000,
+      }),
+      forwardRpc: (input) => pluginService.forwardP6rRpc(input),
+    },
+    now: Date.now,
+    retireBindings: (generation) => p6rDispatch.retireBindings(generation),
+    trustedInvocation: p6rAdmission.trustedInvocation,
+  });
+  pluginService = createPluginService({
+    createSdkFetch: (origin) => async (input, init) => {
+      const requested = new Request(input, init);
+      const scope = new AbortController();
+      const lifetime = AbortSignal.any([
+        origin.lifetime,
+        requested.signal,
+        scope.signal,
+      ]);
+      lifetime.throwIfAborted();
+      const request = new Request(requested, { signal: lifetime });
+      internalSdkRequests.set(request, { ...origin, lifetime });
+      try {
+        return await app.fetch(request);
+      } finally {
+        internalSdkRequests.delete(request);
+        scope.abort();
+      }
+    },
     db: deps.db,
     hub: deps.hub,
     logger: deps.logger,
@@ -558,6 +721,9 @@ export function createApp(
     getAppUrl: () => deps.config.appUrl ?? null,
     sharedPorts: deps.sharedPorts,
     providerRegistry: deps.providerRegistry,
+    p6rDispatch,
+    p6rIdentity,
+    p6rProviderRegistry,
     pluginHostArtifacts: deps.pluginHostArtifacts,
     aiServices: deps.aiServices,
     ensureSharedPortTunnel: (hostId) =>
@@ -630,9 +796,9 @@ export function createApp(
   registerHostRoutes(publicApi, deps, pluginService);
   registerTerminalRoutes(publicApi, deps);
   registerEnvironmentRoutes(publicApi, deps);
-  registerThreadRoutes(publicApi, deps);
+  registerThreadRoutes(publicApi, { ...deps, nativeRequestAdmission });
   registerQueueRoutes(publicApi, deps);
-  registerSystemRoutes(publicApi, deps, pluginService);
+  registerSystemRoutes(publicApi, deps, pluginService, p6rNativeHttpIdentity);
   registerPluginCatalogRoutes(publicApi, pluginCatalogService);
   registerPluginRoutes(publicApi, deps, pluginService, upgradeWebSocket);
   registerSkillsRegistryRoutes(publicApi, deps);
@@ -650,6 +816,20 @@ export function createApp(
   registerInternalToolCallRoutes(internalApi, deps);
   registerInternalInteractiveRequestRoutes(internalApi, deps);
   app.route("/internal", internalApi);
+
+  const p6rNativeWebSocketIdentity = createP6rNativeWebSocketIdentityAdmission({
+    providerAdmission: p6rAdmission,
+  });
+  const p6rNativePresence = createP6rNativePresenceService();
+  registerNativePresenceWebSocket(app, {
+    boundary: () => deps.config.p6rIdentityBoundary ?? null,
+    db: deps.db,
+    deps: deps.config,
+    identity: p6rNativeWebSocketIdentity,
+    lineage: p6rNativeLineage,
+    presence: p6rNativePresence,
+    upgradeWebSocket,
+  });
 
   app.get(
     "/ws",

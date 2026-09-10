@@ -1,0 +1,1 @@
+export { nativePersonReferenceSchema, nativePersonActorSchema, nativeActorSnapshotSchema, nativeOriginSchema, nativeInputAttributionSchema, type NativeActorSnapshot, type NativeOrigin, type NativeInputAttribution } from "@bb/domain";

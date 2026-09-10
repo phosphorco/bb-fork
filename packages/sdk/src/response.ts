@@ -6,6 +6,7 @@ export type FetchImplementation = typeof fetch;
 
 export interface RequestTimeoutFetchOptions {
   timeoutMs: number;
+  fetch?: FetchImplementation;
 }
 
 interface RequestTimeoutContext {
@@ -110,7 +111,7 @@ export function createRequestTimeoutFetch(
     };
 
     try {
-      const response = await fetch(input, { ...init, signal: requestSignal });
+      const response = await (options.fetch ?? fetch)(input, { ...init, signal: requestSignal });
       return wrapRequestTimeoutResponse({ context, response });
     } catch (error) {
       if (isRequestTimeoutError(context, error)) {

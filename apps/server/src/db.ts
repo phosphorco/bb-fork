@@ -9,6 +9,7 @@ import {
   exportLegacyAutomationsForPluginImport,
   hasLegacyAutomationsToExport,
 } from "./legacy-automations-export.js";
+import { migrateP6rSidecars } from "./services/p6r/sidecar-migrate.js";
 
 type InitDbLogger = MigrationWarningLogger &
   SlowDbQueryLogger &
@@ -41,6 +42,7 @@ export function initDb(
     deferDestructiveLegacyCleanup: true,
     logger: options.logger,
   });
+  migrateP6rSidecars(db);
   ensurePersonalProject(db);
   return db;
 }

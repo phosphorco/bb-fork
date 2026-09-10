@@ -538,6 +538,7 @@ describe("timeline CLI rendering snapshots", () => {
     );
     expect(pendingSteerRow?.sourceSeqStart).toBe(3);
     expect(pendingSteerRow?.turnRequest).toEqual({
+      source: { requestId: "creq_2222222225", inputGroupIndex: 0 },
       isGrouped: false,
       kind: "steer",
       status: "pending",
@@ -579,6 +580,7 @@ describe("timeline CLI rendering snapshots", () => {
         row.kind === "conversation" && row.role === "user",
     );
     expect(rejectedSteerRow?.turnRequest).toEqual({
+      source: { requestId: "creq_2222222223", inputGroupIndex: 0 },
       isGrouped: false,
       kind: "steer",
       status: "rejected",
@@ -690,6 +692,7 @@ describe("timeline CLI rendering snapshots", () => {
     );
     expect(steerMessage?.sourceSeqStart).toBe(4);
     expect(steerMessage?.turnRequest).toEqual({
+      source: { requestId: "creq_2222222223", inputGroupIndex: 0 },
       isGrouped: false,
       kind: "steer",
       status: "accepted",
@@ -707,6 +710,7 @@ describe("timeline CLI rendering snapshots", () => {
     );
     expect(steerRow?.sourceSeqStart).toBe(4);
     expect(steerRow?.turnRequest).toEqual({
+      source: { requestId: "creq_2222222223", inputGroupIndex: 0 },
       isGrouped: false,
       kind: "steer",
       status: "accepted",
@@ -784,8 +788,8 @@ describe("timeline CLI rendering snapshots", () => {
       "Follow-up task",
     ]);
     expect(userMessages.map((message) => message.turnRequest)).toEqual([
-      { isGrouped: false, kind: "message", status: "accepted" },
-      { isGrouped: false, kind: "message", status: "accepted" },
+      { isGrouped: false, kind: "message", status: "accepted", source: { requestId: "creq_2222222223", inputGroupIndex: 0 } },
+      { isGrouped: false, kind: "message", status: "accepted", source: { requestId: "creq_2222222228", inputGroupIndex: 0 } },
     ]);
     const topLevelUserRows = timeline.rows.filter(
       (row) => row.kind === "conversation" && row.role === "user",

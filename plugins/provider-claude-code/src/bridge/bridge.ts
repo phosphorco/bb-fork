@@ -26,6 +26,7 @@ import {
   type BridgeToolCallRequest,
   experimental_defineProviderBridge,
 } from "@get-bb/plugin-sdk/provider-bridge";
+import { formatPromptInputForProvider } from "@bb/provider-bridge-protocol";
 import { randomUUID } from "node:crypto";
 import { join as joinPath, resolve as resolvePath } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -2626,7 +2627,11 @@ async function handleTurnStart(
       buildClaudeTurnParams({
         threadId: params.threadId,
         providerThreadId: params.providerThreadId,
-        input: params.input,
+        input: formatPromptInputForProvider(
+          params.input,
+          params.inputGroups,
+          params.provenanceGroups,
+        ),
         options: params.options,
       }),
     ),
@@ -2712,7 +2717,11 @@ async function handleTurnSteer(
         threadId: params.threadId,
         providerThreadId: params.providerThreadId,
         expectedTurnId: params.expectedTurnId,
-        input: params.input,
+        input: formatPromptInputForProvider(
+          params.input,
+          params.inputGroups,
+          params.provenanceGroups,
+        ),
         options: params.options,
       }),
     ),

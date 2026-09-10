@@ -3,6 +3,7 @@ import {
   clientTurnRequestIdSchema,
   dynamicToolSchema,
   instructionModeSchema,
+  nativeInputProvenanceGroupSchema,
   promptInputSchema,
 } from "@bb/domain";
 import { z } from "zod";
@@ -97,18 +98,57 @@ const turnInputFields = {
   threadId: z.string().min(1),
   providerThreadId: z.string().min(1),
   input: z.array(promptInputSchema),
+  inputGroups: z.array(z.array(promptInputSchema).min(1)).min(1).optional(),
+  provenanceGroups: z.array(nativeInputProvenanceGroupSchema).optional(),
   clientRequestId: clientTurnRequestIdSchema,
   options: bridgeExecutionOptionsSchema,
 };
 
-export const turnStartParamsSchema = z.object(turnInputFields).passthrough();
+const turnInputParamsSchema = z.object(turnInputFields);
+type TurnInputParams = z.infer<typeof turnInputParamsSchema>;
+
+function refineProvenanceGroups(
+  value: TurnInputParams,
+  ctx: z.RefinementCtx,
+): void {
+  if (value.provenanceGroups === undefined) return;
+  if (value.inputGroups === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      message: "provenanceGroups requires inputGroups",
+      path: ["provenanceGroups"],
+    });
+    return;
+  }
+  if (value.provenanceGroups.length !== value.inputGroups.length) {
+    ctx.addIssue({
+      code: "custom",
+      message: "provenanceGroups must align with inputGroups",
+      path: ["provenanceGroups"],
+    });
+  }
+  for (const [index, group] of value.provenanceGroups.entries()) {
+    if (group.groupIndex !== index) {
+      ctx.addIssue({
+        code: "custom",
+        message: "provenanceGroups must preserve inputGroups order",
+        path: ["provenanceGroups", index, "groupIndex"],
+      });
+    }
+  }
+}
+
+export const turnStartParamsSchema = turnInputParamsSchema
+  .passthrough()
+  .superRefine(refineProvenanceGroups);
 
 export const turnSteerParamsSchema = z
   .object({
     ...turnInputFields,
     expectedTurnId: z.string().min(1),
   })
-  .passthrough();
+  .passthrough()
+  .superRefine(refineProvenanceGroups);
 
 export const skillsConfigureRootSchema = z
   .object({

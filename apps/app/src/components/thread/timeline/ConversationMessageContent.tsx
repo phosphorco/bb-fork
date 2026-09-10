@@ -54,6 +54,7 @@ import {
 import { turnRequestLabel } from "@bb/client-core";
 import { splitStreamingMarkdown } from "./streaming-markdown-split.js";
 import { TurnRequestLabel } from "./TurnRequestLabel.js";
+import { NativeMessageAttribution } from "./NativeMessageAttribution.js";
 import {
   MessageActionBar,
   PROSE_COLUMN_INSET_CLASS,
@@ -81,6 +82,7 @@ interface ConversationMessageContentBaseProps {
 }
 
 interface ConversationMessageContentUserProps extends ConversationMessageContentBaseProps {
+  attribution?: TimelineUserConversationRow["attribution"];
   role: "user";
   mobileActionDisplay?: "inline" | "overflow";
   originKind: ThreadOriginKind | null;
@@ -142,6 +144,7 @@ type ConversationMessageContentProps =
   | ConversationMessageContentAssistantProps;
 
 interface UserConversationMessageProps {
+  attribution?: TimelineUserConversationRow["attribution"];
   addToChatAttachments: readonly PromptDraftAttachment[];
   attachmentItems: ConversationAttachmentItems;
   originKind: ThreadOriginKind | null;
@@ -325,6 +328,7 @@ function buildAddToChatAttachments(
 }
 
 function UserConversationMessage({
+  attribution,
   addToChatAttachments,
   attachmentItems,
   originKind,
@@ -428,7 +432,7 @@ function UserConversationMessage({
             />
           </div>
         ) : null}
-        {}
+        <NativeMessageAttribution sources={attribution} />
         <div className="flex w-fit max-w-full flex-col items-end">
           <div className="max-w-full rounded-xl border border-border-seam bg-surface-recessed px-4 py-2.5 text-sm leading-relaxed text-foreground">
             {messageText ? (
@@ -667,6 +671,7 @@ export function ConversationMessageContent(
   if (props.role === "user") {
     return (
       <UserConversationMessage
+        attribution={props.attribution}
         addToChatAttachments={addToChatAttachments}
         attachmentItems={attachmentItems}
         originKind={props.originKind}

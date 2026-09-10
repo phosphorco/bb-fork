@@ -34,6 +34,7 @@ import type {
   ExperimentalHostClient,
   ExperimentalHostSignals,
 } from "./host-contract.js";
+import type { ExperimentalP6rIdentityProtocol } from "./experimental-p6r-identity.js";
 
 /**
  * The backend plugin API contract — the `bb` object handed to a plugin's
@@ -1614,6 +1615,52 @@ export interface PluginHosts {
   declareSharedPorts(hostId: string, ports: readonly number[]): void;
 }
 
+export type ExperimentalThreadFacetCardinality = "one" | "many";
+
+declare const experimentalThreadFacetTargetGrantBrand: unique symbol;
+
+export interface ExperimentalThreadFacetTargetGrant {
+  readonly [experimentalThreadFacetTargetGrantBrand]: true;
+}
+
+export type ExperimentalThreadFacetTarget =
+  | Awaited<ReturnType<BbSdk["threads"]["get"]>>
+  | Awaited<ReturnType<BbSdk["threads"]["list"]>>[number];
+
+export type ExperimentalThreadFacetReplacement<
+  Cardinality extends ExperimentalThreadFacetCardinality,
+  Member extends string,
+> = Cardinality extends "one" ? readonly [] | readonly [Member] : readonly Member[];
+
+export interface ExperimentalThreadFacetTargetPage {
+  targets: readonly ExperimentalThreadFacetTarget[];
+  nextCursor: string | null;
+}
+
+export interface ExperimentalThreadFacetHandle<
+  Cardinality extends ExperimentalThreadFacetCardinality,
+  Member extends string,
+> {
+  replace(target: ExperimentalThreadFacetTargetGrant, members: ExperimentalThreadFacetReplacement<Cardinality, Member>): Promise<void>;
+  clear(target: ExperimentalThreadFacetTargetGrant): Promise<void>;
+  listPriorTargets(args?: { cursor?: string; pageSize?: number }): Promise<ExperimentalThreadFacetTargetPage>;
+  markReady(): Promise<void>;
+}
+
+export interface ExperimentalThreadFacets {
+  target(thread: ExperimentalThreadFacetTarget): ExperimentalThreadFacetTargetGrant;
+  declare<
+    const Cardinality extends ExperimentalThreadFacetCardinality,
+    const Members extends readonly string[],
+  >(declaration: {
+    assignmentScope: "shared-thread";
+    cardinality: Cardinality;
+    localName: string;
+    memberKind: "enum";
+    members: Members;
+  }): ExperimentalThreadFacetHandle<Cardinality, Members[number]>;
+}
+
 // ---------------------------------------------------------------------------
 // Status + the API root.
 // ---------------------------------------------------------------------------
@@ -1682,6 +1729,12 @@ export interface BbPluginApi {
    * inference, voice transcription). See `@get-bb/plugin-sdk/ai-services`.
    */
   readonly experimental_aiServices: PluginAiServices;
+  readonly experimental_facets: ExperimentalThreadFacets;
+  /**
+   * Optional enhanced identity host capability. It is absent on ordinary
+   * hosts; product adapters validate the structural protocol before use.
+   */
+  readonly experimental_p6rIdentity?: ExperimentalP6rIdentityProtocol;
   /**
    * The full BB SDK, bound to this server over loopback (design §4.1).
    * Bind-gated: reading this before the host binds the SDK throws. The real

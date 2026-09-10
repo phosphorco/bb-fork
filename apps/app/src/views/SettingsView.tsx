@@ -46,6 +46,7 @@ import {
 import { useHostDaemon, useLocalHostDaemonAccess } from "@/hooks/useHostDaemon";
 import { UsageLimitsSettingsSection } from "@/components/settings/UsageLimitsSettingsSection";
 import { ProvidersSettingsSection } from "@/components/settings/ProvidersSettingsSection";
+import { NativeIdentitySettingsSection } from "@/components/settings/NativeIdentitySettingsSection";
 import { CodeRendererSettings } from "@/components/settings/CodeRendererSettings";
 import { SidebarThreadListSetting } from "@/components/settings/SidebarThreadListSetting";
 import { SidebarNavigationSetting } from "@/components/settings/SidebarNavigationSetting";
@@ -1223,6 +1224,7 @@ export function SettingsView() {
   } else {
     content = (
       <>
+        <NativeIdentitySettingsSection />
         <GeneralSettingsSection
           desktopBrowserAvailable={desktopBrowserAvailable}
           managedBranchPrefix={generalSettings.managedBranchPrefix}

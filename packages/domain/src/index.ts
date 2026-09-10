@@ -50,6 +50,7 @@ export * from "./terminal.js";
 export * from "./thread-dynamic-context.js";
 export * from "./thread-event-scope.js";
 export * from "./thread-events.js";
+export * from "./thread-facet.js";
 export * from "./thread-git-diff.js";
 export * from "./thread-lifecycle.js";
 export * from "./thread-name-tags.js";
@@ -60,3 +61,5 @@ export * from "./thread-timeline-model-fallback.js";
 export * from "./thread-timeline-pending-todos.js";
 export * from "./thread-visibility.js";
 export * from "./thread.js";
+
+export * from "./native-attribution.js";

@@ -149,6 +149,7 @@ import type {
   SystemCliSkillsStatusResponse,
   SystemInstallCliSkillsRequest,
   SystemInstallCliSkillsResponse,
+  SystemNativeIdentityStatusResponse,
   SystemExecutionOptionsQuery,
   SystemExecutionOptionsResponse,
   SystemProviderInfo,
@@ -180,6 +181,14 @@ import type {
   ThreadCountResponse,
   ThreadListQuery,
   ThreadListResponse,
+  ThreadFacetParticipantsQuery,
+  ThreadFacetParticipantsResponse,
+  ThreadFacetQueryRequest,
+  ThreadFacetQueryResponse,
+  ExperimentalThreadExecutionPreflightRequest,
+  ExperimentalThreadExecutionPreflightResponse,
+  ExperimentalThreadExecutionApplyRequest,
+  ExperimentalThreadExecutionApplyResponse,
   ThreadConversationOutlineResponse,
   ThreadOpenRequest,
   ThreadOpenResponse,
@@ -293,6 +302,10 @@ import {
   threadHostFileContentQuerySchema,
   threadCountQuerySchema,
   threadListQuerySchema,
+  threadFacetParticipantsQuerySchema,
+  threadFacetQueryRequestSchema,
+  experimentalThreadExecutionPreflightRequestSchema,
+  experimentalThreadExecutionApplyRequestSchema,
   threadOpenRequestSchema,
   threadPaneActionRequestSchema,
   threadSearchQuerySchema,
@@ -917,6 +930,39 @@ export const publicApiRoutes = {
       ),
       response: jsonResponse<ThreadListResponse>(),
     }),
+    facetQuery: defineRoute({
+      path: "/threads/facet-query",
+      method: "post",
+      request: jsonRequest<EmptyInput, ThreadFacetQueryRequest>(
+        threadFacetQueryRequestSchema,
+      ),
+      response: jsonResponse<ThreadFacetQueryResponse>(),
+    }),
+    experimentalExecutionPreflight: defineRoute({
+      path: "/threads/execution-overrides/preflight",
+      method: "post",
+      request: jsonRequest<
+        EmptyInput,
+        ExperimentalThreadExecutionPreflightRequest
+      >(experimentalThreadExecutionPreflightRequestSchema),
+      response: jsonResponse<ExperimentalThreadExecutionPreflightResponse>(),
+    }),
+    experimentalExecutionApply: defineRoute({
+      path: "/threads/execution-overrides/apply",
+      method: "post",
+      request: jsonRequest<EmptyInput, ExperimentalThreadExecutionApplyRequest>(
+        experimentalThreadExecutionApplyRequestSchema,
+      ),
+      response: jsonResponse<ExperimentalThreadExecutionApplyResponse>(),
+    }),
+    facetParticipants: defineRoute({
+      path: "/threads/:id/facet-participants",
+      method: "get",
+      request: optionalQueryRequest<PathId, ThreadFacetParticipantsQuery>(
+        threadFacetParticipantsQuerySchema,
+      ),
+      response: jsonResponse<ThreadFacetParticipantsResponse>(),
+    }),
     /**
      * Grouped `SELECT count(*)` over threads. Exists because a plugin gate
      * that limits concurrency must count without loading: `threads.list`
@@ -1385,6 +1431,12 @@ export const publicApiRoutes = {
       method: "get",
       request: noRequest(),
       response: jsonResponse<SystemConfigResponse>(),
+    }),
+    nativeIdentity: defineRoute({
+      path: "/system/native-identity",
+      method: "get",
+      request: noRequest(),
+      response: jsonResponse<SystemNativeIdentityStatusResponse>(),
     }),
     generalSettings: defineRoute({
       path: "/settings/general",

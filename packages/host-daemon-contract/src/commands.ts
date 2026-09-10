@@ -7,6 +7,7 @@ import {
   instructionModeSchema,
   pendingInteractionResolutionSchema,
   permissionModeSchema,
+  nativeInputProvenanceGroupSchema,
   promptInputSchema,
   providerForkSchema,
   threadGitDiffResponseSchema,
@@ -241,6 +242,7 @@ type HostDaemonPromptInput = z.infer<typeof promptInputSchema>;
 interface GroupedPromptInputCommand {
   input: HostDaemonPromptInput[];
   inputGroups?: HostDaemonPromptInput[][];
+  provenanceGroups?: z.infer<typeof nativeInputProvenanceGroupSchema>[];
 }
 
 function flattenPromptInputGroups(
@@ -272,6 +274,37 @@ function refineGroupedInputMatchesFlatInput(
   });
 }
 
+function refineProvenanceGroups(
+  value: GroupedPromptInputCommand,
+  ctx: z.RefinementCtx,
+): void {
+  if (value.provenanceGroups === undefined) return;
+  if (value.inputGroups === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      message: "provenanceGroups requires inputGroups",
+      path: ["provenanceGroups"],
+    });
+    return;
+  }
+  if (value.provenanceGroups.length !== value.inputGroups.length) {
+    ctx.addIssue({
+      code: "custom",
+      message: "provenanceGroups must align with inputGroups",
+      path: ["provenanceGroups"],
+    });
+  }
+  for (const [index, group] of value.provenanceGroups.entries()) {
+    if (group.groupIndex !== index) {
+      ctx.addIssue({
+        code: "custom",
+        message: "provenanceGroups must preserve inputGroups order",
+        path: ["provenanceGroups", index, "groupIndex"],
+      });
+    }
+  }
+}
+
 const threadStartCommandSchema = hostDaemonThreadTargetSchema
   .merge(hostDaemonThreadRuntimeContextSchema)
   .extend({
@@ -279,6 +312,7 @@ const threadStartCommandSchema = hostDaemonThreadTargetSchema
     requestId: clientTurnRequestIdSchema,
     input: z.array(promptInputSchema),
     inputGroups: z.array(z.array(promptInputSchema).min(1)).min(1).optional(),
+    provenanceGroups: z.array(nativeInputProvenanceGroupSchema).optional(),
     threadStoragePath: z.string().min(1).optional(),
     fork: z
       .object({
@@ -297,6 +331,7 @@ const threadStartCommandSchema = hostDaemonThreadTargetSchema
       });
     }
     refineGroupedInputMatchesFlatInput(value, ctx);
+    refineProvenanceGroups(value, ctx);
   });
 
 const threadRewindPrepareCommandSchema = hostDaemonThreadTargetSchema
@@ -337,13 +372,17 @@ const turnSubmitCommandSchema = hostDaemonThreadTargetSchema
     requestId: clientTurnRequestIdSchema,
     input: z.array(promptInputSchema).min(1),
     inputGroups: z.array(z.array(promptInputSchema).min(1)).min(1).optional(),
+    provenanceGroups: z.array(nativeInputProvenanceGroupSchema).optional(),
     options: runtimeThreadExecutionOptionsSchema,
     bridgeLaunch: hostDaemonBridgeLaunchSchema,
     resumeContext: turnResumeContextSchema,
     target: turnSubmitTargetSchema,
   })
   .strict()
-  .superRefine(refineGroupedInputMatchesFlatInput);
+  .superRefine((value, ctx) => {
+    refineGroupedInputMatchesFlatInput(value, ctx);
+    refineProvenanceGroups(value, ctx);
+  });
 
 const threadStopIntentSchema = z.enum(["interrupt", "release"]);
 

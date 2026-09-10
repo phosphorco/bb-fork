@@ -1,14 +1,23 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { upsertInstalledPlugin } from "@bb/db";
+import {
+  getInstalledPlugin,
+  getPluginArtifactByResolution,
+  upsertInstalledPlugin,
+} from "@bb/db";
 import { PLUGIN_SDK_MAJOR, PLUGIN_SDK_VERSION } from "@bb/domain";
+import { loadPluginAppBundle } from "../../../src/services/plugins/app-bundle.js";
+import {
+  hashInstallDir,
+  npmArtifactCacheDir,
+} from "../../../src/services/plugins/install-sources.js";
 import {
   createTestAppHarness,
   type TestAppHarness,
@@ -103,6 +112,45 @@ describe("plugin app bundles (build policy, inventory, asset routes)", () => {
   afterEach(async () => {
     await harness.pluginService.stop();
     await harness.cleanup();
+  });
+
+  it("loads a sealed app artifact with no source entry to rebuild", async () => {
+    const rootDir = join(harness.config.dataDir, "fixtures", "sealed-thread-progress");
+    await mkdir(join(rootDir, "dist"), { recursive: true });
+    await writeFile(
+      join(rootDir, "package.json"),
+      JSON.stringify({
+        name: "@phosphor/bb-plugin-thread-progress",
+        version: "0.1.0",
+        type: "module",
+        bb: {
+          name: "Thread Progress",
+          description: "sealed fixture",
+          branding: { icon: "Mountain" },
+          server: "./dist/server.js",
+          app: "./dist/app.js",
+        },
+      }),
+    );
+    await writeFile(join(rootDir, "dist", "app.js"), "export default {};\n");
+    await writeFile(join(rootDir, "dist", "app.css"), ".sealed{}\n");
+    await writeFile(
+      join(rootDir, "dist", "app.meta.json"),
+      JSON.stringify({
+        sdkMajor: PLUGIN_SDK_MAJOR,
+        sdkVersion: PLUGIN_SDK_VERSION,
+        artifactFormatVersion: 1,
+        pluginId: "thread-progress",
+        pluginVersion: "0.1.0",
+        builtWith: { bbVersion: "test", pluginSdkVersion: PLUGIN_SDK_VERSION },
+      }),
+    );
+
+    const loaded = await loadPluginAppBundle("thread-progress", rootDir);
+
+    expect(loaded.assets?.jsPath).toBe(join(rootDir, "dist", "app.js"));
+    expect(loaded.assets?.cssPath).toBe(join(rootDir, "dist", "app.css"));
+    expect(loaded.state.bundle?.compatible).toBe(true);
   });
 
   it("builds path installs at install time and serves hash-cached assets", async () => {
@@ -588,7 +636,39 @@ describe("plugin app bundles (build policy, inventory, asset routes)", () => {
         await writeAppPluginFixture(prebuiltDir, {
           name: "bb-plugin-prebuilt",
         });
+        await rm(join(prebuiltDir, "server.ts"));
+        await rm(join(prebuiltDir, "app.tsx"));
+        await writeFile(
+          join(prebuiltDir, "package.json"),
+          JSON.stringify({
+            name: "bb-plugin-prebuilt",
+            version: "0.1.0",
+            type: "module",
+            bb: {
+              name: "Prebuilt fixture",
+              description: "Contains only sealed dist entries.",
+              branding: { icon: "Zap" },
+              server: "./dist/server.js",
+              app: "./dist/app.js",
+            },
+          }),
+        );
         await mkdir(join(prebuiltDir, "dist"), { recursive: true });
+        await writeFile(
+          join(prebuiltDir, "dist", "server.js"),
+          "export default function plugin() {}\n",
+        );
+        await writeFile(
+          join(prebuiltDir, "dist", "server.meta.json"),
+          JSON.stringify({
+            sdkMajor: PLUGIN_SDK_MAJOR,
+            sdkVersion: PLUGIN_SDK_VERSION,
+            artifactFormatVersion: 1,
+            pluginId: "prebuilt",
+            pluginVersion: "0.1.0",
+            builtWith: { bbVersion: "test", pluginSdkVersion: PLUGIN_SDK_VERSION },
+          }),
+        );
         await writeFile(
           join(prebuiltDir, "dist", "app.js"),
           "export default {};\n",
@@ -736,6 +816,42 @@ describe("plugin app bundles (build policy, inventory, asset routes)", () => {
             sdkVersion: PLUGIN_SDK_VERSION,
             compatible: true,
           });
+          await expect(stat(join(prebuiltDir, "app.tsx"))).rejects.toThrow();
+          await expect(stat(join(prebuiltDir, "server.ts"))).rejects.toThrow();
+          const installed = getInstalledPlugin(harness.db, "prebuilt");
+          const prebuiltTarball = tarballs.get("bb-plugin-prebuilt");
+          if (prebuiltTarball === undefined) throw new Error("missing tarball");
+          const integrity = `sha512-${createHash("sha512")
+            .update(prebuiltTarball)
+            .digest("base64")}`;
+          expect(installed?.rootDir).toBe(
+            join(
+              npmArtifactCacheDir(
+                harness.config.dataDir,
+                "bb-plugin-prebuilt",
+                "0.1.0",
+              ),
+              "node_modules",
+              "bb-plugin-prebuilt",
+            ),
+          );
+          expect(installed?.npmIntegrity).toBe(integrity);
+          const artifact = getPluginArtifactByResolution(harness.db, {
+            sourceKind: "npm",
+            pluginId: "prebuilt",
+            path: installed?.rootDir ?? "",
+            version: "0.1.0",
+            integrity,
+          });
+          expect(artifact?.contentHash).toBe(
+            await hashInstallDir(
+              npmArtifactCacheDir(
+                harness.config.dataDir,
+                "bb-plugin-prebuilt",
+                "0.1.0",
+              ),
+            ),
+          );
         } finally {
           if (previousRegistry === undefined) {
             delete process.env.npm_config_registry;

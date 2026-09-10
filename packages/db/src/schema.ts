@@ -32,6 +32,10 @@ import type {
   ThreadEventItemType,
   ThreadEventScopeKind,
   ThreadEventType,
+  ThreadFacetAssignmentScope,
+  ThreadFacetCardinality,
+  ThreadFacetMemberKind,
+  ThreadFacetOwnerState,
   WorkspaceProvisionType,
   ProjectKind,
 } from "@bb/domain";
@@ -493,6 +497,7 @@ export const threads = sqliteTable(
     reasoningLevelOverride: text(
       "reasoning_level_override",
     ).$type<ReasoningLevel>(),
+    executionRevision: integer("execution_revision").notNull().default(0),
     title: text("title"),
     titleFallback: text("title_fallback"),
     sectionId: text("section_id").references(() => threadSections.id, {
@@ -621,6 +626,133 @@ export const threadSearchSegments = sqliteTable(
       table.threadId,
       table.sourceSeq,
     ),
+  ],
+);
+
+export const threadFacetDeclarations = sqliteTable(
+  "thread_facet_declarations",
+  {
+    typeScope: text("type_scope").$type<"core" | "plugin">().notNull(),
+    typeOwner: text("type_owner").notNull(),
+    localName: text("local_name").notNull(),
+    memberKind: text("member_kind").$type<ThreadFacetMemberKind>().notNull(),
+    cardinality: text("cardinality").$type<ThreadFacetCardinality>().notNull(),
+    assignmentScope: text("assignment_scope").$type<ThreadFacetAssignmentScope>().notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.typeScope, table.typeOwner, table.localName] })],
+);
+
+export const threadFacetCursorKeys = sqliteTable("thread_facet_cursor_keys", {
+  keyId: text("key_id").primaryKey(),
+  secret: text("secret").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+
+export const threadFacetMembers = sqliteTable(
+  "thread_facet_members",
+  {
+    typeScope: text("type_scope").$type<"core" | "plugin">().notNull(),
+    typeOwner: text("type_owner").notNull(),
+    localName: text("local_name").notNull(),
+    memberId: text("member_id").notNull(),
+    memberRank: integer("member_rank").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.typeScope, table.typeOwner, table.localName, table.memberId] }),
+    uniqueIndex("thread_facet_members_rank_idx").on(table.typeScope, table.typeOwner, table.localName, table.memberRank),
+  ],
+);
+
+export const threadFacetOwners = sqliteTable(
+  "thread_facet_owners",
+  {
+    typeScope: text("type_scope").$type<"core" | "plugin">().notNull(),
+    typeOwner: text("type_owner").notNull(),
+    localName: text("local_name").notNull(),
+    assignmentScope: text("assignment_scope").$type<ThreadFacetAssignmentScope>().notNull(),
+    generation: integer("generation").notNull(),
+    state: text("state").$type<ThreadFacetOwnerState>().notNull(),
+    censusExhausted: integer("census_exhausted", { mode: "boolean" }).notNull().default(false),
+    censusTerminalDelivered: integer("census_terminal_delivered", { mode: "boolean" }).notNull().default(false),
+    projectionRevision: integer("projection_revision").notNull().default(0),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.typeScope, table.typeOwner, table.localName, table.assignmentScope] })],
+);
+
+export const threadFacetReconciliationTargets = sqliteTable(
+  "thread_facet_reconciliation_targets",
+  {
+    typeScope: text("type_scope").$type<"core" | "plugin">().notNull(),
+    typeOwner: text("type_owner").notNull(),
+    localName: text("local_name").notNull(),
+    assignmentScope: text("assignment_scope").$type<ThreadFacetAssignmentScope>().notNull(),
+    ownerGeneration: integer("owner_generation").notNull(),
+    threadId: text("thread_id").notNull().references(() => threads.id, { onDelete: "cascade" }),
+    discharged: integer("discharged", { mode: "boolean" }).notNull().default(false),
+  },
+  (table) => [
+    primaryKey({ columns: [table.typeScope, table.typeOwner, table.localName, table.assignmentScope, table.ownerGeneration, table.threadId] }),
+    index("thread_facet_reconciliation_targets_pending_idx").on(table.typeScope, table.typeOwner, table.localName, table.assignmentScope, table.ownerGeneration, table.discharged, table.threadId),
+  ],
+);
+
+export const threadFacetRelations = sqliteTable(
+  "thread_facet_relations",
+  {
+    typeScope: text("type_scope").$type<"core" | "plugin">().notNull(),
+    typeOwner: text("type_owner").notNull(),
+    localName: text("local_name").notNull(),
+    assignmentScope: text("assignment_scope").$type<ThreadFacetAssignmentScope>().notNull(),
+    threadId: text("thread_id").notNull().references(() => threads.id, { onDelete: "cascade" }),
+    memberId: text("member_id").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.typeScope, table.typeOwner, table.localName, table.assignmentScope, table.threadId, table.memberId] }),
+    index("thread_facet_relations_member_thread_idx").on(table.typeScope, table.typeOwner, table.localName, table.assignmentScope, table.memberId, table.threadId),
+  ],
+);
+
+export const threadFacetSnapshots = sqliteTable(
+  "thread_facet_snapshots",
+  {
+    typeScope: text("type_scope").$type<"core" | "plugin">().notNull(),
+    typeOwner: text("type_owner").notNull(),
+    localName: text("local_name").notNull(),
+    assignmentScope: text("assignment_scope").$type<ThreadFacetAssignmentScope>().notNull(),
+    threadId: text("thread_id").notNull().references(() => threads.id, { onDelete: "cascade" }),
+    ownerGeneration: integer("owner_generation").notNull(),
+    sourceVersion: integer("source_version"),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.typeScope, table.typeOwner, table.localName, table.assignmentScope, table.threadId] }),
+    index("thread_facet_snapshots_generation_thread_idx").on(table.typeScope, table.typeOwner, table.localName, table.assignmentScope, table.ownerGeneration, table.threadId),
+  ],
+);
+
+export const threadFacetPrincipalProfiles = sqliteTable(
+  "thread_facet_principal_profiles",
+  {
+    typeScope: text("type_scope").$type<"core" | "plugin">().notNull(),
+    typeOwner: text("type_owner").notNull(),
+    localName: text("local_name").notNull(),
+    assignmentScope: text("assignment_scope").$type<ThreadFacetAssignmentScope>().notNull(),
+    threadId: text("thread_id").notNull().references(() => threads.id, { onDelete: "cascade" }),
+    principalKey: text("principal_key").notNull(),
+    identityKind: text("identity_kind").$type<"external" | "person">().notNull().default("person"),
+    memberPosition: integer("member_position").notNull(),
+    displayName: text("display_name").notNull(),
+    imageUrl: text("image_url"),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.typeScope, table.typeOwner, table.localName, table.assignmentScope, table.threadId, table.principalKey] }),
+    uniqueIndex("thread_facet_principal_profiles_position_idx").on(table.typeScope, table.typeOwner, table.localName, table.assignmentScope, table.threadId, table.memberPosition),
   ],
 );
 

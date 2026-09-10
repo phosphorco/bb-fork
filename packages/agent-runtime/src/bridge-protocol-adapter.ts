@@ -364,6 +364,12 @@ export function createBridgeProtocolAdapter(
               threadId: command.threadId,
               providerThreadId: command.providerThreadId,
               input: command.input,
+              ...(command.inputGroups !== undefined
+                ? { inputGroups: command.inputGroups }
+                : {}),
+              ...(command.provenanceGroups !== undefined
+                ? { provenanceGroups: command.provenanceGroups }
+                : {}),
               clientRequestId: command.clientRequestId,
               options: toBridgeWireOptions(
                 command.options,
@@ -384,6 +390,12 @@ export function createBridgeProtocolAdapter(
                   command.expectedTurnId,
                 ) ?? command.expectedTurnId,
               input: command.input,
+              ...(command.inputGroups !== undefined
+                ? { inputGroups: command.inputGroups }
+                : {}),
+              ...(command.provenanceGroups !== undefined
+                ? { provenanceGroups: command.provenanceGroups }
+                : {}),
               clientRequestId: command.clientRequestId,
               options: toBridgeWireOptions(
                 command.options,

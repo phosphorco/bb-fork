@@ -300,6 +300,40 @@ describe("plugin service", () => {
     );
   });
 
+  it("cleans failed reload candidate hooks while keeping the previous instance live", async () => {
+    const rootDir = await writePlugin(workDir, {
+      name: "bb-plugin-candidate-cleanup",
+      serverSource: `
+        export default function plugin(bb: any) {
+          (globalThis as any).__candidateCleanupLive = "previous";
+        }
+      `,
+    });
+    await service.installPath(rootDir);
+    await writeFile(
+      join(rootDir, "server.ts"),
+      `
+        export default function plugin(bb: any) {
+          const g = globalThis as any;
+          g.__candidateCleanup = [];
+          bb.onDispose(() => g.__candidateCleanup.push("first"));
+          bb.onDispose(() => g.__candidateCleanup.push("second"));
+          throw new Error("candidate failed");
+        }
+      `,
+    );
+
+    await service.reload("candidate-cleanup");
+
+    const globals = globalThis as Record<string, unknown>;
+    expect(globals.__candidateCleanup).toEqual(["second", "first"]);
+    expect(globals.__candidateCleanupLive).toBe("previous");
+    expect(
+      service.list().find((entry) => entry.id === "candidate-cleanup")
+        ?.status,
+    ).toBe("running");
+  });
+
   it("reload re-reads an ESM plugin's entry and its submodules", async () => {
     const rootDir = join(workDir, "bb-plugin-esm-reloader");
     await writeEsmPlugin(rootDir, "esm-reloader");

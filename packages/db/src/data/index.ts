@@ -62,8 +62,11 @@ export {
   countNonDeletedAssignedChildThreads,
   getThread,
   getThreadExecutionOverride,
+  listThreadExecutionOverridesByThreadIds,
+  listThreadExecutionProjectionRowsByIds,
   hasActiveThreadAttention,
   setThreadExecutionOverride,
+  setThreadExecutionOverridesBatch,
   getThreadPendingStartContext,
   setThreadPendingStartContext,
   hasLiveThreadAtHostPath,
@@ -81,6 +84,7 @@ export {
   listRunningThreads,
   listThreads,
   listThreadsWithPendingInteractionState,
+  listThreadsWithPendingInteractionStateByIds,
   listThreadsWithPendingInteractionStateForProjects,
   pinThread,
   reorderPinnedThread,
@@ -97,6 +101,35 @@ export {
   THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT,
   THREAD_SEARCH_LIMIT_PER_GROUP_MAX,
 } from "./threads.js";
+
+export {
+  activatePluginThreadFacetDeclarations,
+  getOrCreateThreadFacetCursorSigningKey,
+  listCoreParticipantProfilePage,
+  listCoreParticipantProfilesByThreadIds,
+  listCoreParticipantSummariesByThreadIds,
+  listThreadIdsMissingCoreParticipantProjection,
+  listPriorThreadFacetSnapshotTargets,
+  listThreadFacetOwnerProjections,
+  markThreadFacetOwnerGenerationReady,
+  markThreadFacetOwnerGenerationUnavailable,
+  queryThreadFacetThreadIds,
+  recordThreadFacetCensusExhausted,
+  replaceCoreParticipantProfiles,
+  replaceCoreParticipantProfilesBatch,
+  replaceCoreParticipantProfilesInTransaction,
+  replaceThreadFacetRelationsInGeneration,
+  ThreadFacetInvariantError,
+} from "./thread-facets.js";
+export type {
+  CoreParticipantProfile,
+  CoreParticipantSummary,
+  ThreadFacetDeclaration,
+  ThreadFacetGeneration,
+  ThreadFacetIdPage,
+  ThreadFacetInvariantErrorCode,
+  ThreadFacetQueryPosition,
+} from "./thread-facets.js";
 export type {
   ApplyThreadLifecycleEventArgs,
   ApplyThreadLifecycleEventOutcome,
@@ -112,6 +145,9 @@ export type {
   ThreadSearchResultGroup,
   ThreadWithPendingInteractionState,
   ThreadExecutionOverride,
+  SetThreadExecutionOverrideBatchInput,
+  ThreadExecutionOverrideRow,
+  ThreadExecutionProjectionRow,
   UpdateThreadInput,
 } from "./threads.js";
 
@@ -253,6 +289,7 @@ export {
   hasStoredTurnStarted,
   getLastStoredProviderThreadId,
   getLastStoredTurnRequestEvent,
+  listLastStoredTurnRequestEventsByThreadIds,
   getStoredTurnRequestEventForTurn,
   getLatestThreadOutputEventRow,
   getLatestStoredConversationOutlineSequence,
@@ -322,6 +359,7 @@ export type {
   StoredThreadEventDataRow,
   StandardTimelineSegmentAnchorRow,
   ThreadClientTurnRequestKey,
+  ListLastStoredTurnRequestEventsByThreadIdsArgs,
   StoredTurnRequestEventRow,
 } from "./events.js";
 

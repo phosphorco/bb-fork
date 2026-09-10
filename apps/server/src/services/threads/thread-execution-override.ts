@@ -1,5 +1,6 @@
 import {
   getProjectExecutionDefaults,
+  getEnvironment,
   getThreadExecutionOverride,
   setThreadExecutionOverride,
   type ThreadExecutionOverride,
@@ -14,7 +15,8 @@ import {
 import { ApiError } from "../../errors.js";
 import type { LoggedWorkSessionDeps } from "../../types.js";
 import type { ProviderRegistryService } from "../providers/provider-registry.js";
-import { resolveSystemExecutionOptions } from "../system/execution-options.js";
+import { resolveSystemProviderModels } from "../system/execution-options.js";
+import { resolveSystemLookupHostId } from "../system/host-lookup.js";
 import { getLastExecutionOptions } from "./thread-events.js";
 import { getSupportedReasoningLevelsForProvider } from "./thread-reasoning-policy.js";
 
@@ -54,14 +56,21 @@ export function resolveThreadExecutionOverrideUpdate(
     if (patch.model === null || patch.model === undefined) {
       nextModel = null;
     } else {
-      const target = models.find(
+      const targets = models.filter(
         (candidate) => candidate.model === patch.model,
       );
-      if (!target) {
+      if (targets.length === 0) {
         throw new ApiError(
           400,
           "invalid_request",
           `Model "${patch.model}" is not available in this thread's ${providerId} model catalog. Choose a model offered by ${providerId}; changing providers requires starting a new thread.`,
+        );
+      }
+      if (targets.length > 1) {
+        throw new ApiError(
+          400,
+          "invalid_request",
+          `Model "${patch.model}" is ambiguous in this thread's ${providerId} model catalog. Refresh the catalog or choose a uniquely identified model.`,
         );
       }
       nextModel = patch.model;
@@ -69,9 +78,17 @@ export function resolveThreadExecutionOverrideUpdate(
   }
 
   const effectiveModel = nextModel ?? fallbackModel;
-  const effectiveModelEntry = effectiveModel
-    ? models.find((candidate) => candidate.model === effectiveModel)
-    : undefined;
+  const effectiveModelEntries = effectiveModel
+    ? models.filter((candidate) => candidate.model === effectiveModel)
+    : [];
+  if (effectiveModelEntries.length > 1) {
+    throw new ApiError(
+      400,
+      "invalid_request",
+      `Model "${effectiveModel}" is ambiguous in this thread's ${providerId} model catalog. Refresh the catalog or choose a uniquely identified model.`,
+    );
+  }
+  const effectiveModelEntry = effectiveModelEntries[0];
   const supportedReasoning: readonly ReasoningLevel[] = effectiveModelEntry
     ? effectiveModelEntry.supportedReasoningEfforts.map(
         (effort) => effort.reasoningEffort,
@@ -130,10 +147,22 @@ export async function applyThreadExecutionOverride(
     fallbackModel: resolveFallbackModel(deps, thread),
   });
 
-  setThreadExecutionOverride(deps.db, {
+  if (
+    existing.modelOverride === next.modelOverride &&
+    existing.reasoningLevelOverride === next.reasoningLevelOverride
+  ) {
+    return;
+  }
+  const updated = setThreadExecutionOverride(deps.db, {
     threadId: thread.id,
     modelOverride: next.modelOverride,
     reasoningLevelOverride: next.reasoningLevelOverride,
+  });
+  if (!updated) {
+    throw new ApiError(404, "thread_not_found", "Thread not found");
+  }
+  deps.hub.notifyThread(thread.id, ["execution-options-changed"], {
+    projectId: thread.projectId,
   });
 }
 
@@ -162,10 +191,20 @@ async function loadThreadProviderModels(
   deps: LoggedWorkSessionDeps,
   thread: Thread,
 ): Promise<readonly AvailableModel[]> {
-  const result = await resolveSystemExecutionOptions(deps, {
+  const environment =
+    thread.environmentId === null
+      ? null
+      : getEnvironment(deps.db, thread.environmentId);
+  const hostId = resolveSystemLookupHostId(deps, {
+    ...(thread.environmentId === null
+      ? {}
+      : { environmentId: thread.environmentId }),
+  });
+  const result = await resolveSystemProviderModels(deps, {
     providerId: thread.providerId,
-    ...(thread.environmentId !== null
-      ? { environmentId: thread.environmentId }
+    hostId,
+    ...(environment?.path
+      ? { cwd: environment.path }
       : {}),
   });
   if (result.modelLoadError !== null) {
@@ -189,5 +228,7 @@ function resolveFallbackModel(
   const projectDefaults = getProjectExecutionDefaults(deps.db, {
     projectId: thread.projectId,
   });
-  return projectDefaults?.model ?? null;
+  return projectDefaults?.providerId === thread.providerId
+    ? projectDefaults.model
+    : null;
 }

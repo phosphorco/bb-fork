@@ -192,9 +192,45 @@ describe("user message parsing", () => {
       `${event.threadId}:user-seed:${meta.seq}-1`,
     ]);
     expect(messages.map((message) => message.turnRequest)).toEqual([
-      { isGrouped: true, kind: "message", status: "pending" },
-      { isGrouped: true, kind: "message", status: "pending" },
+      { isGrouped: true, kind: "message", status: "pending", source: { requestId: expect.any(String), inputGroupIndex: 0 } },
+      { isGrouped: true, kind: "message", status: "pending", source: { requestId: expect.any(String), inputGroupIndex: 1 } },
     ]);
+  });
+
+  it("keeps original group indices and request identity across hidden groups and accepted steers", () => {
+    const factory = createTimelineEventFactory({ threadId: "thread-1" });
+    const row = factory.clientTurnRequested({
+      initiator: "user",
+      target: { kind: "steer", expectedTurnId: "turn-1" },
+      text: "Visible",
+      inputGroups: [
+        [
+          {
+            type: "text",
+            text: "Hidden",
+            mentions: [],
+            visibility: "agent-only",
+          },
+        ],
+        [{ type: "text", text: "Visible", mentions: [] }],
+      ],
+    });
+    const { event, meta } = decodeThreadEventRow(row);
+    if (event.type !== "client/turn/requested")
+      throw new Error("Expected request");
+    const accepted = acceptedClientRequest();
+    const messages = parseAcceptedSteersFromClientRequest({
+      decoded: event,
+      meta,
+      acceptedClientRequest: accepted,
+      options: standardProjectionOptions,
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.sourceSeqStart).toBe(accepted.meta.seq);
+    expect(messages[0]?.turnRequest.source).toEqual({
+      requestId: event.requestId,
+      inputGroupIndex: 1,
+    });
   });
 
   it("uses the base id for the first visible grouped turn request", () => {
@@ -439,12 +475,12 @@ describe("user message parsing", () => {
       {
         id: "thread-1:user-seed:1",
         text: "First grouped steer",
-        turnRequest: { isGrouped: true, kind: "steer", status: "pending" },
+        turnRequest: { isGrouped: true, kind: "steer", status: "pending", source: { requestId: event.requestId, inputGroupIndex: 0 } },
       },
       {
         id: "thread-1:user-seed:1-1",
         text: "Second grouped steer",
-        turnRequest: { isGrouped: true, kind: "steer", status: "pending" },
+        turnRequest: { isGrouped: true, kind: "steer", status: "pending", source: { requestId: event.requestId, inputGroupIndex: 1 } },
       },
     ]);
     expect(
@@ -464,13 +500,13 @@ describe("user message parsing", () => {
         id: "thread-1:user-seed:1",
         sourceSeqStart: accepted.meta.seq,
         text: "First grouped steer",
-        turnRequest: { isGrouped: true, kind: "steer", status: "accepted" },
+        turnRequest: { isGrouped: true, kind: "steer", status: "accepted", source: { requestId: event.requestId, inputGroupIndex: 0 } },
       },
       {
         id: "thread-1:user-seed:1-1",
         sourceSeqStart: accepted.meta.seq,
         text: "Second grouped steer",
-        turnRequest: { isGrouped: true, kind: "steer", status: "accepted" },
+        turnRequest: { isGrouped: true, kind: "steer", status: "accepted", source: { requestId: event.requestId, inputGroupIndex: 1 } },
       },
     ]);
   });

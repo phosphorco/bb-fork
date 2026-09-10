@@ -443,6 +443,71 @@ describe("execution options", () => {
       workflowsEnabled: false,
     });
   });
+
+  it("accepts only provenance groups aligned to the original input groups", () => {
+    const params = {
+      threadId: "thr_1",
+      providerThreadId: "p_1",
+      input: [
+        { type: "text", text: "hello", mentions: [] },
+        { type: "text", text: "\n\n", mentions: [] },
+        { type: "localFile", path: "/tmp/brief.pdf", name: "brief.pdf" },
+      ],
+      inputGroups: [
+        [{ type: "text", text: "hello", mentions: [] }],
+        [{ type: "localFile", path: "/tmp/brief.pdf", name: "brief.pdf" }],
+      ],
+      provenanceGroups: [
+        {
+          groupIndex: 0,
+          sources: [
+            {
+              sourceKind: "contribution",
+              sourceIndex: 0,
+              contributionId: null,
+              attribution: {
+                author: {
+                  kind: "unknown",
+                  reason: "upstream-unattributed",
+                },
+                latestEditor: null,
+              },
+            },
+          ],
+        },
+        { groupIndex: 1, sources: [] },
+      ],
+      clientRequestId: "creq_abcdefghjk",
+      options: {
+        model: "claude-opus-5",
+        permissionMode: "auto",
+        permissionScope: "workspace",
+        approvalReviewer: "automatic",
+        permissionEscalation: "ask",
+        providerOptions: {},
+      },
+    };
+
+    expect(turnStartParamsSchema.parse(params)).toMatchObject({
+      provenanceGroups: params.provenanceGroups,
+    });
+    expect(() =>
+      turnStartParamsSchema.parse({
+        ...params,
+        provenanceGroups: [
+          params.provenanceGroups[1]!,
+          params.provenanceGroups[0]!,
+        ],
+      }),
+    ).toThrow(/preserve inputGroups order/u);
+    expect(() =>
+      turnStartParamsSchema.parse({
+        ...params,
+        provenanceGroups: undefined,
+        inputGroups: undefined,
+      }),
+    ).not.toThrow();
+  });
 });
 
 describe("conformance turn/settles-without-activity", () => {

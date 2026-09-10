@@ -240,6 +240,11 @@ describe("plugin app runtime shim", () => {
       "0.9.0-test",
       await testToolchain(),
     );
+    expect(result).toMatchObject({
+      jsPath: join(dir, "dist", "app.js"),
+      cssPath: join(dir, "dist", "app.css"),
+      metaPath: join(dir, "dist", "app.meta.json"),
+    });
     const css = await readFile(result.cssPath, "utf8");
 
     const scope =
@@ -252,6 +257,88 @@ describe("plugin app runtime shim", () => {
     expect(css).not.toContain("@scope");
     expect(css).not.toContain(`${scope} .bb71-authored-decoration`);
     expect(css).toContain(".bb71-authored-decoration");
+  });
+
+  it("writes an explicit output directory without touching the canonical dist", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bb-plugin-app-output-"));
+    tempDirs.push(dir);
+    const canonicalDist = join(dir, "dist");
+    const sentinelPath = join(canonicalDist, "sentinel.bin");
+    const sentinel = Buffer.from([0, 1, 2, 3, 255]);
+    const outputDir = join(dir, "proof-artifacts");
+    await mkdir(canonicalDist, { recursive: true });
+    await writeFile(sentinelPath, sentinel);
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({
+        name: "bb-plugin-app-output-fixture",
+        version: "0.0.0",
+        bb: {
+          name: "App output fixture",
+          description: "Verifies an explicit artifact output directory.",
+          branding: { icon: "Zap" },
+          server: "./server.ts",
+          app: "./app.ts",
+        },
+      }),
+    );
+    await writeFile(
+      join(dir, "server.ts"),
+      "export default function plugin() {}\n",
+    );
+    await writeFile(
+      join(dir, "app.ts"),
+      'export const utility = "flex-col";\n',
+    );
+
+    const result = await buildPluginApp(
+      dir,
+      "0.9.0-test",
+      await testToolchain(),
+      { outputDir },
+    );
+
+    expect(result).toEqual({
+      jsPath: join(outputDir, "app.js"),
+      cssPath: join(outputDir, "app.css"),
+      metaPath: join(outputDir, "app.meta.json"),
+      receiptPath: join(outputDir, "app.receipt.json"),
+    });
+    await expect(readFile(result.jsPath, "utf8")).resolves.toContain(
+      "flex-col",
+    );
+    await expect(readFile(result.cssPath, "utf8")).resolves.toContain(
+      ".flex-col",
+    );
+    await expect(readFile(result.metaPath, "utf8")).resolves.toContain(
+      '"pluginId": "app-output-fixture"',
+    );
+    const receiptBytes = await readFile(result.receiptPath, "utf8");
+    const receipt = JSON.parse(receiptBytes);
+    expect(receipt).toMatchObject({
+      formatVersion: 1,
+      kind: "plugin-app-build",
+      inputs: {
+        tailwind: {
+          ownFiles: expect.arrayContaining([
+            expect.objectContaining({ path: "app.ts" }),
+          ]),
+        },
+        runtimeShims: expect.arrayContaining([
+          expect.objectContaining({
+            path: "virtual:generated/runtime-export-manifest",
+          }),
+        ]),
+      },
+    });
+    const rebuilt = await buildPluginApp(
+      dir,
+      "0.9.0-test",
+      await testToolchain(),
+      { outputDir },
+    );
+    expect(await readFile(rebuilt.receiptPath, "utf8")).toBe(receiptBytes);
+    expect(await readFile(sentinelPath)).toEqual(sentinel);
   });
 
   it("minifies app.js and app.css unless the caller asks for readable output", async () => {
@@ -405,6 +492,33 @@ describe("plugin app runtime shim", () => {
     expect(css).not.toContain(".tracking-normal{");
     expect(css).toMatch(/:root,:host\{[^}]*--tracking-widest:/);
     expect(css).not.toContain("--color-background:");
+
+    const firstReceipt = await readFile(result.receiptPath, "utf8");
+    const first = JSON.parse(firstReceipt);
+    expect(first.inputs.tailwind.dependencySources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          packageName: "fixture-ui",
+          pattern: "src/**/*",
+          manifest: expect.objectContaining({ path: "../packages/fixture-ui/package.json" }),
+        }),
+      ]),
+    );
+    expect(first.inputs.tailwind.dependencyFiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "../packages/fixture-ui/actual-src/used.ts" }),
+      ]),
+    );
+    await writeFile(
+      join(uiPackageDir, "actual-src", "used.ts"),
+      'export const usedClass = "tracking-wide";\n',
+    );
+    const rebuilt = await buildPluginApp(
+      join(aliasedRoot, "plugin"),
+      "0.9.0-test",
+      await testToolchain(),
+    );
+    expect(await readFile(rebuilt.receiptPath, "utf8")).not.toBe(firstReceipt);
   });
 
   it.each([

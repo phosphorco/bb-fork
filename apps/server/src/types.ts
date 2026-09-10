@@ -1,4 +1,5 @@
 import type { CustomProviderModel } from "@bb/config/bb-app-managed-config";
+import type { P6rIdentityBoundaryConfig } from "@bb/config/server";
 import type { DbConnection } from "@bb/db";
 import type { FeatureFlags, ProviderNativeSkillRoots } from "@bb/domain";
 import type { Logger } from "@bb/logger";
@@ -35,6 +36,7 @@ export interface ServerRuntimeConfig {
   managedEnvironmentRetireGraceMs: number;
   marketplaceUrl: string;
   openAiApiKey: string;
+  p6rIdentityBoundary?: P6rIdentityBoundaryConfig | null;
   serverPort: number;
   sharedSkillRoots: ProviderNativeSkillRoots;
   transcriptionModel: string;
@@ -44,6 +46,7 @@ export interface ServerRuntimeConfig {
 }
 
 export interface AppDeps {
+  nativeRequestAdmission?: import("./services/p6r/native-http-admission.js").P6rNativeRequestAdmissionReader;
   config: ServerRuntimeConfig;
   db: DbConnection;
   hub: NotificationHub;

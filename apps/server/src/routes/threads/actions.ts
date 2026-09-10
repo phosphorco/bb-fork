@@ -53,6 +53,13 @@ import { acceptThreadSendRequest } from "../../services/threads/thread-send-requ
 import { editThreadMessage } from "../../services/threads/thread-edit-message.js";
 import { clearThreadContext } from "../../services/threads/thread-context-clear.js";
 import {
+  deleteP6rNativeQueuedWriteInTransaction,
+  p6rQueuedOperationReservation,
+  rejectP6rQueuedOperationInTransaction,
+  updateP6rNativeQueuedWriteInTransaction,
+} from "../../services/p6r/sidecar-store.js";
+import { withP6rOrdinaryWriteAttribution } from "../../services/p6r/ordinary-write-attribution.js";
+import {
   buildExecutionOptions,
   dispatchThreadUnarchiveCommand,
   prepareTurnSubmitCommandPayload,
@@ -229,8 +236,17 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.send, async (context, payload) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
-    return context.json(
-      await acceptThreadSendRequest(deps, { payload, thread }),
+    return withP6rOrdinaryWriteAttribution(
+      deps,
+      context,
+      async (p6rNativeWriteOrigin) =>
+        context.json(
+          await acceptThreadSendRequest(deps, {
+            payload,
+            p6rNativeWriteOrigin,
+            thread,
+          }),
+        ),
     );
   });
 
@@ -256,23 +272,32 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.createQueuedMessage, async (context, payload) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
-    const queuedMessage = await createQueuedMessageForThread(deps, {
-      payload,
-      thread,
-    });
-    return context.json(queuedMessage, 201);
+    return withP6rOrdinaryWriteAttribution(
+      deps,
+      context,
+      async (p6rNativeWriteOrigin) => {
+        const queuedMessage = await createQueuedMessageForThread(deps, {
+          payload,
+          p6rNativeWriteOrigin,
+          thread,
+        });
+        return context.json(queuedMessage, 201);
+      },
+    );
   });
 
   post(routes.sendQueuedMessage, async (context, payload) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     ensureThreadIsWritable(thread);
     ensureThreadIsNotAwaitingUserInteraction(deps, thread.id);
-    const result = await sendQueuedMessageNow(deps, {
-      queuedMessageId: context.req.param("queuedMessageId"),
-      mode: payload.mode,
-      threadId: context.req.param("id"),
+    return withP6rOrdinaryWriteAttribution(deps, context, async () => {
+      const result = await sendQueuedMessageNow(deps, {
+        queuedMessageId: context.req.param("queuedMessageId"),
+        mode: payload.mode,
+        threadId: context.req.param("id"),
+      });
+      return context.json({ ok: true, ...result });
     });
-    return context.json({ ok: true, ...result });
   });
 
   patch(routes.reorderQueuedMessage, (context, payload) => {
@@ -313,35 +338,58 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
   patch(routes.updateQueuedMessage, async (context, payload) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     ensureThreadIsWritable(thread);
-    await validatePromptAttachmentReferences({
-      dataDir: deps.config.dataDir,
-      input: payload.input,
-      projectId: thread.projectId,
-    });
-    const result = updateQueuedThreadMessage(deps.db, deps.hub, {
-      content: payload.input,
-      expectedUpdatedAt: payload.expectedUpdatedAt,
-      id: context.req.param("queuedMessageId"),
-      threadId: thread.id,
-    });
-    if (result.kind === "not_found") {
-      throw new ApiError(404, "invalid_request", "Queued message not found");
-    }
-    if (result.kind === "claimed") {
-      throw new ApiError(
-        409,
-        "invalid_request",
-        "Queued message is already being sent",
-      );
-    }
-    if (result.kind === "stale") {
-      throw new ApiError(
-        409,
-        "invalid_request",
-        "Queued message changed since editing began",
-      );
-    }
-    return context.json(toThreadQueuedMessage(result.queuedMessage));
+    return withP6rOrdinaryWriteAttribution(
+      deps,
+      context,
+      async (p6rNativeWriteOrigin) => {
+        await validatePromptAttachmentReferences({
+          dataDir: deps.config.dataDir,
+          input: payload.input,
+          projectId: thread.projectId,
+        });
+        if (p6rQueuedOperationReservation(
+          deps.db,
+          context.req.param("queuedMessageId"),
+        ) !== null) {
+          throw new ApiError(
+            409,
+            "invalid_request",
+            "Queued external operations cannot be edited; cancel and create a new operation instead",
+          );
+        }
+        const result = updateQueuedThreadMessage(deps.db, deps.hub, {
+          afterUpdateInTransaction: ({ tx }) => {
+            updateP6rNativeQueuedWriteInTransaction(tx, {
+              editor: p6rNativeWriteOrigin,
+              input: payload.input,
+              queuedMessageId: context.req.param("queuedMessageId"),
+            });
+          },
+          content: payload.input,
+          expectedUpdatedAt: payload.expectedUpdatedAt,
+          id: context.req.param("queuedMessageId"),
+          threadId: thread.id,
+        });
+        if (result.kind === "not_found") {
+          throw new ApiError(404, "invalid_request", "Queued message not found");
+        }
+        if (result.kind === "claimed") {
+          throw new ApiError(
+            409,
+            "invalid_request",
+            "Queued message is already being sent",
+          );
+        }
+        if (result.kind === "stale") {
+          throw new ApiError(
+            409,
+            "invalid_request",
+            "Queued message changed since editing began",
+          );
+        }
+        return context.json(toThreadQueuedMessage(result.queuedMessage));
+      },
+    );
   });
 
   del(routes.deleteQueuedMessage, (context) => {
@@ -356,6 +404,12 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
       deps.db,
       deps.hub,
       context.req.param("queuedMessageId"),
+      {
+        beforeDeleteInTransaction: ({ queuedMessage, tx }) => {
+          rejectP6rQueuedOperationInTransaction(tx, queuedMessage.id);
+          deleteP6rNativeQueuedWriteInTransaction(tx, queuedMessage.id);
+        },
+      },
     );
     if (!deleted) {
       throw new ApiError(404, "invalid_request", "Queued message not found");

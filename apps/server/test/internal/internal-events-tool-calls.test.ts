@@ -1,4 +1,7 @@
 import { once } from "node:events";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { eq } from "drizzle-orm";
 import {
@@ -36,6 +39,11 @@ import { withTestHarness } from "../helpers/test-app.js";
 import type { TestAppHarness } from "../helpers/test-app.js";
 import { setPluginAgentContributions } from "../../src/services/plugins/plugin-agent-contributions.js";
 import type { PluginAgentToolRecord } from "../../src/services/plugins/plugin-api.js";
+import {
+  acceptP6rOperationInTransaction,
+  initializeP6rInstanceNamespace,
+  listP6rAttempts,
+} from "../../src/services/p6r/sidecar-store.js";
 
 async function postEventBatch(args: {
   events: HostDaemonEventEnvelope[];
@@ -82,7 +90,178 @@ async function flushDeferredChildThreadNotifications(): Promise<void> {
   await sleep(2_100);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 describe("internal event and tool-call routes", () => {
+  it("projects one admitted native tool through public identity history and provenance", async () => {
+    await withTestHarness(async (harness) => {
+      const packageEntry = await import(new URL(
+        "../../../../../../../plugins/packages/bb-identity/dist/bb-entry-runtime.js",
+        import.meta.url,
+      ).href);
+      const bindBbIdentity = Reflect.get(packageEntry, "bindBbIdentity");
+      if (typeof bindBbIdentity !== "function") throw new Error("Public bb-identity binding is unavailable");
+      const pluginRoot = await mkdtemp(join(tmpdir(), "bb-public-p6r-"));
+      Reflect.set(globalThis, "__publicP6rBinding", bindBbIdentity);
+      try {
+        await writeFile(join(pluginRoot, "package.json"), JSON.stringify({
+          bb: { branding: { icon: "Zap" }, description: "Public provenance fixture", name: "Public provenance fixture", server: "./server.ts" },
+          name: "bb-public-p6r-fixture",
+          version: "0.1.0",
+        }));
+        await writeFile(join(pluginRoot, "server.ts"), `
+          const schema = { "~standard": { version: 1, vendor: "p6r-public", validate: (value) => ({ value }) } };
+          export default function plugin(bb) {
+            const bound = globalThis.__publicP6rBinding(bb);
+            if (!bound.ok) throw new Error(bound.error.message);
+            bb.agents.registerTool({
+              name: "p6r_public_provenance",
+              description: "Reads retained P6R provenance",
+              parameters: schema,
+              execute: async (_input, context) => JSON.stringify({
+                attempts: await bound.value.server.history.attempts({ kind: "operation", operationId: "operation-public-p6r", limit: 10 }),
+                provenance: await bound.value.toolProvenance(context),
+              }),
+            });
+          }
+        `);
+        const installed = await harness.pluginService.installPath(pluginRoot);
+        if (installed.status !== "running") throw new Error(installed.statusDetail ?? "Public provenance fixture did not start");
+        const instanceId = initializeP6rInstanceNamespace(harness.db);
+        const operationNamespace = `${instanceId.length}:${instanceId}${installed.id.length}:${installed.id}`;
+        const { host, session } = seedHostSession(harness.deps, { id: "host-public-p6r" });
+        const { project } = seedProjectWithSource(harness.deps, { hostId: host.id });
+        const environment = seedEnvironment(harness.deps, { hostId: host.id, projectId: project.id });
+        const thread = seedThread(harness.deps, { environmentId: environment.id, projectId: project.id });
+        harness.db.transaction((tx) => acceptP6rOperationInTransaction(tx, {
+          assertLive: () => ({ ok: true }),
+          attempt: {
+            createdAt: 100,
+            id: "attempt-public-p6r",
+            inputs: [{ contributionId: "contribution-public-p6r", groupIndex: 0, snapshot: { text: "input" }, sourceIndex: 0, sourceKind: "contribution" }],
+            nativeRequestId: "creq_23456789ab",
+            threadId: thread.id,
+          },
+          contribution: {
+            acceptedAt: 100,
+            acceptedAuthorship: { kind: "external" },
+            currentProjection: { text: "input" },
+            id: "contribution-public-p6r",
+            initialInput: { text: "input" },
+            latestEditor: { kind: "external" },
+            nativeRequestId: "creq_23456789ab",
+            threadId: thread.id,
+          },
+          operationId: "operation-public-p6r",
+          operationNamespace,
+          payloadHash: "hash-public-p6r",
+          receipt: { acceptedAt: 100, nativeRequestId: "creq_23456789ab", retentionDeadline: 1_000, threadId: thread.id },
+        }));
+        const eventResponse = await postEventBatch({
+          harness,
+          sessionId: session.id,
+          events: [
+            { threadId: thread.id, event: { type: "turn/started", threadId: thread.id, providerThreadId: "provider-public-p6r", scope: turnScope("turn-public-p6r") } },
+            { threadId: thread.id, event: { type: "turn/input/accepted", threadId: thread.id, providerThreadId: "provider-public-p6r", clientRequestId: "creq_23456789ab", scope: turnScope("turn-public-p6r") } },
+          ],
+        });
+        expect(eventResponse.status).toBe(200);
+        const toolResponse = await postToolCall({
+          callId: "call-public-p6r",
+          harness,
+          providerThreadId: "provider-public-p6r",
+          sessionId: session.id,
+          threadId: thread.id,
+          tool: "p6r_public_provenance",
+          turnId: "turn-public-p6r",
+        });
+        expect(toolResponse.status).toBe(200);
+        const toolResult = await readJson(toolResponse);
+        if (!isRecord(toolResult) || !Array.isArray(toolResult.contentItems)) throw new Error("Expected public provenance tool result");
+        const item = toolResult.contentItems[0];
+        if (!isRecord(item) || item.type !== "inputText" || typeof item.text !== "string") throw new Error("Expected public provenance tool text");
+        const result = JSON.parse(item.text);
+        if (!isRecord(result)) throw new Error("Expected public provenance result");
+        expect(result.attempts).toMatchObject({ ok: true, value: { items: [{ correlation: { attemptId: "attempt-public-p6r", threadId: thread.id, toolCallId: null, turnId: "turn-public-p6r" }, status: "known" }] } });
+        expect(result.provenance).toMatchObject({ ok: true, value: { correlation: { attemptId: "attempt-public-p6r", threadId: thread.id, toolCallId: "call-public-p6r", turnId: "turn-public-p6r" }, status: "known" } });
+      } finally {
+        Reflect.deleteProperty(globalThis, "__publicP6rBinding");
+        await rm(pluginRoot, { force: true, recursive: true });
+      }
+    });
+  });
+
+  it("links a retained P6r attempt only after its exact native accepted-input event", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, { id: "host-p6r-link" });
+      const { project } = seedProjectWithSource(harness.deps, { hostId: host.id });
+      const environment = seedEnvironment(harness.deps, { hostId: host.id, projectId: project.id });
+      const thread = seedThread(harness.deps, { environmentId: environment.id, projectId: project.id });
+      harness.db.transaction((tx) => acceptP6rOperationInTransaction(tx, {
+        assertLive: () => ({ ok: true }),
+        attempt: {
+          createdAt: 100,
+          id: "attempt-native-link",
+          inputs: [{ contributionId: "contribution-native-link", groupIndex: 0, snapshot: { text: "input" }, sourceIndex: 0, sourceKind: "contribution" }],
+          nativeRequestId: "creq_23456789ab",
+          threadId: thread.id,
+        },
+        contribution: {
+          acceptedAt: 100,
+          acceptedAuthorship: { kind: "external" },
+          currentProjection: { text: "input" },
+          id: "contribution-native-link",
+          initialInput: { text: "input" },
+          latestEditor: { kind: "external" },
+          nativeRequestId: "creq_23456789ab",
+          threadId: thread.id,
+        },
+        operationId: "operation-native-link",
+        operationNamespace: "plugin-native-link",
+        payloadHash: "hash-native-link",
+        receipt: {
+          acceptedAt: 100,
+          nativeRequestId: "creq_23456789ab",
+          retentionDeadline: 1_000,
+          threadId: thread.id,
+        },
+      }));
+
+      const response = await postEventBatch({
+        harness,
+        sessionId: session.id,
+        events: [
+          {
+            threadId: thread.id,
+            event: {
+              type: "turn/started",
+              threadId: thread.id,
+              providerThreadId: "provider-native-link",
+              scope: turnScope("turn-native-link"),
+            },
+          },
+          {
+            threadId: thread.id,
+            event: {
+              type: "turn/input/accepted",
+              threadId: thread.id,
+              providerThreadId: "provider-native-link",
+              clientRequestId: "creq_23456789ab",
+              scope: turnScope("turn-native-link"),
+            },
+          },
+        ],
+      });
+
+      expect(response.status).toBe(200);
+      expect(listP6rAttempts(harness.db, "plugin-native-link", {
+        operationId: "operation-native-link",
+      })).toMatchObject([{ nativeTurnId: "turn-native-link" }]);
+    });
+  });
+
   it("returns the response head before a plugin tool completes", async () => {
     await withTestHarness(async (harness) => {
       const record = {

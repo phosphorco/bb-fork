@@ -83,6 +83,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
     isDevelopment: !isProduction,
     managedEnvironmentRetireGraceMs: MANAGED_ENVIRONMENT_RETIRE_GRACE_MS,
     openAiApiKey: serverConfig.OPENAI_API_KEY,
+    p6rIdentityBoundary: serverConfig.BB_P6R_IDENTITY_BOUNDARY,
     serverPort: serverConfig.BB_SERVER_PORT,
     sharedSkillRoots: { user: [], project: [] },
     transcriptionModel: serverConfig.BB_TRANSCRIPTION,
