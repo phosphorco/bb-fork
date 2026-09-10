@@ -17,8 +17,9 @@
 2. **Retained facets and execution** composes the still-required Thread Facet,
    execution, sidebar, appearance, recovery, and provider behavior.
 3. **Consumer compatibility witnesses** pins the plugin and host-facing seams.
-4. **Capability-authenticated routes** adds bounded authenticated plugin HTTP
-   and RPC surfaces.
+4. **Retired: capability-authenticated routes.** The fork-specific auth mode
+   and its patch are removed. Plugin-owned connection tokens use upstream
+   `auth: "none"`; the plugin handler retains any token validation.
 5. **Verified mention targets** adds authenticated mention recipients without
    conflating recipients and authors.
 6. **Built sidecar migrations** includes the generated P6R migration payloads.
@@ -47,7 +48,7 @@
 
 - Upstream: `960255b98ce3dccdcb5754eb67a7f989236602a1`.
 - Materialized package: `bb-app@0.42.0` plus the reviewed downstream queue.
-- Patch queue: sixteen patches in `patches/series`; this queue is the current implementation candidate, while running deployments may remain on earlier historical compositions until root-owned integration and activation.
+- Patch queue: fifteen patches (stable numbers 1–16, excluding retired patch 4) in `patches/series`; this queue is the current implementation candidate, while running deployments may remain on earlier historical compositions until root-owned integration and activation.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries

@@ -4,7 +4,6 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 output="${1:-$repo_root/build/bb}"
 upstream_sha="$(tr -d '[:space:]' < "$repo_root/upstream.lock")"
-source_tip="$(tr -d '[:space:]' < "$repo_root/source-tip.lock")"
 expected_tree="$(tr -d '[:space:]' < "$repo_root/result-tree.lock")"
 
 if [[ -e "$output" ]]; then
@@ -18,19 +17,17 @@ if [[ "$actual_submodule_sha" != "$upstream_sha" ]]; then
   exit 1
 fi
 
-if ! git -C "$repo_root/upstream" remote get-url downstream >/dev/null; then
-  git -C "$repo_root/upstream" remote add downstream \
-    "$(git -C "$repo_root" remote get-url origin)"
-fi
-git -C "$repo_root/upstream" fetch --quiet downstream "$source_tip"
-actual_source_tree="$(git -C "$repo_root/upstream" rev-parse "${source_tip}^{tree}")"
-if [[ "$actual_source_tree" != "$expected_tree" ]]; then
-  echo "source tip tree is $actual_source_tree; expected $expected_tree" >&2
-  exit 1
-fi
-
+(cd "$repo_root/patches" && sha256sum --check sha256)
 mkdir -p "$(dirname "$output")"
-git -C "$repo_root/upstream" worktree add --detach "$output" "$source_tip"
+git -C "$repo_root/upstream" worktree add --detach "$output" "$upstream_sha"
+
+while IFS= read -r patch_name; do
+  [[ -z "$patch_name" || "$patch_name" == \#* ]] && continue
+  GIT_COMMITTER_NAME="bb-fork materializer" \
+    GIT_COMMITTER_EMAIL="bb-fork@invalid.local" \
+    git -C "$output" am --3way --committer-date-is-author-date \
+      "$repo_root/patches/$patch_name"
+done < "$repo_root/patches/series"
 
 actual_tree="$(git -C "$output" rev-parse 'HEAD^{tree}')"
 if [[ "$actual_tree" != "$expected_tree" ]]; then

@@ -1,0 +1,389 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Phosphor <engineering@phosphor.co>
+Date: Tue, 8 Sep 2026 17:35:56 +0200
+Subject: [PATCH 03/13] test(identity): add consumer compatibility witnesses
+
+---
+ .../thread-manager-native-parity.test.ts      | 265 ++++++++++++++++++
+ .../thread-progress-native-facet.test.ts      |  97 +++++++
+ 2 files changed, 362 insertions(+)
+ create mode 100644 apps/server/test/services/plugins/thread-manager-native-parity.test.ts
+ create mode 100644 apps/server/test/services/plugins/thread-progress-native-facet.test.ts
+
+diff --git a/apps/server/test/services/plugins/thread-manager-native-parity.test.ts b/apps/server/test/services/plugins/thread-manager-native-parity.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..dc8620c0ffba2d11cbb366f79d55e0413ef5ce81
+--- /dev/null
++++ b/apps/server/test/services/plugins/thread-manager-native-parity.test.ts
+@@ -0,0 +1,265 @@
++import { mkdir, writeFile } from "node:fs/promises";
++import { pathToFileURL } from "node:url";
++import { join } from "node:path";
++import { afterEach, expect, it } from "vitest";
++import {
++  startTestServer,
++  type RunningTestServer,
++} from "../../helpers/test-app.js";
++import { seedThreadFixture } from "../../helpers/seed.js";
++import { p6rContributions } from "../../../src/services/p6r/sidecar-schema.js";
++import { setThreadExecutionOverride, getThreadExecutionOverride } from "@bb/db";
++import { z } from "zod";
++
++const threadManagerRoot = process.env.BB_THREAD_MANAGER_PLUGIN_ROOT;
++
++let harness: RunningTestServer | undefined;
++afterEach(async () => {
++  await harness?.pluginService.stop();
++  await harness?.close();
++});
++
++it(
++  "runs the authored Thread Manager dashboard through candidate native SDK routes",
++  { timeout: 60_000 },
++  async () => {
++    if (threadManagerRoot === undefined) throw new Error("missing BB_THREAD_MANAGER_PLUGIN_ROOT");
++    harness = await startTestServer();
++    harness.pluginService.bindSdk({ baseUrl: harness.baseUrl });
++    const { thread } = seedThreadFixture(harness, {
++      thread: { title: "Native dashboard witness" },
++    });
++    const participants = Array.from({ length: 5 }, (_, index) => ({
++      key: `p6r:fixture/${index}`,
++      name: `Participant ${index}`,
++    }));
++    harness.db
++      .insert(p6rContributions)
++      .values(
++        participants.map(({ key, name }, index) => {
++          const actor = JSON.stringify({
++            evidence: "provider-verified",
++            identity: {
++              kind: "person",
++              key,
++              issuer: "fixture",
++              subject: String(index),
++            },
++            presentation: {
++              displayName: name,
++              handle: null,
++              avatarUrl: `/avatars/${index}.png`,
++            },
++          });
++          return {
++            id: `dashboard-contribution-${index}`,
++            threadId: thread.id,
++            acceptedAt: index + 1,
++            acceptedAuthorship: actor,
++            initialInput: "[]",
++            currentProjection: "[]",
++            latestEditor: actor,
++            nativeRequestId: null,
++            copiedFromContributionId: null,
++            replacesContributionId: null,
++          };
++        }),
++      )
++      .run();
++    const root = join(harness.config.dataDir, "fixture-thread-manager");
++    await mkdir(root);
++    await writeFile(
++      join(root, "package.json"),
++      JSON.stringify({
++        name: "bb-plugin-thread-manager",
++        version: "0.1.0",
++        type: "module",
++        bb: {
++          name: "Thread Manager",
++          description: "Actual authored factory witness",
++          branding: { icon: "List" },
++          server: "./server.ts",
++        },
++      }),
++    );
++    const source = pathToFileURL(join(threadManagerRoot, "server.ts")).href;
++    await writeFile(
++      join(root, "server.ts"),
++      `export { default } from ${JSON.stringify(source)};\n`,
++    );
++    const installed = await harness.pluginService.installPath(root);
++    expect(installed.status, JSON.stringify(installed)).toBe("running");
++    const handler = harness.pluginService.getRpcHandler(
++      "thread-manager",
++      "dashboard",
++    );
++    if (handler.outcome !== "found")
++      throw new Error("Missing actual dashboard handler");
++    const result = await harness.pluginService.invokeRpcHandler(
++      "thread-manager",
++      "dashboard",
++      handler.value,
++      {
++        sinceDays: null,
++        projectId: null,
++        archiveState: "active",
++        errorQuery: "",
++        includeErrorHistory: false,
++        excludeParticipantKeys: [],
++      },
++      {
++        ingress: { requestId: "native-dashboard-witness", transport: "http" },
++        request: {},
++      },
++    );
++    expect(result).toMatchObject({
++      ok: true,
++      result: {
++        threads: expect.arrayContaining([
++          expect.objectContaining({
++            id: thread.id,
++            title: "Native dashboard witness",
++            participantNames: expect.arrayContaining(
++              participants.map(({ name }) => name),
++            ),
++          }),
++        ]),
++        participants,
++      },
++    });
++    const filtered = await harness.pluginService.invokeRpcHandler(
++      "thread-manager",
++      "dashboard",
++      handler.value,
++      {
++        sinceDays: null,
++        projectId: null,
++        archiveState: "active",
++        errorQuery: "",
++        includeErrorHistory: false,
++        excludeParticipantKeys: [participants[4]!.key],
++      },
++      {
++        ingress: { requestId: "native-dashboard-filter", transport: "http" },
++        request: {},
++      },
++    );
++    expect(filtered).toMatchObject({
++      ok: true,
++      result: { threads: [], participants },
++    });
++    const invoke = async (method: string, input: unknown) => {
++      const selected = harness!.pluginService.getRpcHandler(
++        "thread-manager",
++        method,
++      );
++      if (selected.outcome !== "found")
++        throw new Error(`Missing actual ${method} handler`);
++      return harness!.pluginService.invokeRpcHandler(
++        "thread-manager",
++        method,
++        selected.value,
++        input,
++        {
++          ingress: { requestId: `native-${method}`, transport: "http" },
++          request: {},
++        },
++      );
++    };
++    const dashboardSchema = z.object({
++      ok: z.literal(true),
++      result: z.object({
++        threads: z.array(
++          z.object({
++            id: z.string(),
++            execution: z.object({ witness: z.string() }),
++          }),
++        ),
++      }),
++    });
++    const witness = dashboardSchema
++      .parse(result)
++      .result.threads.find((row) => row.id === thread.id)!.execution.witness;
++    const preflightSchema = z.object({
++      ok: z.literal(true),
++      result: z.object({
++        results: z.array(
++          z.object({ status: z.literal("ready"), applyToken: z.string() }),
++        ),
++      }),
++    });
++    const preflight = preflightSchema.parse(
++      await invoke("preflightExecutionChange", {
++        items: [
++          {
++            threadId: thread.id,
++            witness,
++            patch: { model: "test-provider-default", reasoningLevel: "low" },
++          },
++        ],
++      }),
++    );
++    setThreadExecutionOverride(harness.db, {
++      threadId: thread.id,
++      modelOverride: "test-provider-default",
++      reasoningLevelOverride: "high",
++    });
++    expect(
++      await invoke("applyExecutionChange", {
++        mutationId: "stale-change",
++        items: [
++          {
++            threadId: thread.id,
++            applyToken: preflight.result.results[0]!.applyToken,
++          },
++        ],
++      }),
++    ).toMatchObject({
++      ok: true,
++      result: { results: [{ status: "stale", threadId: thread.id }] },
++    });
++    expect(
++      getThreadExecutionOverride(harness.db, thread.id)?.reasoningLevelOverride,
++    ).toBe("high");
++    const current = dashboardSchema
++      .parse(
++        await invoke("dashboard", {
++          sinceDays: null,
++          projectId: null,
++          archiveState: "active",
++          errorQuery: "",
++          includeErrorHistory: false,
++          excludeParticipantKeys: [],
++        }),
++      )
++      .result.threads.find((row) => row.id === thread.id)!;
++    const retry = preflightSchema.parse(
++      await invoke("preflightExecutionChange", {
++        items: [
++          {
++            threadId: thread.id,
++            witness: current.execution.witness,
++            patch: { model: "test-provider-default", reasoningLevel: "low" },
++          },
++        ],
++      }),
++    );
++    expect(
++      await invoke("applyExecutionChange", {
++        mutationId: "fresh-change",
++        items: [
++          {
++            threadId: thread.id,
++            applyToken: retry.result.results[0]!.applyToken,
++          },
++        ],
++      }),
++    ).toMatchObject({
++      ok: true,
++      result: { results: [{ status: "applied", threadId: thread.id }] },
++    });
++    expect(
++      getThreadExecutionOverride(harness.db, thread.id)?.reasoningLevelOverride,
++    ).toBe("low");
++  },
++);
+diff --git a/apps/server/test/services/plugins/thread-progress-native-facet.test.ts b/apps/server/test/services/plugins/thread-progress-native-facet.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..590adb6cfe542adfa760550ad817fccb77932516
+--- /dev/null
++++ b/apps/server/test/services/plugins/thread-progress-native-facet.test.ts
+@@ -0,0 +1,97 @@
++import Database from "better-sqlite3";
++import { join } from "node:path";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import {
++  listThreadFacetOwnerProjections,
++  queryThreadFacetThreadIds,
++} from "@bb/db";
++import { serializeThreadFacetTypeId } from "@bb/domain";
++import { createNodeBbSdk } from "@bb/sdk/node";
++import type { RunningTestServer } from "../../helpers/test-app.js";
++import { startTestServer } from "../../helpers/test-app.js";
++import {
++  seedHostSession,
++  seedPrimaryHost,
++  seedProjectWithSource,
++  seedThread,
++} from "../../helpers/seed.js";
++
++const threadProgressRoot = process.env.BB_THREAD_PROGRESS_PLUGIN_ROOT;
++const integrationIt = threadProgressRoot === undefined ? it.skip : it;
++
++describe("Thread Progress native facet writer", () => {
++  let server: RunningTestServer | undefined;
++
++  afterEach(async () => {
++    await server?.close();
++    server = undefined;
++  });
++
++  integrationIt("writes its declared phase through host-issued targets and fences replacement readiness", async () => {
++    if (threadProgressRoot === undefined) {
++      throw new Error("missing BB_THREAD_PROGRESS_PLUGIN_ROOT");
++    }
++    const running = await startTestServer();
++    server = running;
++    const { host } = seedHostSession(running.deps, {
++      id: "host-thread-progress-native-facet",
++    });
++    seedPrimaryHost(running.deps, host.id);
++    const { project } = seedProjectWithSource(running.deps, {
++      hostId: host.id,
++      path: "/tmp/thread-progress-native-facet",
++    });
++    const thread = seedThread(running.deps, { projectId: project.id });
++    running.pluginService.bindSdk({ baseUrl: running.baseUrl });
++    const installed = await running.pluginService.installPath(threadProgressRoot);
++    expect(installed.status, installed.statusDetail ?? undefined).toBe("running");
++
++    const typeId = serializeThreadFacetTypeId({
++      scope: "plugin",
++      owner: "thread-progress",
++      localName: "phase",
++    });
++    await vi.waitFor(
++      () => expect(listThreadFacetOwnerProjections(running.db, [typeId]))
++        .toMatchObject([{ generation: 1, ownerState: "ready" }]),
++      { timeout: 10_000 },
++    );
++    await running.pluginService.setEnabled("thread-progress", false);
++    expect(listThreadFacetOwnerProjections(running.db, [typeId]))
++      .toMatchObject([{ generation: 1, ownerState: "unavailable" }]);
++
++    const pluginDatabase = new Database(
++      join(running.config.dataDir, "plugins", "thread-progress", "data.db"),
++    );
++    try {
++      expect(pluginDatabase.prepare(
++        "UPDATE thread_progress SET phase = ? WHERE thread_id = ?",
++      ).run("working", thread.id).changes).toBe(1);
++    } finally {
++      pluginDatabase.close();
++    }
++
++    await running.pluginService.setEnabled("thread-progress", true);
++    expect(
++      await createNodeBbSdk({ baseUrl: running.baseUrl }).threads.get({
++        threadId: thread.id,
++      }),
++    ).toMatchObject({ id: thread.id });
++    await vi.waitFor(
++      () => expect(listThreadFacetOwnerProjections(running.db, [typeId]))
++        .toMatchObject([{ generation: 2, ownerState: "ready" }]),
++      { timeout: 10_000 },
++    );
++    expect(queryThreadFacetThreadIds(running.db, {
++      filters: [{ typeId, operator: "contains", member: "working" }],
++      includeHidden: false,
++      pageSize: 10,
++    }).threadIds).toEqual([thread.id]);
++
++    const page = await createNodeBbSdk({ baseUrl: running.baseUrl }).threads.queryFacets({
++      filters: [{ typeId, operator: "contains", member: "working" }],
++      pageSize: 10,
++    });
++    expect(page.threads.map(({ id }) => id)).toEqual([thread.id]);
++  }, 20_000);
++});
+-- 
+2.34.1
+
