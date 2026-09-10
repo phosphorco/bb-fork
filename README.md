@@ -55,8 +55,22 @@ original authors, later editors, queue/retry history and native command dispatch
 The preceding patches retain the independent facet, execution, plugin, Agent
 Connect and editor changes.
 
-This candidate is not yet activated. Plugin invocation expiry, obsolete host session-age configuration, and
+The transcript amendment also stays in patch 16. Native messages use minimal
+`[sender=…]` frames and group-local `<attached>` context. Producer integrations
+opt into a plugin-generation rendering policy through the existing identity
+extension. Their SDK sends and explicit queues carry a presentation hint so
+core preserves the producer frames without adding a synthetic machine wrapper.
+The hint is not a credential. Accepted producer input survives normal queue and
+retry handling; ordinary native requests retain person or machine attribution.
+This adds no public SDK export, storage field, or seventeenth patch.
+
+This queue is the current implementation candidate for the trusted shared
+deployment. The supported source replay is the authoring and verification path;
+it does not change a running deployment. A normal deployment may remain on an
+earlier historical composition until root completes integration and activation.
+Plugin invocation expiry, obsolete host session-age configuration, and
 issuance-only checks have been removed under the approved ADR. The delivery
 plan records the remaining integration and runtime gates. The queue replays to
-the exact tree in `result-tree.lock`; historical review artifacts remain
-supporting evidence rather than a second deployment path.
+the exact tree in `result-tree.lock`; historical deployments and review
+artifacts are evidence of their own composition, not proof that this candidate
+is active.

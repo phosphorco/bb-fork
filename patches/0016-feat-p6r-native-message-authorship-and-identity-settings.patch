@@ -1,4 +1,4 @@
-From e6b84d2c1fff9d84b0b48056a403ac57de2e51e3 Mon Sep 17 00:00:00 2001
+From 0ba993279b93dc90c52ef33a4b8ff848ee2917c3 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Wed, 9 Sep 2026 21:37:35 +0200
 Subject: [PATCH] feat(p6r): use best-effort native attribution in shared
@@ -22,22 +22,24 @@ Remove identity admission expiry and issuance-only checks; retain operation life
  apps/server/src/routes/threads/actions.ts     |   27 +-
  apps/server/src/routes/threads/base.ts        |   37 +-
  apps/server/src/server.ts                     |   48 +-
- .../src/services/p6r/identity-protocol.ts     |   74 +-
+ .../src/services/p6r/identity-protocol.ts     |   82 +-
  .../src/services/p6r/invocation-registry.ts   |   66 +-
- .../src/services/p6r/native-authorship.ts     |   87 +
- .../server/src/services/p6r/native-request.ts |   74 +
+ .../src/services/p6r/native-authorship.ts     |   91 +
+ .../server/src/services/p6r/native-request.ts |   91 +
  .../services/p6r/participant-projection.ts    |   40 +-
  .../src/services/p6r/plugin-p6r-lineage.ts    |  113 -
  .../src/services/p6r/provider-admission.ts    |  575 +--
  .../src/services/p6r/provider-contract.ts     |    4 +-
  .../src/services/p6r/provider-registry.ts     |   11 +-
+ .../src/services/plugins/plugin-mentions.ts   |   64 +-
  .../src/services/plugins/plugin-p6r-http.ts   |    5 +-
+ .../src/services/plugins/plugin-runtime.ts    |   82 +-
  .../src/services/plugins/plugin-service.ts    |   29 +-
  .../bb-cli/references/command-index.md        |    1 +
  .../bb-cli/references/configuration.md        |    4 +
  .../src/services/threads/dispatch-attempt.ts  |   50 +-
- .../src/services/threads/queued-messages.ts   |   16 +-
- .../src/services/threads/thread-create.ts     |   14 +
+ .../src/services/threads/queued-messages.ts   |   53 +-
+ .../src/services/threads/thread-create.ts     |   20 +-
  .../services/threads/thread-edit-message.ts   |    7 +
  .../src/services/threads/thread-events.ts     |   12 +-
  .../services/threads/thread-facet-query.ts    |   18 +-
@@ -46,9 +48,10 @@ Remove identity admission expiry and issuance-only checks; retain operation life
  .../services/threads/thread-provisioning.ts   |   25 +-
  .../threads/thread-queued-messages.ts         |   21 +-
  .../services/threads/thread-send-request.ts   |    4 +
- .../src/services/threads/thread-send.ts       |   36 +-
+ .../src/services/threads/thread-send.ts       |   98 +-
  .../services/threads/thread-turn-dispatch.ts  |   10 +-
  apps/server/test/helpers/p6r-authorship.ts    |   36 +
+ ...blic-thread-context-clear-dispatch.test.ts |    4 +-
  .../test/public/public-thread-data.test.ts    |   60 +-
  .../test/public/public-thread-facets.test.ts  |  210 +-
  .../test/public/public-thread-fork.test.ts    |   67 +-
@@ -57,11 +60,14 @@ Remove identity admission expiry and issuance-only checks; retain operation life
  .../services/p6r/invocation-registry.test.ts  |   97 +-
  .../p6r/mention-target-service-paths.test.ts  |    2 +-
  .../test/services/p6r/mention-targets.test.ts |    2 +-
- .../p6r/native-message-authorship.test.ts     |  691 +++
+ .../p6r/native-message-authorship.test.ts     | 1037 ++++
  .../services/p6r/provider-admission.test.ts   |  372 +-
  .../services/p6r/provider-registry.test.ts    |   33 +-
  .../test/services/p6r/sidecar-store.test.ts   |    4 +-
+ .../services/plugins/heroes-phase2.test.ts    |    9 +-
+ .../plugins/plugin-mention-providers.test.ts  |   67 +-
  .../plugin-p6r-admission-boundary.test.ts     |   36 +-
+ .../test/services/plugins/plugin-sdk.test.ts  |  170 +-
  .../test/threads/thread-edit-message.test.ts  |  102 +
  packages/config/src/env-vars.ts               |    6 +-
  packages/config/src/server.ts                 |    1 -
@@ -93,7 +99,7 @@ Remove identity admission expiry and issuance-only checks; retain operation life
  .../thread-view/src/user-message-parsing.ts   |    6 +
  .../test/user-message-parsing.test.ts         |   19 +
  .../fake/smoke/dynamic-acp-agent.test.ts      |   11 +-
- 85 files changed, 7451 insertions(+), 1165 deletions(-)
+ 91 files changed, 8258 insertions(+), 1234 deletions(-)
  create mode 100644 apps/app/src/components/settings/P6rIdentitySettingsSection.test.tsx
  create mode 100644 apps/app/src/components/settings/P6rIdentitySettingsSection.tsx
  create mode 100644 apps/app/src/components/thread/timeline/P6rMessageAuthorLabel.tsx
@@ -973,7 +979,7 @@ index 0ffa1dbcc7717938c78b35080d51fd23bef160c6..556c4a24ab8bf36c6688c70698909580
    registerThreadSectionRoutes(publicApi, deps);
    registerFileRoutes(publicApi, deps);
 diff --git a/apps/server/src/services/p6r/identity-protocol.ts b/apps/server/src/services/p6r/identity-protocol.ts
-index 9e9a71b5b2253d84326277d9094e63c08af8cd12..6c02ae6f049a9928f618154aea64a1140a30c27b 100644
+index 9e9a71b5b2253d84326277d9094e63c08af8cd12..51d1264da4e49f94535e3c0aed15f9d8ac9b5ca9 100644
 --- a/apps/server/src/services/p6r/identity-protocol.ts
 +++ b/apps/server/src/services/p6r/identity-protocol.ts
 @@ -21,9 +21,11 @@ export type { P6rForkIdentityProvider, P6rForkProviderRegistration, P6rIdentityE
@@ -990,7 +996,7 @@ index 9e9a71b5b2253d84326277d9094e63c08af8cd12..6c02ae6f049a9928f618154aea64a114
  export interface P6rRequestExpectation { readonly actor: string; readonly session: string; }
  export interface P6rReadOptions { readonly signal?: AbortSignal; }
  export interface P6rSendInput { readonly input: readonly P6rJson[]; readonly mode: "auto" | "start" | "steer-if-active" | "queue-if-active"; readonly operationId: string; readonly threadId: string; }
-@@ -38,14 +40,14 @@ export type P6rExecutionProvenance =
+@@ -38,21 +40,21 @@ export type P6rExecutionProvenance =
  export interface P6rContributionReference { readonly contributionId: string; readonly threadId: string; }
  export type P6rContributionQuery = ({ readonly kind: "references"; readonly references: readonly P6rContributionReference[] } | { readonly kind: "native-message"; readonly messageId: string; readonly threadId: string } | { readonly kind: "native-event"; readonly eventId: string; readonly threadId: string }) & { readonly cursor?: string; readonly limit?: number; };
  export type P6rAttemptQuery = ({ readonly kind: "operation"; readonly operationId: string } | { readonly kind: "contribution"; readonly reference: P6rContributionReference }) & { readonly cursor?: string; readonly limit?: number; };
@@ -1009,6 +1015,15 @@ index 9e9a71b5b2253d84326277d9094e63c08af8cd12..6c02ae6f049a9928f618154aea64a114
  export interface P6rParticipantPage { readonly coverage: "complete-history" | "partial-history"; readonly items: readonly P6rParticipant[]; readonly nextCursor: string | null; readonly revision: string; }
  export type P6rHostInvalidation = { readonly kind: "session"; readonly reason: "actor" | "provider" | "capabilities" } | { readonly kind: "directory"; readonly keys: readonly string[] } | { readonly kind: "participants"; readonly threadIds: readonly string[] } | { readonly kind: "disconnected" | "reconnected" | "disposed" };
  
+-export type P6rRawProtocol = ExperimentalP6rIdentityProtocol<object, P6rToolContext, P6rSendInput, P6rExternalAuthor, P6rServerSession, P6rResult<P6rIdentityProfile>, P6rReadySession, P6rResult<void>, P6rRequestExpectation, P6rIdentityError, P6rAcceptanceOutcome, P6rResult<P6rOperationLookup>, P6rResult<P6rExecutionProvenance>, P6rContributionQuery, P6rResult<P6rEvidencePage<P6rContribution>>, P6rAttemptQuery, P6rResult<P6rEvidencePage<P6rExecutionProvenance>>, P6rProviderDirectorySource, P6rParticipantQuery, P6rResult<P6rParticipantPage>, P6rJson, P6rForkIdentityProvider, P6rForkProviderRegistration, P6rHostInvalidation, () => void, P6rReadOptions, P6rJson>;
++export type P6rRawProtocol = ExperimentalP6rIdentityProtocol<object, P6rToolContext, P6rSendInput, P6rExternalAuthor, P6rServerSession, P6rResult<P6rIdentityProfile>, P6rReadySession, P6rResult<void>, P6rRequestExpectation, P6rIdentityError, P6rAcceptanceOutcome, P6rResult<P6rOperationLookup>, P6rResult<P6rExecutionProvenance>, P6rContributionQuery, P6rResult<P6rEvidencePage<P6rContribution>>, P6rAttemptQuery, P6rResult<P6rEvidencePage<P6rExecutionProvenance>>, P6rProviderDirectorySource, P6rParticipantQuery, P6rResult<P6rParticipantPage>, P6rJson, P6rForkIdentityProvider, P6rForkProviderRegistration, P6rHostInvalidation, () => void, P6rReadOptions, P6rJson> & { readonly experimental_useProducerMessageRendering?: () => void };
+ 
+ export interface P6rIdentityGeneration { readonly generation: string; readonly lifetime: AbortSignal; readonly pluginId: string; }
+-export interface P6rIdentityExtension { readonly protocol: P6rRawProtocol; activate(): void; retire(): void; }
++export interface P6rIdentityExtension { readonly protocol: P6rRawProtocol; readonly producerMessageRenderingEnabled: () => boolean; activate(): void; retire(): void; }
+ export interface P6rNativeAcceptance { readonly authorEvidence: P6rJson | null; readonly input: P6rSendInput; readonly operationNamespace: string; readonly payloadHash: string; readonly source: "external" | "scope"; readonly validate: () => P6rValidity; }
+ export interface P6rIdentityServiceRoot {
+   readonly db: DbConnection;
 @@ -69,28 +71,17 @@ export interface P6rIdentityServiceRoot {
      }) => Promise<P6rJson>;
    };
@@ -1117,7 +1132,21 @@ index 9e9a71b5b2253d84326277d9094e63c08af8cd12..6c02ae6f049a9928f618154aea64a114
        return captured;
      },
      preparedProvider(pluginId, generation) { return preparedProviders.get(generationKey(pluginId, generation)) ?? null; },
-@@ -249,7 +232,7 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
+@@ -216,11 +199,13 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
+       const identityGeneration: P6rIdentityGeneration = { generation, lifetime, pluginId };
+       let lease: ReturnType<P6rInvocationRegistry["activateGeneration"]> | null = null;
+       let retired = false;
++      let producerMessageRenderingEnabled = false;
+       const retire = (): void => { if (retired) return; retired = true; notify(generation, { kind: "disposed" }); subscribers.delete(generation); if (generations.get(generation) === identityGeneration) generations.delete(generation); lease?.retire(); root.retireBindings(identityGeneration); const key = generationKey(pluginId, generation); const provider = preparedProviders.get(key); if (provider !== undefined) { preparedProviders.delete(key); root.providerRegistry.retire(provider); } };
+       lifetime.addEventListener("abort", retire, { once: true });
+       const protocol: P6rRawProtocol = {
+         instanceId: root.instanceId,
+         version: 1,
++        experimental_useProducerMessageRendering() { if (!retired) producerMessageRenderingEnabled = true; },
+         bindInvocation<Args extends readonly unknown[], Output>(input: { readonly handler: (context: ExperimentalP6rInvocationContext<object>, ...args: Args) => Output; readonly routeClass: ExperimentalP6rInvocationRouteClass; }) { return root.bindInvocation({ generation: identityGeneration, handler: input.handler, routeClass: input.routeClass }); },
+         session: async (context) => requestState(context)?.session ?? unavailableSession(),
+         selfProfile: async (context) => {
+@@ -249,7 +234,7 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
              scope: state.scope, signal: state.scope.signal, session, release: state.scope.release,
              validate: (expected) => {
                const validity = root.invocationRegistry.validateScope(state.scope);
@@ -1126,7 +1155,7 @@ index 9e9a71b5b2253d84326277d9094e63c08af8cd12..6c02ae6f049a9928f618154aea64a114
                return expected.actor === session.actor.identity.key && expected.session === session.stamp
                  ? { ok: true, value: undefined }
                  : { ok: false, error: failure("stale-context", "Request expectation does not match the captured session") };
-@@ -284,7 +267,7 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
+@@ -284,7 +269,7 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
                : { ok: true };
            };
            const validity = validate();
@@ -1135,7 +1164,7 @@ index 9e9a71b5b2253d84326277d9094e63c08af8cd12..6c02ae6f049a9928f618154aea64a114
            if (root.native.accept === undefined) return { status: "rejected", error: failure("unavailable", "Native transactional acceptance is not configured") };
            const outcome = await root.native.accept({ authorEvidence: immutableAuthor, input: immutableInput, operationNamespace: namespace, payloadHash: hash, source, validate });
            if (outcome.status === "submitted") {
-@@ -367,7 +350,7 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
+@@ -367,7 +352,7 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
            const records = listP6rContributions(root.db, operationNamespace(root.instanceId, identityGeneration.pluginId), { threadId: input.threadId });
            const entries = new Map<string, { identity: P6rParticipant["identity"]; presentation: P6rProfilePresentation; roles: Set<"author" | "editor"> }>();
            const add = (actor: P6rActorSnapshot | null, role: "author" | "editor") => { if (actor === null) return; const entry = entries.get(actor.identity.key) ?? { identity: actor.identity, presentation: actor.presentation, roles: new Set<"author" | "editor">() }; entry.roles.add(role); entries.set(actor.identity.key, entry); };
@@ -1144,7 +1173,7 @@ index 9e9a71b5b2253d84326277d9094e63c08af8cd12..6c02ae6f049a9928f618154aea64a114
            const roleOrder = ["author", "editor", "mentioned", "interaction-resolver"] as const;
            const values = [...entries.values()].sort((left, right) => left.identity.key.localeCompare(right.identity.key)).map((entry) => ({ identity: entry.identity, presentation: entry.presentation, roles: roleOrder.filter((role) => entry.roles.has(role as "author" | "editor")) }));
            const revision = getP6rHistoryRevision(root.db);
-@@ -398,7 +381,6 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
+@@ -398,7 +383,6 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
                const request = Object.freeze({});
                requests.set(request, { scope: derived.scope, session });
                scopeSessions.set(derived.scope, session);
@@ -1152,6 +1181,15 @@ index 9e9a71b5b2253d84326277d9094e63c08af8cd12..6c02ae6f049a9928f618154aea64a114
                return {
                  request,
                  release: derived.scope.release,
+@@ -432,7 +416,7 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
+           };
+         },
+       };
+-      return { protocol: Object.freeze(protocol), activate: () => { if (retired || lease !== null) return; lease = root.invocationRegistry.activateGeneration(generation); generations.set(generation, identityGeneration); root.activateBindings(identityGeneration); }, retire };
++      return { protocol: Object.freeze(protocol), producerMessageRenderingEnabled: () => producerMessageRenderingEnabled, activate: () => { if (retired || lease !== null) return; lease = root.invocationRegistry.activateGeneration(generation); generations.set(generation, identityGeneration); root.activateBindings(identityGeneration); }, retire };
+     },
+   };
+ }
 diff --git a/apps/server/src/services/p6r/invocation-registry.ts b/apps/server/src/services/p6r/invocation-registry.ts
 index 35f667672544c1c482f6c8e61577113aad037423..6a5640c511d3103a682e30a65704a9faee26a055 100644
 --- a/apps/server/src/services/p6r/invocation-registry.ts
@@ -1330,10 +1368,10 @@ index 35f667672544c1c482f6c8e61577113aad037423..6a5640c511d3103a682e30a65704a9fa
  }
 diff --git a/apps/server/src/services/p6r/native-authorship.ts b/apps/server/src/services/p6r/native-authorship.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..fe6ecb5db9f10b1f023e89207c12f362e6554fba
+index 0000000000000000000000000000000000000000..358cfb17b4fbe1c7a6d5d571197cedc991aa6b18
 --- /dev/null
 +++ b/apps/server/src/services/p6r/native-authorship.ts
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,91 @@
 +import {
 +  getStoredTurnRequestEventByRequestId,
 +  type DbQueryConnection,
@@ -1382,7 +1420,7 @@ index 0000000000000000000000000000000000000000..fe6ecb5db9f10b1f023e89207c12f362
 +        ? sender.presentation.displayName
 +        : `machine:${sender.presentation.displayName}`
 +      : (sender.presentation.handle ?? sender.presentation.displayName);
-+  return label.replace(/[\[\]\r\n%]/g, (character) =>
++  return label.replace(/[\[\]<>\r\n%]/g, (character) =>
 +    encodeURIComponent(character),
 +  );
 +}
@@ -1410,7 +1448,11 @@ index 0000000000000000000000000000000000000000..fe6ecb5db9f10b1f023e89207c12f362
 +      mentions: [],
 +      text,
 +    });
-+    return [marker(`[from=${from}]\n`), ...group, marker(`\n[/from=${from}]`)];
++    return [
++      marker(`[sender=${from}]\n`),
++      ...group,
++      marker(`\n[/sender=${from}]`),
++    ];
 +  });
 +  return {
 +    input: enriched.flatMap((group, index) =>
@@ -1423,10 +1465,10 @@ index 0000000000000000000000000000000000000000..fe6ecb5db9f10b1f023e89207c12f362
 +}
 diff --git a/apps/server/src/services/p6r/native-request.ts b/apps/server/src/services/p6r/native-request.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..9cfb212949ec54156b9dc3fcf31c4f793bd5ed10
+index 0000000000000000000000000000000000000000..e49ad91253e3677f15be9e6c442c1db1021c4447
 --- /dev/null
 +++ b/apps/server/src/services/p6r/native-request.ts
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,91 @@
 +import { type P6rMessageAuthor } from "@bb/domain";
 +import type { Context, Hono, Next } from "hono";
 +import { ApiError } from "../../errors.js";
@@ -1442,8 +1484,12 @@ index 0000000000000000000000000000000000000000..9cfb212949ec54156b9dc3fcf31c4f79
 +  readonly author: P6rMessageAuthor;
 +}
 +
++const PRODUCER_MESSAGE_RENDERING_HEADER = "x-bb-p6r-message-rendering";
++const PRODUCER_MESSAGE_RENDERING_VALUE = "producer";
++
 +interface NativeContextState {
 +  readonly resolve: () => Promise<P6rMessageAuthor>;
++  readonly producerMessageRendering: boolean;
 +  authorship?: P6rNativeAuthorship;
 +  resolving?: Promise<P6rNativeAuthorship>;
 +}
@@ -1454,7 +1500,7 @@ index 0000000000000000000000000000000000000000..9cfb212949ec54156b9dc3fcf31c4f79
 +  context: object,
 +): Promise<P6rNativeAuthorship | undefined> {
 +  const state = nativeContexts.get(context);
-+  if (state === undefined) return undefined;
++  if (state === undefined || state.producerMessageRendering) return undefined;
 +  if (state.authorship !== undefined) return state.authorship;
 +  if (state.resolving !== undefined) return state.resolving;
 +  state.resolving = state.resolve().then((author) => {
@@ -1465,9 +1511,22 @@ index 0000000000000000000000000000000000000000..9cfb212949ec54156b9dc3fcf31c4f79
 +  return state.resolving;
 +}
 +
++function isProducerMessageRequest(context: Context): boolean {
++  if (context.req.method !== "POST") return false;
++  if (
++    context.req.header(PRODUCER_MESSAGE_RENDERING_HEADER) !==
++    PRODUCER_MESSAGE_RENDERING_VALUE
++  ) {
++    return false;
++  }
++  const pathname = context.req.path.replace(/\/+$/u, "");
++  return /\/threads\/[^/]+\/(?:send|queued-messages)$/u.test(pathname);
++}
++
 +function installNativeContextResolver(admission: P6rProviderAdmission) {
 +  return async (context: Context, next: Next): Promise<void> => {
 +    nativeContexts.set(context, {
++      producerMessageRendering: isProducerMessageRequest(context),
 +      resolve: () => admission.resolveNativeAuthor(context),
 +    });
 +    try {
@@ -2515,6 +2574,88 @@ index 1ae5b083387534b2e81ccd6ff90cf5f37e9323fe..f7bcd63a1d5958e5624de0debf12d461
        } catch { return { status: "unavailable", reason: "provider-resolution-fault" }; } finally { evidence.signal.removeEventListener("abort", onEvidenceAbort); state.resolutionControllers.delete(controller); }
      },
      retire(candidate) {
+diff --git a/apps/server/src/services/plugins/plugin-mentions.ts b/apps/server/src/services/plugins/plugin-mentions.ts
+index 89e633fc6a8f507fa90158497c30db551573739a..e0c38e08b01ae2d5f1c7c120236a853b10722937 100644
+--- a/apps/server/src/services/plugins/plugin-mentions.ts
++++ b/apps/server/src/services/plugins/plugin-mentions.ts
+@@ -26,17 +26,12 @@ function collectPluginMentionResources(
+   return resources;
+ }
+ 
+-export async function resolvePluginMentionInputs(
+-  input: readonly PromptInput[],
+-): Promise<{ contextInputs: PromptInput[]; targets: P6rMentionTarget[] }> {
+-  const resources = collectPluginMentionResources(input);
+-  if (resources.length === 0) return { contextInputs: [], targets: [] };
+-  if (resources.length > 256)
+-    throw new ApiError(
+-      422,
+-      "plugin_mention_resolve_failed",
+-      "Too many plugin mention targets",
+-    );
++async function resolvePluginMentionResources(
++  resources: readonly PluginMentionResource[],
++): Promise<{
++  contextInputs: PromptInput[];
++  targets: P6rMentionTarget[];
++}> {
+   const targets = new Map<string, P6rMentionTarget>();
+   const contextInputs: PromptInput[] = [];
+   for (const resource of resources) {
+@@ -62,6 +57,53 @@ export async function resolvePluginMentionInputs(
+   return { contextInputs, targets: [...targets.values()] };
+ }
+ 
++export async function resolvePluginMentionInputsByGroup(
++  inputGroups: readonly (readonly PromptInput[])[],
++): Promise<{
++  contextInputs: PromptInput[][];
++  targets: P6rMentionTarget[];
++}> {
++  const resourcesByGroup = inputGroups.map(collectPluginMentionResources);
++  const resources: PluginMentionResource[] = [];
++  const seen = new Set<string>();
++  for (const group of resourcesByGroup) {
++    for (const resource of group) {
++      const key = `${resource.pluginId}::${resource.itemId}`;
++      if (seen.has(key)) continue;
++      seen.add(key);
++      resources.push(resource);
++    }
++  }
++  if (resources.length > 256)
++    throw new ApiError(
++      422,
++      "plugin_mention_resolve_failed",
++      "Too many plugin mention targets",
++    );
++  const resolved = await resolvePluginMentionResources(resources);
++  const contextByKey = new Map(
++    resources.map((resource, index) => [
++      `${resource.pluginId}::${resource.itemId}`,
++      resolved.contextInputs[index]!,
++    ] as const),
++  );
++  return {
++    contextInputs: resourcesByGroup.map((group) =>
++      group.map(
++        (resource) => contextByKey.get(`${resource.pluginId}::${resource.itemId}`)!,
++      ),
++    ),
++    targets: resolved.targets,
++  };
++}
++
++export async function resolvePluginMentionInputs(
++  input: readonly PromptInput[],
++): Promise<{ contextInputs: PromptInput[]; targets: P6rMentionTarget[] }> {
++  const result = await resolvePluginMentionInputsByGroup([input]);
++  return { contextInputs: result.contextInputs[0] ?? [], targets: result.targets };
++}
++
+ export async function resolvePluginMentionContextInputs(
+   input: readonly PromptInput[],
+ ): Promise<PromptInput[]> {
 diff --git a/apps/server/src/services/plugins/plugin-p6r-http.ts b/apps/server/src/services/plugins/plugin-p6r-http.ts
 index a4ebfa171abf578ab8699a197431bb4226393038..e5ce50c2065e32d952f534333d08197b1fcef655 100644
 --- a/apps/server/src/services/plugins/plugin-p6r-http.ts
@@ -2547,6 +2688,118 @@ index a4ebfa171abf578ab8699a197431bb4226393038..e5ce50c2065e32d952f534333d08197b
 -  if (!settled) deadline = setTimeout(abort, Math.max(0, Math.min(2_147_483_647, scope.expiresAt - Date.now())));
    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
  }
+diff --git a/apps/server/src/services/plugins/plugin-runtime.ts b/apps/server/src/services/plugins/plugin-runtime.ts
+index a606879e7b139d990fd82dbeeec806dc6bee8625..365e5bb3c3076f358d1d9dce77912d385db43f43 100644
+--- a/apps/server/src/services/plugins/plugin-runtime.ts
++++ b/apps/server/src/services/plugins/plugin-runtime.ts
+@@ -35,7 +35,13 @@ import {
+ } from "@bb/plugin-build";
+ import { PluginHostArtifactRegistry } from "./plugin-host-artifact-registry.js";
+ import { getPluginBuildToolchain } from "./build-toolchain.js";
+-import { createNodeBbSdk, type BbSdk } from "@bb/sdk";
++import {
++  createNodeBbSdk,
++  createRequestTimeoutFetch,
++  DEFAULT_BB_REQUEST_TIMEOUT_MS,
++  type BbSdk,
++  type FetchImplementation,
++} from "@bb/sdk";
+ import { experimental_aiServicesHostContract } from "@get-bb/plugin-sdk/ai-services";
+ import {
+   getInstalledPlugin,
+@@ -96,6 +102,65 @@ const pluginSdkRuntimePath = join(
+ const PLUGIN_SDK_SPECIFIER = "@get-bb/plugin-sdk";
+ 
+ const LEGACY_PLUGIN_SDK_SPECIFIER = "@bb/plugin-sdk";
++const PRODUCER_MESSAGE_RENDERING_HEADER = "x-bb-p6r-message-rendering";
++const PRODUCER_MESSAGE_RENDERING_VALUE = "producer";
++
++function isProducerMessageRoute(
++  input: Parameters<FetchImplementation>[0],
++  init: Parameters<FetchImplementation>[1],
++  baseUrl: string,
++): boolean {
++  const method = (
++    init?.method ??
++    (typeof Request !== "undefined" && input instanceof Request
++      ? input.method
++      : "GET")
++  ).toUpperCase();
++  if (method !== "POST") return false;
++
++  const rawUrl =
++    typeof input === "string"
++      ? input
++      : input instanceof URL
++        ? input.href
++        : input.url;
++  let pathname: string;
++  try {
++    pathname = new URL(rawUrl, baseUrl).pathname.replace(/\/+$/u, "");
++  } catch {
++    return false;
++  }
++  return /\/threads\/[^/]+\/(?:send|queued-messages)$/u.test(pathname);
++}
++
++function createPluginMessageFetch(
++  baseUrl: string,
++  producerMessageRenderingEnabled: () => boolean,
++): FetchImplementation {
++  const timeoutFetch = createRequestTimeoutFetch({
++    timeoutMs: DEFAULT_BB_REQUEST_TIMEOUT_MS,
++  });
++  return async (input, init) => {
++    if (
++      !producerMessageRenderingEnabled() ||
++      !isProducerMessageRoute(input, init, baseUrl)
++    ) {
++      return timeoutFetch(input, init);
++    }
++    const headers = new Headers(
++      init?.headers !== undefined
++        ? init.headers
++        : typeof Request !== "undefined" && input instanceof Request
++          ? input.headers
++          : undefined,
++    );
++    headers.set(
++      PRODUCER_MESSAGE_RENDERING_HEADER,
++      PRODUCER_MESSAGE_RENDERING_VALUE,
++    );
++    return timeoutFetch(input, { ...init, headers });
++  };
++}
+ 
+ async function hashFile(
+   path: string,
+@@ -1301,12 +1366,25 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+       p6rGeneration,
+       new AbortController().signal,
+     );
++    let pluginSdk: BbSdk | undefined;
+     const handle = createPluginApi({
+       pluginId: row.id,
+       logger: deps.logger,
+       db: deps.db,
+       dataDir: deps.dataDir,
+-      getSdk: () => boundSdk,
++      getSdk: () => {
++        if (boundSdk === undefined || boundLoopbackBaseUrl === undefined) {
++          return undefined;
++        }
++        pluginSdk ??= createNodeBbSdk({
++          baseUrl: boundLoopbackBaseUrl,
++          fetch: createPluginMessageFetch(
++            boundLoopbackBaseUrl,
++            () => p6rCandidate?.producerMessageRenderingEnabled() === true,
++          ),
++        });
++        return pluginSdk;
++      },
+       getAppUrl: deps.getAppUrl ?? (() => null),
+       getLoopbackBaseUrl: () => boundLoopbackBaseUrl,
+       publishSignal: (channel, payload) => {
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
 index b77386ca82aedb18181dbce61a92ec8de9bd09e6..b94f9cc6eb9cdf7074f6cb5526947059d6c48857 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
@@ -2793,7 +3046,7 @@ index 44cf02107d5713c40efacda08cce016c1baea45f..b03c1f6d23a75afdd0ebf60240d2bf2a
        ? { providerInput: startContext.providerInput }
        : {}),
 diff --git a/apps/server/src/services/threads/queued-messages.ts b/apps/server/src/services/threads/queued-messages.ts
-index 5f769eab21242ec587d664156141054138245848..4bcc933931aebb7c80fd582782410d0f2e32e1ec 100644
+index 5f769eab21242ec587d664156141054138245848..78119928aae564af9bbd06d8ee3e331e4b428c55 100644
 --- a/apps/server/src/services/threads/queued-messages.ts
 +++ b/apps/server/src/services/threads/queued-messages.ts
 @@ -1,3 +1,5 @@
@@ -2802,7 +3055,32 @@ index 5f769eab21242ec587d664156141054138245848..4bcc933931aebb7c80fd582782410d0f
  import {
    projectP6rParticipantsInTransaction,
    readP6rMentionTargetsForRequest,
-@@ -175,6 +177,7 @@ async function requireReadyQueuedMessageEnvironment(
+@@ -20,6 +22,7 @@ import {
+ } from "@bb/db";
+ import { promptInputSchema, queuedMessageSystemNoticeSchema } from "@bb/domain";
+ import type {
++  P6rMentionTarget,
+   PromptInput,
+   QueuedMessageWaitingOn,
+   Thread,
+@@ -51,7 +54,7 @@ import {
+   buildExecutionOptions,
+   prepareTurnSubmitCommandPayload,
+ } from "./thread-commands.js";
+-import { resolvePluginMentionInputs } from "../plugins/plugin-mentions.js";
++import { resolvePluginMentionInputsByGroup } from "../plugins/plugin-mentions.js";
+ import {
+   prependDeferredFirstTurnContext,
+   requireDeferredFirstTurnContextCurrent,
+@@ -72,6 +75,7 @@ import { deliverParentSystemMessage } from "./parent-system-messages.js";
+ import { settleQueueRowDispatched } from "./queue-waits.js";
+ import { recordQueuedMessageDrainFailure } from "./queue-drain-failure.js";
+ import {
++  attachedPluginMentionContext,
+   ensureThreadIsWritable,
+   formatAgentThreadInput,
+   groupedInputForRuntime,
+@@ -175,6 +179,7 @@ async function requireReadyQueuedMessageEnvironment(
  }
  
  export interface CreateQueuedMessageForThreadArgs {
@@ -2810,7 +3088,7 @@ index 5f769eab21242ec587d664156141054138245848..4bcc933931aebb7c80fd582782410d0f
    payload: CreateQueuedMessageRequest;
    thread: Thread;
  }
-@@ -243,7 +246,7 @@ export async function createQueuedMessageForThread(
+@@ -243,7 +248,7 @@ export async function createQueuedMessageForThread(
            // idle drain treats the two identically anyway.
            waitingOn: { kind: "thread-busy" },
            sendAt: null,
@@ -2819,7 +3097,7 @@ index 5f769eab21242ec587d664156141054138245848..4bcc933931aebb7c80fd582782410d0f
            systemNotice: null,
          });
          return { currentThread, providerThreadId, queuedMessage };
-@@ -475,7 +478,14 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
+@@ -475,7 +480,14 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
    const queuedMessage = queuedMessages[0]!;
  
    if (args.queuedMessages.some(
@@ -2835,7 +3113,47 @@ index 5f769eab21242ec587d664156141054138245848..4bcc933931aebb7c80fd582782410d0f
    )) {
      return null;
    }
-@@ -785,6 +795,8 @@ async function sendClaimedQueuedMessageForThread(
+@@ -488,24 +500,21 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
+     }),
+   );
+   let input = groupedInputForRuntime(inputGroups);
+-  const { contextInputs: pluginMentionContext, targets: p6rMentionedTargets } =
+-    queuedMessage.payload.kind !== "retry"
+-      ? await resolvePluginMentionInputs(input)
+-      : {
+-          contextInputs: [],
+-          targets: readP6rMentionTargetsForRequest(
+-            deps.db,
+-            thread.id,
+-            queuedMessage.payload.retryOfTurnRequestId,
+-          ),
+-        };
+-  if (pluginMentionContext.length > 0) {
+-    input = [...input, ...pluginMentionContext];
+-    const lastGroup = inputGroups[inputGroups.length - 1]!;
+-    inputGroups = [
+-      ...inputGroups.slice(0, -1),
+-      [...lastGroup, ...pluginMentionContext],
+-    ];
++  let p6rMentionedTargets: P6rMentionTarget[];
++  if (queuedMessage.payload.kind === "retry") {
++    p6rMentionedTargets = readP6rMentionTargetsForRequest(
++      deps.db,
++      thread.id,
++      queuedMessage.payload.retryOfTurnRequestId,
++    );
++  } else {
++    const mentionResult = await resolvePluginMentionInputsByGroup(inputGroups);
++    p6rMentionedTargets = mentionResult.targets;
++    inputGroups = inputGroups.map((group, index) => [
++      ...group,
++      ...attachedPluginMentionContext(mentionResult.contextInputs[index] ?? []),
++    ]);
++    input = groupedInputForRuntime(inputGroups);
+   }
+   const deferredFirstTurnContext = resolveDeferredFirstTurnContext(
+     deps.db,
+@@ -785,6 +794,8 @@ async function sendClaimedQueuedMessageForThread(
            },
          };
    const outcome = await attemptDispatch(deps, {
@@ -2845,7 +3163,7 @@ index 5f769eab21242ec587d664156141054138245848..4bcc933931aebb7c80fd582782410d0f
      payload: {
        ...sendQueuedMessagePayload(
 diff --git a/apps/server/src/services/threads/thread-create.ts b/apps/server/src/services/threads/thread-create.ts
-index 9c201e39fe5d3806d06bd978aa52559191eb4fd9..78b7cfb87ca0612f0d88a1187929aee2c52dd2d8 100644
+index 9c201e39fe5d3806d06bd978aa52559191eb4fd9..9493a949cee454b30e9320fc60aa1c9e03d8da8c 100644
 --- a/apps/server/src/services/threads/thread-create.ts
 +++ b/apps/server/src/services/threads/thread-create.ts
 @@ -1,3 +1,9 @@
@@ -2858,7 +3176,15 @@ index 9c201e39fe5d3806d06bd978aa52559191eb4fd9..78b7cfb87ca0612f0d88a1187929aee2
  import type { P6rMentionTarget } from "@bb/domain";
  import {
    deleteThread,
-@@ -87,6 +93,8 @@ interface ExistingUnmanagedEnvironmentIntentResult {
+@@ -37,6 +43,7 @@ import {
+   resolveProjectExecutionDefaultsForCreate,
+ } from "./project-execution-defaults.js";
+ import { validatePromptAttachmentReferences } from "../projects/attachments.js";
++import { attachedPluginMentionContext } from "./thread-send.js";
+ import { resolvePluginMentionInputs } from "../plugins/plugin-mentions.js";
+ import {
+   attemptDispatch,
+@@ -87,6 +94,8 @@ interface ExistingUnmanagedEnvironmentIntentResult {
  }
  
  interface CreateProvisioningThreadArgs {
@@ -2867,7 +3193,7 @@ index 9c201e39fe5d3806d06bd978aa52559191eb4fd9..78b7cfb87ca0612f0d88a1187929aee2
    p6rMentionedTargets?: P6rMentionTarget[];
    environmentId: string | null;
    executionDefaults: Parameters<
-@@ -473,6 +481,8 @@ async function createPendingThreadAndAttemptFirstDispatch(
+@@ -473,6 +482,8 @@ async function createPendingThreadAndAttemptFirstDispatch(
      );
  
      const startContext: PendingThreadStartContext = {
@@ -2876,7 +3202,7 @@ index 9c201e39fe5d3806d06bd978aa52559191eb4fd9..78b7cfb87ca0612f0d88a1187929aee2
        p6rMentionedTargets: args.p6rMentionedTargets,
        environmentIntent: args.environmentIntent,
        fork: args.fork?.descriptor ?? null,
-@@ -492,6 +502,8 @@ async function createPendingThreadAndAttemptFirstDispatch(
+@@ -492,6 +503,8 @@ async function createPendingThreadAndAttemptFirstDispatch(
      });
  
      await attemptDispatch(deps, {
@@ -2885,7 +3211,7 @@ index 9c201e39fe5d3806d06bd978aa52559191eb4fd9..78b7cfb87ca0612f0d88a1187929aee2
        thread,
        payload: {
          input: args.request.input,
-@@ -550,6 +562,7 @@ export async function createThreadFromRequest(
+@@ -550,6 +563,7 @@ export async function createThreadFromRequest(
    options: {
      providerInput?: ThreadCreateServiceRequestInput["input"];
      forkSourceEnvironmentId?: string;
@@ -2893,7 +3219,19 @@ index 9c201e39fe5d3806d06bd978aa52559191eb4fd9..78b7cfb87ca0612f0d88a1187929aee2
    } = {},
  ) {
    const project = requirePublicProjectForThreadCreate(
-@@ -878,6 +891,7 @@ export async function createThreadFromRequest(
+@@ -583,7 +597,10 @@ export async function createThreadFromRequest(
+   const { contextInputs: pluginMentionContext, targets: p6rMentionedTargets } =
+     await resolvePluginMentionInputs(requestInput.input);
+   if (pluginMentionContext.length > 0) {
+-    requestInput.input = [...requestInput.input, ...pluginMentionContext];
++    requestInput.input = [
++      ...requestInput.input,
++      ...attachedPluginMentionContext(pluginMentionContext),
++    ];
+   }
+   assertProjectWorkspaceCompatibility(project, requestInput);
+   const originKind = requestInput.originKind ?? null;
+@@ -878,6 +895,7 @@ export async function createThreadFromRequest(
    }
  
    const createArgs = {
@@ -3241,7 +3579,7 @@ index 35fd6af876ebcac2745dae04e6a8ff2f58a981ee..01aa994890459d97485ea2aa3313413a
      payload: args.payload,
      source: { kind: "inline" },
 diff --git a/apps/server/src/services/threads/thread-send.ts b/apps/server/src/services/threads/thread-send.ts
-index 1997c4b2c6d5994b25ae896b53362db742b900e4..b07f782d8b2f78c39966496c605812dcc1ad285e 100644
+index 1997c4b2c6d5994b25ae896b53362db742b900e4..6a15362726759bc43a68696bcff25000e3191850 100644
 --- a/apps/server/src/services/threads/thread-send.ts
 +++ b/apps/server/src/services/threads/thread-send.ts
 @@ -1,3 +1,11 @@
@@ -3256,7 +3594,18 @@ index 1997c4b2c6d5994b25ae896b53362db742b900e4..b07f782d8b2f78c39966496c605812dc
  import { readP6rMentionTargetsForRequest } from "../p6r/participant-projection.js";
  import type { P6rMentionTarget } from "@bb/domain";
  import {
-@@ -83,6 +91,8 @@ type SendThreadMessagePayload = SendMessageRequest & {
+@@ -65,7 +73,9 @@ import {
+   throwThreadNotWritable,
+ } from "../lib/lifecycle-api-errors.js";
+ import { validatePromptAttachmentReferences } from "../projects/attachments.js";
+-import { resolvePluginMentionInputs } from "../plugins/plugin-mentions.js";
++import {
++  resolvePluginMentionInputsByGroup,
++} from "../plugins/plugin-mentions.js";
+ import { clearThreadContext } from "./thread-context-clear.js";
+ import { withThreadSendGuard } from "./thread-context-mutation-guard.js";
+ import {
+@@ -83,6 +93,8 @@ type SendThreadMessagePayload = SendMessageRequest & {
  };
  
  interface SendThreadMessageArgs {
@@ -3265,7 +3614,7 @@ index 1997c4b2c6d5994b25ae896b53362db742b900e4..b07f782d8b2f78c39966496c605812dc
    afterAppendInTransaction?: SendThreadMessageTransactionCommit;
    beforeAppendInTransaction?: SendThreadMessageTransactionPreflight;
    /**
-@@ -151,6 +161,8 @@ interface SendThreadMessageQueueRequest {
+@@ -151,6 +163,8 @@ interface SendThreadMessageQueueRequest {
  }
  
  interface AppendAndQueueSendThreadMessageArgs {
@@ -3274,7 +3623,31 @@ index 1997c4b2c6d5994b25ae896b53362db742b900e4..b07f782d8b2f78c39966496c605812dc
    p6rMentionedTargets?: P6rMentionTarget[];
    afterAppendInTransaction?: SendThreadMessageTransactionCommit;
    /** Retry provenance; absent for an original dispatch. */
-@@ -353,6 +365,8 @@ function captureUserMessageSentTelemetry(
+@@ -338,6 +352,23 @@ export function groupedInputForRuntime(
+   );
+ }
+ 
++export function attachedPluginMentionContext(
++  contextInputs: readonly PromptInput[],
++): PromptInput[] {
++  if (contextInputs.length === 0) return [];
++  const marker = (text: string): PromptInput => ({
++    type: "text",
++    visibility: "agent-only",
++    mentions: [],
++    text,
++  });
++  return [
++    marker("\n<attached>\n"),
++    ...contextInputs,
++    marker("\n</attached>"),
++  ];
++}
++
+ function captureUserMessageSentTelemetry(
+   deps: Pick<LoggedPendingInteractionWorkSessionDeps, "telemetry">,
+   thread: Thread,
+@@ -353,6 +384,8 @@ function captureUserMessageSentTelemetry(
  }
  
  function appendAndQueueSendThreadMessageInTransaction({
@@ -3283,7 +3656,7 @@ index 1997c4b2c6d5994b25ae896b53362db742b900e4..b07f782d8b2f78c39966496c605812dc
    p6rMentionedTargets,
    afterAppendInTransaction,
    retryOf,
-@@ -382,6 +396,8 @@ function appendAndQueueSendThreadMessageInTransaction({
+@@ -382,6 +415,8 @@ function appendAndQueueSendThreadMessageInTransaction({
              type: "client/turn/requested",
              ...(retryOf !== undefined ? { retryOf } : {}),
              input,
@@ -3292,7 +3665,7 @@ index 1997c4b2c6d5994b25ae896b53362db742b900e4..b07f782d8b2f78c39966496c605812dc
              p6rMentionedTargets,
              ...(inputGroups !== undefined ? { inputGroups } : {}),
              execution,
-@@ -448,6 +464,14 @@ async function sendThreadMessageWithoutContextClear(
+@@ -448,6 +483,14 @@ async function sendThreadMessageWithoutContextClear(
    if (args.trigger === "user") {
      ensureThreadIsNotAwaitingUserInteraction(deps, thread.id);
    }
@@ -3307,7 +3680,55 @@ index 1997c4b2c6d5994b25ae896b53362db742b900e4..b07f782d8b2f78c39966496c605812dc
    const mode = resolveSendMode(thread, payload.mode);
    ensureRuntimeCanAcceptActiveSend(deps, args);
    if (mode === "start") {
-@@ -572,6 +596,8 @@ async function sendThreadMessageWithoutContextClear(
+@@ -476,25 +519,28 @@ async function sendThreadMessageWithoutContextClear(
+             senderThreadId,
+           })
+         : payload.input;
+-  const { contextInputs: pluginMentionContext, targets: p6rMentionedTargets } =
+-    args.retryOf === undefined
+-      ? await resolvePluginMentionInputs(input)
+-      : {
+-          contextInputs: [],
+-          targets: readP6rMentionTargetsForRequest(
+-            deps.db,
+-            thread.id,
+-            args.retryOf.requestId,
+-          ),
+-        };
+-  if (pluginMentionContext.length > 0) {
+-    input = [...input, ...pluginMentionContext];
+-    if (inputGroups !== undefined && inputGroups.length > 0) {
+-      const lastGroup = inputGroups[inputGroups.length - 1]!;
+-      inputGroups = [
+-        ...inputGroups.slice(0, -1),
+-        [...lastGroup, ...pluginMentionContext],
+-      ];
++  let p6rMentionedTargets: P6rMentionTarget[];
++  if (args.retryOf !== undefined) {
++    p6rMentionedTargets = readP6rMentionTargetsForRequest(
++      deps.db,
++      thread.id,
++      args.retryOf.requestId,
++    );
++  } else {
++    const sourceGroups = inputGroups ?? [input];
++    const mentionResult = await resolvePluginMentionInputsByGroup(sourceGroups);
++    p6rMentionedTargets = mentionResult.targets;
++    const contextGroups = mentionResult.contextInputs.map(
++      attachedPluginMentionContext,
++    );
++    if (inputGroups !== undefined) {
++      inputGroups = inputGroups.map((group, index) => [
++        ...group,
++        ...(contextGroups[index] ?? []),
++      ]);
++      input = groupedInputForRuntime(inputGroups);
++    } else {
++      input = [...input, ...(contextGroups[0] ?? [])];
+     }
+   }
+   const deferredFirstTurnContext = resolveDeferredFirstTurnContext(
+@@ -572,6 +618,8 @@ async function sendThreadMessageWithoutContextClear(
  
    if (
      await dispatchTurnDuringReprovision({
@@ -3316,7 +3737,7 @@ index 1997c4b2c6d5994b25ae896b53362db742b900e4..b07f782d8b2f78c39966496c605812dc
        p6rMentionedTargets,
        beforeRequestAppendInTransaction: beforeAppendInTransaction,
        deps,
-@@ -614,8 +640,7 @@ async function sendThreadMessageWithoutContextClear(
+@@ -614,8 +662,7 @@ async function sendThreadMessageWithoutContextClear(
      const commandArgs = {
        thread,
        fork: null,
@@ -3326,7 +3747,7 @@ index 1997c4b2c6d5994b25ae896b53362db742b900e4..b07f782d8b2f78c39966496c605812dc
        requestId,
        execution,
        permissionEscalation,
-@@ -646,6 +671,8 @@ async function sendThreadMessageWithoutContextClear(
+@@ -646,6 +693,8 @@ async function sendThreadMessageWithoutContextClear(
          }
        : await prepareReadyThreadTurnCommand(deps, commandArgs);
      const queuedRequest = appendAndQueueSendThreadMessageInTransaction({
@@ -3335,7 +3756,7 @@ index 1997c4b2c6d5994b25ae896b53362db742b900e4..b07f782d8b2f78c39966496c605812dc
        p6rMentionedTargets,
        afterAppendInTransaction,
        ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
-@@ -720,8 +747,7 @@ async function sendThreadMessageWithoutContextClear(
+@@ -720,8 +769,7 @@ async function sendThreadMessageWithoutContextClear(
    });
    const preparedCommand = await prepareTurnSubmitCommandPayload(deps, {
      thread,
@@ -3345,7 +3766,7 @@ index 1997c4b2c6d5994b25ae896b53362db742b900e4..b07f782d8b2f78c39966496c605812dc
      execution,
      permissionEscalation,
      target: {
-@@ -741,6 +767,8 @@ async function sendThreadMessageWithoutContextClear(
+@@ -741,6 +789,8 @@ async function sendThreadMessageWithoutContextClear(
      requestId,
    });
    const queuedRequest = appendAndQueueSendThreadMessageInTransaction({
@@ -3388,7 +3809,7 @@ index b335907f075b9d0150086a28ee27fed602703ffb..fd2b4b48fcdd577509e2a34802ab1f84
            initiator: args.initiator,
 diff --git a/apps/server/test/helpers/p6r-authorship.ts b/apps/server/test/helpers/p6r-authorship.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..ea7e0bec03402fe076375be3001e82f96e5d7446
+index 0000000000000000000000000000000000000000..65ec73c8b966c303b083eee9230f07d0139d8a87
 --- /dev/null
 +++ b/apps/server/test/helpers/p6r-authorship.ts
 @@ -0,0 +1,36 @@
@@ -3401,14 +3822,14 @@ index 0000000000000000000000000000000000000000..ea7e0bec03402fe076375be3001e82f9
 +      type: "text",
 +      visibility: "agent-only",
 +      mentions: [],
-+      text: `[from=machine:${hostname()}]\n`,
++      text: `[sender=machine:${hostname()}]\n`,
 +    },
 +    ...input,
 +    {
 +      type: "text",
 +      visibility: "agent-only",
 +      mentions: [],
-+      text: `\n[/from=machine:${hostname()}]`,
++      text: `\n[/sender=machine:${hostname()}]`,
 +    },
 +  ];
 +}
@@ -3428,6 +3849,24 @@ index 0000000000000000000000000000000000000000..ea7e0bec03402fe076375be3001e82f9
 +    },
 +  });
 +}
+diff --git a/apps/server/test/public/public-thread-context-clear-dispatch.test.ts b/apps/server/test/public/public-thread-context-clear-dispatch.test.ts
+index 6d1fb0872e54519c94a80b64c6e475b4dc99a069..1830a90d0d991a7e3b2c59f0b0a32d68179c1070 100644
+--- a/apps/server/test/public/public-thread-context-clear-dispatch.test.ts
++++ b/apps/server/test/public/public-thread-context-clear-dispatch.test.ts
+@@ -92,11 +92,11 @@ describe("context clear dispatch races", () => {
+           });
+           vi.spyOn(
+             mentions,
+-            "resolvePluginMentionInputs",
++            "resolvePluginMentionInputsByGroup",
+           ).mockImplementationOnce(async () => {
+             entered.resolve();
+             await release.promise;
+-            return { contextInputs: [], targets: [] };
++            return { contextInputs: [[]], targets: [] };
+           });
+         } else {
+           const buildExecutionOptions = commands.buildExecutionOptions;
 diff --git a/apps/server/test/public/public-thread-data.test.ts b/apps/server/test/public/public-thread-data.test.ts
 index b2f23731d20d7f2d3a331ac8ad2b1c5a303b0721..2d164554292f01ddd21ba72d0c8d898bfa003101 100644
 --- a/apps/server/test/public/public-thread-data.test.ts
@@ -4457,10 +4896,10 @@ index f3a6eca86e0c59300a5d233341c97b0783881342..ebe54528f011c0f518fcd54f94880019
        deadlineAt: Date.now() + 1000,
 diff --git a/apps/server/test/services/p6r/native-message-authorship.test.ts b/apps/server/test/services/p6r/native-message-authorship.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..145a8064b2894a7078cb7757731876cfd265c7b8
+index 0000000000000000000000000000000000000000..339dfde0e43773817827ac4a8b6f6449b124a8fa
 --- /dev/null
 +++ b/apps/server/test/services/p6r/native-message-authorship.test.ts
-@@ -0,0 +1,691 @@
+@@ -0,0 +1,1037 @@
 +import { withP6rNativeAuthorContext } from "../../../src/services/p6r/native-authorship.js";
 +import { applyLoggedThreadLifecycleEvent } from "../../../src/services/threads/lifecycle-outcome.js";
 +import { Hono } from "hono";
@@ -4490,7 +4929,11 @@ index 0000000000000000000000000000000000000000..145a8064b2894a7078cb7757731876cf
 +} from "../../../src/services/p6r/provider-admission.js";
 +import { installP6rNativeRequestRoutes } from "../../../src/services/p6r/native-request.js";
 +import { sendQueuedMessage } from "../../../src/services/threads/queued-messages.js";
-+import { sendThreadMessage } from "../../../src/services/threads/thread-send.js";
++import {
++  formatAgentThreadInput,
++  groupedInputForRuntime,
++  sendThreadMessage,
++} from "../../../src/services/threads/thread-send.js";
 +import { waitForQueuedCommand } from "../../helpers/commands.js";
 +import {
 +  seedEnvironment,
@@ -4500,6 +4943,7 @@ index 0000000000000000000000000000000000000000..145a8064b2894a7078cb7757731876cf
 +  seedThreadRuntimeState,
 +} from "../../helpers/seed.js";
 +import { createTestAppHarness } from "../../helpers/test-app.js";
++import { setPluginAgentContributions } from "../../../src/services/plugins/plugin-agent-contributions.js";
 +
 +const input: PromptInput[] = [
 +  { type: "text", text: "Who sent this?", mentions: [] },
@@ -4612,23 +5056,29 @@ index 0000000000000000000000000000000000000000..145a8064b2894a7078cb7757731876cf
 +    path: "/tmp/native-identity",
 +    status: "ready",
 +  });
-+  const newThread = () => {
++  const newThread = (withRuntime = true) => {
 +    const thread = seedThread(harness.deps, {
 +      projectId: project.id,
 +      environmentId: environment.id,
 +      status: "idle",
 +    });
-+    seedThreadRuntimeState(harness.deps, {
-+      environmentId: environment.id,
-+      providerThreadId: `provider-${thread.id}`,
-+      threadId: thread.id,
-+    });
++    if (withRuntime) {
++      seedThreadRuntimeState(harness.deps, {
++        environmentId: environment.id,
++        providerThreadId: "provider-" + thread.id,
++        threadId: thread.id,
++      });
++    }
 +    return thread;
 +  };
-+  const post = (path: string, body: unknown) =>
-+    app.request(`/api/v1${path}`, {
++  const post = (
++    path: string,
++    body: unknown,
++    extraHeaders: Record<string, string> = {},
++  ) =>
++    app.request("/api/v1" + path, {
 +      method: "POST",
-+      headers: { "content-type": "application/json" },
++      headers: { "content-type": "application/json", ...extraHeaders },
 +      body: JSON.stringify(body),
 +    });
 +  const requestAfter = (threadId: string, sequence: number) => {
@@ -4693,8 +5143,8 @@ index 0000000000000000000000000000000000000000..145a8064b2894a7078cb7757731876cf
 +      ({ command }) =>
 +        command.type === "thread.start" && command.threadId === thread.id,
 +    );
-+    expect(JSON.stringify(start.command)).toContain("[from=alice]");
-+    expect(JSON.stringify(start.command)).toContain("[/from=alice]");
++    expect(JSON.stringify(start.command)).toContain("[sender=alice]");
++    expect(JSON.stringify(start.command)).toContain("[/sender=alice]");
 +    expect(JSON.stringify(start.command)).toContain("alice");
 +    f.setPerson("bob");
 +    const live = f.newThread();
@@ -4721,6 +5171,108 @@ index 0000000000000000000000000000000000000000..145a8064b2894a7078cb7757731876cf
 +        command.type === "turn.submit" && command.threadId === live.id,
 +    );
 +    expect(JSON.stringify(command.command)).toContain("bob");
++  } finally {
++    await f.harness.cleanup();
++  }
++});
++
++it("keeps producer-owned send and queued input raw while ordinary requests retain native attribution", async () => {
++  const f = await fixture();
++  try {
++    const producerInput: PromptInput[] = [
++      {
++        type: "text",
++        text: "[sender=agentation:alice]\nattached <image.png>\n[/sender=agentation:alice]",
++        mentions: [],
++      },
++    ];
++    const producerThread = f.newThread();
++    const producerBefore = getLatestThreadSequence(f.harness.db, {
++      threadId: producerThread.id,
++    });
++    const producerSend = await f.post(
++      "/threads/" + producerThread.id + "/send",
++      { input: producerInput, mode: "start", ...execution },
++      { "x-bb-p6r-message-rendering": "producer" },
++    );
++    expect(producerSend.status, await producerSend.clone().text()).toBe(200);
++    const producerRequest = f.requestAfter(producerThread.id, producerBefore);
++    expect(producerRequest.p6rAuthors).toBeUndefined();
++    expect(producerRequest.input).toEqual(producerInput);
++    const producerCommand = await waitForQueuedCommand(
++      f.harness,
++      ({ command }) =>
++        command.type === "turn.submit" &&
++        command.threadId === producerThread.id,
++    );
++    if (producerCommand.command.type !== "turn.submit") {
++      throw new Error("Expected producer turn.submit command");
++    }
++    expect(producerCommand.command.input).toEqual(producerInput);
++    expect(JSON.stringify(producerCommand.command)).not.toContain(
++      "[sender=test-server]",
++    );
++
++    const ordinaryThread = f.newThread();
++    const ordinaryBefore = getLatestThreadSequence(f.harness.db, {
++      threadId: ordinaryThread.id,
++    });
++    const ordinarySend = await f.post(
++      "/threads/" + ordinaryThread.id + "/send",
++      { input: producerInput, mode: "start", ...execution },
++    );
++    expect(ordinarySend.status, await ordinarySend.clone().text()).toBe(200);
++    const ordinaryRequest = f.requestAfter(ordinaryThread.id, ordinaryBefore);
++    expect(ordinaryRequest.p6rAuthors?.[0]).toMatchObject({
++      evidence: "provider-verified",
++      identity: { kind: "person", subject: "alice" },
++    });
++
++    const queuedThread = f.newThread(false);
++    const queuedCreate = await f.post(
++      "/threads/" + queuedThread.id + "/queued-messages",
++      { input: producerInput, ...execution },
++      { "x-bb-p6r-message-rendering": "producer" },
++    );
++    expect(queuedCreate.status, await queuedCreate.clone().text()).toBe(201);
++    const queuedBody = await queuedCreate.json();
++    expect(queuedBody).toMatchObject({ content: producerInput });
++    expect(
++      listQueuedThreadMessages(f.harness.db, queuedThread.id),
++    ).toHaveLength(1);
++    seedThreadRuntimeState(f.harness.deps, {
++      environmentId: f.environment.id,
++      providerThreadId: "provider-" + queuedThread.id,
++      threadId: queuedThread.id,
++    });
++    const queuedBeforeDrain = getLatestThreadSequence(f.harness.db, {
++      threadId: queuedThread.id,
++    });
++    const drain = await f.app.request(
++      "/api/v1/threads/" +
++        queuedThread.id +
++        "/queued-messages/" +
++        queuedBody.id +
++        "/send",
++      {
++        method: "POST",
++        headers: { "content-type": "application/json" },
++        body: JSON.stringify({ mode: "auto" }),
++      },
++    );
++    expect(drain.status, await drain.clone().text()).toBe(200);
++    const queuedCommand = await waitForQueuedCommand(
++      f.harness,
++      ({ command }) =>
++        command.type === "turn.submit" && command.threadId === queuedThread.id,
++    );
++    const queuedRequest = f.requestAfter(queuedThread.id, queuedBeforeDrain);
++    expect(queuedRequest.p6rAuthors).toBeUndefined();
++    expect(queuedRequest.input).toEqual(producerInput);
++    if (queuedCommand.command.type !== "turn.submit") {
++      throw new Error("Expected queued producer turn.submit command");
++    }
++    expect(queuedCommand.command.input).toEqual(producerInput);
 +  } finally {
 +    await f.harness.cleanup();
 +  }
@@ -4855,8 +5407,8 @@ index 0000000000000000000000000000000000000000..145a8064b2894a7078cb7757731876cf
 +    expect(hostDaemonCommandSchema.parse(command)).toMatchObject({
 +      type: "turn.submit",
 +    });
-+    expect(JSON.stringify(command)).toContain("[from=alice]");
-+    expect(JSON.stringify(command)).toContain("[/from=alice]");
++    expect(JSON.stringify(command)).toContain("[sender=alice]");
++    expect(JSON.stringify(command)).toContain("[/sender=alice]");
 +    expect(JSON.stringify(command)).not.toContain("BB verified attribution");
 +  } finally {
 +    await f.harness.cleanup();
@@ -4998,7 +5550,7 @@ index 0000000000000000000000000000000000000000..145a8064b2894a7078cb7757731876cf
 +        command.type === "turn.submit" && command.threadId === thread.id,
 +    );
 +    expect(command).toMatchObject({ input: compact });
-+    expect(JSON.stringify(command)).not.toContain("[from=");
++    expect(JSON.stringify(command)).not.toContain("[sender=");
 +  } finally {
 +    await f.harness.cleanup();
 +  }
@@ -5084,6 +5636,230 @@ index 0000000000000000000000000000000000000000..145a8064b2894a7078cb7757731876cf
 +  }
 +});
 +
++it("assembles provider input per native sender group with local mention attachments", async () => {
++  const f = await fixture();
++  const resolvedItems: string[] = [];
++  setPluginAgentContributions({
++    listSkillRootContributions: () => [],
++    listAgentTools: () => [],
++    listInstructionContributions: () => [],
++    findAgentTool: () => undefined,
++    invokeAgentTool: async () => ({ success: false, contentItems: [] }),
++    resolveMention: async ({ itemId }) => {
++      resolvedItems.push(itemId);
++      return { ok: true, context: `resolved-${itemId}` };
++    },
++  });
++  try {
++    const thread = f.newThread();
++    const senderThread = f.newThread();
++    const firstInput: PromptInput[] = [
++      {
++        type: "text",
++        text: "Alice body @one",
++        mentions: [
++          {
++            start: 11,
++            end: 15,
++            resource: {
++              kind: "plugin",
++              pluginId: "mentions-proof",
++              itemId: "one",
++              label: "one",
++            },
++          },
++        ],
++      },
++      { type: "image", url: "https://example.test/one.png" },
++    ];
++    const secondInput: PromptInput[] = [
++      {
++        type: "text",
++        text: "Machine body @one and @two",
++        mentions: [
++          {
++            start: 13,
++            end: 17,
++            resource: {
++              kind: "plugin",
++              pluginId: "mentions-proof",
++              itemId: "one",
++              label: "one",
++            },
++          },
++          {
++            start: 22,
++            end: 26,
++            resource: {
++              kind: "plugin",
++              pluginId: "mentions-proof",
++              itemId: "two",
++              label: "two",
++            },
++          },
++        ],
++      },
++      {
++        type: "localFile",
++        path: "/tmp/native-transcript-proof.txt",
++        name: "proof.txt",
++        mimeType: "text/plain",
++      },
++    ];
++    const alice: P6rMessageAuthor = {
++      evidence: "provider-verified",
++      identity: {
++        kind: "person",
++        key: "person:alice",
++        issuer: "test:people",
++        subject: "alice",
++      },
++      presentation: {
++        displayName: "Alice",
++        handle: "alice@phosphor.co",
++        avatarUrl: null,
++      },
++    };
++    const machine: P6rMessageAuthor = {
++      evidence: "machine",
++      identity: {
++        kind: "machine",
++        key: "p6r-machine:v1:native-proof:server",
++        instanceId: "native-proof",
++        hostId: null,
++      },
++      presentation: {
++        displayName: "bb-machine",
++        handle: null,
++        avatarUrl: null,
++      },
++    };
++    const rawGroups = [firstInput, secondInput];
++    await sendThreadMessage(f.harness.deps, {
++      environment: f.environment,
++      payload: {
++        input: groupedInputForRuntime(rawGroups),
++        inputGroups: rawGroups,
++        mode: "start",
++        senderThreadId: senderThread.id,
++        ...execution,
++      },
++      p6rAuthors: [alice, machine],
++      thread,
++      trigger: "user",
++    });
++
++    const { command } = await waitForQueuedCommand(
++      f.harness,
++      ({ command }) =>
++        command.type === "turn.submit" && command.threadId === thread.id,
++    );
++    if (command.type !== "turn.submit") {
++      throw new Error("Expected a turn.submit command");
++    }
++    const firstFormatted = formatAgentThreadInput({
++      input: firstInput,
++      senderThreadId: senderThread.id,
++    });
++    const secondFormatted = formatAgentThreadInput({
++      input: secondInput,
++      senderThreadId: senderThread.id,
++    });
++    const text = (text: string): PromptInput => ({
++      type: "text",
++      visibility: "agent-only",
++      mentions: [],
++      text,
++    });
++    const firstContext = text(
++      'Context for @one (resolved by plugin "mentions-proof"):\n\nresolved-one',
++    );
++    const secondContext = text(
++      'Context for @one (resolved by plugin "mentions-proof"):\n\nresolved-one',
++    );
++    const thirdContext = text(
++      'Context for @two (resolved by plugin "mentions-proof"):\n\nresolved-two',
++    );
++    const expectedGroups: PromptInput[][] = [
++      [
++        text(`[sender=alice@phosphor.co]\n`),
++        ...firstFormatted,
++        text("\n<attached>\n"),
++        firstContext,
++        text("\n</attached>"),
++        text("\n[/sender=alice@phosphor.co]"),
++      ],
++      [
++        text(`[sender=machine:bb-machine]\n`),
++        ...secondFormatted,
++        text("\n<attached>\n"),
++        secondContext,
++        thirdContext,
++        text("\n</attached>"),
++        text("\n[/sender=machine:bb-machine]"),
++      ],
++    ];
++    expect(resolvedItems).toEqual(["one", "two"]);
++    expect(command.inputGroups).toEqual(expectedGroups);
++    expect(command.input).toEqual(groupedInputForRuntime(expectedGroups));
++    expect(command.inputGroups?.[0]?.[1]).toMatchObject({
++      type: "text",
++      text: expect.stringContaining("Alice body @one"),
++    });
++    expect(command.inputGroups?.[0]?.[2]).toEqual(firstInput[1]);
++    expect(command.inputGroups?.[1]?.[1]).toMatchObject({
++      type: "text",
++      text: expect.stringContaining("Machine body @one and @two"),
++    });
++    expect(command.inputGroups?.[1]?.[2]).toEqual(secondInput[1]);
++    expect(JSON.stringify(command)).not.toContain("[from=");
++    expect(JSON.stringify(command)).not.toContain("BB verified attribution");
++  } finally {
++    setPluginAgentContributions(undefined);
++    await f.harness.cleanup();
++  }
++});
++
++it("passes an external sender envelope through the provider without a native double wrapper", async () => {
++  const f = await fixture();
++  try {
++    const thread = f.newThread();
++    const externalInput: PromptInput[] = [
++      {
++        type: "text",
++        text: [
++          "[sender=slack:@Cole <@U123>]",
++          "Original contribution",
++          "<attached>",
++          "File: report.txt",
++          "</attached>",
++          "[/sender=slack:@Cole]",
++        ].join("\n"),
++        mentions: [],
++      },
++      { type: "image", url: "https://example.test/external.png" },
++    ];
++    await sendThreadMessage(f.harness.deps, {
++      environment: f.environment,
++      payload: { input: externalInput, mode: "start", ...execution },
++      thread,
++      trigger: "user",
++    });
++    const { command } = await waitForQueuedCommand(
++      f.harness,
++      ({ command }) =>
++        command.type === "turn.submit" && command.threadId === thread.id,
++    );
++    if (command.type !== "turn.submit") {
++      throw new Error("Expected a turn.submit command");
++    }
++    expect(command.input).toEqual(externalInput);
++    expect(JSON.stringify(command)).not.toContain("[sender=machine:");
++  } finally {
++    await f.harness.cleanup();
++  }
++});
++
 +it("wraps machine senders with one qualified escaped label", () => {
 +  const machine = {
 +    evidence: "machine" as const,
@@ -5094,18 +5870,27 @@ index 0000000000000000000000000000000000000000..145a8064b2894a7078cb7757731876cf
 +      hostId: null,
 +    },
 +    presentation: {
-+      displayName: "bb-machine[1]",
++      displayName: "bb-machine[1]<>%",
 +      handle: null,
 +      avatarUrl: null,
 +    },
 +  };
-+  const result = withP6rNativeAuthorContext(input, [machine]);
++  const rawBody: PromptInput[] = [
++    {
++      type: "text",
++      text: "literal [sender=raw <body>] and 100%",
++      mentions: [],
++    },
++    { type: "image", url: "https://example.test/raw.png" },
++  ];
++  const result = withP6rNativeAuthorContext(rawBody, [machine]);
 +  expect(result.input[0]).toMatchObject({
-+    text: "[from=machine:bb-machine%5B1%5D]\n",
++    text: "[sender=machine:bb-machine%5B1%5D%3C%3E%25]\n",
 +  });
 +  expect(result.input.at(-1)).toMatchObject({
-+    text: "\n[/from=machine:bb-machine%5B1%5D]",
++    text: "\n[/sender=machine:bb-machine%5B1%5D%3C%3E%25]",
 +  });
++  expect(result.input.slice(1, -1)).toEqual(rawBody);
 +});
 +
 +it("wraps each sender's original content without exposing profile metadata", () => {
@@ -5138,14 +5923,14 @@ index 0000000000000000000000000000000000000000..145a8064b2894a7078cb7757731876cf
 +        type: "text",
 +        visibility: "agent-only",
 +        mentions: [],
-+        text: "[from=cole@phosphor.co]\n",
++        text: "[sender=cole@phosphor.co]\n",
 +      },
 +      ...input,
 +      {
 +        type: "text",
 +        visibility: "agent-only",
 +        mentions: [],
-+        text: "\n[/from=cole@phosphor.co]",
++        text: "\n[/sender=cole@phosphor.co]",
 +      },
 +    ],
 +    second,
@@ -5648,6 +6433,140 @@ index b0a62a4324c163fe05b2c0ef466b6a120a60a5ee..21065e51bd6ee28c20cbb62892dd9d7e
        ),
      );
  
+diff --git a/apps/server/test/services/plugins/heroes-phase2.test.ts b/apps/server/test/services/plugins/heroes-phase2.test.ts
+index 96139d4f2c23c5261a2c18e8fcacc8acb9ce4837..8d8d217ebc46fb84aadb60c0e3a651d0273b5886 100644
+--- a/apps/server/test/services/plugins/heroes-phase2.test.ts
++++ b/apps/server/test/services/plugins/heroes-phase2.test.ts
+@@ -248,11 +248,14 @@ describe("hero plugin: agent-enrichment (Phase 2 surfaces)", () => {
+     const agentOnly = queued.command.input.filter(
+       (item) => item.type === "text" && item.visibility === "agent-only",
+     );
+-    expect(agentOnly).toHaveLength(1);
+-    expect(agentOnly[0]).toMatchObject({
++    const mentionContext = agentOnly.filter(
++      (item) => item.type === "text" && item.text.startsWith("Context for @"),
++    );
++    expect(mentionContext).toHaveLength(1);
++    expect(mentionContext[0]).toMatchObject({
+       text: expect.stringContaining("conventional commits"),
+     });
+-    expect(agentOnly[0]).toMatchObject({
++    expect(mentionContext[0]).toMatchObject({
+       text: expect.stringContaining('resolved by plugin "agent-enrichment"'),
+     });
+   });
+diff --git a/apps/server/test/services/plugins/plugin-mention-providers.test.ts b/apps/server/test/services/plugins/plugin-mention-providers.test.ts
+index 6922fdd6b44a106a7e5459f895ab440d2ffde2a8..13af5989ffe70777797ecc229b4b7e9423884576 100644
+--- a/apps/server/test/services/plugins/plugin-mention-providers.test.ts
++++ b/apps/server/test/services/plugins/plugin-mention-providers.test.ts
+@@ -12,6 +12,7 @@ import {
+ } from "../../../src/services/plugins/plugin-service.js";
+ import { sendQueuedMessage } from "../../../src/services/threads/queued-messages.js";
+ import { sendThreadMessage } from "../../../src/services/threads/thread-send.js";
++import { createThreadFromRequest } from "../../../src/services/threads/thread-create.js";
+ import {
+   listQueuedThreadCommands,
+   waitForQueuedCommand,
+@@ -148,7 +149,7 @@ function seedColdIdleThreadFixture(harness: TestAppHarness, value: number) {
+     environmentId: environment.id,
+     status: "idle",
+   });
+-  return { environment, thread };
++  return { environment, project, thread };
+ }
+ 
+ function seedWarmIdleThreadFixture(harness: TestAppHarness, value: number) {
+@@ -329,6 +330,52 @@ describe("plugin mention providers (bb.ui.registerMentionProvider)", () => {
+     expect(foreign.status).toBe(403);
+   });
+ 
++  it("keeps initial thread mention context inside an attached block", async () => {
++    const { environment, project } = seedColdIdleThreadFixture(harness, 7);
++    await createThreadFromRequest(harness.deps, {
++      environment: { type: "reuse", environmentId: environment.id },
++      input: pluginMentionInput({
++        text: "Initial @Fix login bug",
++        mentions: [{ label: "Fix login bug", itemId: "issues:ISS-42" }],
++      }),
++      model: "gpt-5",
++      origin: "app",
++      permissionMode: "full",
++      projectId: project.id,
++      providerId: "codex",
++      reasoningLevel: "medium",
++      serviceTier: "default",
++      startedOnBehalfOf: null,
++    });
++
++    const queued = await waitForQueuedCommand(
++      harness,
++      (candidate) => candidate.command.type === "thread.start",
++    );
++    if (queued.command.type !== "thread.start") {
++      throw new Error("Expected a thread.start command");
++    }
++    expect(queued.command.input).toContainEqual({
++      type: "text",
++      text: "\n<attached>\n",
++      mentions: [],
++      visibility: "agent-only",
++    });
++    expect(queued.command.input).toContainEqual(
++      expect.objectContaining({
++        type: "text",
++        text: expect.stringContaining("Issue ISS-42 details"),
++        visibility: "agent-only",
++      }),
++    );
++    expect(queued.command.input).toContainEqual({
++      type: "text",
++      text: "\n</attached>",
++      mentions: [],
++      visibility: "agent-only",
++    });
++  });
++
+   it("resolves each unique mention once at send and attaches agent-only context inputs", async () => {
+     const { environment, thread } = seedColdIdleThreadFixture(harness, 1);
+ 
+@@ -365,16 +412,19 @@ describe("plugin mention providers (bb.ui.registerMentionProvider)", () => {
+     const agentOnly = queued.command.input.filter(
+       (item) => item.type === "text" && item.visibility === "agent-only",
+     );
+-    expect(agentOnly).toHaveLength(2);
+-    expect(agentOnly[0]).toMatchObject({
++    const mentionContext = agentOnly.filter(
++      (item) => item.type === "text" && item.text.startsWith("Context for @"),
++    );
++    expect(mentionContext).toHaveLength(2);
++    expect(mentionContext[0]).toMatchObject({
+       type: "text",
+       visibility: "agent-only",
+       text: expect.stringContaining("Issue ISS-42 details (resolve call 1)"),
+     });
+-    expect(agentOnly[0]).toMatchObject({
++    expect(mentionContext[0]).toMatchObject({
+       text: expect.stringContaining('resolved by plugin "mentions"'),
+     });
+-    expect(agentOnly[1]).toMatchObject({
++    expect(mentionContext[1]).toMatchObject({
+       type: "text",
+       visibility: "agent-only",
+       text: expect.stringContaining("Issue ISS-43 details (resolve call 2)"),
+@@ -417,8 +467,11 @@ describe("plugin mention providers (bb.ui.registerMentionProvider)", () => {
+     const agentOnly = dispatched.command.input.filter(
+       (item) => item.type === "text" && item.visibility === "agent-only",
+     );
+-    expect(agentOnly).toHaveLength(1);
+-    expect(agentOnly[0]).toMatchObject({
++    const mentionContext = agentOnly.filter(
++      (item) => item.type === "text" && item.text.startsWith("Context for @"),
++    );
++    expect(mentionContext).toHaveLength(1);
++    expect(mentionContext[0]).toMatchObject({
+       type: "text",
+       visibility: "agent-only",
+       text: expect.stringContaining("Issue ISS-42 details"),
 diff --git a/apps/server/test/services/plugins/plugin-p6r-admission-boundary.test.ts b/apps/server/test/services/plugins/plugin-p6r-admission-boundary.test.ts
 index ff3e9b3240333efe787c4b5009d40400ceb211eb..2f6fb5da7a97089b1184db407670a01dd83f3b9e 100644
 --- a/apps/server/test/services/plugins/plugin-p6r-admission-boundary.test.ts
@@ -5727,6 +6646,198 @@ index ff3e9b3240333efe787c4b5009d40400ceb211eb..2f6fb5da7a97089b1184db407670a01d
      await unavailable.service.stop();
      await rm(workDir!, { force: true, recursive: true });
      service = null;
+diff --git a/apps/server/test/services/plugins/plugin-sdk.test.ts b/apps/server/test/services/plugins/plugin-sdk.test.ts
+index 7929f39ddd6a083b30577987003407244d7d2f30..3ae5df4bac026f5e7bba4087d4cb8e9b012a54da 100644
+--- a/apps/server/test/services/plugins/plugin-sdk.test.ts
++++ b/apps/server/test/services/plugins/plugin-sdk.test.ts
+@@ -5,11 +5,14 @@ import { join } from "node:path";
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ import {
+   createConnection,
++  getLatestThreadSequence,
+   getThread,
++  listEvents,
++  listQueuedThreadMessages,
+   migrate,
+   type DbConnection,
+ } from "@bb/db";
+-import { PERSONAL_PROJECT_ID } from "@bb/domain";
++import { PERSONAL_PROJECT_ID, turnRequestEventDataSchema } from "@bb/domain";
+ import type { Logger } from "@bb/logger";
+ import { createAiServiceRegistry } from "../../../src/services/ai/ai-service-registry.js";
+ import {
+@@ -438,6 +441,171 @@ describe("plugin bb.sdk against a running server", () => {
+     }
+   });
+ 
++  it("retains a plugin SDK reference across the producer hook and isolates an untouched plugin", async () => {
++    const server = await startTestServer();
++    const workDir = await mkdtemp(join(tmpdir(), "bb-plugin-sdk-producer-"));
++    try {
++      const { host } = seedHostSession(server.deps);
++      seedPrimaryHost(server.deps, host.id);
++      const { project } = seedProjectWithSource(server.deps, {
++        hostId: host.id,
++        path: "/tmp/plugin-sdk-producer-source",
++      });
++      const environment = seedEnvironment(server.deps, {
++        hostId: host.id,
++        projectId: project.id,
++        path: "/tmp/plugin-sdk-producer-source",
++      });
++
++      server.pluginService.bindSdk({ baseUrl: server.baseUrl });
++      await server.pluginService.installPath(
++        await writePlugin(workDir, {
++          name: "bb-plugin-producer",
++          serverSource: "export default function plugin() {}",
++        }),
++      );
++      await server.pluginService.installPath(
++        await writePlugin(workDir, {
++          name: "bb-plugin-ordinary",
++          serverSource: "export default function plugin() {}",
++        }),
++      );
++      const producerApi = requireApi(server.pluginService, "producer");
++      const ordinaryApi = requireApi(server.pluginService, "ordinary");
++      const retainedProducerSdk = producerApi.sdk;
++      const untouchedOrdinarySdk = ordinaryApi.sdk;
++      const producerIdentity = producerApi.experimental_p6rIdentity as
++        | { experimental_useProducerMessageRendering?: () => void }
++        | undefined;
++      expect(
++        producerIdentity?.experimental_useProducerMessageRendering,
++      ).toBeTypeOf("function");
++      producerIdentity?.experimental_useProducerMessageRendering?.();
++
++      const producerThread = seedThread(server.deps, {
++        environmentId: environment.id,
++        projectId: project.id,
++        status: "idle",
++      });
++      seedThreadRuntimeState(server.deps, {
++        environmentId: environment.id,
++        inputText: "Producer baseline",
++        providerThreadId: "provider-producer",
++        threadId: producerThread.id,
++      });
++      const producerInput = [
++        {
++          type: "text" as const,
++          text: "[sender=agentation:alice]\nproducer <attached>\n[/sender=agentation:alice]",
++          mentions: [],
++        },
++      ];
++      const producerBefore = getLatestThreadSequence(server.db, {
++        threadId: producerThread.id,
++      });
++      await expect(
++        retainedProducerSdk.threads.send({
++          threadId: producerThread.id,
++          mode: "auto",
++          input: producerInput,
++        }),
++      ).resolves.toEqual({ ok: true, delivery: "sent" });
++      const producerCommand = await waitForQueuedCommand(
++        server,
++        ({ command }) =>
++          command.type === "turn.submit" &&
++          command.threadId === producerThread.id,
++      );
++      if (producerCommand.command.type !== "turn.submit") {
++        throw new Error("Expected producer turn.submit command");
++      }
++      expect(producerCommand.command.input).toEqual(producerInput);
++      const producerEvents = listEvents(server.db, {
++        threadId: producerThread.id,
++      }).filter(
++        (event) =>
++          event.type === "client/turn/requested" &&
++          event.sequence > producerBefore,
++      );
++      expect(producerEvents).toHaveLength(1);
++      expect(
++        turnRequestEventDataSchema.parse(JSON.parse(producerEvents[0]!.data))
++          .p6rAuthors,
++      ).toBeUndefined();
++
++      const queuedThread = seedThread(server.deps, {
++        environmentId: environment.id,
++        projectId: project.id,
++        status: "idle",
++      });
++      const queued = await retainedProducerSdk.threads.queuedMessages.create({
++        threadId: queuedThread.id,
++        input: producerInput,
++        model: "gpt-5",
++        permissionMode: "full",
++        reasoningLevel: "medium",
++        serviceTier: "default",
++      });
++      expect(queued.content).toEqual(producerInput);
++      const queuedRows = listQueuedThreadMessages(server.db, queuedThread.id);
++      expect(queuedRows).toHaveLength(1);
++      expect(queuedRows[0]!.p6rAuthors).toBeNull();
++
++      const ordinaryThread = seedThread(server.deps, {
++        environmentId: environment.id,
++        projectId: project.id,
++        status: "idle",
++      });
++      seedThreadRuntimeState(server.deps, {
++        environmentId: environment.id,
++        inputText: "Ordinary baseline",
++        providerThreadId: "provider-ordinary",
++        threadId: ordinaryThread.id,
++      });
++      const ordinaryBefore = getLatestThreadSequence(server.db, {
++        threadId: ordinaryThread.id,
++      });
++      await expect(
++        untouchedOrdinarySdk.threads.send({
++          threadId: ordinaryThread.id,
++          mode: "auto",
++          input: [
++            {
++              type: "text",
++              text: "ordinary input",
++              mentions: [],
++            },
++          ],
++        }),
++      ).resolves.toEqual({ ok: true, delivery: "sent" });
++      await waitForQueuedCommand(
++        server,
++        ({ command }) =>
++          command.type === "turn.submit" &&
++          command.threadId === ordinaryThread.id,
++      );
++      const ordinaryEvents = listEvents(server.db, {
++        threadId: ordinaryThread.id,
++      }).filter(
++        (event) =>
++          event.type === "client/turn/requested" &&
++          event.sequence > ordinaryBefore,
++      );
++      expect(ordinaryEvents).toHaveLength(1);
++      expect(
++        turnRequestEventDataSchema.parse(JSON.parse(ordinaryEvents[0]!.data))
++          .p6rAuthors?.[0],
++      ).toMatchObject({
++        evidence: "machine",
++        identity: { kind: "machine" },
++      });
++    } finally {
++      await server.pluginService.stop();
++      await rm(workDir, { recursive: true, force: true });
++      await server.close();
++    }
++  });
++
+   it("keeps hidden plugin threads attributed and directly operable by id", async () => {
+     const server = await startTestServer();
+     const workDir = await mkdtemp(join(tmpdir(), "bb-plugin-sdk-live-"));
 diff --git a/apps/server/test/threads/thread-edit-message.test.ts b/apps/server/test/threads/thread-edit-message.test.ts
 index 708820a44749a1072b369392da3c1219f26aabea..132500365b5f9e73f648611fe89a7590ea4645fa 100644
 --- a/apps/server/test/threads/thread-edit-message.test.ts
@@ -11159,7 +12270,7 @@ index 76e150249e3f8359d55ae0d11e7482323ce38381..857b046a603beeb29cee5089528a9c75
 +  expect(parseUsersFromClientRequest({ decoded: historical.event, meta: historical.meta, options: standardProjectionOptions }).every((message) => message.p6rAuthor === undefined)).toBe(true);
 +});
 diff --git a/tests/integration/fake/smoke/dynamic-acp-agent.test.ts b/tests/integration/fake/smoke/dynamic-acp-agent.test.ts
-index 8a023c759fa44664d3ac39b048abca3a415098a2..395b301dc247e5753c3db40926bb2c895a35747e 100644
+index 8a023c759fa44664d3ac39b048abca3a415098a2..615c2212659937ebe8aa9772225fa837b28392b3 100644
 --- a/tests/integration/fake/smoke/dynamic-acp-agent.test.ts
 +++ b/tests/integration/fake/smoke/dynamic-acp-agent.test.ts
 @@ -1,4 +1,5 @@
@@ -11173,7 +12284,7 @@ index 8a023c759fa44664d3ac39b048abca3a415098a2..395b301dc247e5753c3db40926bb2c89
            harness.api,
            nativeThread.id,
 -          "dynamic-acp:model=bb-dynamic-acp-native-strong:native selection",
-+          `dynamic-acp:model=bb-dynamic-acp-native-strong:[from=machine:${hostname()}]\n native selection \n[/from=machine:${hostname()}]`,
++          `dynamic-acp:model=bb-dynamic-acp-native-strong:[sender=machine:${hostname()}]\n native selection \n[/sender=machine:${hostname()}]`,
            TURN_TIMEOUT_MS,
          );
  
@@ -11182,7 +12293,7 @@ index 8a023c759fa44664d3ac39b048abca3a415098a2..395b301dc247e5753c3db40926bb2c89
            harness.api,
            thread.id,
 -          "dynamic-acp:model=bb-dynamic-smoke-medium:start launch spec",
-+          `dynamic-acp:model=bb-dynamic-smoke-medium:[from=machine:${hostname()}]\n start launch spec \n[/from=machine:${hostname()}]`,
++          `dynamic-acp:model=bb-dynamic-smoke-medium:[sender=machine:${hostname()}]\n start launch spec \n[/sender=machine:${hostname()}]`,
            TURN_TIMEOUT_MS,
          );
  
@@ -11191,7 +12302,7 @@ index 8a023c759fa44664d3ac39b048abca3a415098a2..395b301dc247e5753c3db40926bb2c89
            harness.api,
            thread.id,
 -          "dynamic-acp:model=bb-dynamic-smoke-medium:submit launch spec",
-+          `dynamic-acp:model=bb-dynamic-smoke-medium:[from=machine:${hostname()}]\n submit launch spec \n[/from=machine:${hostname()}]`,
++          `dynamic-acp:model=bb-dynamic-smoke-medium:[sender=machine:${hostname()}]\n submit launch spec \n[/sender=machine:${hostname()}]`,
            TURN_TIMEOUT_MS,
          );
          await waitForThreadStatus(
@@ -11200,17 +12311,14 @@ index 8a023c759fa44664d3ac39b048abca3a415098a2..395b301dc247e5753c3db40926bb2c89
            harness.api,
            thread.id,
 -          "dynamic-acp:model=bb-dynamic-smoke-medium:resume launch spec",
-+          `dynamic-acp:model=bb-dynamic-smoke-medium:[from=machine:${hostname()}]\n resume launch spec \n[/from=machine:${hostname()}]`,
++          `dynamic-acp:model=bb-dynamic-smoke-medium:[sender=machine:${hostname()}]\n resume launch spec \n[/sender=machine:${hostname()}]`,
            TURN_TIMEOUT_MS,
          );
  
          const output = await getThreadOutput(harness.api, thread.id);
          expect(output).toContain(
 -          "dynamic-acp:model=bb-dynamic-smoke-medium:resume launch spec",
-+          `dynamic-acp:model=bb-dynamic-smoke-medium:[from=machine:${hostname()}]\n resume launch spec \n[/from=machine:${hostname()}]`,
++          `dynamic-acp:model=bb-dynamic-smoke-medium:[sender=machine:${hostname()}]\n resume launch spec \n[/sender=machine:${hostname()}]`,
          );
        }),
      DYNAMIC_ACP_TEST_TIMEOUT_MS,
--- 
-2.53.0
-

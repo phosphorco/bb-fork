@@ -47,10 +47,17 @@
 
 - Upstream: `960255b98ce3dccdcb5754eb67a7f989236602a1`.
 - Materialized package: `bb-app@0.42.0` plus the reviewed downstream queue.
-- Patch queue: sixteen candidate patches in `patches/series`; not yet activated.
+- Patch queue: sixteen patches in `patches/series`; this queue is the current implementation candidate, while running deployments may remain on earlier historical compositions until root-owned integration and activation.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
 ## Compatibility boundaries
+
+- Producer bindings may enable the optional identity-protocol
+  `experimental_useProducerMessageRendering` hook. The per-plugin SDK evaluates
+  its policy on each send/queue request, including retained SDK references. The
+  HTTP presentation hint omits redundant native batch authorship; actual
+  producer authors stay in producer records. It does not change explicit queue
+  semantics, introduce authorization, or infer ownership from message text.
 
 - Native operations capture verified people when available and otherwise use
   stable machine attribution. Invalid or missing person evidence does not block
