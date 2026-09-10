@@ -1,7 +1,9 @@
-import type { Context } from "hono";
 import { ApiError } from "../../errors.js";
 import type { AppDeps } from "../../types.js";
-import type { P6rNativeRequestAdmission } from "./native-http-admission.js";
+import type {
+  P6rNativeRequestAdmission,
+  P6rNativeRequestContext,
+} from "./native-http-admission.js";
 import type { P6rNativeWriteOrigin } from "./sidecar-store.js";
 
 function readyOrigin(
@@ -46,7 +48,7 @@ function internalOrigin(
  */
 export async function withP6rOrdinaryWriteAttribution<T>(
   deps: AppDeps,
-  context: Context,
+  context: P6rNativeRequestContext,
   write: (origin: P6rNativeWriteOrigin | null) => Promise<T>,
 ): Promise<T> {
   const admission =

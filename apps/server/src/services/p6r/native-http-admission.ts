@@ -1,4 +1,3 @@
-import type { Context } from "hono";
 import type { P6rReadySession } from "./identity-protocol.js";
 import type { P6rValidity } from "./invocation-registry.js";
 import type {
@@ -35,8 +34,14 @@ export type P6rNativeRequestAdmission =
       readonly generation: string;
       validate(): P6rValidity;
     };
+export interface P6rNativeRequestContext {
+  readonly req: {
+    readonly raw: Request;
+  };
+}
+
 export type P6rNativeRequestAdmissionReader = (
-  context: Context,
+  context: P6rNativeRequestContext,
 ) => Promise<P6rNativeRequestAdmission>;
 
 function statusFromAdmission(
