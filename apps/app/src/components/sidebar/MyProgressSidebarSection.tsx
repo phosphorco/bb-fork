@@ -1,9 +1,13 @@
-import { useMemo } from "react";
-import type { ThreadFacetOwnerState } from "@bb/domain";
-import type { ThreadFacetQueryThread } from "@bb/server-contract";
+import { useCallback, useMemo } from "react";
+import type { ThreadFacetOwnerState, ThreadListEntry } from "@bb/domain";
+import type {
+  ThreadFacetParticipantSummary,
+  ThreadFacetQueryThread,
+} from "@bb/server-contract";
 import { Button } from "@bb/shared-ui/button";
 import { Skeleton } from "@bb/shared-ui/skeleton";
 import { usePromptDraftHasInput } from "@/hooks/usePromptDraftStorage";
+import { useSidebarNavigationThreadSelection } from "@/hooks/queries/sidebar-navigation-query";
 import {
   MY_PROGRESS_SAVED_FACET_QUERY,
   useMyProgressFacetQuery,
@@ -17,6 +21,10 @@ import { MY_PROGRESS_SIDEBAR_SECTION_ID } from "./sidebarCollapsedAtoms";
 export const MY_PROGRESS_LAST_KNOWN_STATUS =
   "Progress unavailable; showing last-known classifications";
 export const MY_PROGRESS_UNAVAILABLE_STATUS = "Progress unavailable";
+
+type MyProgressThread = ThreadListEntry & {
+  participantSummary?: ThreadFacetParticipantSummary;
+};
 
 function progressOwnerState(
   page: MyProgressFacetPage,
@@ -37,6 +45,30 @@ export function myProgressCollectionStatus(
     : null;
 }
 
+function promoteActiveMyProgressThread({
+  activeThread,
+  activeThreadId,
+  facetThreads,
+}: {
+  activeThread: ThreadListEntry | undefined;
+  activeThreadId: string | undefined;
+  facetThreads: readonly ThreadFacetQueryThread[];
+}): MyProgressThread[] {
+  const facetActiveThread = activeThreadId
+    ? facetThreads.find((thread) => thread.id === activeThreadId)
+    : undefined;
+  const threadToPromote =
+    facetActiveThread ??
+    (activeThread?.id === activeThreadId ? activeThread : undefined);
+  if (threadToPromote === undefined) {
+    return [...facetThreads];
+  }
+  return [
+    threadToPromote,
+    ...facetThreads.filter((thread) => thread.id !== threadToPromote.id),
+  ];
+}
+
 function MyProgressThreadRow({
   activeThreadId,
   onNavigate,
@@ -44,7 +76,7 @@ function MyProgressThreadRow({
 }: {
   activeThreadId?: string;
   onNavigate?: () => void;
-  thread: ThreadFacetQueryThread;
+  thread: MyProgressThread;
 }) {
   const hasComposerDraft = usePromptDraftHasInput({
     kind: "thread",
@@ -83,11 +115,30 @@ export function MyProgressSidebarSection({
 }) {
   const query = useMyProgressFacetQuery();
   const pages = query.data?.pages;
-  const threads = useMemo(
+  const selectActiveThread = useCallback(
+    (threads: ThreadListEntry[]) =>
+      activeThreadId === undefined
+        ? undefined
+        : threads.find((thread) => thread.id === activeThreadId),
+    [activeThreadId],
+  );
+  const { data: activeThread } =
+    useSidebarNavigationThreadSelection(selectActiveThread);
+  const facetThreads = useMemo(
     () => pages?.flatMap((page) => page.response.threads) ?? [],
     [pages],
   );
+  const threads = useMemo(
+    () =>
+      promoteActiveMyProgressThread({
+        activeThread,
+        activeThreadId,
+        facetThreads,
+      }),
+    [activeThread, activeThreadId, facetThreads],
+  );
   const status = myProgressCollectionStatus(pages ?? []);
+  const showLoadingState = query.isLoading && activeThread === undefined;
 
   return (
     <SortableSidebarSection
@@ -97,17 +148,18 @@ export function MyProgressSidebarSection({
       collapseControl={{ isCollapsed, onToggleCollapsed }}
       consumeClickSuppression={consumeClickSuppression}
     >
-      {query.isLoading ? (
+      {showLoadingState ? (
         <div aria-label="Loading My progress" className="space-y-1.5 px-2 py-1">
           <Skeleton className="h-7 w-full rounded-md bg-sidebar-border/50" />
           <Skeleton className="h-7 w-4/5 rounded-md bg-sidebar-border/40" />
         </div>
-      ) : query.isError ? (
-        <p role="alert" className="px-3 py-1 text-xs text-destructive">
-          My progress unavailable
-        </p>
       ) : (
         <div className="space-y-1">
+          {query.isError ? (
+            <p role="alert" className="px-3 py-1 text-xs text-destructive">
+              My progress unavailable
+            </p>
+          ) : null}
           {status === null ? null : (
             <p role="status" className="px-3 text-xs text-muted-foreground">
               {status}
@@ -127,6 +179,15 @@ export function MyProgressSidebarSection({
               />
             ))
           )}
+          {query.isLoading ? (
+            <div
+              aria-label="Loading more My progress"
+              className="space-y-1.5 px-2 py-1"
+            >
+              <Skeleton className="h-7 w-full rounded-md bg-sidebar-border/50" />
+              <Skeleton className="h-7 w-4/5 rounded-md bg-sidebar-border/40" />
+            </div>
+          ) : null}
           {query.hasNextPage ? (
             <div className="px-2 pt-1">
               <Button

@@ -1272,11 +1272,13 @@ function projectParticipantsByThreadId(
       continue;
     }
     target.sourceVersion = Math.max(target.sourceVersion, row.sequence);
+    const displayName = row.p6rActorDisplayName ?? row.p6rActorHandle;
+    const handle = row.p6rActorHandle ?? displayName;
     const parsed = p6rActorSnapshotSchema.safeParse({
       p6rProviderId: row.p6rActorProviderId,
       p6rSubject: row.p6rActorSubject,
-      p6rHandle: row.p6rActorHandle,
-      p6rDisplayName: row.p6rActorDisplayName,
+      p6rHandle: handle,
+      p6rDisplayName: displayName,
       p6rImageUrl: row.p6rActorImageUrl,
     });
     if (!parsed.success) {

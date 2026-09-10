@@ -28,7 +28,6 @@ import {
   findTimelineWindowBudgetFloorSequence,
   getStoredEventRowsByParentToolCallIdsDataBytes,
   getEnvironment,
-  findUnfinishedTurnCoveringSequence,
   hasParentedEventCrossingSequence,
   getTimelineSegmentAnchorAtSequence,
   listContextWindowUsageRows,
@@ -228,9 +227,12 @@ interface BuildThreadTimelineInternalOptions extends BuildThreadTimelineOptions 
   includeProfile: boolean;
 }
 
+type TimelineSequenceWindowKind = TimelineSequenceWindowStart["kind"];
+
 interface TimelineEventRowSelection {
-  byteWindowSequenceEnd: number | null;
-  byteWindowSequenceStart: number | null;
+  sequenceWindowSequenceEnd: number | null;
+  sequenceWindowSequenceStart: number | null;
+  sequenceWindowKind: TimelineSequenceWindowKind | null;
   contextOnlyToolCallIds: Set<string>;
   /** See {@link paginateTimelineRows}. */
   sequenceWindowStart: TimelineSequenceWindowStart | null;
@@ -679,8 +681,9 @@ function selectFullTimelineEventRows(
   maxInlineOutputChars: InlineOutputCharLimit,
 ): TimelineEventRowSelection {
   return {
-    byteWindowSequenceEnd: null,
-    byteWindowSequenceStart: null,
+    sequenceWindowSequenceEnd: null,
+    sequenceWindowSequenceStart: null,
+    sequenceWindowKind: null,
     contextOnlyToolCallIds: new Set(),
     sequenceWindowStart: null,
     knownHasOlderSegments: null,
@@ -1032,7 +1035,8 @@ interface ResolveTimelineSegmentWindowArgs {
 
 interface ResolvedTimelineSegmentWindow {
   beforeSequence: number | undefined;
-  byteWindowSequenceStart: number | null;
+  sequenceWindowSequenceStart: number | null;
+  sequenceWindowKind: TimelineSequenceWindowKind | null;
   /**
    * Whether the window boundary needs whole-item lifecycle closure.
    * See {@link ensureSequenceWindowWholeItemRows}.
@@ -1073,7 +1077,8 @@ function applyTimelineWindowByteBudget(
       floor.hasOlderRows || args.window.knownHasOlderSegments === true;
     return {
       ...args.window,
-      byteWindowSequenceStart: floor.sequenceStart,
+      sequenceWindowSequenceStart: floor.sequenceStart,
+      sequenceWindowKind: "byte",
       knownHasOlderSegments: hasOlderRows,
       oversizedEventPlaceholder: {
         id: `${args.threadId}:oversized-event:${floor.sequenceStart}`,
@@ -1105,7 +1110,8 @@ function applyTimelineWindowByteBudget(
 
   return {
     ...args.window,
-    byteWindowSequenceStart: floor.sequenceStart,
+    sequenceWindowSequenceStart: floor.sequenceStart,
+    sequenceWindowKind: "byte",
     requiresWholeItemClosure: true,
     sequenceWindowStart: {
       kind: "byte",
@@ -1155,9 +1161,11 @@ function countAffordableAnchors(
  * window starts at the budget floor instead, mid-turn, and pages backwards from
  * there.
  *
- * This event-count pass cuts only an unfinished turn. A finished turn collapses
- * into one summary row. The later byte-budget pass can cut either turn state.
- * The memory limit must take priority over the summary boundary.
+ * This event-count pass cuts at the event floor whenever no parented aggregate
+ * crosses it. A finished turn collapses into one summary row, so the sequence
+ * page owns a clamped summary range and closes its lifecycle rows just like a
+ * byte-budget page. The memory limit must take priority over the summary
+ * boundary.
  *
  * One row is still turn-scoped rather than per-item across an unfinished turn:
  * the context-compaction banner is keyed by turn id, deliberately, so a
@@ -1187,17 +1195,9 @@ function resolveTimelineWindowBounds(
     budgetFloorSequence,
     segmentLimit,
   );
-  const unfinishedTurnId =
-    affordable === 0 && budgetFloorSequence !== undefined
-      ? findUnfinishedTurnCoveringSequence(db, {
-          sequence: budgetFloorSequence,
-          threadId,
-        })
-      : null;
   if (
     affordable === 0 &&
     budgetFloorSequence !== undefined &&
-    unfinishedTurnId !== null &&
     !hasParentedEventCrossingSequence(db, {
       sequence: budgetFloorSequence,
       threadId,
@@ -1236,8 +1236,8 @@ function resolveTimelineWindowBounds(
  * Segment count alone is a weak bound on work: anchors are user messages, and
  * an agentic turn can be thousands of events, so "the last 20 turns" routinely
  * means "the entire thread". When `eventBudget` is set the window is
- * additionally clamped to that many events, and the page returns however many
- * whole segments fit.
+ * additionally clamped to that many events; completed turns may be split into
+ * sequence pages while parented aggregates remain whole.
  */
 function resolveTimelineSegmentWindow(
   db: DbConnection,
@@ -1246,7 +1246,8 @@ function resolveTimelineSegmentWindow(
   const { eventBudget, page, threadId } = args;
   const noAnchors: ResolvedTimelineSegmentWindow = {
     beforeSequence: undefined,
-    byteWindowSequenceStart: null,
+    sequenceWindowSequenceStart: null,
+    sequenceWindowKind: null,
     requiresWholeItemClosure: false,
     effectiveSegmentLimit: page.segmentLimit,
     hasAnchors: false,
@@ -1329,10 +1330,14 @@ function resolveTimelineSegmentWindow(
       // the cursor instead — and trimming that segment off after projecting it
       // — meant an older page read one whole extra segment beyond its budget:
       // on a thread with a 3,900-event turn, 5,513 events against a budget of
-      // 1,500, all to discard the surplus.
+      // 256, all to discard the surplus.
       beforeSequence: cursor.anchorSeq,
-      byteWindowSequenceStart:
-        sequenceCursor?.kind === "byte" ? bounds.sequenceStart : null,
+      sequenceWindowSequenceStart:
+        sequenceCursor !== null || bounds.sequenceWindowStart !== null
+          ? bounds.sequenceStart
+          : null,
+      sequenceWindowKind:
+        sequenceCursor?.kind ?? bounds.sequenceWindowStart?.kind ?? null,
       requiresWholeItemClosure:
         sequenceCursor !== null || bounds.sequenceWindowStart !== null,
       effectiveSegmentLimit: bounds.effectiveSegmentLimit,
@@ -1364,7 +1369,9 @@ function resolveTimelineSegmentWindow(
   });
   return {
     beforeSequence: undefined,
-    byteWindowSequenceStart: null,
+    sequenceWindowSequenceStart:
+      bounds.sequenceWindowStart === null ? null : bounds.sequenceStart,
+    sequenceWindowKind: bounds.sequenceWindowStart?.kind ?? null,
     requiresWholeItemClosure: bounds.sequenceWindowStart !== null,
     effectiveSegmentLimit: bounds.effectiveSegmentLimit,
     hasAnchors: true,
@@ -1396,7 +1403,7 @@ function selectStandardTimelineEventRows(
   if (
     !window.hasAnchors &&
     window.sequenceWindowStart === null &&
-    window.byteWindowSequenceStart === null
+    window.sequenceWindowSequenceStart === null
   ) {
     return selectFullTimelineEventRows(db, thread, page, maxInlineOutputChars);
   }
@@ -1426,7 +1433,7 @@ function selectStandardTimelineEventRows(
     rows: wholeItemWindowRows,
   });
   const selectedRowsWithTurnLifecycle =
-    window.byteWindowSequenceStart === null
+    window.sequenceWindowSequenceStart === null
       ? selectedRowsWithTurnStarts
       : ensureSequenceWindowTurnCompletedRows(db, {
           threadId: thread.id,
@@ -1450,7 +1457,7 @@ function selectStandardTimelineEventRows(
   const selectedRowsWithParentedContext = ensureTimelineWindowParentedRows(db, {
     maxInlineOutputChars,
     sequenceBounds:
-      window.byteWindowSequenceStart === null
+      window.sequenceWindowSequenceStart === null
         ? null
         : { beforeSequence, sequenceStart },
     threadId: thread.id,
@@ -1462,7 +1469,7 @@ function selectStandardTimelineEventRows(
       rows: selectedRowsWithParentedContext.rows,
     });
   const selectedRowsWithParentedTurnLifecycle =
-    window.byteWindowSequenceStart === null
+    window.sequenceWindowSequenceStart === null
       ? selectedRowsWithParentedTurnStarts
       : ensureSequenceWindowTurnCompletedRows(db, {
           threadId: thread.id,
@@ -1470,14 +1477,14 @@ function selectStandardTimelineEventRows(
         });
 
   return {
-    byteWindowSequenceEnd:
-      window.byteWindowSequenceStart === null
+    sequenceWindowSequenceEnd:
+      window.sequenceWindowSequenceStart === null
         ? null
-        : (wholeItemWindowRows.at(-1)?.sequence ??
-          window.byteWindowSequenceStart),
-    byteWindowSequenceStart: window.byteWindowSequenceStart,
+        : (windowRows.at(-1)?.sequence ?? window.sequenceWindowSequenceStart),
+    sequenceWindowSequenceStart: window.sequenceWindowSequenceStart,
+    sequenceWindowKind: window.sequenceWindowKind,
     contextOnlyToolCallIds:
-      window.byteWindowSequenceStart === null
+      window.sequenceWindowSequenceStart === null
         ? selectedRowsWithParentedContext.contextOnlyToolCallIds
         : new Set(),
     sequenceWindowStart: window.sequenceWindowStart,
@@ -1516,38 +1523,44 @@ function buildSequencePageTimelineRows(
         (left, right) => left.sourceSeqStart - right.sourceSeqStart,
       )
     : [...rows];
-  if (selection.byteWindowSequenceStart === null) {
+  if (selection.sequenceWindowSequenceStart === null) {
     return rowsWithPlaceholder;
   }
 
   const suffix =
     selection.responsePageKind === "latest"
       ? ""
-      : `:sequence-page:${selection.byteWindowSequenceStart}`;
+      : `:sequence-page:${selection.sequenceWindowSequenceStart}`;
+  const suffixEveryRow = selection.sequenceWindowKind === "byte";
   return rowsWithPlaceholder.flatMap((row): TimelineRow[] => {
     if (
       row.kind !== "turn" ||
-      selection.byteWindowSequenceEnd === null ||
-      selection.byteWindowSequenceStart === null
+      selection.sequenceWindowSequenceEnd === null ||
+      selection.sequenceWindowSequenceStart === null
     ) {
-      return [{ ...row, id: `${row.id}${suffix}` }];
+      return [
+        {
+          ...row,
+          id: `${row.id}${suffixEveryRow ? suffix : ""}`,
+        },
+      ];
     }
     const sourceSeqStart = Math.max(
       row.sourceSeqStart,
-      selection.byteWindowSequenceStart,
+      selection.sequenceWindowSequenceStart,
     );
     const sourceSeqEnd = Math.min(
       row.sourceSeqEnd,
-      selection.byteWindowSequenceEnd,
+      selection.sequenceWindowSequenceEnd,
     );
     if (sourceSeqStart > sourceSeqEnd) {
-      // A finished turn with no event inside this byte window is closure
+      // A finished turn with no event inside this sequence window is closure
       // context, not page content: the window's rows carried a
       // `parentToolCallId` (a workflow's progress snapshots name the Workflow
       // call in the turn that started it), parent closure pulled that tool
       // call in, and turn lifecycle closure completed the turn around it. The
       // page that holds the turn's own events renders its summary; emitting
-      // it here too gives every byte page another "Worked for" row under a
+      // it here too gives every sequence page another "Worked for" row under a
       // page-unique id.
       return [];
     }

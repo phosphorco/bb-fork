@@ -29,10 +29,6 @@ export type FeatureFlags = z.infer<typeof featureFlagsSchema>;
 
 export const defaultFeatureFlags: FeatureFlags = {
   placeholder: false,
-  /**
-   * Measured on real threads a build costs ~0.06ms/event across the SQLite
-   * read, JSON decode, and projection. 1500 keeps a cold build near 100ms; the
-   * 10k-event thread that motivated the bound was ~670ms unbounded.
-   */
-  timelineWindowEventBudget: 1_500,
+  /** Keep the synchronous timeline read/decode/projection frontier small. */
+  timelineWindowEventBudget: 256,
 };

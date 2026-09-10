@@ -393,10 +393,10 @@ describe("timeline event budget", () => {
     expect(budgeted.timelinePage.olderCursor).not.toBeNull();
   });
 
-  it("still renders a single turn larger than the whole budget", () => {
+  it("pages through a turn larger than the whole budget", () => {
     const { db, thread } = setup();
-    // One turn of 400 events against a budget of 50: the window cannot be
-    // shrunk below one segment without showing an empty thread.
+    // One turn of 400 events against a budget of 50: the window uses an
+    // in-turn sequence page instead of reading the whole turn.
     insertTurns(db, thread, 3, [10, 400, 10]);
 
     const budgeted = buildThreadTimeline(db, thread, {

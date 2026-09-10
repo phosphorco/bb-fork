@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createConnection,
+  ensurePersonalProject,
   getThreadFacetDeclaration,
   getThread,
   listThreadFacetOwnerProjections,
@@ -846,6 +847,48 @@ describe("plugin bb.sdk against a running server", () => {
         providerCheckpointId: null,
       });
       await expect(stopPromise).resolves.toEqual({ ok: true });
+    } finally {
+      await server.pluginService.stop();
+      await rm(workDir, { recursive: true, force: true });
+      await server.close();
+    }
+  });
+
+  it("lets hidden plugin workers follow a switched personal checkout", async () => {
+    const server = await startTestServer();
+    const workDir = await mkdtemp(join(tmpdir(), "bb-plugin-sdk-personal-"));
+    try {
+      const { host } = seedHostSession(server.deps);
+      seedPrimaryHost(server.deps, host.id);
+      ensurePersonalProject(server.db);
+      const environment = seedEnvironment(server.deps, {
+        hostId: host.id,
+        projectId: PERSONAL_PROJECT_ID,
+        path: "/tmp/plugin-sdk-personal-switched",
+        workspaceProvisionType: "unmanaged",
+      });
+
+      server.pluginService.bindSdk({ baseUrl: server.baseUrl });
+      const rootDir = await writePlugin(workDir, {
+        name: "bb-plugin-personal-worker",
+        serverSource: `export default function plugin() {}`,
+      });
+      const entry = await server.pluginService.installPath(rootDir);
+      expect(entry.status).toBe("running");
+      const api = requireApi(server.pluginService, "personal-worker");
+
+      const thread = await api.sdk.threads.spawn({
+        environment: { type: "reuse", environmentId: environment.id },
+        projectId: PERSONAL_PROJECT_ID,
+        prompt: "Review the switched personal checkout",
+        visibility: "hidden",
+      });
+
+      expect(thread).toMatchObject({
+        environmentId: environment.id,
+        originPluginId: "personal-worker",
+        visibility: "hidden",
+      });
     } finally {
       await server.pluginService.stop();
       await rm(workDir, { recursive: true, force: true });

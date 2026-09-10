@@ -180,12 +180,15 @@ export async function startHostDaemon(
       }),
     );
     const hostWatcher = createHostWatcher();
-    const resolveRuntimeShellEnv = async () =>
+    const resolveRuntimeShellEnv = async (workspacePath?: string) =>
       prepareRuntimeShellEnv({
         bbExecutableDirectory,
         bbExecutablePath,
         hostDaemonPort: localApiConfig.port,
-        inheritedPath: (await resolveUserShellPath()) ?? process.env.PATH,
+        inheritedPath:
+          (await resolveUserShellPath(
+            workspacePath === undefined ? {} : { cwd: workspacePath },
+          )) ?? process.env.PATH,
         serverUrl: machineAuthProxy?.serverUrl ?? serverUrl,
       });
     const runtimeShellEnv = await resolveRuntimeShellEnv();

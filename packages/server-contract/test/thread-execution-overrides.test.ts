@@ -17,6 +17,34 @@ describe("experimental thread execution override requests", () => {
     return `thr_${suffix}`;
   };
 
+  it("rejects zero targets and accepts one target", () => {
+    const preflightItem = {
+      threadId: threadId(0),
+      witness: "a".repeat(64),
+      patch: { model: "opus" },
+    };
+    const applyItem = { threadId: threadId(0), applyToken: "token" };
+    expect(
+      experimentalThreadExecutionPreflightRequestSchema.safeParse({
+        items: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      experimentalThreadExecutionPreflightRequestSchema.safeParse({
+        items: [preflightItem],
+      }).success,
+    ).toBe(true);
+    expect(
+      experimentalThreadExecutionApplyRequestSchema.safeParse({ items: [] })
+        .success,
+    ).toBe(false);
+    expect(
+      experimentalThreadExecutionApplyRequestSchema.safeParse({
+        items: [applyItem],
+      }).success,
+    ).toBe(true);
+  });
+
   it("rejects duplicate thread ids before service execution", () => {
     expect(
       experimentalThreadExecutionPreflightRequestSchema.safeParse({

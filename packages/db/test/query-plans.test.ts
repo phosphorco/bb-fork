@@ -40,7 +40,10 @@ import {
   createThread,
   listThreadsWithPendingInteractionState,
 } from "../src/data/threads.js";
-import { listThreadIdsForFacetProjection } from "../src/data/thread-facets.js";
+import {
+  ensureCoreParticipantsProjection,
+  listThreadIdsForFacetProjection,
+} from "../src/data/thread-facets.js";
 
 type SqliteParameter = string | number | bigint | Buffer | null;
 type LoggedSqlPredicate = (fields: SlowDbQueryLogFields) => boolean;
@@ -309,6 +312,35 @@ describe("slow query index plans", () => {
     ).toHaveLength(2);
     expect(details).toMatch(/USING INDEX events_thread_sequence_idx/u);
     expect(details).not.toMatch(/SCAN events/u);
+
+    db.$client.close();
+  });
+
+  it("uses an index-only participant census and skips stable history reads", () => {
+    const { db, thread } = setup();
+    ensureCoreParticipantsProjection(db, [thread.id]);
+
+    const captured = captureStatements(db, () => {
+      ensureCoreParticipantsProjection(db, [thread.id]);
+    });
+    const census = captured.find((query) =>
+      query.sql.includes("INDEXED BY events_thread_type_sequence_idx"),
+    );
+    if (!census) {
+      throw new Error("Expected the participant source-version census SQL");
+    }
+    const details = queryPlanDetails({
+      db,
+      params: census.params,
+      sql: census.sql,
+    });
+    expect(details).toMatch(
+      /USING COVERING INDEX events_thread_type_sequence_idx/u,
+    );
+    expect(details).not.toMatch(/SCAN events/u);
+    expect(
+      captured.some((query) => query.sql.includes('"p6r_actor_handle"')),
+    ).toBe(false);
 
     db.$client.close();
   });

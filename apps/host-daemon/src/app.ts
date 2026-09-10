@@ -122,9 +122,9 @@ interface CreateHostDaemonAppOptions {
   createRuntime?: RuntimeManagerOptions["createRuntime"];
   runtimeShellEnv?: AgentRuntimeOptions["shellEnv"];
   runtimeShellEnvResolvedAtMs?: number;
-  resolveRuntimeShellEnv?: () => Promise<
-    NonNullable<AgentRuntimeOptions["shellEnv"]>
-  >;
+  resolveRuntimeShellEnv?: (
+    workspacePath?: string,
+  ) => Promise<NonNullable<AgentRuntimeOptions["shellEnv"]>>;
   nowMs?: () => number;
   hostWatcher?: HostWatcher;
   onToolCall?: (request: ToolCallRequest) => Promise<ToolCallResponse>;
@@ -228,6 +228,7 @@ interface MaybeInvalidateSessionArgs {
 export async function createHostDaemonApp(
   options: CreateHostDaemonAppOptions,
 ): Promise<HostDaemonApp> {
+  const resolveRuntimeShellEnv = options.resolveRuntimeShellEnv;
   const threadStorageRootPath = await ensureThreadStorageRoot(options.dataDir);
   const dataDirSkillsRootPath = await ensureDataDirSkillsRootPath(
     options.dataDir,
@@ -511,6 +512,12 @@ export async function createHostDaemonApp(
       }),
     hostWatcher: options.hostWatcher,
     logger: options.logger,
+    ...(resolveRuntimeShellEnv !== undefined
+      ? {
+          resolveWorkspaceShellEnv: (workspacePath: string) =>
+            resolveRuntimeShellEnv(workspacePath),
+        }
+      : {}),
     shellEnv: options.runtimeShellEnv,
     onEvent: ({ environmentId, event }) => {
       try {

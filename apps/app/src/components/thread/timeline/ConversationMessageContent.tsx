@@ -66,6 +66,7 @@ import {
 import type { ThreadTimelinePluginMessageAction } from "./types.js";
 import type { PromptDraftAttachment } from "@bb/client-core";
 import { buildThreadHostFileContentUrl } from "@/lib/file-content-urls";
+import { P6rAvatar } from "@/components/identity/P6rAvatar";
 
 interface ConversationMessageContentBaseProps {
   attachments: TimelineConversationAttachments | null;
@@ -80,6 +81,8 @@ interface ConversationMessageContentBaseProps {
 
 interface ConversationMessageContentUserProps extends ConversationMessageContentBaseProps {
   role: "user";
+  /** Server-authored identity snapshot for the human who sent this row. */
+  p6rActor: TimelineUserConversationRow["p6rActor"];
   /** Claimed handle of the human who sent this row; null = unattributed. */
   p6rActorHandle: string | null;
   /**
@@ -210,6 +213,7 @@ type ConversationMessageContentProps =
   | ConversationMessageContentAssistantProps;
 
 interface UserConversationMessageProps {
+  p6rActor: TimelineUserConversationRow["p6rActor"];
   p6rActorHandle: string | null;
   addToChatAttachments: readonly PromptDraftAttachment[];
   attachmentItems: ConversationAttachmentItems;
@@ -412,6 +416,7 @@ function buildAddToChatAttachments(
 }
 
 function UserConversationMessage({
+  p6rActor,
   p6rActorHandle,
   addToChatAttachments,
   attachmentItems,
@@ -509,6 +514,8 @@ function UserConversationMessage({
   // loaded) and only for attributed rows — legacy rows carry a null handle.
   const authorChipHandle =
     p6rShowAuthor && p6rActorHandle !== null ? p6rActorHandle : null;
+  const authorDisplayName = p6rActor?.p6rDisplayName ?? authorChipHandle;
+  const authorImageUrl = p6rActor?.p6rImageUrl ?? null;
 
   return (
     // `data-message-column` marks the full timeline width for the action row,
@@ -517,9 +524,11 @@ function UserConversationMessage({
       <div className="group/message ml-auto flex w-fit max-w-[70%] flex-col items-end">
         {authorChipHandle !== null ? (
           <div className="mb-1 flex items-center justify-end gap-1">
-            <span className="inline-flex size-4 select-none items-center justify-center rounded-full border border-border bg-surface-recessed text-[9px] font-medium uppercase leading-none text-muted-foreground">
-              {authorChipHandle[0] ?? "?"}
-            </span>
+            <P6rAvatar
+              p6rDisplayName={authorDisplayName ?? authorChipHandle}
+              p6rImageUrl={authorImageUrl}
+              className="size-4 shrink-0 select-none overflow-hidden rounded-full border border-border bg-surface-recessed object-cover text-[9px] font-medium uppercase leading-none text-muted-foreground"
+            />
             <span
               data-testid="user-message-author"
               className="text-xs text-muted-foreground"
@@ -795,6 +804,7 @@ export function ConversationMessageContent(
   if (props.role === "user") {
     return (
       <UserConversationMessage
+        p6rActor={props.p6rActor}
         p6rActorHandle={props.p6rActorHandle}
         addToChatAttachments={addToChatAttachments}
         attachmentItems={attachmentItems}

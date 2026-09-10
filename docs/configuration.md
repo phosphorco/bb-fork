@@ -734,8 +734,10 @@ is synchronous, so it blocked the server's event loop — which also delayed
 dynamic tool call and before registering every interactive request. One slow
 thread therefore slowed agent work on _every_ thread on the host.
 
-A window is capped at `BB_FF_TIMELINE_WINDOW_EVENT_BUDGET` events (default 1500) and returns however many whole turns fit. Older turns load automatically
-as you scroll toward the top of the loaded window; a manual "Load older
+A window is capped at `BB_FF_TIMELINE_WINDOW_EVENT_BUDGET` events (default 256)
+and returns a bounded sequence page; completed turns may be split across pages.
+Older turns load automatically as you scroll toward the top of the loaded window;
+a manual "Load older
 messages" button remains on surfaces that render no scroll body, and after a
 failed page so a broken fetch is retried on request rather than in a loop.
 Nothing becomes unreachable — pagination still walks the full history, and the
@@ -743,12 +745,12 @@ head-state banners (goal, pending todos, running workflows, background
 commands) are resolved by thread-scoped lookups rather than by scanning the
 window, so a narrow window cannot drop them mid-session.
 
-A turn larger than the whole budget is cut at the budget while it is _running_,
-so watching an agent work through a very long turn costs the budget per update
-rather than the whole turn; scrolling up loads the earlier part. Once the turn
-finishes it is rendered whole again, because a finished turn collapses into one
-summary row that two pages cannot each own — so the budget bounds a running turn
-and a long thread, but not a single finished oversized turn.
+A turn larger than the whole budget is cut at the budget while it is _running_
+or completed, so watching an agent work through a very long turn costs the
+budget per update rather than the whole turn; scrolling up loads the earlier
+part. Completed-turn summary ranges are clamped to their owning page, and
+delegated aggregates that cross a cut remain whole until nested pagination is
+available.
 
 Raising the budget far above the default restores the previous
 unbounded-in-practice behavior; it is an operator escape hatch set at server

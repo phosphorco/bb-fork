@@ -204,6 +204,9 @@ export interface RuntimeManagerOptions {
     options: ProvisionWorkspaceArgs,
   ) => Promise<HostWorkspace>;
   providerMaintenanceIdleTimeoutMs?: number;
+  resolveWorkspaceShellEnv?: (
+    workspacePath: string,
+  ) => Promise<NonNullable<AgentRuntimeOptions["shellEnv"]>>;
   shellEnv?: AgentRuntimeOptions["shellEnv"];
   onEvent?: (args: { environmentId: string; event: ThreadEvent }) => void;
   threadStorageRootPath?: string | null;
@@ -628,6 +631,15 @@ export class RuntimeManager {
 
   getShellEnv(): NonNullable<AgentRuntimeOptions["shellEnv"]> {
     return { ...this.baseShellEnv };
+  }
+
+  private async resolveEntryShellEnv(
+    workspacePath: string,
+  ): Promise<NonNullable<AgentRuntimeOptions["shellEnv"]>> {
+    const resolveWorkspaceShellEnv = this.options.resolveWorkspaceShellEnv;
+    return resolveWorkspaceShellEnv === undefined
+      ? this.getShellEnv()
+      : resolveWorkspaceShellEnv(workspacePath);
   }
 
   async replaceBaseShellEnv(
@@ -1438,7 +1450,7 @@ export class RuntimeManager {
       workspaceRoots: workspaceWriteRoots,
     });
     let runtime: AgentRuntime | null = null;
-    const shellEnv = this.getShellEnv();
+    const shellEnv = await this.resolveEntryShellEnv(workspace.path);
     const providerProcessEnv = providerProcessEnvFromShellEnv(shellEnv);
     runtime = this.createRuntime({
       workspacePath: workspace.path,

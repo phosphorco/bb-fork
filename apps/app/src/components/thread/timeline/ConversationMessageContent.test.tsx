@@ -91,6 +91,49 @@ describe("ConversationMessageContent assistant images", () => {
   });
 });
 
+describe("ConversationMessageContent user authors", () => {
+  it("renders the attributed actor's profile image", () => {
+    render(
+      <MemoryRouter>
+        <RouteNavigationProvider>
+          <ConversationMessageContent
+            role="user"
+            p6rActor={{
+              p6rProviderId: "identity-boundaries/tailnet",
+              p6rSubject: "cole@example.test",
+              p6rHandle: "cole",
+              p6rDisplayName: "Cole Lawrence",
+              p6rImageUrl: "https://images.example.test/cole.png",
+            }}
+            p6rActorHandle="cole"
+            p6rShowAuthor={true}
+            attachments={null}
+            originKind={null}
+            initiator="user"
+            mentions={[]}
+            senderThreadId={null}
+            senderThreadTitle={null}
+            senderIsPluginSideChat={false}
+            systemMessageKind="unlabeled"
+            systemMessageSubject={null}
+            text="Ship it"
+            turnRequest={{
+              isGrouped: false,
+              kind: "message",
+              status: "accepted",
+            }}
+          />
+        </RouteNavigationProvider>
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("img", { name: "Cole Lawrence" }).getAttribute("src"),
+    ).toBe("https://images.example.test/cole.png");
+    expect(screen.getByTestId("user-message-author").textContent).toBe("@cole");
+  });
+});
+
 describe("ConversationMessageContent assistant thread mentions", () => {
   it("renders an agent-authored thread token with the referenced thread title", () => {
     const mentionedThread = threadListEntry({
@@ -160,6 +203,7 @@ describe("ConversationMessageContent long user messages", () => {
             threadById={new Map([[mentionedThread.id, mentionedThread]])}
           >
             <ConversationMessageContent
+              p6rActor={null}
               p6rActorHandle={null}
               role="user"
               p6rShowAuthor={false}
@@ -195,6 +239,7 @@ describe("ConversationMessageContent long user messages", () => {
         <RouteNavigationProvider>
           <ConversationMessageContent
             role="user"
+            p6rActor={null}
             p6rActorHandle={null}
             attachments={null}
             originKind={null}
@@ -308,6 +353,7 @@ describe("ConversationMessageContent user thread mentions", () => {
             threadById={new Map([[mentionedThread.id, mentionedThread]])}
           >
             <ConversationMessageContent
+              p6rActor={null}
               p6rActorHandle={null}
               role="user"
               p6rShowAuthor={false}
@@ -355,6 +401,7 @@ describe("ConversationMessageContent user thread mentions", () => {
             threadById={new Map([[mentionedThread.id, mentionedThread]])}
           >
             <ConversationMessageContent
+              p6rActor={null}
               p6rActorHandle={null}
               role="user"
               p6rShowAuthor={false}
@@ -404,6 +451,7 @@ describe("ConversationMessageContent user thread mentions", () => {
           >
             <ConversationMessageContent
               role="user"
+              p6rActor={null}
               p6rActorHandle={null}
               attachments={null}
               originKind={null}
@@ -451,6 +499,7 @@ describe("ConversationMessageContent user thread mentions", () => {
           >
             <ConversationMessageContent
               role="user"
+              p6rActor={null}
               p6rActorHandle={null}
               attachments={null}
               originKind={null}

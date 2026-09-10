@@ -9,6 +9,7 @@ import {
   listSystemProviderInfos,
   resolveSystemExecutionOptions,
   resolveSystemProviderModels,
+  resolveTargetedSystemExecutionOptions,
 } from "../../src/services/system/execution-options.js";
 import { ApiError } from "../../src/errors.js";
 import { availableModelFixture } from "../helpers/available-models.js";
@@ -890,8 +891,20 @@ describe("resolveSystemExecutionOptions", () => {
               providerId: "claude-code",
             })
           ).models.map((model) => model.model);
+        const listTargetedModelIds = async () =>
+          (
+            await resolveTargetedSystemExecutionOptions(harness.deps, {
+              hostId: host.id,
+              providerId: "claude-code",
+              experimental_targeted: "true",
+            })
+          ).models.map((model) => model.model);
 
         expect(await listModelIds()).toEqual([
+          "claude-opus-5",
+          "claude-example-preview",
+        ]);
+        expect(await listTargetedModelIds()).toEqual([
           "claude-opus-5",
           "claude-example-preview",
         ]);
@@ -901,6 +914,7 @@ describe("resolveSystemExecutionOptions", () => {
           streamerMode: true,
         });
         expect(await listModelIds()).toEqual(["claude-opus-5"]);
+        expect(await listTargetedModelIds()).toEqual(["claude-opus-5"]);
 
         setAppSettings(harness.db, {
           ...getAppSettings(harness.db),

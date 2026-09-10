@@ -56,6 +56,7 @@ function renderChildCompleted(text = MARKDOWN_BODY) {
     <MemoryRouter>
       <RouteNavigationProvider>
         <ConversationMessageContent
+          p6rActor={null}
           p6rActorHandle={null}
           role="user"
           p6rShowAuthor={false}
@@ -198,6 +199,7 @@ function renderAgentMessage(
           threadById={new Map([[rawMentionTarget.id, rawMentionTarget]])}
         >
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             p6rShowAuthor={false}

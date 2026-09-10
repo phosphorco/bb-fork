@@ -172,7 +172,7 @@ export type PluginThreadEventHandler<E extends PluginThreadEventName> = (
 // Wire surfaces: HTTP, rpc, realtime (design §4.6/§4.7).
 // ---------------------------------------------------------------------------
 
-export type PluginHttpAuthMode = "local" | "token" | "none";
+export type PluginHttpAuthMode = "local" | "token" | "capability" | "none";
 
 /** Ambient request facts supplied by core after the shared identity boundary. */
 export interface P6rPluginRequestContext {
@@ -195,6 +195,9 @@ export interface PluginHttp {
    *   content-type application/json (forces a CORS preflight).
    * - "token": requires the per-plugin token (`bb plugin token <id>`) via
    *   the x-bb-plugin-token header or ?token=.
+   * - "capability": the handler authenticates a bearer capability or signed
+   *   request itself. The handler must reject invalid credentials before any
+   *   side effect; this mode remains reachable when ambient identity rejects.
    * - "none": no checks — only for signature-verified webhooks.
    */
   route(
@@ -1158,6 +1161,29 @@ export interface PluginStatusApi {
  * the BB server; this contract is what plugin `server.ts` files compile
  * against.
  */
+/** Presentation and stable plugin-local subject for one external message author. */
+export interface P6rExperimentalPluginThreadMessageActor {
+  /** Stable within the owning plugin; core namespaces it by plugin id. */
+  subject: string;
+  handle: string;
+  displayName: string;
+  imageUrl: string | null;
+}
+
+export interface P6rExperimentalPluginThreadMessages {
+  /**
+   * Send one user-authored text message under a server-authored,
+   * plugin-qualified identity. Plugins cannot choose the provider id or
+   * principal key and cannot attach arbitrary prompt inputs through this seam.
+   */
+  send(args: {
+    threadId: string;
+    message: string;
+    mode: "auto" | "steer" | "queue";
+    actor: P6rExperimentalPluginThreadMessageActor;
+  }): Promise<{ ok: true }>;
+}
+
 export interface BbPluginApi {
   /** The plugin's own id (namespaces storage, routes, commands). */
   readonly pluginId: string;
@@ -1171,6 +1197,8 @@ export interface BbPluginApi {
   readonly http: PluginHttp;
   /** Exclusive provider-qualified inbound identity registration. */
   readonly p6rIdentity: P6rIdentityApi;
+  /** Server-authored external-message attribution (experimental). */
+  readonly experimental_threadMessages: P6rExperimentalPluginThreadMessages;
   /** RPC methods under /api/v1/plugins/<id>/rpc/<method> (design §4.6). */
   readonly rpc: PluginRpc;
   /** Ephemeral push to connected frontends (design §4.7). */

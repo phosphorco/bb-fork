@@ -61,6 +61,68 @@ async function providerIds(response: Response): Promise<string[]> {
 }
 
 describe("system provider host routing", () => {
+  it("loads one targeted catalog without provider-wide health discovery", async () => {
+    await withTestHarness({}, async (harness) => {
+      const target = seedHostSession(harness.deps, {
+        id: "host-provider-targeted-catalog",
+      });
+      seedPrimaryHost(harness.deps, target.host.id);
+      const responder = registerHostRpcResponder(harness, {
+        hostId: target.host.id,
+        sessionId: target.session.id,
+        handle: (request) => {
+          if (request.command.type !== "provider.list_models") {
+            throw new Error(`Unexpected RPC command ${request.command.type}`);
+          }
+          return {
+            ok: true,
+            result: {
+              models: [availableModelFixture({ model: "targeted-model" })],
+              selectedOnlyModels: [],
+            },
+          };
+        },
+      });
+
+      const response = systemExecutionOptionsResponseSchema.parse(
+        await readJson(
+          await harness.app.request(
+            "/api/v1/system/execution-options?providerId=codex&experimental_targeted=true",
+          ),
+        ),
+      );
+
+      expect(response.providers).toEqual([]);
+      expect(response.models.map(({ model }) => model)).toEqual([
+        "targeted-model",
+      ]);
+      const workspaceResponse = systemExecutionOptionsResponseSchema.parse(
+        await readJson(
+          await harness.app.request(
+            "/api/v1/system/execution-options?providerId=pi&hostId=host-provider-targeted-catalog&experimental_targeted=true&experimental_workspacePath=%2Fworkspace%2Ftargeted",
+          ),
+        ),
+      );
+      expect(workspaceResponse.models.map(({ model }) => model)).toEqual([
+        "targeted-model",
+      ]);
+      expect(
+        responder.requests.map(({ command }) => {
+          if (command.type !== "provider.list_models") return command.type;
+          const { bridgeLaunch: _ignored, ...rest } = command;
+          return rest;
+        }),
+      ).toEqual([
+        { type: "provider.list_models", providerId: "codex" },
+        {
+          type: "provider.list_models",
+          providerId: "pi",
+          cwd: "/workspace/targeted",
+        },
+      ]);
+    });
+  });
+
   it("separates provider discovery by explicit host and environment host while preserving primary fallback", async () => {
     await withTestHarness({}, async (harness) => {
       const primary = seedHostSession(harness.deps, {

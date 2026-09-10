@@ -77,6 +77,7 @@ import {
   experimental_defineProviderBridge,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { z } from "zod";
+import { p6rResolveCodexAppServerLaunch } from "./app-server-launch.js";
 import {
   CODEX_MACOS_PERMISSION_EXTENSION_KIND,
   summarizeCodexMacOsPermissions,
@@ -311,10 +312,6 @@ function sendRuntimeRequest(
 // App-server child launch
 // ---------------------------------------------------------------------------
 
-/** Test seam for the app-server command; production launches `codex app-server`. */
-const CODEX_APP_SERVER_COMMAND_ENV = "BB_CODEX_BRIDGE_APP_SERVER_COMMAND";
-const CODEX_APP_SERVER_ARGS_ENV = "BB_CODEX_BRIDGE_APP_SERVER_ARGS";
-
 const CODEX_INITIALIZE_PARAMS = {
   clientInfo: { name: "bb", version: "1.0.0", title: null },
   capabilities: { experimentalApi: true },
@@ -327,15 +324,7 @@ const MISSING_CODEX_CLI_GUIDANCE =
   "bb could not find the Codex CLI on this machine. Install Codex (https://developers.openai.com/codex/cli) or put `codex` on PATH, then retry.";
 
 function resolveAppServerLaunch(): { command: string; args: string[] } {
-  const command = process.env[CODEX_APP_SERVER_COMMAND_ENV];
-  if (!command) {
-    return { command: "codex", args: ["app-server"] };
-  }
-  const rawArgs = process.env[CODEX_APP_SERVER_ARGS_ENV];
-  if (!rawArgs) {
-    return { command, args: [] };
-  }
-  return { command, args: z.array(z.string()).parse(JSON.parse(rawArgs)) };
+  return p6rResolveCodexAppServerLaunch(process.env);
 }
 
 /**

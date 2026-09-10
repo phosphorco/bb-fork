@@ -1491,6 +1491,12 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       dataDir: deps.dataDir,
       getSdk: () => boundSdk,
       getLoopbackBaseUrl: () => boundLoopbackBaseUrl,
+      sendPluginThreadMessage: (pluginId, args) => {
+        if (!deps.sendPluginThreadMessage) {
+          throw new Error("plugin-authored thread messages are unavailable");
+        }
+        return deps.sendPluginThreadMessage(pluginId, args);
+      },
       publishSignal: (channel, payload) => {
         deps.hub.notifyPluginSignal(row.id, channel, payload);
       },

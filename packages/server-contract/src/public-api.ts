@@ -133,6 +133,8 @@ import type {
   ReorderPinnedThreadRequest,
   ReorderProjectRequest,
   ReorderQueuedMessageRequest,
+  RecoverySnapshotRequest,
+  RecoverySnapshotResponse,
   ResolvePendingInteractionRequest,
   ResolveThreadMentionsRequest,
   ResolveThreadMentionsResponse,
@@ -284,6 +286,7 @@ import {
   reorderPinnedThreadRequestSchema,
   reorderProjectRequestSchema,
   reorderQueuedMessageRequestSchema,
+  recoverySnapshotRequestSchema,
   resolvePendingInteractionRequestSchema,
   resolveThreadMentionsRequestSchema,
   respondPluginInteractionRequestSchema,
@@ -340,6 +343,16 @@ type PathThreadInteractionId = {
 };
 
 export const publicApiRoutes = {
+  recovery: {
+    snapshot: defineRoute({
+      path: "/recovery/snapshot",
+      method: "post",
+      request: jsonRequest<EmptyInput, RecoverySnapshotRequest>(
+        recoverySnapshotRequestSchema,
+      ),
+      response: jsonResponse<RecoverySnapshotResponse>(),
+    }),
+  },
   projects: {
     list: defineRoute({
       path: "/projects",

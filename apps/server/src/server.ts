@@ -4,7 +4,11 @@ import { performance } from "node:perf_hooks";
 import { extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Hono } from "hono";
-import { terminalWebSocketQuerySchema } from "@bb/server-contract";
+import {
+  sendMessageRequestSchema,
+  terminalWebSocketQuerySchema,
+} from "@bb/server-contract";
+import { p6rActorSnapshotSchema } from "@bb/domain";
 import { markAllPluginThreadFacetOwnersUnavailable } from "@bb/db";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
@@ -14,10 +18,12 @@ import { registerEnvironmentRoutes } from "./routes/environments.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerHostRoutes } from "./routes/hosts.js";
 import { registerProjectRoutes } from "./routes/projects.js";
+import { registerRecoveryRoutes } from "./routes/recovery.js";
 import { registerThreadSectionRoutes } from "./routes/thread-sections.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerTerminalRoutes } from "./routes/terminals.js";
 import { registerThreadRoutes } from "./routes/threads/index.js";
+import { sendAuthoredThreadMessage } from "./routes/threads/actions.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerPluginCatalogRoutes } from "./routes/plugin-catalog.js";
 import { registerSkillsRegistryRoutes } from "./routes/skills-registry.js";
@@ -329,6 +335,21 @@ export function createApp(
     defaultActor,
     now: Date.now,
   });
+  let pluginService: PluginService | undefined;
+
+  const rejectedIdentityCanReachPluginRoute = (
+    method: string,
+    path: string,
+  ): boolean => {
+    const match = /^\/api\/v1\/plugins\/([^/]+)\/http(\/.*)?$/u.exec(path);
+    if (match === null || pluginService === undefined) return false;
+    const lookup = pluginService.getHttpRoute(
+      match[1]!,
+      method,
+      match[2] || "/",
+    );
+    return lookup.outcome === "found" && lookup.value.auth === "capability";
+  };
 
   app.use("*", async (context, next) => {
     captureTrustedRemoteAddress(context);
@@ -341,19 +362,27 @@ export function createApp(
     }
     return runEventLoopWork(`${context.req.method} ${path}`, next);
   });
-  app.use(
-    "*",
-    cors({
-      origin: (origin, context) => {
-        const allowedCorsOrigins = allowedAppOrigins(deps);
-        const requestOrigin = new URL(context.req.url).origin;
-        if (origin === requestOrigin || allowedCorsOrigins.has(origin)) {
-          return origin;
-        }
-        return null;
-      },
-    }),
-  );
+  const applyCors = cors({
+    origin: (origin, context) => {
+      const allowedCorsOrigins = allowedAppOrigins(deps);
+      const requestOrigin = new URL(context.req.url).origin;
+      if (origin === requestOrigin || allowedCorsOrigins.has(origin)) {
+        return origin;
+      }
+      return null;
+    },
+  });
+  app.use("*", (context, next) => {
+    // Custom plugin HTTP routes own their public browser contract. Let their
+    // explicit OPTIONS handler advertise only the methods they implement.
+    if (
+      context.req.method === "OPTIONS" &&
+      /^\/api\/v1\/plugins\/[^/]+\/http\//.test(context.req.path)
+    ) {
+      return next();
+    }
+    return applyCors(context, next);
+  });
   const compressResponse = compress();
   const compressApiJson = apiJsonCompression();
   app.use("*", (context, next) => {
@@ -413,6 +442,19 @@ export function createApp(
       p6rRequestInputFromContext(context, "http"),
     );
     if (resolution.kind === "reject") {
+      // Only an exact route that explicitly declares handler-owned capability
+      // authentication may override an ambient identity rejection. Path shape
+      // alone is never authority: local, token, public, unknown, and core API
+      // routes remain fail-closed.
+      if (
+        rejectedIdentityCanReachPluginRoute(
+          context.req.method,
+          context.req.path,
+        )
+      ) {
+        p6rSetRequestPrincipal(context, null);
+        return next();
+      }
       throw new ApiError(
         401,
         "unauthorized",
@@ -422,16 +464,13 @@ export function createApp(
     if (resolution.kind === "authenticated") {
       const requestPrincipal = resolution.p6rActor;
       p6rSetRequestPrincipal(context, requestPrincipal);
-      p6rSetRequestActor(
-        context,
-        {
-          p6rHandle: requestPrincipal.p6rHandle,
-          p6rDisplayName: requestPrincipal.p6rDisplayName,
-          p6rImageUrl: requestPrincipal.p6rImageUrl,
-          p6rClientId: "p6r-resolved",
-          p6rPrincipalKey: p6rPrincipalKeyForActor(requestPrincipal),
-        },
-      );
+      p6rSetRequestActor(context, {
+        p6rHandle: requestPrincipal.p6rHandle,
+        p6rDisplayName: requestPrincipal.p6rDisplayName,
+        p6rImageUrl: requestPrincipal.p6rImageUrl,
+        p6rClientId: "p6r-resolved",
+        p6rPrincipalKey: p6rPrincipalKeyForActor(requestPrincipal),
+      });
     } else {
       const p6rClaimedIdentity = actorService.p6rResolveClaimedRequest({
         header: (name) => context.req.header(name),
@@ -496,9 +535,33 @@ export function createApp(
     }
     return next();
   });
-  const pluginService = createPluginService({
+  pluginService = createPluginService({
     p6rIdentity: identityBoundary,
     db: deps.db,
+    async sendPluginThreadMessage(pluginId, args) {
+      if (args.message.trim().length === 0 || args.message.length > 32_000) {
+        throw new Error(
+          "plugin-authored message must contain 1-32000 characters",
+        );
+      }
+      const p6rActor = p6rActorSnapshotSchema.parse({
+        p6rProviderId: `plugin/${pluginId}`,
+        p6rSubject: args.actor.subject,
+        p6rHandle: args.actor.handle,
+        p6rDisplayName: args.actor.displayName,
+        p6rImageUrl: args.actor.imageUrl,
+      });
+      identityBoundary.p6rRecordAuthenticatedActor(p6rActor);
+      const payload = sendMessageRequestSchema.parse({
+        input: [{ type: "text", text: args.message, mentions: [] }],
+        mode: args.mode === "queue" ? "queue-if-active" : args.mode,
+      });
+      await sendAuthoredThreadMessage(deps, {
+        threadId: args.threadId,
+        payload,
+        p6rActor,
+      });
+    },
     hub: deps.hub,
     logger: deps.logger,
     telemetry: deps.telemetry,
@@ -563,6 +626,7 @@ export function createApp(
     warn: (message) => deps.logger.warn(message),
   });
   registerProjectRoutes(publicApi, deps);
+  registerRecoveryRoutes(publicApi, deps);
   registerThreadSectionRoutes(publicApi, deps);
   registerFileRoutes(publicApi, deps);
   registerHostRoutes(publicApi, deps, pluginService);

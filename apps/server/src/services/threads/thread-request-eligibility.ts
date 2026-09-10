@@ -30,8 +30,9 @@ type ReuseThreadRequestEnvironment = Extract<
 interface ResolveStableThreadRequestEnvironmentArgs {
   /**
    * A directory switch can leave a personal-project source thread attached to
-   * an unmanaged environment. Source-derived forks may reuse that exact
-   * environment, but a new root thread must still use a personal workspace.
+   * an unmanaged environment. Source-derived forks and hidden plugin workers
+   * may reuse that exact environment, but an ordinary new root thread must
+   * still use a personal workspace.
    */
   allowUnmanagedPersonalProjectReuseEnvironmentId?: string;
   environment: ThreadRequestEnvironment;

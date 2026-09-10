@@ -7,6 +7,7 @@ import {
   type Environment,
   type JsonValue,
 } from "@bb/domain";
+import type { RecoverySnapshotResponse } from "@bb/server-contract";
 import { createBbSdk } from "../src/core.js";
 import { createHttpTransport } from "../src/transport-http.js";
 import { ThreadWaitTimeoutError } from "../src/areas/threads.js";
@@ -110,6 +111,84 @@ function createFetchQueue(
 }
 
 describe("@bb/sdk", () => {
+  it("requests a bounded recovery snapshot through the typed transport", async () => {
+    const snapshot: RecoverySnapshotResponse = {
+      contractVersion: 1,
+      generatedAtMs: 10,
+      consistency: "partial",
+      incompleteReasons: ["sidebar-revision-unavailable"],
+      cacheOwner: {
+        state: "read-only",
+        principalKey: null,
+        actor: null,
+      },
+      sidebar: {
+        sections: [],
+        projects: [],
+        personalProject: {
+          id: "personal",
+          kind: "personal",
+          name: "Personal",
+          gitRemoteUrl: null,
+          createdAt: 1,
+          updatedAt: 1,
+          sources: [],
+          threads: [],
+          defaultExecutionOptions: null,
+        },
+      },
+      timelines: [],
+      unavailableThreads: [],
+    };
+    const queue = createFetchQueue([
+      { body: snapshot as unknown as JsonValue },
+    ]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    await expect(
+      sdk.recovery.snapshot({
+        contractVersion: 1,
+        threadIds: ["thread-a", "thread-b"],
+        timelineSegmentLimit: 20,
+      }),
+    ).resolves.toEqual(snapshot);
+    expect(queue.requests).toEqual([
+      {
+        bodyText: JSON.stringify({
+          contractVersion: 1,
+          threadIds: ["thread-a", "thread-b"],
+          timelineSegmentLimit: 20,
+        }),
+        method: "POST",
+        url: "http://bb.test/api/v1/recovery/snapshot",
+      },
+    ]);
+  });
+
+  it("rejects a malformed recovery snapshot at the SDK boundary", async () => {
+    const queue = createFetchQueue([{ body: { ok: true } }]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+    await expect(
+      sdk.recovery.snapshot({
+        contractVersion: 1,
+        threadIds: [],
+        timelineSegmentLimit: 20,
+      }),
+    ).rejects.toThrow();
+  });
+
   it("lists, adds, and removes Connect members through the members area", async () => {
     const member = {
       p6rUserId: "user-1",
@@ -666,6 +745,7 @@ describe("@bb/sdk", () => {
     await expect(
       sdk.providers.models({
         environmentId: "env_remote",
+        experimental_targeted: true,
         providerId: "acp-remote",
       }),
     ).resolves.toMatchObject({ models: [], providers: [] });
@@ -679,7 +759,7 @@ describe("@bb/sdk", () => {
       {
         bodyText: undefined,
         method: "GET",
-        url: "http://bb.test/api/v1/system/execution-options?environmentId=env_remote&providerId=acp-remote",
+        url: "http://bb.test/api/v1/system/execution-options?environmentId=env_remote&providerId=acp-remote&experimental_targeted=true",
       },
     ]);
   });

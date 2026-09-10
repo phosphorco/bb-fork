@@ -73,6 +73,7 @@ function UserMessage({
   return (
     <TimelineStage revealMessageActions={revealMessageActions}>
       <ConversationMessageContent
+        p6rActor={null}
         p6rActorHandle={null}
         role="user"
         p6rShowAuthor={false}

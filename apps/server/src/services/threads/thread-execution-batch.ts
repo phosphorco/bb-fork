@@ -20,11 +20,15 @@ import { z } from "zod";
 import type { LoggedWorkSessionDeps } from "../../types.js";
 import { resolveSystemProviderModels } from "../system/execution-options.js";
 import { resolveSystemLookupHostId } from "../system/host-lookup.js";
-import { buildThreadExecutionProjection } from "./thread-facet-query.js";
+import {
+  buildThreadExecutionProjection,
+  buildThreadExecutionProjectionDetails,
+} from "./thread-facet-query.js";
 import { resolveThreadExecutionOverrideUpdate } from "./thread-execution-override.js";
 
 const APPLY_TOKEN_TTL_MS = 5 * 60 * 1_000;
 const CATALOG_LOAD_CONCURRENCY = 4;
+const MAX_CATALOG_ROUTES = 100;
 
 const applyTokenPayloadSchema = z
   .object({
@@ -58,6 +62,11 @@ interface CatalogResult {
   fingerprint: string | null;
   models: readonly AvailableModel[];
   route: CatalogRoute;
+}
+
+interface LoadedCatalogs {
+  catalogsByRouteKey: Map<string, CatalogResult>;
+  routesByThreadId: Map<string, CatalogRoute>;
 }
 
 class ThreadExecutionWriteConflictError extends Error {}
@@ -96,19 +105,32 @@ function resolveCatalogRoute(
 function catalogFingerprint(
   route: CatalogRoute,
   models: readonly AvailableModel[],
+  selectedOnlyModels: readonly AvailableModel[],
 ): string {
+  const catalogModels = [
+    ...models.map((model) => ({ model, selectedOnly: false })),
+    ...selectedOnlyModels.map((model) => ({ model, selectedOnly: true })),
+  ];
   return digest(
     JSON.stringify({
       providerId: route.providerId,
       hostId: route.hostId,
       workspacePath: route.workspacePath,
       registrationRevision: route.registrationRevision,
-      models: [...models]
-        .map((model) => ({
+      models: catalogModels
+        .map(({ model, selectedOnly }) => ({
+          id: model.id,
           model: model.model,
-          supportedReasoningEfforts: model.supportedReasoningEfforts,
+          routeProviderId: model.routeProviderId ?? null,
+          selectedOnly,
+          supportedReasoningEfforts: [...model.supportedReasoningEfforts].sort(
+            (left, right) =>
+              left.reasoningEffort.localeCompare(right.reasoningEffort),
+          ),
         }))
-        .sort((left, right) => left.model.localeCompare(right.model)),
+        .sort((left, right) =>
+          JSON.stringify(left).localeCompare(JSON.stringify(right)),
+        ),
     }),
   );
 }
@@ -146,7 +168,7 @@ function decodeApplyToken(
     const parsed = applyTokenPayloadSchema.safeParse(
       JSON.parse(Buffer.from(body, "base64url").toString("utf8")),
     );
-    if (!parsed.success || parsed.data.expiresAt < Date.now()) return null;
+    if (!parsed.success || parsed.data.expiresAt <= Date.now()) return null;
     return parsed.data;
   } catch {
     return null;
@@ -175,11 +197,41 @@ async function mapWithConcurrency<TValue, TResult>(
 async function loadCatalogs(
   deps: LoggedWorkSessionDeps,
   threads: readonly ThreadExecutionProjectionRow[],
-): Promise<Map<string, CatalogResult>> {
+  { fresh = false }: { fresh?: boolean } = {},
+): Promise<LoadedCatalogs> {
   const routes = new Map<string, CatalogRoute>();
+  const routesByThreadId = new Map<string, CatalogRoute>();
   for (const thread of threads) {
-    const route = resolveCatalogRoute(deps, thread);
-    routes.set(route.key, route);
+    try {
+      const route = resolveCatalogRoute(deps, thread);
+      routes.set(route.key, route);
+      routesByThreadId.set(thread.threadId, route);
+    } catch (error) {
+      deps.logger.warn(
+        { error, providerId: thread.providerId, threadId: thread.threadId },
+        "Failed to resolve an execution override catalog route",
+      );
+    }
+  }
+  if (routes.size > MAX_CATALOG_ROUTES) {
+    deps.logger.warn(
+      { routeCount: routes.size, routeLimit: MAX_CATALOG_ROUTES },
+      "Execution batch exceeds the catalog route limit",
+    );
+    return {
+      routesByThreadId,
+      catalogsByRouteKey: new Map(
+        [...routes].map(([key, route]) => [
+          key,
+          {
+            error: "catalog-unavailable" as const,
+            fingerprint: null,
+            models: [],
+            route,
+          },
+        ]),
+      ),
+    };
   }
   const loaded = await mapWithConcurrency(
     [...routes.values()],
@@ -189,6 +241,7 @@ async function loadCatalogs(
         const response = await resolveSystemProviderModels(deps, {
           providerId: route.providerId,
           hostId: route.hostId,
+          fresh,
           ...(route.workspacePath === null ? {} : { cwd: route.workspacePath }),
         });
         if (response.modelLoadError !== null) {
@@ -207,7 +260,11 @@ async function loadCatalogs(
           route.key,
           {
             error: null,
-            fingerprint: catalogFingerprint(route, models),
+            fingerprint: catalogFingerprint(
+              route,
+              response.models,
+              response.selectedOnlyModels,
+            ),
             models,
             route,
           },
@@ -229,7 +286,7 @@ async function loadCatalogs(
       }
     },
   );
-  return new Map(loaded);
+  return { catalogsByRouteKey: new Map(loaded), routesByThreadId };
 }
 
 function projectionInputs(rows: readonly ThreadExecutionProjectionRow[]) {
@@ -264,16 +321,25 @@ export async function preflightThreadExecutionOverrides(
     request.items.map(({ threadId }) => threadId),
   );
   const rowsById = new Map(rows.map((row) => [row.threadId, row]));
-  const summaries = buildThreadExecutionProjection(
+  const projectionDetails = buildThreadExecutionProjectionDetails(
     deps,
     projectionInputs(rows),
+  );
+  const summaries = new Map(
+    [...projectionDetails].map(([threadId, details]) => [
+      threadId,
+      details.summary,
+    ]),
   );
   const candidates = request.items.flatMap(({ threadId, witness }) => {
     const row = rowsById.get(threadId);
     const summary = summaries.get(threadId);
     return row && summary?.witness === witness ? [row] : [];
   });
-  const catalogs = await loadCatalogs(deps, candidates);
+  const { catalogsByRouteKey, routesByThreadId } = await loadCatalogs(
+    deps,
+    candidates,
+  );
   const signingKey = getOrCreateThreadFacetCursorSigningKey(deps.db);
   const expiresAt = Date.now() + APPLY_TOKEN_TTL_MS;
 
@@ -292,14 +358,33 @@ export async function preflightThreadExecutionOverrides(
       if (current.witness !== item.witness) {
         return { status: "stale" as const, threadId: item.threadId, current };
       }
-      const route = resolveCatalogRoute(deps, row);
-      const catalog = catalogs.get(route.key);
-      if (!catalog || catalog.error !== null || catalog.fingerprint === null) {
+      const route = routesByThreadId.get(item.threadId);
+      const catalog =
+        route == null ? undefined : catalogsByRouteKey.get(route.key);
+      if (
+        !route ||
+        !catalog ||
+        catalog.error !== null ||
+        catalog.fingerprint === null
+      ) {
         return {
           status: "unavailable" as const,
           threadId: item.threadId,
           reason: "catalog-unavailable" as const,
           message: `Unable to load ${row.providerId}'s model catalog`,
+          current,
+        };
+      }
+      if (
+        item.patch.model === null &&
+        projectionDetails.get(item.threadId)?.fallbackModel == null
+      ) {
+        return {
+          status: "unavailable" as const,
+          threadId: item.threadId,
+          reason: "invalid-target" as const,
+          message:
+            "This thread has no next-turn fallback model; choose an explicit model instead",
           current,
         };
       }
@@ -325,15 +410,25 @@ export async function preflightThreadExecutionOverrides(
             models: catalog.models,
             providerId: row.providerId,
             fallbackModel:
-              current.state === "resolved" ? current.effectiveModel : null,
+              projectionDetails.get(item.threadId)?.fallbackModel ?? null,
           },
         );
+        const details = projectionDetails.get(item.threadId);
         return {
           status: "ready" as const,
           threadId: item.threadId,
           current,
           nextModelOverride: next.modelOverride,
           nextReasoningLevelOverride: next.reasoningLevelOverride,
+          nextEffectiveModel:
+            next.modelOverride ?? details?.fallbackModel ?? null,
+          nextEffectiveReasoningLevel:
+            next.reasoningLevelOverride ??
+            details?.fallbackReasoningLevel ??
+            null,
+          unchanged:
+            row.modelOverride === next.modelOverride &&
+            row.reasoningLevelOverride === next.reasoningLevelOverride,
           applyToken: encodeApplyToken(
             {
               version: 2,
@@ -385,13 +480,28 @@ export async function applyPreflightedThreadExecutionOverrides(
   const initialRowsById = new Map(
     initialRows.map((row) => [row.threadId, row]),
   );
-  const catalogs = await loadCatalogs(deps, initialRows);
+  // Apply bypasses the picker memo so a retirement or capability change on
+  // the same daemon session invalidates the signed preflight token.
+  const { catalogsByRouteKey, routesByThreadId } = await loadCatalogs(
+    deps,
+    initialRows,
+    { fresh: true },
+  );
   const preclassified = new Map<
     string,
     ExperimentalThreadExecutionApplyResponse["results"][number]
   >();
   for (const { item, payload } of decoded) {
     if (payload === null || payload.threadId !== item.threadId) {
+      preclassified.set(item.threadId, {
+        status: "rejected",
+        threadId: item.threadId,
+        reason: "invalid-token",
+        retryable: false,
+      });
+      continue;
+    }
+    if (payload.expiresAt <= Date.now()) {
       preclassified.set(item.threadId, {
         status: "rejected",
         threadId: item.threadId,
@@ -410,9 +520,11 @@ export async function applyPreflightedThreadExecutionOverrides(
       });
       continue;
     }
-    const route = resolveCatalogRoute(deps, row);
-    const catalog = catalogs.get(route.key);
+    const route = routesByThreadId.get(item.threadId);
+    const catalog =
+      route == null ? undefined : catalogsByRouteKey.get(route.key);
     if (
+      !route ||
       !routeMatchesToken(route, payload) ||
       !catalog ||
       catalog.error !== null ||
@@ -431,6 +543,10 @@ export async function applyPreflightedThreadExecutionOverrides(
     ({ item }) => !preclassified.has(item.threadId),
   );
   const changedByProject = new Map<string, string[]>();
+  const transactionIndependentResults = new Map<
+    string,
+    ExperimentalThreadExecutionApplyResponse["results"][number]
+  >();
   let transactionalResults: ExperimentalThreadExecutionApplyResponse["results"];
   try {
     transactionalResults = deps.db.transaction(
@@ -450,35 +566,52 @@ export async function applyPreflightedThreadExecutionOverrides(
         >();
         const writes = [];
         for (const { item, payload } of candidates) {
+          if (payload.expiresAt <= Date.now()) {
+            const result = {
+              status: "rejected",
+              threadId: item.threadId,
+              reason: "invalid-token",
+              retryable: false,
+            } as const;
+            results.set(item.threadId, result);
+            transactionIndependentResults.set(item.threadId, result);
+            continue;
+          }
           const row = rowsById.get(item.threadId);
           const current = summaries.get(item.threadId);
           if (!row || !current) {
-            results.set(item.threadId, {
+            const result = {
               status: "rejected",
               threadId: item.threadId,
               reason: "thread-not-found",
               retryable: false,
-            });
+            } as const;
+            results.set(item.threadId, result);
+            transactionIndependentResults.set(item.threadId, result);
             continue;
           }
           if (current.witness !== payload.witness) {
-            results.set(item.threadId, {
+            const result = {
               status: "stale",
               threadId: item.threadId,
               current,
-            });
+            } as const;
+            results.set(item.threadId, result);
+            transactionIndependentResults.set(item.threadId, result);
             continue;
           }
           if (
             row.modelOverride === payload.modelOverride &&
             row.reasoningLevelOverride === payload.reasoningLevelOverride
           ) {
-            results.set(item.threadId, {
+            const result = {
               status: "unchanged",
               threadId: item.threadId,
               finalModelOverride: row.modelOverride,
               finalReasoningLevelOverride: row.reasoningLevelOverride,
-            });
+            } as const;
+            results.set(item.threadId, result);
+            transactionIndependentResults.set(item.threadId, result);
             continue;
           }
           writes.push({
@@ -513,15 +646,18 @@ export async function applyPreflightedThreadExecutionOverrides(
   } catch (error) {
     changedByProject.clear();
     deps.logger.error({ error }, "Failed to apply thread execution overrides");
-    transactionalResults = candidates.map(({ item }) => ({
-      status: "failed" as const,
-      threadId: item.threadId,
-      reason:
-        error instanceof ThreadExecutionWriteConflictError
-          ? ("write-conflict" as const)
-          : ("transaction-failed" as const),
-      retryable: true,
-    }));
+    transactionalResults = candidates.map(
+      ({ item }) =>
+        transactionIndependentResults.get(item.threadId) ?? {
+          status: "failed" as const,
+          threadId: item.threadId,
+          reason:
+            error instanceof ThreadExecutionWriteConflictError
+              ? ("write-conflict" as const)
+              : ("transaction-failed" as const),
+          retryable: true,
+        },
+    );
   }
 
   for (const [projectId, threadIds] of changedByProject) {

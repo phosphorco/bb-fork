@@ -163,6 +163,7 @@ export function Overview() {
         <StoryRow key={row.systemMessageKind} label={row.label} hint={row.hint}>
           <TimelineStage>
             <ConversationMessageContent
+              p6rActor={null}
               p6rActorHandle={null}
               role="user"
               p6rShowAuthor={false}
@@ -189,6 +190,7 @@ export function Overview() {
       >
         <TimelineStage>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             p6rShowAuthor={false}
@@ -214,6 +216,7 @@ export function Overview() {
       >
         <TimelineStage>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             p6rShowAuthor={false}
@@ -246,6 +249,7 @@ export function ClippedAgentMessage() {
       >
         <div className="w-full max-w-[560px]">
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             p6rShowAuthor={false}

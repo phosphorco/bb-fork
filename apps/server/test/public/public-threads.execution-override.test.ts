@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { getThreadExecutionOverride } from "@bb/db";
+import {
+  getThreadExecutionOverride,
+  setThreadExecutionOverride,
+  upsertProjectExecutionDefaults,
+} from "@bb/db";
 import { registerProviderHostRpcResponder } from "../helpers/host-rpc.js";
 import { readJson } from "../helpers/json.js";
 import {
@@ -132,6 +136,40 @@ describe("PATCH /threads/:id execution override", () => {
       expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({
         modelOverride: null,
         reasoningLevelOverride: null,
+      });
+    });
+  });
+
+  it("ignores a project fallback owned by a different provider when clearing", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session, thread } = seedProviderThread(harness);
+      stubProviderCatalog(
+        harness,
+        host.id,
+        session.id,
+        "claude-code",
+        "gpt-foreign-default",
+      );
+      upsertProjectExecutionDefaults(harness.db, {
+        projectId: thread.projectId,
+        providerId: "codex",
+        model: "gpt-foreign-default",
+        reasoningLevel: "low",
+        permissionMode: "accept-edits",
+        serviceTier: "default",
+      });
+      setThreadExecutionOverride(harness.db, {
+        threadId: thread.id,
+        modelOverride: "claude-opus-4-8",
+        reasoningLevelOverride: "max",
+      });
+
+      const response = await patchThread(harness, thread.id, { model: null });
+
+      expect(response.status).toBe(200);
+      expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({
+        modelOverride: null,
+        reasoningLevelOverride: "max",
       });
     });
   });

@@ -7,6 +7,7 @@ import { createFilesArea, type FilesArea } from "./areas/files.js";
 import type { GuideArea } from "./areas/guide.js";
 import { createHostsArea, type HostsArea } from "./areas/hosts.js";
 import { createProjectsArea, type ProjectsArea } from "./areas/projects.js";
+import { createRecoveryArea, type RecoveryArea } from "./areas/recovery.js";
 import { createProvidersArea, type ProvidersArea } from "./areas/providers.js";
 import { createPluginsArea, type PluginsArea } from "./areas/plugins.js";
 import { createBbRealtimeClient } from "./realtime-client.js";
@@ -54,6 +55,7 @@ export interface BbSdkAreas extends BbRealtime {
   p6rMembers: P6rMembersArea;
   p6rPresence: P6rPresenceArea;
   projects: ProjectsArea;
+  recovery: RecoveryArea;
   plugins: PluginsArea;
   providers: ProvidersArea;
   skills: SkillsArea;
@@ -88,6 +90,7 @@ export function createBbSdk(
       return realtime.subscribe(args);
     },
     projects: createProjectsArea(sdkContext),
+    recovery: createRecoveryArea(sdkContext),
     plugins: createPluginsArea(sdkContext),
     providers: createProvidersArea(sdkContext),
     skills: createSkillsArea(sdkContext),

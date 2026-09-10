@@ -19,6 +19,7 @@ import {
 } from "@bb/db";
 import {
   p6rPrincipalKeyForActorSnapshot,
+  providerModelCatalogDependsOnWorkspace,
   type P6rActorSnapshot,
   type ResolvedThreadFacetFilter,
   type ThreadFacetFilter,
@@ -207,11 +208,19 @@ interface ThreadExecutionProjectionInput {
   providerId: string;
 }
 
-export function buildThreadExecutionProjection(
+export interface ThreadExecutionProjectionDetails {
+  /** Model that becomes effective after clearing a sticky model override. */
+  fallbackModel: string | null;
+  /** Reasoning that becomes effective after clearing its sticky override. */
+  fallbackReasoningLevel: ReasoningLevel | null;
+  summary: ExperimentalThreadExecutionSummary;
+}
+
+export function buildThreadExecutionProjectionDetails(
   deps: { db: DbQueryConnection },
   threads: readonly ThreadExecutionProjectionInput[],
-): Map<string, ExperimentalThreadExecutionSummary> {
-  const summaries = new Map<string, ExperimentalThreadExecutionSummary>();
+): Map<string, ThreadExecutionProjectionDetails> {
+  const details = new Map<string, ThreadExecutionProjectionDetails>();
   const threadIds = threads.map(({ id }) => id);
   const overrides = listThreadExecutionOverridesByThreadIds(deps.db, threadIds);
   const projectDefaults = listProjectExecutionDefaultsByProjectIds(deps.db, {
@@ -285,6 +294,9 @@ export function buildThreadExecutionProjection(
     );
     const base = {
       providerId: thread.providerId,
+      catalogDependsOnWorkspace: providerModelCatalogDependsOnWorkspace(
+        thread.providerId,
+      ),
       projectId: thread.projectId,
       environmentId: thread.environmentId,
       hostId: thread.hostId,
@@ -296,33 +308,52 @@ export function buildThreadExecutionProjection(
       latestRequestSequence: lastRow?.sequence ?? null,
       witness,
     } as const;
-    summaries.set(
-      thread.id,
-      malformedHistory
+    const summary: ExperimentalThreadExecutionSummary = malformedHistory
+      ? {
+          ...base,
+          state: "unresolved",
+          effectiveModel: null,
+          modelSource: "unresolved",
+          issue: "malformed-history",
+        }
+      : modelResolution === null
         ? {
             ...base,
             state: "unresolved",
             effectiveModel: null,
             modelSource: "unresolved",
-            issue: "malformed-history",
+            issue: "missing-model",
           }
-        : modelResolution === null
-          ? {
-              ...base,
-              state: "unresolved",
-              effectiveModel: null,
-              modelSource: "unresolved",
-              issue: "missing-model",
-            }
-          : {
-              ...base,
-              state: "resolved",
-              effectiveModel: modelResolution.model,
-              modelSource: modelResolution.source,
-            },
-    );
+        : {
+            ...base,
+            state: "resolved",
+            effectiveModel: modelResolution.model,
+            modelSource: modelResolution.source,
+          };
+    details.set(thread.id, {
+      fallbackModel: malformedHistory
+        ? null
+        : (lastExecution?.model ?? matchingProjectDefault?.model ?? null),
+      fallbackReasoningLevel: malformedHistory
+        ? null
+        : (lastExecution?.reasoningLevel ??
+          matchingProjectDefault?.reasoningLevel ??
+          DEFAULT_REASONING_LEVEL),
+      summary,
+    });
   }
-  return summaries;
+  return details;
+}
+
+export function buildThreadExecutionProjection(
+  deps: { db: DbQueryConnection },
+  threads: readonly ThreadExecutionProjectionInput[],
+): Map<string, ExperimentalThreadExecutionSummary> {
+  return new Map(
+    [...buildThreadExecutionProjectionDetails(deps, threads)].map(
+      ([threadId, details]) => [threadId, details.summary],
+    ),
+  );
 }
 
 function decodeQueryCursor(

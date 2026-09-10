@@ -229,6 +229,7 @@ type ExpectedBbSdkKey =
   | "p6rPresence"
   | "plugins"
   | "projects"
+  | "recovery"
   | "providers"
   | "skills"
   | "status"
@@ -332,6 +333,8 @@ type ExpectedProjectSourcesKey = "add" | "delete" | "update";
 type ExpectedProjectAttachmentsKey = "copy" | "read" | "upload";
 
 type ExpectedProvidersKey = "list" | "models";
+
+type ExpectedRecoveryKey = "snapshot";
 
 type ExpectedStatusKey = "get";
 
@@ -538,6 +541,9 @@ describe("SDK public type entrypoints", () => {
     expectTypeOf<
       keyof RootBbSdk["providers"]
     >().toEqualTypeOf<ExpectedProvidersKey>();
+    expectTypeOf<
+      keyof RootBbSdk["recovery"]
+    >().toEqualTypeOf<ExpectedRecoveryKey>();
     expectTypeOf<
       keyof RootBbSdk["status"]
     >().toEqualTypeOf<ExpectedStatusKey>();

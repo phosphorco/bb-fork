@@ -71,6 +71,7 @@ import {
   useProjectThreadSubset,
   useThread,
   useThreadDetailBootstrap,
+  useP6rThreadParticipantCount,
   useThreadPendingInteractions,
   useThreadQueuedMessages,
   type ProjectThreadSubsetFilters,
@@ -527,6 +528,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
   const navigate = useNavigate();
   useFixedPanelTabsStorageMaintenance();
   const systemConfigQuery = useSystemConfig();
+  const p6rParticipantCount = useP6rThreadParticipantCount(threadId);
   const threadDetailBootstrapQuery = useThreadDetailBootstrap(threadId);
   const hasThreadDetailBootstrapSettled =
     threadDetailBootstrapQuery.isSuccess || threadDetailBootstrapQuery.isError;
@@ -3004,6 +3006,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
               onOpenPluginPanel: handleOpenTimelinePluginPanel,
               onTitleAction: handleTimelineTitleAction,
               projectId,
+              p6rParticipantCount,
               resolveMentionLink,
               showOngoingIndicator:
                 thread.status !== "stopping" &&

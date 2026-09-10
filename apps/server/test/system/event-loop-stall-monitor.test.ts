@@ -71,9 +71,12 @@ function installHistogram(
 }
 
 const EMPTY_WORK_SNAPSHOT = {
+  activePluginRpcCount: 0,
+  activeWorkCount: 0,
   currentWork: null,
   lastWork: null,
   lastWorkMs: null,
+  omittedCurrentWorkCount: 0,
   slowestWork: null,
   slowestWorkMs: null,
 };
@@ -314,6 +317,49 @@ describe("event loop stall monitor", () => {
 
     releaseSecond();
     await second;
+    monitor.stop();
+  });
+
+  it("bounds details and counts plugin RPC fan-out on a stall", async () => {
+    installHistogram({
+      maxDelayMs: 750,
+      meanDelayMs: 80,
+      p99DelayMs: 700,
+    });
+    const logger = { info: vi.fn() };
+    const monitor = startEventLoopStallMonitor({ logger });
+    const releases: Array<() => void> = [];
+    const held = Array.from({ length: 25 }, (_, index) =>
+      runEventLoopWork(`POST /api/v1/plugins/example/rpc/read-${index}`, () =>
+        runEventLoopWork(
+          `plugin:example rpc read-${index}`,
+          () =>
+            new Promise<void>((resolve) => {
+              releases.push(resolve);
+            }),
+        ),
+      ),
+    );
+
+    vi.advanceTimersByTime(EVENT_LOOP_STALL_MONITOR_INTERVAL_MS);
+
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        activePluginRpcCount: 25,
+        activeWorkCount: 25,
+        maxDelayMs: 750,
+        omittedCurrentWorkCount: 5,
+      }),
+      "Event loop stalled",
+    );
+    const fields = logger.info.mock.calls[0]?.[0] as {
+      currentWork: string;
+    };
+    expect(fields.currentWork.split(" | ")).toHaveLength(20);
+    expect(fields.currentWork).not.toContain("read-24");
+
+    for (const release of releases) release();
+    await Promise.all(held);
     monitor.stop();
   });
 

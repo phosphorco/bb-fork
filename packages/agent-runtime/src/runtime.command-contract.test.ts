@@ -135,6 +135,30 @@ describe("createAgentRuntime command contracts", () => {
     }
   });
 
+  it("forgets a failed resume so later sends can reconstruct the same durable thread", async () => {
+    const { record, runtime } = createContractRuntime({
+      launch: { scripted: { failMethods: [
+        { method: "thread/resume", message: "no rollout found", times: 1 },
+      ] } },
+    });
+    try {
+      // Keep the shared provider alive so this test also exercises another
+      // healthy thread surviving the failed resume.
+      await runtime.startThread({ environmentId: "env-1", projectId: "p1",
+        providerId: "fake", threadId: "healthy", options: fullRuntimeOptions });
+      const request = { environmentId: "env-1", projectId: "p1", providerId: "fake",
+        providerThreadId: "prov-retained", threadId: "retry", options: fullRuntimeOptions };
+      await expect(runtime.resumeThread(request)).rejects.toThrow("no rollout found");
+      expect(runtime.hasThread("retry")).toBe(false);
+      expect(runtime.hasThread("healthy")).toBe(true);
+      await expect(runtime.resumeThread(request)).resolves.toEqual({ providerThreadId: "prov-retained" });
+      expect(runtime.hasThread("retry")).toBe(true);
+      expect(record.read().filter((request) => request.method === "thread/resume")).toHaveLength(2);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
   it("passes acp launch specs to the provider for model list, start, and resume", async () => {
     const { record, runtime } = createContractRuntime();
 

@@ -25,6 +25,7 @@ interface PrepareRuntimeShellEnvOptions {
 }
 
 interface ResolveUserShellPathOptions {
+  cwd?: string;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   spawnUserShellEnv?: SpawnUserShellEnv;
@@ -34,6 +35,7 @@ interface ResolveUserShellPathOptions {
 export interface SpawnUserShellEnvArgs {
   command: string;
   args: string[];
+  cwd?: string;
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
 }
@@ -192,6 +194,7 @@ function defaultSpawnUserShellEnv(
 
     try {
       child = spawn(args.command, args.args, {
+        ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
         env: args.env,
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -342,6 +345,7 @@ export async function resolveUserShellPath(
     const result = await spawnUserShellEnv({
       command: shell,
       args: shellArgs,
+      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
       env,
       timeoutMs: options.timeoutMs ?? USER_SHELL_ENV_TIMEOUT_MS,
     });

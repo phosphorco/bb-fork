@@ -62,6 +62,7 @@ const BB_PLUGIN_API_KEYS = [
   "storage",
   "http",
   "p6rIdentity",
+  "experimental_threadMessages",
   "rpc",
   "realtime",
   "background",
@@ -114,6 +115,7 @@ void _assertAllSettingTypesListed;
 const HTTP_AUTH_MODES = [
   "local",
   "token",
+  "capability",
   "none",
 ] as const satisfies readonly PluginHttpAuthMode[];
 
@@ -140,7 +142,9 @@ const THREAD_EVENT_PAYLOAD_FIELDS = {
   "thread.archived": ["thread"],
   "thread.deleted": ["thread"],
 } as const satisfies {
-  [E in keyof PluginThreadEventPayloads]: readonly (keyof PluginThreadEventPayloads[E])[];
+  [
+    E in keyof PluginThreadEventPayloads
+  ]: readonly (keyof PluginThreadEventPayloads[E])[];
 };
 
 type MissingThreadEventField = {

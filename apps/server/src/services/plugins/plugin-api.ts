@@ -45,6 +45,7 @@ import type {
   ExperimentalThreadFacets,
   ExperimentalThreadFacetTarget,
   ExperimentalThreadFacetTargetGrant,
+  P6rExperimentalPluginThreadMessages,
   PluginHttp,
   PluginHttpAuthMode,
   PluginHttpHandler,
@@ -540,6 +541,10 @@ export function createPluginApi(options: {
   getSdk: () => BbSdk | undefined;
   /** Undefined until the server is listening (bb.server is bind-gated too). */
   getLoopbackBaseUrl: () => string | undefined;
+  sendPluginThreadMessage: (
+    pluginId: string,
+    args: Parameters<P6rExperimentalPluginThreadMessages["send"]>[0],
+  ) => Promise<void>;
   /** Broadcasts a plugin-signal WS message (hub.notifyPluginSignal). */
   publishSignal: (channel: string, payload: unknown) => void;
   /** Marks the plugin needs-configuration in the loader's status table. */
@@ -601,6 +606,7 @@ export function createPluginApi(options: {
     dataDir,
     getSdk,
     getLoopbackBaseUrl,
+    sendPluginThreadMessage,
     publishSignal,
     reportNeedsConfiguration,
     isAgentToolNameTaken,
@@ -1087,9 +1093,14 @@ export function createPluginApi(options: {
         );
       }
       const auth = opts?.auth ?? "local";
-      if (auth !== "local" && auth !== "token" && auth !== "none") {
+      if (
+        auth !== "local" &&
+        auth !== "token" &&
+        auth !== "capability" &&
+        auth !== "none"
+      ) {
         throw new Error(
-          `invalid auth mode "${String(auth)}" for ${normalizedMethod} ${path} — use "local", "token", or "none"`,
+          `invalid auth mode "${String(auth)}" for ${normalizedMethod} ${path} — use "local", "token", "capability", or "none"`,
         );
       }
       if (
@@ -1122,6 +1133,14 @@ export function createPluginApi(options: {
         p6rPrincipalKeyForSubject: (subject) =>
           p6rIdentityProviderLease!.p6rPrincipalKeyForSubject(subject),
       };
+    },
+  };
+
+  const experimentalThreadMessages: P6rExperimentalPluginThreadMessages = {
+    async send(args) {
+      assertLive();
+      await sendPluginThreadMessage(pluginId, args);
+      return { ok: true };
     },
   };
 
@@ -1754,6 +1773,7 @@ export function createPluginApi(options: {
     storage,
     http,
     p6rIdentity,
+    experimental_threadMessages: experimentalThreadMessages,
     rpc,
     realtime,
     background,

@@ -102,9 +102,37 @@ export const systemExecutionOptionsQuerySchema = z
   .object({
     ...systemProviderHostQueryFields,
     providerId: z.string().min(1),
+    /** Skip provider-wide discovery and load only `providerId`'s catalog. */
+    experimental_targeted: z.literal("true"),
+    /** Workspace path for a targeted primary/explicit-host catalog route. */
+    experimental_workspacePath: z.string().min(1),
   })
   .partial()
-  .superRefine(rejectMultipleProviderHostSelectors);
+  .superRefine((query, context) => {
+    rejectMultipleProviderHostSelectors(query, context);
+    if (
+      query.experimental_workspacePath !== undefined &&
+      query.experimental_targeted !== "true"
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "experimental_workspacePath requires experimental_targeted=true",
+        path: ["experimental_workspacePath"],
+      });
+    }
+    if (
+      query.experimental_workspacePath !== undefined &&
+      query.environmentId !== undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "experimental_workspacePath cannot be combined with environmentId",
+        path: ["experimental_workspacePath"],
+      });
+    }
+  });
 
 export type SystemExecutionOptionsQuery = z.infer<
   typeof systemExecutionOptionsQuerySchema

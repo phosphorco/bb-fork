@@ -379,6 +379,40 @@ async function createQueuedMessageForThread(
   return toThreadQueuedMessage(queuedMessage);
 }
 
+export async function sendAuthoredThreadMessage(
+  deps: AppDeps,
+  args: {
+    threadId: string;
+    payload: SendMessageRequest;
+    p6rActor: P6rActorSnapshot;
+  },
+): Promise<void> {
+  const thread = requirePublicThread(deps.db, args.threadId);
+  const shouldQueue =
+    thread.status === "active" &&
+    (args.payload.mode === "queue-if-active" ||
+      (args.payload.mode !== "start" &&
+        isManualCompactionActive(deps, thread)));
+  if (shouldQueue) {
+    ensureThreadIsNotAwaitingUserInteraction(deps, thread.id);
+    await createQueuedMessageForThread(deps, {
+      p6rActor: args.p6rActor,
+      payload: queuedMessagePayloadFromSendRequest(args.payload),
+      thread,
+    });
+    return;
+  }
+  const environment = await requireThreadCommandEnvironment(deps, { thread });
+  await sendThreadMessage(deps, {
+    p6rActor: args.p6rActor,
+    p6rActorHandle: args.p6rActor.p6rHandle,
+    environment,
+    payload: args.payload,
+    thread,
+    trigger: "user",
+  });
+}
+
 export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
   const { post, patch, del } = typedRoutes<PublicApiSchema>(app, {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
@@ -386,31 +420,11 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
   const routes = publicApiRoutes.threads;
 
   post(routes.send, async (context, payload) => {
-    const thread = requirePublicThread(deps.db, context.req.param("id"));
     const p6rActor = requireP6rRequestPrincipal(context as unknown as Context);
-    const shouldQueue =
-      thread.status === "active" &&
-      (payload.mode === "queue-if-active" ||
-        (payload.mode !== "start" && isManualCompactionActive(deps, thread)));
-    if (shouldQueue) {
-      ensureThreadIsNotAwaitingUserInteraction(deps, thread.id);
-      await createQueuedMessageForThread(deps, {
-        p6rActor,
-        payload: queuedMessagePayloadFromSendRequest(payload),
-        thread,
-      });
-      return context.json({ ok: true });
-    }
-    const environment = await requireThreadCommandEnvironment(deps, {
-      thread,
-    });
-    await sendThreadMessage(deps, {
-      p6rActor,
-      p6rActorHandle: p6rActor.p6rHandle,
-      environment,
+    await sendAuthoredThreadMessage(deps, {
+      threadId: context.req.param("id"),
       payload,
-      thread,
-      trigger: "user",
+      p6rActor,
     });
     return context.json({ ok: true });
   });

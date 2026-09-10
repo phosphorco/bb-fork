@@ -1882,36 +1882,50 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
             return { providerThreadId: currentProviderThreadId };
           }
 
-          const result = await sendCommand({
-            proc,
-            message: plan,
-            resultSchema: threadIdentityResultSchema,
-            recovery: {
-              providerId,
-              providerThreadId: adapterCommand.providerThreadId,
-              threadId,
-            },
-          });
-          const resolvedId =
-            resolveThreadIdentityResult({ result, threadId }) ??
-            providerThreadId ??
-            threadIdentityRegistry.getProviderThreadId(threadId);
-          if (!resolvedId) {
-            throw new Error(
-              `Provider resume did not return a thread id for ${threadId}`,
-            );
-          }
-          recordProviderThreadIdentity(proc, threadId, resolvedId);
-          updateSessionRestoreCapability(threadId, result.sessionRestorable);
-          emitAcceptedCommandEvents({
-            command: adapterCommand,
-            proc,
-            providerThreadId: resolvedId,
-            sourceThreadId: threadId,
-          });
+          try {
+            const result = await sendCommand({
+              proc,
+              message: plan,
+              resultSchema: threadIdentityResultSchema,
+              recovery: {
+                providerId,
+                providerThreadId: adapterCommand.providerThreadId,
+                threadId,
+              },
+            });
+            const resolvedId =
+              resolveThreadIdentityResult({ result, threadId }) ??
+              providerThreadId ??
+              threadIdentityRegistry.getProviderThreadId(threadId);
+            if (!resolvedId) {
+              throw new Error(
+                `Provider resume did not return a thread id for ${threadId}`,
+              );
+            }
+            recordProviderThreadIdentity(proc, threadId, resolvedId);
+            updateSessionRestoreCapability(threadId, result.sessionRestorable);
+            emitAcceptedCommandEvents({
+              command: adapterCommand,
+              proc,
+              providerThreadId: resolvedId,
+              sourceThreadId: threadId,
+            });
 
-          markHostedProviderSessionIdle(threadId);
-          return { providerThreadId: resolvedId };
+            markHostedProviderSessionIdle(threadId);
+            return { providerThreadId: resolvedId };
+          } catch (resumeError) {
+            // A durable identity is not a live session. Failed construction
+            // must not make hasThread skip the next on-use resume attempt.
+            forgetThreadRuntimeStateForProviderState(proc.identity, threadId);
+            try {
+              await releaseIdleProviderProcess(proc);
+            } catch (shutdownError) {
+              options.onStderr?.(
+                `Failed to stop the provider after thread "${threadId}" resume failed: ${shutdownError instanceof Error ? shutdownError.message : String(shutdownError)}`,
+              );
+            }
+            throw resumeError;
+          }
         },
       });
     },

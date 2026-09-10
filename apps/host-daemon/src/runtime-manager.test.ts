@@ -1296,6 +1296,64 @@ describe("RuntimeManager", () => {
     );
   });
 
+  it("resolves shell environments independently from each workspace", async () => {
+    const provisionWorkspace = vi.fn(async (options: ProvisionWorkspaceArgs) =>
+      createFakeWorkspace(getProvisionWorkspacePath(options)),
+    );
+    const createRuntime = vi.fn(() => createFakeRuntime());
+    const resolveWorkspaceShellEnv = vi.fn(async (workspacePath: string) => ({
+      PATH: `/bb-bin:${workspacePath}/node_modules/.bin:${workspacePath}/toolchain:/usr/bin`,
+      BB_CLI: "/bb-bin/bb",
+      BB_SERVER_URL: "http://127.0.0.1:3334",
+    }));
+    const manager = new RuntimeManager({
+      provisionWorkspace,
+      createRuntime,
+      resolveWorkspaceShellEnv,
+      shellEnv: {
+        PATH: "/bb-bin:/machine/node-22.12/bin:/usr/bin",
+        BB_CLI: "/bb-bin/bb",
+        BB_SERVER_URL: "http://127.0.0.1:3334",
+      },
+    });
+
+    await manager.ensureEnvironment({
+      environmentId: "env-a",
+      workspacePath: "/tmp/workspace-a",
+    });
+    await manager.ensureEnvironment({
+      environmentId: "env-b",
+      workspacePath: "/tmp/workspace-b",
+    });
+
+    expect(resolveWorkspaceShellEnv.mock.calls).toEqual([
+      ["/tmp/workspace-a"],
+      ["/tmp/workspace-b"],
+    ]);
+    expect(createRuntime).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        env: {
+          PATH: "/bb-bin:/tmp/workspace-a/node_modules/.bin:/tmp/workspace-a/toolchain:/usr/bin",
+        },
+        shellEnv: expect.objectContaining({
+          PATH: "/bb-bin:/tmp/workspace-a/node_modules/.bin:/tmp/workspace-a/toolchain:/usr/bin",
+        }),
+      }),
+    );
+    expect(createRuntime).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        env: {
+          PATH: "/bb-bin:/tmp/workspace-b/node_modules/.bin:/tmp/workspace-b/toolchain:/usr/bin",
+        },
+        shellEnv: expect.objectContaining({
+          PATH: "/bb-bin:/tmp/workspace-b/node_modules/.bin:/tmp/workspace-b/toolchain:/usr/bin",
+        }),
+      }),
+    );
+  });
+
   it("recreates the provider maintenance runtime after base shell env changes", async () => {
     const dataDir = await makeTempDir("bb-provider-maintenance-");
     const firstRuntime = createFakeRuntime();

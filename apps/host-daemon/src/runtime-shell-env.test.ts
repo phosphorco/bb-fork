@@ -266,6 +266,7 @@ describe("resolveUserShellPath", () => {
 
     await expect(
       resolveUserShellPath({
+        cwd: "/tmp/workspace-a",
         env: { SHELL: "/usr/bin/bash", PATH: "/usr/bin" },
         platform: "linux",
         spawnUserShellEnv: fakeSpawn.spawn,
@@ -280,6 +281,7 @@ describe("resolveUserShellPath", () => {
           "-ilc",
           "printf '%s\\n' __BB_SHELL_ENV_START__; env; printf '%s\\n' __BB_SHELL_ENV_END__",
         ],
+        cwd: "/tmp/workspace-a",
         env: { SHELL: "/usr/bin/bash", PATH: "/usr/bin" },
         timeoutMs: 1234,
       },

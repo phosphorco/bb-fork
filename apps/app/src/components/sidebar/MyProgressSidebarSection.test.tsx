@@ -12,18 +12,27 @@ import {
   CORE_PARTICIPANTS_FACET_TYPE_ID,
   p6rPrincipalKeySchema,
 } from "@bb/domain";
+import type { ThreadListEntry } from "@bb/domain";
 import type {
   ThreadFacetQueryResponse,
   ThreadFacetQueryThread,
 } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BbHttpError, sdk } from "@/lib/sdk";
+import { useSidebarNavigationThreadSelection } from "@/hooks/queries/sidebar-navigation-query";
 import { MY_PROGRESS_SAVED_FACET_QUERY } from "@/hooks/queries/my-progress-query";
 import {
   MY_PROGRESS_LAST_KNOWN_STATUS,
   MY_PROGRESS_UNAVAILABLE_STATUS,
   MyProgressSidebarSection,
 } from "./MyProgressSidebarSection";
+
+vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+  useSidebarNavigationThreadSelection: vi.fn(() => ({
+    data: undefined,
+    isBootstrapPending: false,
+  })),
+}));
 
 vi.mock("@/hooks/useRealtimeSubscription", async (importOriginal) => {
   const actual =
@@ -40,12 +49,12 @@ vi.mock("./ThreadRow", () => ({
     facetParticipantSummary,
     thread,
   }: {
-    facetParticipantSummary: { totalCount: number };
+    facetParticipantSummary?: { totalCount: number };
     thread: ThreadFacetQueryThread;
   }) => (
     <div
       data-testid={`facet-thread-${thread.id}`}
-      data-participant-count={facetParticipantSummary.totalCount}
+      data-participant-count={facetParticipantSummary?.totalCount}
     >
       {thread.title}
     </div>
@@ -123,13 +132,23 @@ function response(args?: {
   };
 }
 
-function renderSection() {
+function renderSection(
+  args: {
+    activeThreadId?: string;
+    activeThread?: ThreadListEntry;
+  } = {},
+) {
+  vi.mocked(useSidebarNavigationThreadSelection).mockReturnValue({
+    data: args.activeThread,
+    isBootstrapPending: false,
+  });
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={client}>
       <MyProgressSidebarSection
+        activeThreadId={args.activeThreadId}
         disabled
         isCollapsed={false}
         onToggleCollapsed={vi.fn()}
@@ -144,6 +163,64 @@ afterEach(() => {
 });
 
 describe("My progress sidebar collection", () => {
+  it("inserts a canonical active sidebar thread when the facet omits it", async () => {
+    vi.spyOn(sdk.threads, "queryFacets").mockResolvedValueOnce(
+      response({ threads: [thread("thr_other", "Other")] }),
+    );
+    renderSection({
+      activeThreadId: "thr_active",
+      activeThread: thread("thr_active", "Current"),
+    });
+
+    await screen.findByText("Other");
+    expect(
+      screen.getAllByTestId(/^facet-thread-/u).map((row) => row.textContent),
+    ).toEqual(["Current", "Other"]);
+  });
+
+  it("keeps the active thread visible while the facet is loading", () => {
+    vi.spyOn(sdk.threads, "queryFacets").mockReturnValueOnce(
+      new Promise<ThreadFacetQueryResponse>(() => undefined),
+    );
+    renderSection({
+      activeThreadId: "thr_active",
+      activeThread: thread("thr_active", "Current"),
+    });
+
+    expect(screen.getByText("Current")).not.toBeNull();
+    expect(screen.getByLabelText("Loading more My progress")).not.toBeNull();
+  });
+
+  it("keeps the active thread visible alongside a facet error", async () => {
+    vi.spyOn(sdk.threads, "queryFacets").mockRejectedValueOnce(
+      new Error("network down"),
+    );
+    renderSection({
+      activeThreadId: "thr_active",
+      activeThread: thread("thr_active", "Current"),
+    });
+
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "My progress unavailable",
+    );
+    expect(screen.getByText("Current")).not.toBeNull();
+  });
+
+  it("moves an active facet thread to the top without changing the remaining order", async () => {
+    vi.spyOn(sdk.threads, "queryFacets").mockResolvedValueOnce(
+      response({
+        threads: [thread("thr_other", "Other"), thread("thr_active", "Active")],
+      }),
+    );
+    renderSection({ activeThreadId: "thr_active" });
+
+    expect(
+      (await screen.findAllByTestId(/^facet-thread-/u)).map(
+        (row) => row.textContent,
+      ),
+    ).toEqual(["Active", "Other"]);
+  });
+
   it("owns loading, server page order, empty continuation, and explicit pagination", async () => {
     let resolveFirstPage:
       | ((value: ThreadFacetQueryResponse) => void)

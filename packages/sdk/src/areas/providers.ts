@@ -15,10 +15,21 @@ export type ProviderListArgs = ProviderHostRoutingArgs & {
   capability?: SystemProvidersQuery["capability"];
   signal?: AbortSignal;
 };
-export type ProviderModelsArgs = ProviderHostRoutingArgs & {
-  providerId?: string;
-  signal?: AbortSignal;
-};
+export type ProviderModelsArgs = ProviderHostRoutingArgs &
+  (
+    | {
+        /** Load only `providerId`; avoids provider-wide discovery. */
+        experimental_targeted: true;
+        /** Workspace for primary/explicit-host workspace-scoped catalogs. */
+        experimental_workspacePath?: string;
+        providerId: string;
+      }
+    | {
+        experimental_targeted?: false;
+        experimental_workspacePath?: never;
+        providerId?: string;
+      }
+  ) & { signal?: AbortSignal };
 
 export type ProviderListResult = SystemProviderInfo[];
 export type ProviderModelsResult = SystemExecutionOptionsResponse;
@@ -55,6 +66,10 @@ export function createProvidersArea(args: CreateSdkAreaArgs): ProvidersArea {
               environmentId: input.environmentId,
               hostId: input.hostId,
               providerId: input.providerId,
+              experimental_targeted: input.experimental_targeted
+                ? "true"
+                : undefined,
+              experimental_workspacePath: input.experimental_workspacePath,
             },
           },
           ...signalRequestArgs(input.signal),

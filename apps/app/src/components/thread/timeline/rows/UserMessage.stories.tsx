@@ -552,6 +552,7 @@ export function Overview() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             p6rShowAuthor={false}
@@ -582,6 +583,7 @@ export function Overview() {
         >
           <TimelineStage>
             <ConversationMessageContent
+              p6rActor={null}
               p6rActorHandle={null}
               role="user"
               p6rShowAuthor={false}
@@ -606,6 +608,7 @@ export function Overview() {
       >
         <TimelineStage>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             originKind={null}
@@ -627,6 +630,7 @@ export function Overview() {
       <StoryRow label="short">
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             originKind={null}
@@ -651,6 +655,7 @@ export function Overview() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             originKind={null}
@@ -676,6 +681,7 @@ export function Overview() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             originKind={null}
@@ -700,6 +706,7 @@ export function Overview() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             originKind={null}
@@ -724,6 +731,7 @@ export function Overview() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             originKind={null}
@@ -745,6 +753,7 @@ export function Overview() {
       <StoryRow label="with image" hint="single localImage attachment">
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             originKind={null}
@@ -770,6 +779,7 @@ export function Overview() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             originKind={null}
@@ -802,6 +812,7 @@ export function Overview() {
       >
         <TimelineStage>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             originKind={null}
@@ -827,6 +838,7 @@ export function Overview() {
       >
         <TimelineStage>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             originKind={null}
@@ -853,6 +865,7 @@ export function Overview() {
       >
         <div className="flex w-full max-w-[760px] flex-col gap-3">
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             originKind={null}
@@ -871,6 +884,7 @@ export function Overview() {
             turnRequest={acceptedSteer}
           />
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             originKind={null}
@@ -895,6 +909,7 @@ export function Overview() {
       >
         <TimelineStage>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             originKind={null}
@@ -919,6 +934,7 @@ export function Overview() {
       >
         <TimelineStage>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             originKind={null}
@@ -943,6 +959,7 @@ export function Overview() {
       >
         <TimelineStage>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             originKind={null}
@@ -1005,6 +1022,7 @@ export function ActionOverflow() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             p6rShowAuthor={false}
@@ -1028,6 +1046,7 @@ export function ActionOverflow() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             p6rShowAuthor={false}
@@ -1053,6 +1072,7 @@ export function ActionOverflow() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             p6rShowAuthor={false}
@@ -1079,6 +1099,7 @@ export function ActionOverflow() {
       >
         <TimelineStage revealMessageActions>
           <ConversationMessageContent
+            p6rActor={null}
             p6rActorHandle={null}
             role="user"
             p6rShowAuthor={false}
@@ -1110,6 +1131,7 @@ export function ParentChildSystemMessages() {
         <StoryRow key={fixture.label} label={fixture.label} hint={fixture.hint}>
           <TimelineStage>
             <ConversationMessageContent
+              p6rActor={null}
               p6rActorHandle={null}
               role="user"
               p6rShowAuthor={false}

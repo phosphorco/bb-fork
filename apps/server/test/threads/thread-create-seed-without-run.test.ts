@@ -1003,6 +1003,60 @@ describe("thread creation child-thread boundary validation", () => {
     });
   });
 
+  it("allows a hidden plugin worker to reuse a switched personal environment", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps, {
+        id: "host-personal-plugin-worker-environment",
+      });
+      ensurePersonalProject(harness.db);
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/personal-plugin-worker",
+        projectId: PERSONAL_PROJECT_ID,
+        workspaceProvisionType: "unmanaged",
+      });
+
+      const worker = await createThreadFromRequest(harness.deps, {
+        environment: {
+          type: "reuse",
+          environmentId: environment.id,
+        },
+        input: textInput("Review the switched personal environment"),
+        origin: "plugin",
+        originPluginId: "perspectives",
+        projectId: PERSONAL_PROJECT_ID,
+        providerId: "codex",
+        startedOnBehalfOf: null,
+        visibility: "hidden",
+      });
+
+      expect(getThread(harness.db, worker.id)?.environmentId).toBe(
+        environment.id,
+      );
+
+      await expect(
+        createThreadFromRequest(harness.deps, {
+          environment: {
+            type: "reuse",
+            environmentId: environment.id,
+          },
+          input: textInput("Visible plugin root"),
+          origin: "plugin",
+          originPluginId: "perspectives",
+          projectId: PERSONAL_PROJECT_ID,
+          providerId: "codex",
+          startedOnBehalfOf: null,
+          visibility: "visible",
+        }),
+      ).rejects.toMatchObject({
+        body: {
+          message: "Personal project threads must reuse a personal workspace",
+        },
+        status: 409,
+      });
+    });
+  });
+
   it("rejects a personal fork that reuses a different unmanaged environment", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps, {

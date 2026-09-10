@@ -656,6 +656,23 @@ export function useThread(id: string, options?: QueryOptions) {
   });
 }
 
+/**
+ * Participant cardinality from the app-shell-owned sidebar bootstrap. The
+ * selector returns one primitive so unrelated sidebar patches do not rerender
+ * the open timeline. Undefined means the bootstrap has no row for this thread
+ * (for example, a hidden embedded thread), not zero participants.
+ */
+export function useP6rThreadParticipantCount(
+  threadId: string,
+): number | undefined {
+  const selectParticipantCount = useCallback(
+    (threads: ThreadListEntry[]) =>
+      threads.find((thread) => thread.id === threadId)?.participants?.length,
+    [threadId],
+  );
+  return useSidebarNavigationThreadSelection(selectParticipantCount).data;
+}
+
 // A thread primed from the sidebar list cache has no spawn-policy flag (the
 // list response omits it). Conservatively hide the spawn affordance on the
 // placeholder; the real single-thread response, which carries the server-

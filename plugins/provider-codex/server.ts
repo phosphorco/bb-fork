@@ -31,6 +31,7 @@ export default function plugin(bb: BbPluginApi) {
     id: "codex",
     displayName: "Codex",
     icon: "./icons/codex.svg",
+    experimental_env: { passthrough: ["CODEX_APP_SERVER_EXECUTABLE"] },
     experimental_strings: {
       signInHint: "Run `codex` on the machine to sign in.",
       expiredHint: "Your Codex session expired. Run `codex`, then reload.",

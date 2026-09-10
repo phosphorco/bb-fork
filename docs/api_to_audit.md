@@ -1305,6 +1305,27 @@ deliberately: it mounts once, and a crash there should disable it everywhere.
 Confirm that split before stabilizing, and decide whether other multi-mount
 slots need the same treatment.
 
+## `bb.experimental_threadMessages` (`@get-bb/plugin-sdk`)
+
+**What it does.** Lets a trusted backend plugin send one plain-text user
+message to an existing thread as a server-authored, plugin-qualified external
+actor. Core composes the principal namespace from the owning plugin id and the
+plugin's stable subject; the plugin supplies only presentation and cannot
+select a provider id or PrincipalKey. The method exposes `auto`, `steer`, and
+`queue` modes and reuses the native authored-message path.
+
+**Audit before stabilizing.**
+
+1. **Scope.** Confirm plain text is sufficient. Attachments, mentions, model
+   overrides, and permission changes are deliberately unavailable.
+2. **Authority.** Confirm full-trust backend plugins may mint principals only
+   inside their own namespace, and that actor presentation limits remain
+   strict enough for roster and timeline consumers.
+3. **Lifecycle.** Confirm plugin reload, disable, or uninstall needs no actor
+   cleanup beyond historical snapshots already referenced by thread events.
+4. **Modes.** Confirm the public `queue` spelling should remain a simplified
+   alias of core's `queue-if-active` behavior.
+
 ## Experimental thread execution facets and override batches (`@bb/sdk`)
 
 **What they do.** `threads.queryFacets({ experimental_includeExecution: true })`
@@ -1347,3 +1368,13 @@ candidate set before hydration.
    projection, `bb thread update` can set or clear each sticky override, and
    `bb thread execution preflight|apply` exposes the two-phase batch protocol
    for JSON composition. Confirm that this remains the right operator surface.
+8. **Targeted catalog discovery.** `providers.models({
+   experimental_targeted: true, providerId, ...route })` preserves the normal
+   execution-options response envelope while returning an empty provider roster
+   and probing only the requested provider. Confirm whether this should become
+   the default behavior whenever `providerId` is explicit before stabilizing
+   the option.
+9. **Exact review fields.** Ready preflight rows include the final override
+   values, resolved next-turn effective model/reasoning, and an authoritative
+   `unchanged` flag. Confirm these duplicated derived fields remain worthwhile
+   for non-UI SDK consumers.

@@ -43,6 +43,11 @@ export const threadActivityStateSchema = z.object({
   activeWorkflowCount: z.number().int().nonnegative(),
   activeBackgroundAgentCount: z.number().int().nonnegative(),
   activeBackgroundCommandCount: z.number().int().nonnegative(),
+  /**
+   * Newest start among active provider-backgrounded shell commands. Omitted by
+   * older servers and null when no such command is active.
+   */
+  newestActiveBackgroundCommandStartedAt: z.number().nullable().optional(),
   activePlanModeCount: z.number().int().nonnegative(),
   activeGoalCount: z.number().int().nonnegative(),
 });

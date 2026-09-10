@@ -192,6 +192,8 @@ export interface ThreadTimelineRowsProps {
   onOpenPluginPanel?: ThreadTimelineOpenPluginPanelHandler;
   onTitleAction?: TimelineTitleActionResolver;
   projectId?: string;
+  /** Known durable participant count; undefined when this surface has no roster. */
+  p6rParticipantCount?: number;
   resolveMentionLink?: PromptMentionLinkResolver;
   resolveImageViewSrc?: ThreadTimelineImageViewSrcResolver;
   resolveUserAttachmentImageSrc?: UserAttachmentImageSrcResolver;
@@ -263,7 +265,7 @@ interface TimelineRendererStaticContextValue {
   resolveMentionLink: PromptMentionLinkResolver | undefined;
   resolveSegmentLinkHref: TimelineTitleLinkResolver | undefined;
   resolveUserAttachmentImageSrc: UserAttachmentImageSrcResolver | undefined;
-  /** True when 2+ distinct authors are loaded; user rows then show author chips. */
+  /** True when the roster or loaded rows identify multiple participants. */
   p6rShowMessageAuthors: boolean;
   threadId: string | undefined;
   workspaceRootPath: string | undefined;
@@ -827,14 +829,18 @@ function isForkSeedAnchorRow(row: TimelineConversationViewRow): boolean {
 }
 
 /**
- * Whether the loaded timeline shows more than one distinct human author
- * (2+ distinct non-null `p6rActorHandle`s on user rows). Single-author threads
- * stay chip-free so the classic solo layout is untouched; the moment a second
- * collaborator's message loads, every attributed user row gains its author.
+ * Whether attributed user rows need author labels. The durable roster is the
+ * primary signal so labels do not depend on which timeline page is loaded.
+ * Hidden/embedded threads without a roster fall back to distinct loaded actor
+ * handles. A single-participant thread keeps the classic solo layout.
  */
-export function p6rTimelineHasMultipleMessageAuthors(
+export function p6rShouldShowTimelineMessageAuthors(
   rows: readonly ThreadTimelineViewRow[],
+  p6rParticipantCount: number | undefined,
 ): boolean {
+  if (p6rParticipantCount !== undefined && p6rParticipantCount > 1) {
+    return true;
+  }
   const handles = new Set<string>();
 
   const visitRows = (
@@ -1209,6 +1215,7 @@ const ConversationRowContent = memo(function ConversationRowContent({
       : undefined;
     return (
       <ConversationMessageContent
+        p6rActor={row.p6rActor}
         p6rActorHandle={row.p6rActorHandle}
         attachments={row.attachments}
         originKind={originKind}
@@ -2341,8 +2348,8 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
   const projectId = props.projectId;
   const senderThreadMetadataById = useSenderThreadMetadataById();
   const p6rShowMessageAuthors = useMemo(
-    () => p6rTimelineHasMultipleMessageAuthors(rows),
-    [rows],
+    () => p6rShouldShowTimelineMessageAuthors(rows, props.p6rParticipantCount),
+    [props.p6rParticipantCount, rows],
   );
   // Single plugin-slot subscription for the whole timeline; messages read the
   // stable registry from context instead of each opening a store subscription.

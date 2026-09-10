@@ -146,14 +146,15 @@ message agents, or inspect projects, providers, and environments.
   long timelines and large expanded timeline details. Change it with
   `bb settings experiment timelineWindowing <true|false>`.
 - Thread timeline windows are capped by event count as well as by user-message
-  count (`BB_FF_TIMELINE_WINDOW_EVENT_BUDGET`, default 1500), because a thread
+  count (`BB_FF_TIMELINE_WINDOW_EVENT_BUDGET`, default 256), because a thread
   with few user messages but many events would otherwise reproject its whole
   history on every timeline request, blocking the server event loop and
   delaying the daemon endpoints the agent awaits between tool calls. A turn
-  still running is cut at the budget as well, so a very long turn costs the
-  budget per update rather than growing without limit; a finished turn is
-  rendered whole. Older activity loads automatically as you scroll toward the
-  top; nothing becomes unreachable.
+  still running or completed is cut at the budget, so a very long turn costs the
+  budget per update rather than growing without limit. Older activity loads
+  automatically as you scroll toward the top; nothing becomes unreachable.
+  Parented or delegated aggregates that cross a cut remain whole until nested
+  pagination is available.
 
 ## Agent Instructions
 

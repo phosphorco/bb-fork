@@ -1,5 +1,6 @@
 import type { DbConnection } from "@bb/db";
 import type { DynamicTool, Thread } from "@bb/domain";
+import type { P6rExperimentalPluginThreadMessages } from "@get-bb/plugin-sdk";
 import type { HostDaemonConnectTunnelIdentity } from "@bb/host-daemon-contract";
 import {
   pluginUpdateCheckEntrySchema,
@@ -23,9 +24,7 @@ import type { ProviderRegistryService } from "../providers/provider-registry.js"
 import type { PluginHostArtifactRegistry } from "./plugin-host-artifact-registry.js";
 export type {
   PluginHandlerStats,
-
   PluginRuntimeStatus,
-
   PluginUpdateCheckEntry,
 } from "@bb/server-contract";
 
@@ -71,6 +70,11 @@ export interface PluginServiceDeps {
     "p6rStageProvider"
   >;
   db: DbConnection;
+  /** Server-owned authored-message seam; omitted by isolated plugin tests. */
+  sendPluginThreadMessage?: (
+    pluginId: string,
+    args: Parameters<P6rExperimentalPluginThreadMessages["send"]>[0],
+  ) => Promise<void>;
   /** Omitted only by isolated plugin-runtime tests without a daemon plane. */
   sharedPorts?: Pick<
     HostSharedPortCoordinator,

@@ -49,6 +49,9 @@ const WIRE_SOURCE = `
     bb.http.route("GET", "/open", (c: any) => c.json({ open: true }), {
       auth: "none",
     });
+    bb.http.route("GET", "/capability", (c: any) => c.json({ capability: true }), {
+      auth: "capability",
+    });
     bb.http.route("GET", "/boom", () => {
       throw new Error("route boom");
     });
@@ -387,6 +390,60 @@ describe("plugin wire surfaces (http/rpc dispatcher + realtime)", () => {
       { headers: { origin: EVIL_ORIGIN, "x-bb-plugin-token": token } },
     );
     expect(providerNotApplicableToken.status).toBe(200);
+  });
+
+  it("lets only capability routes override a rejected ambient identity", async () => {
+    const issued = await harness.app.request(
+      `${BASE}/api/v1/plugins/wire/token`,
+      { method: "POST" },
+    );
+    const { token } = (await issued.json()) as { token: string };
+    const api = harness.pluginService.getApi("wire");
+    if (!api) throw new Error("wire plugin API was not loaded");
+    api.p6rIdentity.registerProvider({
+      id: "rejecting",
+      resolve: () => ({ kind: "reject" }),
+    });
+
+    const open = await harness.app.request(
+      "http://100.64.158.8:3334/api/v1/plugins/wire/http/open",
+      { headers: { origin: EVIL_ORIGIN } },
+    );
+    expect(open.status).toBe(401);
+
+    const identity = await harness.app.request(
+      "http://100.64.158.8:3334/api/v1/plugins/wire/http/identity",
+      { headers: { origin: "http://100.64.158.8:3334" } },
+    );
+    expect(identity.status).toBe(401);
+
+    const validToken = await harness.app.request(
+      "http://100.64.158.8:3334/api/v1/plugins/wire/http/guarded",
+      { headers: { origin: EVIL_ORIGIN, "x-bb-plugin-token": token } },
+    );
+    expect(validToken.status).toBe(401);
+
+    const invalidToken = await harness.app.request(
+      "http://100.64.158.8:3334/api/v1/plugins/wire/http/guarded",
+      { headers: { origin: EVIL_ORIGIN, "x-bb-plugin-token": "wrong" } },
+    );
+    expect(invalidToken.status).toBe(401);
+
+    const capability = await harness.app.request(
+      "http://100.64.158.8:3334/api/v1/plugins/wire/http/capability",
+      { headers: { origin: EVIL_ORIGIN } },
+    );
+    expect(capability.status).toBe(200);
+    expect(await capability.json()).toEqual({ capability: true });
+
+    const coreApi = await harness.app.request(
+      "http://100.64.158.8:3334/api/v1/plugins",
+    );
+    expect(coreApi.status).toBe(401);
+    expect(await coreApi.json()).toEqual({
+      code: "unauthorized",
+      message: "The request has no authenticated identity for this access path",
+    });
   });
 
   it("local auth requires application/json on non-GET requests", async () => {

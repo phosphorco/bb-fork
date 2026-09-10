@@ -63,6 +63,8 @@ export interface ThreadTimelineSurfaceProps {
   onOpenPluginPanel?: ThreadTimelineOpenPluginPanelHandler;
   onTitleAction?: TimelineTitleActionResolver;
   projectId?: string;
+  /** Known durable participant count; undefined when this surface has no roster. */
+  p6rParticipantCount?: number;
   resolveMentionLink?: PromptMentionLinkResolver;
   showOngoingIndicator: boolean;
   ongoingIndicatorLabel?: string;
@@ -165,6 +167,7 @@ export function ThreadTimelineSurface({
   onOpenPluginPanel,
   onTitleAction,
   projectId,
+  p6rParticipantCount,
   resolveMentionLink,
   showOngoingIndicator,
   ongoingIndicatorLabel,
@@ -239,6 +242,7 @@ export function ThreadTimelineSurface({
           onOpenPluginPanel={onOpenPluginPanel}
           onTitleAction={onTitleAction}
           projectId={projectId}
+          p6rParticipantCount={p6rParticipantCount}
           resolveMentionLink={resolveMentionLink}
           resolveUserAttachmentImageSrc={toUserAttachmentImageSrc}
           hasOlderTimelineRows={hasOlderTimelineRows}

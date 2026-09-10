@@ -595,19 +595,82 @@ describe("in-turn timeline windows", () => {
     );
   });
 
-  it("keeps a finished turn whole under the event-count budget", () => {
+  it("pages a finished turn under the event-count budget", () => {
     const { db, thread } = setup();
     seedTurns(db, thread, { completeLastTurn: true, itemsPerTurn: [300] });
 
-    const budgeted = buildPage(db, thread, 100, null);
-
-    // The event-count budget keeps the completed summary whole. The separate
-    // byte budget can still cut it when its stored source data is too large.
-    expect(budgeted.response.timelinePage.hasOlderRows).toBe(false);
-    expect(budgeted.response.timelinePage.olderCursor).toBeNull();
-    expect(budgeted.response.rows).toEqual(
-      buildPage(db, thread, LARGE_BUDGET, null).response.rows,
+    const oracle = buildNestedPage(db, thread, LARGE_BUDGET, null);
+    const oracleTurn = oracle.response.rows.find((row) => row.kind === "turn");
+    expect(oracleTurn?.kind).toBe("turn");
+    if (oracleTurn?.kind !== "turn") {
+      throw new Error("expected the unbudgeted turn summary");
+    }
+    const oracleDetails = buildTimelineTurnSummaryDetails(db, thread, {
+      includeProviderUnhandledOperations: false,
+      sourceSeqEnd: oracleTurn.sourceSeqEnd,
+      sourceSeqStart: oracleTurn.sourceSeqStart,
+      turnId: oracleTurn.turnId,
+    });
+    const oracleDetailsById = new Map(
+      oracleDetails.rows.map((row) => [row.id, JSON.stringify(row)]),
     );
+
+    const budgetedDetailsById = new Map<string, string>();
+    const seenCursors = new Set<string>();
+    const seenRowIds = new Set<string>();
+    let cursor: TimelinePaginationCursor | null = null;
+    let maxEventRowCount = 0;
+    let pages = 0;
+    for (;;) {
+      const page = buildNestedPage(db, thread, 100, cursor);
+      pages += 1;
+      maxEventRowCount = Math.max(maxEventRowCount, page.profile.eventRowCount);
+      for (const row of page.response.rows) {
+        expect(seenRowIds.has(row.id), `duplicate row ${row.id}`).toBe(false);
+        seenRowIds.add(row.id);
+        if (row.kind !== "turn") {
+          continue;
+        }
+        const details = buildTimelineTurnSummaryDetails(db, thread, {
+          includeProviderUnhandledOperations: false,
+          sourceSeqEnd: row.sourceSeqEnd,
+          sourceSeqStart: row.sourceSeqStart,
+          turnId: row.turnId,
+        });
+        for (const detailRow of details.rows) {
+          if (detailRow.kind !== "work") {
+            continue;
+          }
+          expect(
+            budgetedDetailsById.has(detailRow.id),
+            `duplicate detail row ${detailRow.id}`,
+          ).toBe(false);
+          budgetedDetailsById.set(detailRow.id, JSON.stringify(detailRow));
+        }
+      }
+
+      if (!page.response.timelinePage.hasOlderRows) {
+        break;
+      }
+      const next = page.response.timelinePage.olderCursor;
+      expect(next).not.toBeNull();
+      const cursorKey = `${next!.anchorSeq}:${next!.anchorId}`;
+      expect(seenCursors.has(cursorKey), `cursor loop at ${cursorKey}`).toBe(
+        false,
+      );
+      seenCursors.add(cursorKey);
+      cursor = next;
+      expect(pages).toBeLessThan(20);
+    }
+
+    expect(pages).toBeGreaterThan(1);
+    expect(seenCursors.size).toBe(pages - 1);
+    expect(maxEventRowCount).toBeLessThan(oracle.profile.eventRowCount / 2);
+    expect(maxEventRowCount).toBeLessThanOrEqual(110);
+    expect([...budgetedDetailsById].sort()).toEqual(
+      [...oracleDetailsById].sort(),
+    );
+    expect(cursor?.anchorId).toMatch(new RegExp(`^${thread.id}:in-turn:\\d+$`));
   });
 
   it("pages through a finished turn that exceeds the event-data byte limit", () => {
@@ -959,22 +1022,22 @@ describe("in-turn timeline windows", () => {
 
   it("does not read past its cursor on an older page", () => {
     const { db, thread } = setup();
-    // Two small turns behind one huge finished turn. The huge turn is the page
-    // the cursor points at, and paging past it must not read it again.
+    // The huge finished turn is cut into sequence pages. Paging past the first
+    // page must not read events after that page's cursor again.
     seedTurns(db, thread, {
       completeLastTurn: true,
       itemsPerTurn: [5, 5, 400],
     });
 
     const latest = buildPage(db, thread, 100, null);
-    expect(latest.profile.eventRowCount).toBeGreaterThan(700);
+    expect(latest.profile.eventRowCount).toBeLessThanOrEqual(110);
     const cursor = latest.response.timelinePage.olderCursor;
     expect(cursor).not.toBeNull();
 
     const older = buildPage(db, thread, 100, cursor);
-    // Only the two small turns. Ending the read at the *next anchor past* the
-    // cursor instead would pull the 400-item turn back in to discard it.
-    expect(older.profile.eventRowCount).toBeLessThan(100);
+    // Ending the read at the *next anchor past* the cursor instead would pull
+    // events from the 400-item turn back in to discard them.
+    expect(older.profile.eventRowCount).toBeLessThanOrEqual(110);
     expect(
       older.response.rows.some((row) => row.sourceSeqStart > cursor!.anchorSeq),
     ).toBe(false);
@@ -1024,8 +1087,14 @@ describe("timeline segment anchors", () => {
     ]);
 
     const walked = walkAllPages(db, thread, 20);
+    const oracle = walkAllPages(db, thread, LARGE_BUDGET);
     expect(walked.pages).toBeGreaterThan(1);
-    expect(walked.rows).toEqual(walkAllPages(db, thread, LARGE_BUDGET).rows);
+    expect(walked.rows.some((row) => row.includes(":user-seed:1000"))).toBe(
+      true,
+    );
+    expect(walked.rows.filter((row) => !row.includes('"kind":"turn"'))).toEqual(
+      oracle.rows.filter((row) => !row.includes('"kind":"turn"')),
+    );
   });
 });
 

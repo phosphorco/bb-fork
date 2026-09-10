@@ -53,6 +53,7 @@ import {
 import {
   listSystemProviderInfos,
   resolveSystemExecutionOptions,
+  resolveTargetedSystemExecutionOptions,
 } from "../services/system/execution-options.js";
 import { getProviderStates } from "../services/system/provider-states.js";
 import { getProviderUsageLimits } from "../services/system/usage-limits.js";
@@ -474,9 +475,24 @@ export function registerSystemRoutes(
     context.json(await getProviderUsageLimits(deps, query)),
   );
 
-  get(routes.executionOptions, async (context, query) =>
-    context.json(await resolveSystemExecutionOptions(deps, query)),
-  );
+  get(routes.executionOptions, async (context, query) => {
+    if (query.experimental_targeted === "true") {
+      if (query.providerId === undefined) {
+        throw new ApiError(
+          400,
+          "invalid_request",
+          "experimental_targeted requires providerId",
+        );
+      }
+      return context.json(
+        await resolveTargetedSystemExecutionOptions(deps, {
+          ...query,
+          providerId: query.providerId,
+        }),
+      );
+    }
+    return context.json(await resolveSystemExecutionOptions(deps, query));
+  });
 
   post(routes.voiceTranscription, async (context) => {
     const formData = await context.req.formData();

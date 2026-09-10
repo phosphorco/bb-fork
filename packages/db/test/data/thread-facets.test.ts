@@ -1029,13 +1029,43 @@ describe("core participants facet", () => {
           p6rActorImageUrl: null,
           data: "{}",
         },
+        {
+          threadId: thread.id,
+          scope: threadScope(),
+          sequence: participants.length + 2,
+          type: "client/turn/requested",
+          itemId: null,
+          itemKind: null,
+          parentToolCallId: null,
+          p6rActorProviderId: "test-provider",
+          p6rActorSubject: "handle-only",
+          p6rActorHandle: "Legacy handle",
+          p6rActorDisplayName: null,
+          p6rActorImageUrl: null,
+          data: "{}",
+        },
+        {
+          threadId: thread.id,
+          scope: threadScope(),
+          sequence: participants.length + 3,
+          type: "client/turn/requested",
+          itemId: null,
+          itemKind: null,
+          parentToolCallId: null,
+          p6rActorProviderId: "test-provider",
+          p6rActorSubject: "display-only",
+          p6rActorHandle: null,
+          p6rActorDisplayName: "Legacy display",
+          p6rActorImageUrl: null,
+          data: "{}",
+        },
       ]);
 
       ensureCoreParticipantsProjection(db, [thread.id]);
       const all = listCoreParticipantProfilesByThreadIds(db, [thread.id]).get(
         thread.id,
       );
-      expect(all).toHaveLength(70);
+      expect(all).toHaveLength(72);
       expect(all?.slice(0, 4)).toEqual([
         {
           p6rPrincipalKey: p6rPrincipalKeyForActorSnapshot(oldA),
@@ -1060,7 +1090,25 @@ describe("core participants facet", () => {
       ]);
       expect(
         new Set(all?.map(({ p6rPrincipalKey }) => p6rPrincipalKey)).size,
-      ).toBe(70);
+      ).toBe(72);
+      expect(all?.slice(-2)).toEqual([
+        {
+          p6rPrincipalKey: p6rPrincipalKeyForActorSnapshot({
+            p6rProviderId: "test-provider",
+            p6rSubject: "handle-only",
+          }),
+          p6rDisplayName: "Legacy handle",
+          p6rImageUrl: null,
+        },
+        {
+          p6rPrincipalKey: p6rPrincipalKeyForActorSnapshot({
+            p6rProviderId: "test-provider",
+            p6rSubject: "display-only",
+          }),
+          p6rDisplayName: "Legacy display",
+          p6rImageUrl: null,
+        },
+      ]);
 
       const firstPage = listCoreParticipantProfilePage(db, {
         threadId: thread.id,
@@ -1073,7 +1121,7 @@ describe("core participants facet", () => {
         pageSize: 64,
         afterPosition: firstPage.nextPosition ?? undefined,
       });
-      expect(finalPage.profiles).toHaveLength(6);
+      expect(finalPage.profiles).toHaveLength(8);
       expect(finalPage.nextPosition).toBeNull();
 
       db.update(threads)
@@ -1083,7 +1131,65 @@ describe("core participants facet", () => {
       ensureCoreParticipantsProjection(db, [thread.id]);
       expect(
         listCoreParticipantProfilesByThreadIds(db, [thread.id]).get(thread.id),
-      ).toHaveLength(70);
+      ).toHaveLength(72);
+    } finally {
+      db.$client.close();
+    }
+  });
+
+  it("refreshes only when participant-bearing history advances", () => {
+    const { db, createVisibleThread } = setup();
+    try {
+      const thread = createVisibleThread();
+      const participantEvent = (sequence: number, displayName: string) => ({
+        threadId: thread.id,
+        scope: threadScope(),
+        sequence,
+        type: "client/turn/requested" as const,
+        itemId: null,
+        itemKind: null,
+        parentToolCallId: null,
+        p6rActorProviderId: "test-provider",
+        p6rActorSubject: "participant",
+        p6rActorHandle: "participant",
+        p6rActorDisplayName: displayName,
+        p6rActorImageUrl: null,
+        data: "{}",
+      });
+      insertEvents(db, noopNotifier, [participantEvent(1, "Before")]);
+      ensureCoreParticipantsProjection(db, [thread.id]);
+      expect(
+        listCoreParticipantProfilesByThreadIds(db, [thread.id]).get(thread.id),
+      ).toEqual([
+        expect.objectContaining({ p6rDisplayName: "Before" }),
+      ]);
+
+      insertEvents(db, noopNotifier, [
+        {
+          threadId: thread.id,
+          scope: threadScope(),
+          sequence: 2,
+          type: "system/error",
+          itemId: null,
+          itemKind: null,
+          parentToolCallId: null,
+          data: "{}",
+        },
+      ]);
+      ensureCoreParticipantsProjection(db, [thread.id]);
+      expect(
+        listCoreParticipantProfilesByThreadIds(db, [thread.id]).get(thread.id),
+      ).toEqual([
+        expect.objectContaining({ p6rDisplayName: "Before" }),
+      ]);
+
+      insertEvents(db, noopNotifier, [participantEvent(3, "After")]);
+      ensureCoreParticipantsProjection(db, [thread.id]);
+      expect(
+        listCoreParticipantProfilesByThreadIds(db, [thread.id]).get(thread.id),
+      ).toEqual([
+        expect.objectContaining({ p6rDisplayName: "After" }),
+      ]);
     } finally {
       db.$client.close();
     }

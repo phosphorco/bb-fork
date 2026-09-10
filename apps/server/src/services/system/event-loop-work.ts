@@ -17,9 +17,12 @@ interface CompletedEventLoopWork {
 }
 
 interface EventLoopWorkSnapshot {
+  activePluginRpcCount: number;
+  activeWorkCount: number;
   currentWork: string | null;
   lastWork: string | null;
   lastWorkMs: number | null;
+  omittedCurrentWorkCount: number;
   slowestWork: string | null;
   slowestWorkMs: number | null;
 }
@@ -27,6 +30,7 @@ interface EventLoopWorkSnapshot {
 const activeFrames = new Map<number, EventLoopWorkFrame>();
 const currentFrameId = new AsyncLocalStorage<number>();
 const completedInWindow: CompletedEventLoopWork[] = [];
+const MAX_CURRENT_WORK_DETAILS = 20;
 let nextFrameId = 1;
 let lastCompleted: CompletedEventLoopWork | null = null;
 
@@ -75,16 +79,43 @@ function formatLineage(root: EventLoopWorkFrame): string {
   return labels.join(" > ");
 }
 
-function formatActiveWork(): string | null {
+function isPluginRpcFrame(frame: EventLoopWorkFrame): boolean {
+  return /^plugin:[^ ]+ rpc /u.test(frame.label);
+}
+
+function summarizeActiveWork(): Pick<
+  EventLoopWorkSnapshot,
+  | "activePluginRpcCount"
+  | "activeWorkCount"
+  | "currentWork"
+  | "omittedCurrentWorkCount"
+> {
   if (activeFrames.size === 0) {
-    return null;
+    return {
+      activePluginRpcCount: 0,
+      activeWorkCount: 0,
+      currentWork: null,
+      omittedCurrentWorkCount: 0,
+    };
   }
   const roots = [...activeFrames.values()]
     .filter(
       (frame) => frame.parentId === null || !activeFrames.has(frame.parentId),
     )
     .sort((left, right) => left.id - right.id);
-  return roots.map((root) => formatLineage(root)).join(" | ");
+  const visibleRoots = roots.slice(0, MAX_CURRENT_WORK_DETAILS);
+  let activePluginRpcCount = 0;
+  for (const frame of activeFrames.values()) {
+    if (isPluginRpcFrame(frame)) {
+      activePluginRpcCount += 1;
+    }
+  }
+  return {
+    activePluginRpcCount,
+    activeWorkCount: roots.length,
+    currentWork: visibleRoots.map((root) => formatLineage(root)).join(" | "),
+    omittedCurrentWorkCount: roots.length - visibleRoots.length,
+  };
 }
 
 function selectSlowestWork(): CompletedEventLoopWork | null {
@@ -103,7 +134,7 @@ function selectSlowestWork(): CompletedEventLoopWork | null {
 function getEventLoopWorkSnapshot(): EventLoopWorkSnapshot {
   const slowest = selectSlowestWork();
   return {
-    currentWork: formatActiveWork(),
+    ...summarizeActiveWork(),
     lastWork: lastCompleted?.label ?? null,
     lastWorkMs:
       lastCompleted === null ? null : roundDurationMs(lastCompleted.durationMs),

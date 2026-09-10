@@ -325,6 +325,7 @@ export const experimentalThreadExecutionReasoningSourceSchema = z.enum([
 const experimentalThreadExecutionSummaryBaseSchema = z
   .object({
     providerId: z.string().min(1),
+    catalogDependsOnWorkspace: z.boolean(),
     projectId: z.string().min(1),
     environmentId: z.string().min(1).nullable(),
     hostId: z.string().min(1).nullable(),
@@ -425,6 +426,9 @@ export const experimentalThreadExecutionPreflightResultSchema =
         current: experimentalThreadExecutionSummarySchema,
         nextModelOverride: z.string().min(1).nullable(),
         nextReasoningLevelOverride: reasoningLevelSchema.nullable(),
+        nextEffectiveModel: z.string().min(1).nullable(),
+        nextEffectiveReasoningLevel: reasoningLevelSchema.nullable(),
+        unchanged: z.boolean(),
         applyToken: z.string().min(1).max(4096),
       })
       .strict(),

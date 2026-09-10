@@ -76,14 +76,21 @@ export function resolveThreadExecutionOverrideUpdate(
     if (patch.model === null || patch.model === undefined) {
       nextModel = null;
     } else {
-      const target = models.find(
+      const targets = models.filter(
         (candidate) => candidate.model === patch.model,
       );
-      if (!target) {
+      if (targets.length === 0) {
         throw new ApiError(
           400,
           "invalid_request",
           `Model "${patch.model}" is not available in this thread's ${providerId} model catalog. Choose a model offered by ${providerId}; changing providers requires starting a new thread.`,
+        );
+      }
+      if (targets.length > 1) {
+        throw new ApiError(
+          400,
+          "invalid_request",
+          `Model "${patch.model}" is ambiguous in this thread's ${providerId} model catalog. Refresh the catalog or choose a uniquely identified model.`,
         );
       }
       nextModel = patch.model;
@@ -93,9 +100,17 @@ export function resolveThreadExecutionOverrideUpdate(
   // The model whose reasoning support we validate/reconcile against: the new
   // override if set, otherwise what the next turn would resolve to.
   const effectiveModel = nextModel ?? fallbackModel;
-  const effectiveModelEntry = effectiveModel
-    ? models.find((candidate) => candidate.model === effectiveModel)
-    : undefined;
+  const effectiveModelEntries = effectiveModel
+    ? models.filter((candidate) => candidate.model === effectiveModel)
+    : [];
+  if (effectiveModelEntries.length > 1) {
+    throw new ApiError(
+      400,
+      "invalid_request",
+      `Model "${effectiveModel}" is ambiguous in this thread's ${providerId} model catalog. Refresh the catalog or choose a uniquely identified model.`,
+    );
+  }
+  const effectiveModelEntry = effectiveModelEntries[0];
   const supportedReasoning: readonly ReasoningLevel[] = effectiveModelEntry
     ? effectiveModelEntry.supportedReasoningEfforts.map(
         (effort) => effort.reasoningEffort,
@@ -257,5 +272,7 @@ function resolveFallbackModel(
   const projectDefaults = getProjectExecutionDefaults(deps.db, {
     projectId: thread.projectId,
   });
-  return projectDefaults?.model ?? null;
+  return projectDefaults?.providerId === thread.providerId
+    ? projectDefaults.model
+    : null;
 }

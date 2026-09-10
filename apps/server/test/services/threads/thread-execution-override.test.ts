@@ -42,6 +42,21 @@ describe("resolveThreadExecutionOverrideUpdate", () => {
     ).toThrow(/not available in this thread's claude-code model catalog/);
   });
 
+  it("rejects an ambiguous persisted model string", () => {
+    expect(() =>
+      resolveThreadExecutionOverrideUpdate(registry, {
+        existing: EMPTY,
+        patch: { model: "claude-opus-4-8" },
+        models: [
+          OPUS,
+          { ...OPUS, id: "nested-opus", routeProviderId: "anthropic" },
+        ],
+        providerId: "claude-code",
+        fallbackModel: null,
+      }),
+    ).toThrow(/ambiguous/);
+  });
+
   it("accepts an explicit reasoning level supported by the target model", () => {
     expect(
       resolveThreadExecutionOverrideUpdate(registry, {

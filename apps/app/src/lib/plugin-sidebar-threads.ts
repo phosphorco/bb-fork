@@ -80,6 +80,8 @@ export function toPluginSidebarThread(
       workflows: entry.activity.activeWorkflowCount,
       backgroundAgents: entry.activity.activeBackgroundAgentCount,
       backgroundCommands: entry.activity.activeBackgroundCommandCount,
+      newestBackgroundCommandStartedAt:
+        entry.activity.newestActiveBackgroundCommandStartedAt ?? null,
       planMode: entry.activity.activePlanModeCount,
       goals: entry.activity.activeGoalCount,
     },

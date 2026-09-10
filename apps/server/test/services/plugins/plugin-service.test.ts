@@ -22,6 +22,7 @@ import {
   createPluginService,
   type PluginService,
 } from "../../../src/services/plugins/plugin-service.js";
+import type { PluginServiceDeps } from "../../../src/services/plugins/plugin-service-internal.js";
 import { testLogger } from "../../helpers/test-app.js";
 import { pluginInstalledTelemetryEvent } from "../../../src/services/plugins/plugin-registration.js";
 import type { TelemetryEvent } from "../../../src/services/system/telemetry.js";
@@ -111,6 +112,9 @@ describe("plugin service", () => {
   let workDir: string;
   let service: PluginService;
   let identity: ReturnType<typeof p6rCreateIdentityBoundary>;
+  let sendPluginThreadMessage: NonNullable<
+    PluginServiceDeps["sendPluginThreadMessage"]
+  >;
 
   beforeEach(async () => {
     db = createConnection(":memory:");
@@ -126,10 +130,12 @@ describe("plugin service", () => {
       },
       now: () => 1,
     });
+    sendPluginThreadMessage = vi.fn(async () => {});
     service = createPluginService({
       telemetry: createNoopTelemetryService(),
       db,
       p6rIdentity: identity,
+      sendPluginThreadMessage,
       hub: {
         getDaemonSessionIdForHost: () => null,
         notifyPluginSignal: () => 0,
@@ -181,6 +187,38 @@ describe("plugin service", () => {
     expect(entry.id).toBe("greeter");
     expect(entry.status).toBe("running");
     expect(service.getApi("greeter")).toBeDefined();
+  });
+
+  it("namespaces experimental attributed messages to the calling plugin", async () => {
+    const rootDir = await writePlugin(workDir, {
+      name: "bb-plugin-external-messenger",
+      serverSource: `export default async function plugin(bb: any) {
+        await bb.experimental_threadMessages.send({
+          threadId: "thread-1",
+          message: "hello",
+          mode: "auto",
+          actor: {
+            subject: "connection-1",
+            handle: "amber-otter",
+            displayName: "Amber Otter",
+            imageUrl: null,
+          },
+        });
+      }`,
+    });
+
+    expect((await service.installPath(rootDir)).status).toBe("running");
+    expect(sendPluginThreadMessage).toHaveBeenCalledWith("external-messenger", {
+      threadId: "thread-1",
+      message: "hello",
+      mode: "auto",
+      actor: {
+        subject: "connection-1",
+        handle: "amber-otter",
+        displayName: "Amber Otter",
+        imageUrl: null,
+      },
+    });
   });
 
   it("summarizes user-facing capabilities and drops the live ones when disabled", async () => {
@@ -1155,9 +1193,7 @@ describe("plugin service", () => {
       version: "0.2.0",
       status: "running",
     });
-    expect((globalThis as Record<string, unknown>).__brittleCheckout).toBe(
-      "a",
-    );
+    expect((globalThis as Record<string, unknown>).__brittleCheckout).toBe("a");
     expect(service.getApi("brittle")).toBeDefined();
     expect((await service.getSettings("brittle"))?.values).toEqual({
       token: { set: true },

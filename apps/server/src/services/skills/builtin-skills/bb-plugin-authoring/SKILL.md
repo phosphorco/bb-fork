@@ -363,6 +363,22 @@ two carriers are not interchangeable: neither may be supplied by client
 claims, URL/query/body/header identity, the internal transport caller, or
 transcript parsing of `[from=...]`.
 
+### bb.experimental_threadMessages — attributed external messages
+
+`bb.experimental_threadMessages.send({ threadId, message, mode, actor })`
+sends one plain-text user message through the native thread path while core
+authors a stable principal in the owning plugin's namespace. `actor.subject`
+is the plugin-local immutable key; `handle`, `displayName`, and nullable
+`imageUrl` are presentation. Plugins cannot select the provider id or
+PrincipalKey. Modes are `auto`, `steer`, and `queue` (`queue` waits only when
+the thread is active). Use this for authenticated external bridges whose
+messages must carry their own timeline identity; do not encode attribution in
+message text or forward a claimed-identity header over loopback.
+
+The surface is intentionally narrow: no attachments, mentions, execution
+overrides, or permission changes. It remains experimental pending the audit in
+`docs/api_to_audit.md`.
+
 ### bb.log
 
 `bb.log.debug|info|warn|error(message: string)` — goes to the server log
@@ -848,8 +864,11 @@ Auth modes:
   `--rotate` generates a new one, invalidating the old) via the
   `x-bb-plugin-token` header or `?token=`. Right for external scripts
   and machines you control.
-- `"none"` — no checks. ONLY for webhooks that verify their own signature
-  (e.g. Slack's `x-slack-signature` HMAC) inside the handler.
+- `"capability"` — the handler verifies its own bearer capability or signed
+  request before any side effect. Use this for revocable connection URLs or
+  signature-verified webhooks that must remain reachable without ambient bb
+  identity.
+- `"none"` — no checks. Only for intentionally public, read-only resources.
 
 ### bb.rpc — the frontend data plane
 

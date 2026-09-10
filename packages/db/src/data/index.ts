@@ -285,6 +285,8 @@ export {
   deleteHost,
 } from "./hosts.js";
 
+export { p6rListActiveBackgroundCommandStartsByThreadIds } from "./background-command-activity.js";
+
 export {
   appendDaemonEventsInTransaction,
   appendStoredThreadEvent,

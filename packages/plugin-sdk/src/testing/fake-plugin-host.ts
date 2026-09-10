@@ -1076,9 +1076,14 @@ function createFakePluginHostInternal(
         );
       }
       const auth = opts?.auth ?? "local";
-      if (auth !== "local" && auth !== "token" && auth !== "none") {
+      if (
+        auth !== "local" &&
+        auth !== "token" &&
+        auth !== "capability" &&
+        auth !== "none"
+      ) {
         throw new Error(
-          `invalid auth mode "${String(auth)}" for ${normalizedMethod} ${path} — use "local", "token", or "none"`,
+          `invalid auth mode "${String(auth)}" for ${normalizedMethod} ${path} — use "local", "token", "capability", or "none"`,
         );
       }
       if (
@@ -2224,6 +2229,12 @@ function createFakePluginHostInternal(
     storage,
     http,
     p6rIdentity,
+    experimental_threadMessages: {
+      async send() {
+        assertLive();
+        return { ok: true };
+      },
+    },
     rpc,
     realtime,
     background,

@@ -48,6 +48,7 @@ interface BuildModelLoadErrorArgs {
 
 interface ResolveSystemProviderModelsArgs {
   cwd?: string;
+  fresh?: boolean;
   hostId: string;
   providerId: string;
 }
@@ -331,6 +332,18 @@ export async function resolveSystemProviderModels(
   deps: LoggedWorkSessionDeps,
   args: ResolveSystemProviderModelsArgs,
 ): Promise<ModelListResult> {
+  return resolveSystemProviderModelsWithCustomModels(
+    deps,
+    args,
+    deps.config.customModels,
+  );
+}
+
+async function resolveSystemProviderModelsWithCustomModels(
+  deps: LoggedWorkSessionDeps,
+  args: ResolveSystemProviderModelsArgs,
+  customModels: readonly CustomProviderModel[],
+): Promise<ModelListResult> {
   await deps.providerRegistry.whenProviderRegistered(args.providerId);
   const provider = includeRequestedRegisteredProvider(
     deps,
@@ -347,13 +360,14 @@ export async function resolveSystemProviderModels(
 
   const result = await loadSystemProviderModels(deps, {
     ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
+    ...(args.fresh === undefined ? {} : { fresh: args.fresh }),
     hostId: args.hostId,
     provider,
   });
   const { models, selectedOnlyModels } = appendCustomModels(
     deps.providerRegistry,
     {
-      customModels: deps.config.customModels,
+      customModels: [...customModels],
       models: result.models,
       providerId: provider.id,
       selectedOnlyModels: result.selectedOnlyModels,
@@ -363,6 +377,37 @@ export async function resolveSystemProviderModels(
     models,
     selectedOnlyModels,
     modelLoadError: result.modelLoadError,
+  };
+}
+
+/**
+ * Public picker-shaped response for one explicitly requested provider. This
+ * preserves the existing response envelope while deliberately avoiding the
+ * installed-provider discovery/health fan-out performed by the aggregate
+ * execution-options endpoint.
+ */
+export async function resolveTargetedSystemExecutionOptions(
+  deps: LoggedWorkSessionDeps,
+  query: SystemExecutionOptionsQuery & { providerId: string },
+): Promise<SystemExecutionOptionsResponse> {
+  const hostId = resolveSystemLookupHostId(deps, query);
+  const cwd =
+    query.environmentId === undefined
+      ? query.experimental_workspacePath
+      : (requireEnvironment(deps.db, query.environmentId).path ?? undefined);
+  const result = await resolveSystemProviderModelsWithCustomModels(
+    deps,
+    {
+      providerId: query.providerId,
+      hostId,
+      ...(cwd === undefined ? {} : { cwd }),
+    },
+    listVisibleCustomModels(deps),
+  );
+  return {
+    providers: [],
+    permissionCeiling: getHostPermissionCeiling(deps, hostId),
+    ...result,
   };
 }
 
@@ -586,10 +631,12 @@ async function loadSystemProviderModels(
   deps: LoggedWorkSessionDeps,
   {
     cwd,
+    fresh,
     hostId,
     provider,
   }: {
     cwd?: string;
+    fresh?: boolean;
     hostId: string;
     provider: ProviderInfo;
   },
@@ -621,7 +668,7 @@ async function loadSystemProviderModels(
   try {
     const { models, selectedOnlyModels } = await listProviderModelsMemoized(
       deps,
-      { command, hostId },
+      { command, fresh, hostId },
     );
     return {
       models,
@@ -678,7 +725,15 @@ type ProviderListModelsCommand = Extract<
  */
 async function listProviderModelsMemoized(
   deps: LoggedWorkSessionDeps,
-  { command, hostId }: { command: ProviderListModelsCommand; hostId: string },
+  {
+    command,
+    fresh,
+    hostId,
+  }: {
+    command: ProviderListModelsCommand;
+    fresh?: boolean;
+    hostId: string;
+  },
 ): Promise<ProviderModelListMemoValue> {
   const probe = (): Promise<ProviderModelListMemoValue> =>
     callHostRetryableOnlineRpc(deps, {
@@ -687,7 +742,7 @@ async function listProviderModelsMemoized(
       command,
     });
   const daemonSessionId = deps.hub.getDaemonSessionIdForHost(hostId);
-  if (daemonSessionId === null) {
+  if (fresh === true || daemonSessionId === null) {
     return probe();
   }
   const memoKey = JSON.stringify([

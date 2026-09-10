@@ -751,8 +751,20 @@ export async function createThreadFromRequest(
     providerId,
     titleFallback: deriveTitleFallback(requestInput.input),
   };
+  // A plugin worker is a server-mediated child of the caller, even though it
+  // is not represented by sourceThreadId. Hidden plugin workers must be able
+  // to follow a caller whose personal thread was directory-switched to an
+  // unmanaged checkout. Keep this exception scoped to hidden plugin threads;
+  // visible plugin-created roots retain the normal personal-workspace rule.
+  const allowUnmanagedPersonalProjectReuseEnvironmentId =
+    forkSourceEnvironmentId ??
+    (request.origin === "plugin" &&
+    request.visibility === "hidden" &&
+    request.environment.type === "reuse"
+      ? request.environment.environmentId
+      : undefined);
   const resolvedEnvironment = resolveStableThreadRequestEnvironment(deps, {
-    allowUnmanagedPersonalProjectReuseEnvironmentId: forkSourceEnvironmentId,
+    allowUnmanagedPersonalProjectReuseEnvironmentId,
     environment: request.environment,
     projectId: request.projectId,
   });

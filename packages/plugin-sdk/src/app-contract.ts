@@ -653,6 +653,8 @@ export interface PluginSidebarThreadActivity {
   workflows: number;
   backgroundAgents: number;
   backgroundCommands: number;
+  /** Newest active provider-backgrounded shell start; absent on older hosts. */
+  newestBackgroundCommandStartedAt?: number | null;
   planMode: number;
   goals: number;
 }

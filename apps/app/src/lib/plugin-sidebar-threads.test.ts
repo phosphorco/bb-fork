@@ -53,6 +53,7 @@ describe("toPluginSidebarThread", () => {
           activeWorkflowCount: 2,
           activeBackgroundAgentCount: 3,
           activeBackgroundCommandCount: 4,
+          newestActiveBackgroundCommandStartedAt: 1_234,
           activePlanModeCount: 5,
           activeGoalCount: 6,
         },
@@ -62,6 +63,7 @@ describe("toPluginSidebarThread", () => {
       workflows: 2,
       backgroundAgents: 3,
       backgroundCommands: 4,
+      newestBackgroundCommandStartedAt: 1_234,
       planMode: 5,
       goals: 6,
     });
