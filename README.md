@@ -47,7 +47,9 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The sixteen patches form the current implementation candidate. Patch 16
+The fifteen patches form the current implementation candidate. Patch 4 was
+removed: plugins use upstream `auth: "none"` for routes that validate their own
+connection tokens. Remaining patch filenames retain their stable numbers. Patch 16
 consolidates the previous native identity patches 16–23, including the authored
 minimal sender wrapper. It adds machine attribution and removes native person
 admission callbacks and signed browser lineage while preserving accepted
@@ -62,7 +64,7 @@ extension. Their SDK sends and explicit queues carry a presentation hint so
 core preserves the producer frames without adding a synthetic machine wrapper.
 The hint is not a credential. Accepted producer input survives normal queue and
 retry handling; ordinary native requests retain person or machine attribution.
-This adds no public SDK export, storage field, or seventeenth patch.
+This adds no public SDK export, storage field, or additional patch.
 
 This queue is the current implementation candidate for the trusted shared
 deployment. The supported source replay is the authoring and verification path;

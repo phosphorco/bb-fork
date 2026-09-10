@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
-Subject: [PATCH 05/13] feat(mentions): add verified mention targets
+Subject: [PATCH] feat(mentions): add verified mention targets
 
 ---
  apps/server/src/internal/events.ts            |   3 +
@@ -24,14 +24,13 @@ Subject: [PATCH 05/13] feat(mentions): add verified mention targets
  .../p6r/mention-target-service-paths.test.ts  | 102 ++++++++++
  .../test/services/p6r/mention-targets.test.ts | 192 ++++++++++++++++++
  .../services/p6r/provider-registry.test.ts    | 114 ++++++++++-
- .../plugins/plugin-authoring-docs.test.ts     |   1 +
  docs/api_to_audit.md                          |  19 ++
  packages/db/src/data/events.ts                |   3 +
  packages/domain/src/change-kinds.ts           |   1 +
  packages/domain/src/thread-events.ts          |  28 +++
  packages/plugin-api-map/src/surfaces.ts       |  16 +-
  packages/plugin-sdk/src/backend-contract.ts   |   8 +-
- 27 files changed, 1095 insertions(+), 97 deletions(-)
+ 26 files changed, 1094 insertions(+), 97 deletions(-)
  create mode 100644 apps/server/src/services/p6r/participant-projection.ts
  create mode 100644 apps/server/test/internal/daemon-forged-mention-http.test.ts
  create mode 100644 apps/server/test/services/p6r/mention-target-service-paths.test.ts
@@ -1620,18 +1619,6 @@ index 88dc269d9bc6a238bfc807500530724ecb1c2a22..6bd657717b50cabe2a49c51e490638ed
 +    }
 +  });
 +});
-diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-index e12645f28642decb283329f504ba3accd87d2db3..3a15365def6dbcd53ec07d9f969b9abe122a3e47 100644
---- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-+++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-@@ -195,6 +195,7 @@ const _assertAllSettingTypesListed: MissingSettingType extends never
- void _assertAllSettingTypesListed;
- 
- const HTTP_AUTH_MODES = [
-+  "capability",
-   "local",
-   "token",
-   "none",
 diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
 index e7b20fe202aba7d065b9653cc4e0363302a4a039..cade31bf550fa6ef3deb74e952d5872ba327e7d1 100644
 --- a/docs/api_to_audit.md
@@ -1732,7 +1719,7 @@ index b4e7c816be5f2a5b5362115f7970d5aaf9c77d2b..952286b06d89edbb991d7204fcb32ab3
    request: z.object({
      method: z.enum(["thread/start", "turn/start"]),
 diff --git a/packages/plugin-api-map/src/surfaces.ts b/packages/plugin-api-map/src/surfaces.ts
-index 8bf6f3ff5f77cb0b7f1d06d159f350f76f573620..153cbdfaa8da1222556f59255a87e3dc8694ee1a 100644
+index 8bf6f3ff5f77cb0b7f1d06d159f350f76f573620..5dc1e282a9e8a69473593fce2a6e6e321c77b517 100644
 --- a/packages/plugin-api-map/src/surfaces.ts
 +++ b/packages/plugin-api-map/src/surfaces.ts
 @@ -337,9 +337,11 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
@@ -1776,10 +1763,10 @@ index 8bf6f3ff5f77cb0b7f1d06d159f350f76f573620..153cbdfaa8da1222556f59255a87e3dc
          id: "storage",
          tagline: "Namespaced KV plus your own SQLite",
 diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
-index 05b87c0c6ac349c1ad6dbcd38976abd824492230..8ed3032f8de583edf0786a811f0b3d05b3ecbfb5 100644
+index 580063a5c76516d97ba0f8ed0e96b153edf77f0a..dd599551c3951a9a0b35d4d16c8d7bad40941951 100644
 --- a/packages/plugin-sdk/src/backend-contract.ts
 +++ b/packages/plugin-sdk/src/backend-contract.ts
-@@ -1445,6 +1445,8 @@ export interface PluginMentionItem {
+@@ -1444,6 +1444,8 @@ export interface PluginMentionItem {
    icon?: string;
  }
  
@@ -1788,7 +1775,7 @@ index 05b87c0c6ac349c1ad6dbcd38976abd824492230..8ed3032f8de583edf0786a811f0b3d05
  export interface PluginMentionProviderRegistration {
    /** Unique within this plugin: [a-zA-Z0-9_-]+ (no ":" — the host composes
     * wire item ids as "<providerId>:<itemId>"). */
-@@ -1469,9 +1471,11 @@ export interface PluginMentionProviderRegistration {
+@@ -1468,9 +1470,11 @@ export interface PluginMentionProviderRegistration {
     * Resolves one picked item into agent context, called once per unique
     * item at message send time. The returned `context` is attached to the
     * message as an agent-visible (user-hidden) prompt input. Throwing blocks
