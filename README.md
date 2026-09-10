@@ -17,8 +17,10 @@ The current base is exact upstream commit `960255b98ce3dccdcb5754eb67a7f98923660
 The deployable source is exactly:
 
 1. the commit in `upstream.lock`, also pinned by the `upstream/` submodule;
-2. the ordered mail patches in `patches/series`;
-3. the resulting Git tree in `result-tree.lock`.
+2. the full-tree source commit in `source-tip.lock`, durably advertised by the
+   `downstream` remote;
+3. the ordered mail patches in `patches/series`;
+4. the resulting Git tree in `result-tree.lock`.
 
 Materialize a disposable checkout with:
 
@@ -34,7 +36,10 @@ pnpm test
 pnpm build
 ```
 
-`scripts/materialize` refuses to overwrite an existing checkout. The materialized tree is disposable; make durable changes as patches in this repository instead.
+`scripts/materialize` refuses to overwrite an existing checkout and attaches it
+to the locked source receipt. The materialized tree is disposable; make durable
+changes on the source branch, then run `scripts/export <source-tip>` to publish
+the patches and locks atomically.
 
 Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWNSTREAM.md](DOWNSTREAM.md) for patch intent and compatibility boundaries.
 
@@ -43,9 +48,10 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 1. Advance the submodule to a reviewed upstream commit and copy its full SHA to `upstream.lock`.
 2. Replay the logical downstream commits in a temporary bb worktree, resolving against current behavior rather than preserving obsolete component locations.
 3. Regenerate DB migrations, bundled SDK declarations, and templates using upstream's generators.
-4. Export the reviewed commits with `git format-patch --full-index --binary`, replace `patches/series`, and refresh `patches/sha256`.
-5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
-6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
+4. Push the reviewed full-tree source commit, then run `./scripts/export <source-tip>`.
+   It generates the patch queue, hashes, source receipt, and result-tree lock as
+   one staged artifact set.
+5. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
 The sixteen patches form the current implementation candidate. Patch 16
 consolidates the previous native identity patches 16–23, including the authored

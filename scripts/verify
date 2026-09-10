@@ -2,21 +2,65 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+staged_root="$repo_root"
+if [[ "${1:-}" == "--staged" ]]; then
+  staged_root="${2:?missing staged root}"
+fi
 verification_root="$(mktemp -d)"
 materialized="$verification_root/bb"
+replayed="$verification_root/replayed"
+upstream_sha="$(tr -d '[:space:]' < "$repo_root/upstream.lock")"
+source_tip="$(tr -d '[:space:]' < "$staged_root/source-tip.lock")"
+expected_tree="$(tr -d '[:space:]' < "$staged_root/result-tree.lock")"
 
 cleanup() {
   if git -C "$repo_root/upstream" worktree list --porcelain | grep -Fqx "worktree $materialized"; then
     git -C "$repo_root/upstream" worktree remove --force "$materialized"
+  fi
+  if git -C "$repo_root/upstream" worktree list --porcelain | grep -Fqx "worktree $replayed"; then
+    git -C "$repo_root/upstream" worktree remove --force "$replayed"
   fi
   rmdir "$verification_root" 2>/dev/null || true
 }
 trap cleanup EXIT
 
 node "$repo_root/scripts/check-p6r-namespace.test.mjs"
-"$repo_root/scripts/materialize" "$materialized" >/dev/null
-git -C "$materialized" diff --check "$(cat "$repo_root/upstream.lock")..HEAD"
+if ! git -C "$repo_root/upstream" remote get-url downstream >/dev/null; then
+  git -C "$repo_root/upstream" remote add downstream \
+    "$(git -C "$repo_root" remote get-url origin)"
+fi
+git -C "$repo_root/upstream" fetch --quiet downstream "$source_tip"
+if ! git -C "$repo_root/upstream" ls-remote downstream | awk '{print $1}' | grep -Fqx "$source_tip"; then
+  echo "source tip $source_tip is not advertised by downstream" >&2
+  exit 1
+fi
+(cd "$staged_root/patches" && sha256sum --check sha256)
+git -C "$repo_root/upstream" worktree add --detach "$replayed" "$upstream_sha" >/dev/null
+while IFS= read -r patch_name; do
+  [[ -z "$patch_name" || "$patch_name" == \#* ]] && continue
+  GIT_COMMITTER_NAME="bb-fork verifier" \
+    GIT_COMMITTER_EMAIL="bb-fork@invalid.local" \
+    git -C "$replayed" am --3way --committer-date-is-author-date \
+      "$staged_root/patches/$patch_name" >/dev/null
+done < "$staged_root/patches/series"
+
+replayed_tree="$(git -C "$replayed" rev-parse 'HEAD^{tree}')"
+source_tree="$(git -C "$repo_root/upstream" rev-parse "${source_tip}^{tree}")"
+if [[ "$replayed_tree" != "$expected_tree" || "$source_tree" != "$expected_tree" ]]; then
+  echo "replay/source tree mismatch: replay=$replayed_tree source=$source_tree expected=$expected_tree" >&2
+  exit 1
+fi
+if [[ "$(git -C "$replayed" log --format=%s --reverse "$upstream_sha..HEAD")" != "$(git -C "$repo_root/upstream" log --format=%s --reverse "$upstream_sha..$source_tip")" ]]; then
+  echo "patch subjects do not match the source receipt" >&2
+  exit 1
+fi
+if [[ "$(git -C "$replayed" rev-list --count "$upstream_sha..HEAD")" != "$(git -C "$repo_root/upstream" rev-list --count "$upstream_sha..$source_tip")" ]]; then
+  echo "patch count does not match the source receipt" >&2
+  exit 1
+fi
+
+git -C "$replayed" diff --check "$upstream_sha..HEAD"
 "$repo_root/scripts/check-p6r-namespace" \
-  "$materialized" \
-  "$(cat "$repo_root/upstream.lock")"
-echo "patch queue verified at tree $(cat "$repo_root/result-tree.lock")"
+  "$replayed" \
+  "$upstream_sha"
+echo "patch queue verified at tree $expected_tree"

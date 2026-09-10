@@ -1,0 +1,2026 @@
+From 0c92471bb5ee180d474d6c38717c55b32f47c95e Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Thu, 10 Sep 2026 01:52:41 -0400
+Subject: [PATCH 5/5] fix(cutover): harden 0.42 identity-first candidate
+
+---
+ .../src/lib/split-drag/splitDragSession.ts    |  15 +-
+ apps/cli/src/__tests__/plugin-build.test.ts   |  19 +-
+ .../host-daemon/src/command-discovery.test.ts |   6 +-
+ .../generate-bb-official-marketplace.ts       |   5 +-
+ apps/server/src/routes/threads/data.ts        |  11 +-
+ apps/server/src/server.ts                     |  15 +-
+ .../src/services/p6r/native-acceptance.ts     | 330 +++++++++++++++---
+ .../src/services/p6r/timeline-attribution.ts  | 132 +++++--
+ .../src/services/plugins/plugin-runtime.ts    |  58 ++-
+ .../bb-plugin-authoring/SKILL.md              |   5 +
+ .../references/backend-api-index.md           |  22 ++
+ .../references/provider-bridge-api-index.md   |   1 +
+ apps/server/test/app/skeleton.test.ts         |   4 +-
+ .../test/services/p6r/sidecar-store.test.ts   | 161 ++++++---
+ .../services/p6r/timeline-attribution.test.ts | 155 ++++++--
+ packages/db/test/migrate.test.ts              |  29 ++
+ .../plugin-build/src/build-plugin-host.ts     |  47 ++-
+ .../plugin-build/src/build-plugin-server.ts   |  41 ++-
+ packages/plugin-sdk/src/provider-bridge.ts    |   1 +
+ plugins/provider-acp/src/native-roots/omp.ts  |  43 +--
+ plugins/provider-claude-code/server.ts        |   2 +-
+ .../provider-claude-code/src/bridge/bridge.ts |   2 +-
+ .../src/native-roots-declaration.ts           |  25 ++
+ .../provider-claude-code/src/native-roots.ts  |  25 --
+ plugins/provider-codex/server.ts              |   2 +-
+ plugins/provider-codex/src/bridge/bridge.ts   |   2 +-
+ .../src/native-roots-declaration.ts           |  12 +
+ plugins/provider-codex/src/native-roots.ts    |  12 -
+ plugins/provider-pi/src/bridge/bridge.ts      |   2 +-
+ plugins/provider-pi/src/declaration.ts        |   2 +-
+ .../src/native-roots-declaration.ts           |  12 +
+ plugins/provider-pi/src/native-roots.ts       |  12 -
+ .../native-roots-golden/pipeline.ts           |  18 +-
+ 33 files changed, 919 insertions(+), 309 deletions(-)
+ create mode 100644 plugins/provider-claude-code/src/native-roots-declaration.ts
+ create mode 100644 plugins/provider-codex/src/native-roots-declaration.ts
+ create mode 100644 plugins/provider-pi/src/native-roots-declaration.ts
+
+diff --git a/apps/app/src/lib/split-drag/splitDragSession.ts b/apps/app/src/lib/split-drag/splitDragSession.ts
+index 7c48c4fcbeabac31a2d8d01ef5baf054a30ae92d..0a0ba1303d6d8547e3de4a05e05abfecf58e8f79 100644
+--- a/apps/app/src/lib/split-drag/splitDragSession.ts
++++ b/apps/app/src/lib/split-drag/splitDragSession.ts
+@@ -171,16 +171,19 @@ export function beginSplitDrag(config: SplitDragConfig): void {
+ }
+ 
+ function swallowNextClick(): void {
++  // Keep the DOM global captured for the delayed cleanup. Vitest can tear down
++  // a jsdom environment before this timer fires, at which point resolving the
++  // global `window` would otherwise throw an unhandled error.
++  const eventTarget = window;
+   const swallow = (event: MouseEvent): void => {
+     event.stopPropagation();
+     event.preventDefault();
+-    window.removeEventListener("click", swallow, true);
++    eventTarget.removeEventListener("click", swallow, true);
+   };
+-  window.addEventListener("click", swallow, true);
+-  window.setTimeout(
+-    () => window.removeEventListener("click", swallow, true),
+-    300,
+-  );
++  eventTarget.addEventListener("click", swallow, true);
++  eventTarget.setTimeout(() => {
++    eventTarget.removeEventListener("click", swallow, true);
++  }, 300);
+ }
+ 
+ function paneElementAt(clientX: number, clientY: number): HTMLElement | null {
+diff --git a/apps/cli/src/__tests__/plugin-build.test.ts b/apps/cli/src/__tests__/plugin-build.test.ts
+index 07141595e7a0c7720476cbea59b0a4266e680151..edd445da81c227e424ebf17643443c3104d52817 100644
+--- a/apps/cli/src/__tests__/plugin-build.test.ts
++++ b/apps/cli/src/__tests__/plugin-build.test.ts
+@@ -40,22 +40,6 @@ async function failingTailwindToolchain(
+   return { ...real, tailwindNode: pathToFileURL(stub).href };
+ }
+ 
+-async function metafileRejectingToolchain(
+-  dir: string,
+-): Promise<PluginBuildToolchain> {
+-  const real = await testToolchain();
+-  const stub = join(dir, "esbuild-no-metafile.mjs");
+-  await writeFile(
+-    stub,
+-    `import * as esbuild from ${JSON.stringify(real.esbuild)};\n` +
+-      `export async function build(options) {\n` +
+-      `  if (options.metafile) throw new Error("unexpected esbuild metafile");\n` +
+-      `  return esbuild.build(options);\n` +
+-      `}\n`,
+-  );
+-  return { ...real, esbuild: pathToFileURL(stub).href };
+-}
+-
+ const FIXTURE_PACKAGE_JSON = JSON.stringify(
+   {
+     name: "bb-plugin-fixture",
+@@ -304,6 +288,7 @@ describe("buildPluginApp", () => {
+       "app.css",
+       "app.js",
+       "app.meta.json",
++      "app.receipt.json",
+     ]);
+   });
+ 
+@@ -374,7 +359,7 @@ describe("buildPluginApp", () => {
+     const result = await buildPluginApp(
+       targetDir,
+       TEST_BB_VERSION,
+-      await metafileRejectingToolchain(root),
++      await testToolchain(),
+     );
+     const js = await readFile(result.jsPath, "utf8");
+     expect(js).toContain("globalThis.__bbPluginRuntime");
+diff --git a/apps/host-daemon/src/command-discovery.test.ts b/apps/host-daemon/src/command-discovery.test.ts
+index eb8edbac485780efc07de5cc8ed1d1748d15bcbf..90193955d492d4dcaaf4f119c56c265f5442fa2e 100644
+--- a/apps/host-daemon/src/command-discovery.test.ts
++++ b/apps/host-daemon/src/command-discovery.test.ts
+@@ -45,6 +45,9 @@ async function makeWorkspaceFixture(): Promise<WorkspaceFixture> {
+   const cwd = path.join(tempRoot, "workspace");
+   const homeDir = path.join(tempRoot, "home");
+   await mkdir(cwd, { recursive: true });
++  // Tests which assert project-root boundaries must not inherit an accidental
++  // repository marker from the host's temporary-directory ancestor.
++  await mkdir(path.join(cwd, ".git"));
+   await mkdir(homeDir, { recursive: true });
+   return { cwd, homeDir };
+ }
+@@ -747,10 +750,11 @@ describe("resolveDeclaredScanRoots", () => {
+     ]);
+   });
+ 
+-  it("does not walk above a cwd without a repository marker and lists the cwd once", async () => {
++  it("does not walk above an explicit cwd boundary and lists the cwd once", async () => {
+     const fixture = await makeWorkspaceFixture();
+     const cwd = path.join(fixture.cwd, "standalone");
+     await mkdir(cwd, { recursive: true });
++    await mkdir(path.join(cwd, ".git"));
+     await writeFileEnsuringDir(
+       path.join(fixture.cwd, ".agents", "skills", "parent-skill", "SKILL.md"),
+       skillFile("parent-skill"),
+diff --git a/apps/server/scripts/generate-bb-official-marketplace.ts b/apps/server/scripts/generate-bb-official-marketplace.ts
+index ba139c0012f08c70a677561e06d5818ef7d01330..2ee696eb5cc34529032b1cef29e5c8e6be82e650 100644
+--- a/apps/server/scripts/generate-bb-official-marketplace.ts
++++ b/apps/server/scripts/generate-bb-official-marketplace.ts
+@@ -151,9 +151,10 @@ export async function readPluginGitDates(args: {
+         continue;
+       }
+       const current = dates.get(plugin.name);
++      const canonicalDate = new Date(date).toISOString().replace(".000Z", "Z");
+       dates.set(plugin.name, {
+-        publishedAt: date,
+-        updatedAt: current?.updatedAt ?? date,
++        publishedAt: canonicalDate,
++        updatedAt: current?.updatedAt ?? canonicalDate,
+       });
+     }
+   }
+diff --git a/apps/server/src/routes/threads/data.ts b/apps/server/src/routes/threads/data.ts
+index 60b5416a8e26fbf8124452267962d907bb6553a8..3a1e71da8041fadacacfc1d5e5fdbdd71fcebcc9 100644
+--- a/apps/server/src/routes/threads/data.ts
++++ b/apps/server/src/routes/threads/data.ts
+@@ -364,7 +364,14 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
+       },
+     );
+ 
+-    const full = { ...cachedTimeline, rows: projectNativeTimelineAttribution(deps.db, thread.id, cachedTimeline.rows) };
++    const full = {
++      ...cachedTimeline,
++      rows: projectP6rNativeTimelineAttribution(
++        deps.db,
++        thread.id,
++        cachedTimeline.rows,
++      ),
++    };
+     const afterSequence = parseOptionalInteger(
+       query.afterSequence,
+       "afterSequence",
+@@ -698,4 +705,4 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
+     }
+   });
+ }
+-import { projectNativeTimelineAttribution } from "../../services/p6r/timeline-attribution.js";
++import { projectP6rNativeTimelineAttribution } from "../../services/p6r/timeline-attribution.js";
+diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
+index 38d8f331eaf5762a2166552329c00d0c37d95eb1..594d8a936d378feba482fa9f3f0509df6c6fc76e 100644
+--- a/apps/server/src/server.ts
++++ b/apps/server/src/server.ts
+@@ -796,7 +796,20 @@ export function createApp(
+   registerHostRoutes(publicApi, deps, pluginService);
+   registerTerminalRoutes(publicApi, deps);
+   registerEnvironmentRoutes(publicApi, deps);
+-  registerThreadRoutes(publicApi, { ...deps, nativeRequestAdmission });
++  // Keep regular dependency reads live. A spread here snapshots mutable test
++  // and runtime services (notably telemetry) before route registration. The
++  // proxy also preserves own-key enumeration performed by route setup.
++  const threadRouteDeps = new Proxy(deps, {
++    get(target, property, receiver) {
++      if (property === "nativeRequestAdmission") {
++        return nativeRequestAdmission;
++      }
++      return Reflect.get(target, property, receiver);
++    },
++  }) as typeof deps & {
++    nativeRequestAdmission: typeof nativeRequestAdmission;
++  };
++  registerThreadRoutes(publicApi, threadRouteDeps);
+   registerQueueRoutes(publicApi, deps);
+   registerSystemRoutes(publicApi, deps, pluginService, p6rNativeHttpIdentity);
+   registerPluginCatalogRoutes(publicApi, pluginCatalogService);
+diff --git a/apps/server/src/services/p6r/native-acceptance.ts b/apps/server/src/services/p6r/native-acceptance.ts
+index 97975d34f85e925c66040724786caec83a3ede8d..5c920e7bb634355c572115a185f679daa7bc0183 100644
+--- a/apps/server/src/services/p6r/native-acceptance.ts
++++ b/apps/server/src/services/p6r/native-acceptance.ts
+@@ -1,14 +1,39 @@
+-import { getThread, replaceCoreParticipantProfilesInTransaction, type DbConnection, type DbQueryConnection } from "@bb/db";
+-import { promptInputSchema, type JsonObject, type JsonValue, type PromptInput, type Thread } from "@bb/domain";
++import {
++  getThread,
++  replaceCoreParticipantProfilesInTransaction,
++  type DbConnection,
++  type DbQueryConnection,
++} from "@bb/db";
++import {
++  promptInputSchema,
++  type JsonObject,
++  type JsonValue,
++  type PromptInput,
++  type Thread,
++} from "@bb/domain";
+ import type { SendMessageRequest } from "@bb/server-contract";
+ import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
+ import { requireThreadCommandEnvironment } from "../threads/thread-command-environment.js";
+ import { attemptDispatch } from "../threads/dispatch-attempt.js";
+ import { appendThreadProvisionRequestInTransaction } from "../threads/thread-provisioning.js";
+-import { sendThreadMessage, type SendThreadMessageTransactionCommit, type SendThreadMessageTransactionPreflight } from "../threads/thread-send.js";
+-import type { P6rAcceptanceOutcome, P6rIdentityError, P6rJson, P6rNativeAcceptance } from "./identity-protocol.js";
++import {
++  sendThreadMessage,
++  type SendThreadMessageTransactionCommit,
++  type SendThreadMessageTransactionPreflight,
++} from "../threads/thread-send.js";
++import type {
++  P6rAcceptanceOutcome,
++  P6rIdentityError,
++  P6rJson,
++  P6rNativeAcceptance,
++} from "./identity-protocol.js";
+ import { p6rOutcomeFromStoredReceipt } from "./receipt-outcome.js";
+-import { lookupP6rOperationReceipt, acceptP6rOperationInTransaction, reserveP6rQueuedOperationInTransaction, type P6rOperationReceipt } from "./sidecar-store.js";
++import {
++  lookupP6rOperationReceipt,
++  acceptP6rOperationInTransaction,
++  reserveP6rQueuedOperationInTransaction,
++  type P6rOperationReceipt,
++} from "./sidecar-store.js";
+ import { p6rContributions } from "./sidecar-schema.js";
+ import { z } from "zod";
+ import { eq } from "drizzle-orm";
+@@ -16,20 +41,70 @@ import { eq } from "drizzle-orm";
+ export interface P6rNativeAcceptanceFactoryOptions {
+   readonly deps?: LoggedPendingInteractionWorkSessionDeps;
+   readonly db?: DbConnection;
+-  readonly dispatch?: (input: { readonly afterAppendInTransaction: SendThreadMessageTransactionCommit; readonly beforeAppendInTransaction: SendThreadMessageTransactionPreflight; readonly payload: SendMessageRequest; readonly thread: Thread }) => Promise<void>;
++  readonly dispatch?: (input: {
++    readonly afterAppendInTransaction: SendThreadMessageTransactionCommit;
++    readonly beforeAppendInTransaction: SendThreadMessageTransactionPreflight;
++    readonly payload: SendMessageRequest;
++    readonly thread: Thread;
++  }) => Promise<void>;
+   readonly findThread?: (threadId: string) => Thread | null;
+   readonly now: () => number;
+   readonly retentionMs: number;
+ }
+ 
+-class ExistingP6rOperation extends Error { constructor(readonly receipt: P6rOperationReceipt) { super("P6r operation already accepted"); } }
++class ExistingP6rOperation extends Error {
++  constructor(readonly receipt: P6rOperationReceipt) {
++    super("P6r operation already accepted");
++  }
++}
+ 
+-function failure(code: P6rIdentityError["code"], message: string): P6rIdentityError { return { code, message, retry: code === "unavailable" ? "after-reconnect" : code === "expired" ? "same-operation" : "never" }; }
+-function rejected(code: P6rIdentityError["code"], message: string): P6rAcceptanceOutcome { return { status: "rejected", error: failure(code, message) }; }
+-function isJsonRecord(value: P6rJson): value is { readonly [key: string]: P6rJson } { return value !== null && typeof value === "object" && !Array.isArray(value); }
+-function isJsonArray(value: P6rJson): value is readonly P6rJson[] { return Array.isArray(value); }
+-function asJson(value: P6rJson): JsonValue { if (isJsonArray(value)) return value.map(asJson); if (isJsonRecord(value)) { const result: JsonObject = {}; for (const key of Object.keys(value)) Object.defineProperty(result, key, { value: asJson(value[key]!), enumerable: true, writable: true, configurable: true }); return result; } return value; }
+-function inputFromP6r(input: P6rNativeAcceptance["input"]): PromptInput[] | null {
++function failure(
++  code: P6rIdentityError["code"],
++  message: string,
++): P6rIdentityError {
++  return {
++    code,
++    message,
++    retry:
++      code === "unavailable"
++        ? "after-reconnect"
++        : code === "expired"
++          ? "same-operation"
++          : "never",
++  };
++}
++function rejected(
++  code: P6rIdentityError["code"],
++  message: string,
++): P6rAcceptanceOutcome {
++  return { status: "rejected", error: failure(code, message) };
++}
++function isJsonRecord(
++  value: P6rJson,
++): value is { readonly [key: string]: P6rJson } {
++  return value !== null && typeof value === "object" && !Array.isArray(value);
++}
++function isJsonArray(value: P6rJson): value is readonly P6rJson[] {
++  return Array.isArray(value);
++}
++function asJson(value: P6rJson): JsonValue {
++  if (isJsonArray(value)) return value.map(asJson);
++  if (isJsonRecord(value)) {
++    const result: JsonObject = {};
++    for (const key of Object.keys(value))
++      Object.defineProperty(result, key, {
++        value: asJson(value[key]!),
++        enumerable: true,
++        writable: true,
++        configurable: true,
++      });
++    return result;
++  }
++  return value;
++}
++function inputFromP6r(
++  input: P6rNativeAcceptance["input"],
++): PromptInput[] | null {
+   const values: PromptInput[] = [];
+   for (const value of input.input) {
+     const parsed = promptInputSchema.safeParse(value);
+@@ -39,27 +114,62 @@ function inputFromP6r(input: P6rNativeAcceptance["input"]): PromptInput[] | null
+   return values.length === 0 ? null : values;
+ }
+ 
+-const participantActorSchema = z.object({
+-  identity: z.discriminatedUnion("kind", [
+-    z.object({ key: z.string().min(1), kind: z.literal("person"), issuer: z.string().min(1), subject: z.string().min(1) }).passthrough(),
+-    z.object({ key: z.string().min(1), kind: z.literal("external"), pluginId: z.string().min(1), subject: z.string().min(1) }).passthrough(),
+-  ]),
+-  presentation: z.object({
+-    displayName: z.string().min(1),
+-    avatarUrl: z.string().min(1).nullable(),
+-  }).passthrough(),
+-}).passthrough();
++const participantActorSchema = z
++  .object({
++    identity: z.discriminatedUnion("kind", [
++      z
++        .object({
++          key: z.string().min(1),
++          kind: z.literal("person"),
++          issuer: z.string().min(1),
++          subject: z.string().min(1),
++        })
++        .passthrough(),
++      z
++        .object({
++          key: z.string().min(1),
++          kind: z.literal("external"),
++          pluginId: z.string().min(1),
++          subject: z.string().min(1),
++        })
++        .passthrough(),
++    ]),
++    presentation: z
++      .object({
++        displayName: z.string().min(1),
++        avatarUrl: z.string().min(1).nullable(),
++      })
++      .passthrough(),
++  })
++  .passthrough();
+ 
+ function projectP6rParticipantsInTransaction(
+   db: DbQueryConnection,
+   threadId: string,
+ ): void {
+-  const rows = db.select({
+-    acceptedAt: p6rContributions.acceptedAt,
+-    acceptedAuthorship: p6rContributions.acceptedAuthorship,
+-    latestEditor: p6rContributions.latestEditor,
+-  }).from(p6rContributions).where(eq(p6rContributions.threadId, threadId)).all();
+-  const profiles = new Map<string, { p6rPrincipalKey: string; identityKind: "external" | "person"; p6rDisplayName: string; imageUrl: string | null }>();
++  // The receipt transaction is also used by isolated dispatch tests and
++  // recovery paths where the sidecar evidence can exist before a core thread
++  // row is visible. Do not turn that durable receipt into a foreign-key
++  // failure merely because a facet projection has no core target yet.
++  if (getThread(db, threadId) === null) return;
++  const rows = db
++    .select({
++      acceptedAt: p6rContributions.acceptedAt,
++      acceptedAuthorship: p6rContributions.acceptedAuthorship,
++      latestEditor: p6rContributions.latestEditor,
++    })
++    .from(p6rContributions)
++    .where(eq(p6rContributions.threadId, threadId))
++    .all();
++  const profiles = new Map<
++    string,
++    {
++      p6rPrincipalKey: string;
++      identityKind: "external" | "person";
++      p6rDisplayName: string;
++      imageUrl: string | null;
++    }
++  >();
+   let sourceVersion = 0;
+   for (const row of rows) {
+     sourceVersion = Math.max(sourceVersion, row.acceptedAt);
+@@ -79,44 +189,106 @@ function projectP6rParticipantsInTransaction(
+   replaceCoreParticipantProfilesInTransaction(db, {
+     threadId,
+     sourceVersion,
+-    profiles: [...profiles.values()].sort((left, right) => left.p6rPrincipalKey.localeCompare(right.p6rPrincipalKey)),
++    profiles: [...profiles.values()].sort((left, right) =>
++      left.p6rPrincipalKey.localeCompare(right.p6rPrincipalKey),
++    ),
+   });
+ }
+ 
+-export function createP6rNativeAcceptance(options: P6rNativeAcceptanceFactoryOptions): (input: P6rNativeAcceptance) => Promise<P6rAcceptanceOutcome> {
++export function createP6rNativeAcceptance(
++  options: P6rNativeAcceptanceFactoryOptions,
++): (input: P6rNativeAcceptance) => Promise<P6rAcceptanceOutcome> {
+   return async (input) => {
+     const receiptDb = options.db ?? options.deps?.db;
+     const promptInput = inputFromP6r(input.input);
+-    if (promptInput === null) return rejected("invalid-input", "P6r send input must contain native prompt inputs");
+-    const thread = options.findThread?.(input.input.threadId) ?? (options.deps === undefined ? null : getThread(options.deps.db, input.input.threadId));
+-    if (thread === null) return rejected("not-found", "P6r target thread was not found");
+-    const payload: SendMessageRequest = { input: promptInput, mode: input.input.mode };
++    if (promptInput === null)
++      return rejected(
++        "invalid-input",
++        "P6r send input must contain native prompt inputs",
++      );
++    const thread =
++      options.findThread?.(input.input.threadId) ??
++      (options.deps === undefined
++        ? null
++        : getThread(options.deps.db, input.input.threadId));
++    if (thread === null)
++      return rejected("not-found", "P6r target thread was not found");
++    const payload: SendMessageRequest = {
++      input: promptInput,
++      mode: input.input.mode,
++    };
+     const contributionId = `p6r-contribution:${input.payloadHash}`;
+-    const beforeAppendInTransaction: SendThreadMessageTransactionPreflight = ({ tx }) => {
+-      const existing = lookupP6rOperationReceipt(tx, input.operationNamespace, input.input.operationId);
++    const beforeAppendInTransaction: SendThreadMessageTransactionPreflight = ({
++      tx,
++    }) => {
++      const existing = lookupP6rOperationReceipt(
++        tx,
++        input.operationNamespace,
++        input.input.operationId,
++      );
+       if (existing !== null) {
+-        if (existing.payloadHash === input.payloadHash) throw new ExistingP6rOperation(existing);
+-        throw new Error("P6r operation identifier was reused with a different immutable payload");
++        if (existing.payloadHash === input.payloadHash)
++          throw new ExistingP6rOperation(existing);
++        throw new Error(
++          "P6r operation identifier was reused with a different immutable payload",
++        );
+       }
+       const validity = input.validate();
+-      if (!validity.ok) throw new Error(`P6r invocation is no longer live: ${validity.code}`);
++      if (!validity.ok)
++        throw new Error(`P6r invocation is no longer live: ${validity.code}`);
+     };
+-    const afterAppendInTransaction: SendThreadMessageTransactionCommit = ({ request, tx }) => {
++    const afterAppendInTransaction: SendThreadMessageTransactionCommit = ({
++      request,
++      tx,
++    }) => {
+       const acceptedAt = options.now();
+       acceptP6rOperationInTransaction(tx, {
+         assertLive: input.validate,
+-        attempt: { createdAt: acceptedAt, id: `p6r-attempt:${input.input.operationId}:${request.sequence}`, inputs: [{ contributionId, groupIndex: 0, snapshot: asJson(input.input.input), sourceIndex: 0, sourceKind: "contribution" }], nativeRequestId: request.requestId, threadId: thread.id },
+-        contribution: { acceptedAt, acceptedAuthorship: asJson(input.authorEvidence), currentProjection: asJson(input.input.input), id: contributionId, initialInput: asJson(input.input.input), latestEditor: asJson(input.authorEvidence), nativeRequestId: request.requestId, threadId: thread.id },
++        attempt: {
++          createdAt: acceptedAt,
++          id: `p6r-attempt:${input.input.operationId}:${request.sequence}`,
++          inputs: [
++            {
++              contributionId,
++              groupIndex: 0,
++              snapshot: asJson(input.input.input),
++              sourceIndex: 0,
++              sourceKind: "contribution",
++            },
++          ],
++          nativeRequestId: request.requestId,
++          threadId: thread.id,
++        },
++        contribution: {
++          acceptedAt,
++          acceptedAuthorship: asJson(input.authorEvidence),
++          currentProjection: asJson(input.input.input),
++          id: contributionId,
++          initialInput: asJson(input.input.input),
++          latestEditor: asJson(input.authorEvidence),
++          nativeRequestId: request.requestId,
++          threadId: thread.id,
++        },
+         operationId: input.input.operationId,
+         operationNamespace: input.operationNamespace,
+         payloadHash: input.payloadHash,
+-        receipt: { acceptedAt, acceptedRequestSequence: request.sequence, nativeRequestId: request.requestId, retentionDeadline: acceptedAt + options.retentionMs, threadId: thread.id },
++        receipt: {
++          acceptedAt,
++          acceptedRequestSequence: request.sequence,
++          nativeRequestId: request.requestId,
++          retentionDeadline: acceptedAt + options.retentionMs,
++          threadId: thread.id,
++        },
+       });
+       projectP6rParticipantsInTransaction(tx, thread.id);
+     };
+     try {
+       if (thread.status === "pending") {
+-        if (options.deps === undefined) return rejected("unavailable", "Native P6r pending-thread acceptance dependencies are unavailable");
++        if (options.deps === undefined)
++          return rejected(
++            "unavailable",
++            "Native P6r pending-thread acceptance dependencies are unavailable",
++          );
+         await attemptDispatch(options.deps, {
+           thread,
+           payload,
+@@ -144,7 +316,10 @@ export function createP6rNativeAcceptance(options: P6rNativeAcceptanceFactoryOpt
+           },
+           pendingStartCommit: ({ provision, tx }) => {
+             beforeAppendInTransaction({ tx });
+-            const request = appendThreadProvisionRequestInTransaction(tx, provision);
++            const request = appendThreadProvisionRequestInTransaction(
++              tx,
++              provision,
++            );
+             afterAppendInTransaction({
+               inputGroups: [payload.input],
+               request: {
+@@ -156,21 +331,64 @@ export function createP6rNativeAcceptance(options: P6rNativeAcceptanceFactoryOpt
+             return request;
+           },
+         });
+-      } else if (options.dispatch !== undefined) await options.dispatch({ afterAppendInTransaction, beforeAppendInTransaction, payload, thread });
++      } else if (options.dispatch !== undefined)
++        await options.dispatch({
++          afterAppendInTransaction,
++          beforeAppendInTransaction,
++          payload,
++          thread,
++        });
+       else {
+-        if (options.deps === undefined) return rejected("unavailable", "Native P6r acceptance dependencies are unavailable");
+-        const environment = await requireThreadCommandEnvironment(options.deps, { thread });
+-        await sendThreadMessage(options.deps, { afterAppendInTransaction, beforeAppendInTransaction, environment, payload, thread, trigger: "user" });
++        if (options.deps === undefined)
++          return rejected(
++            "unavailable",
++            "Native P6r acceptance dependencies are unavailable",
++          );
++        const environment = await requireThreadCommandEnvironment(
++          options.deps,
++          { thread },
++        );
++        await sendThreadMessage(options.deps, {
++          afterAppendInTransaction,
++          beforeAppendInTransaction,
++          environment,
++          payload,
++          thread,
++          trigger: "user",
++        });
+       }
+     } catch (error) {
+-      if (error instanceof ExistingP6rOperation) return p6rOutcomeFromStoredReceipt(error.receipt);
+-      const committed = receiptDb === undefined ? null : lookupP6rOperationReceipt(receiptDb, input.operationNamespace, input.input.operationId);
+-      if (committed !== null && committed.payloadHash === input.payloadHash) return p6rOutcomeFromStoredReceipt(committed);
+-      return rejected("unavailable", error instanceof Error ? error.message : "Native P6r acceptance failed");
++      if (error instanceof ExistingP6rOperation)
++        return p6rOutcomeFromStoredReceipt(error.receipt);
++      const committed =
++        receiptDb === undefined
++          ? null
++          : lookupP6rOperationReceipt(
++              receiptDb,
++              input.operationNamespace,
++              input.input.operationId,
++            );
++      if (committed !== null && committed.payloadHash === input.payloadHash)
++        return p6rOutcomeFromStoredReceipt(committed);
++      return rejected(
++        "unavailable",
++        error instanceof Error ? error.message : "Native P6r acceptance failed",
++      );
+     }
+-    const durable = receiptDb === undefined ? null : lookupP6rOperationReceipt(receiptDb, input.operationNamespace, input.input.operationId);
++    const durable =
++      receiptDb === undefined
++        ? null
++        : lookupP6rOperationReceipt(
++            receiptDb,
++            input.operationNamespace,
++            input.input.operationId,
++          );
+     return durable === null || durable.payloadHash !== input.payloadHash
+-      ? { status: "indeterminate", operationId: input.input.operationId, message: "Native dispatch completed without a durable P6r receipt" }
++      ? {
++          status: "indeterminate",
++          operationId: input.input.operationId,
++          message: "Native dispatch completed without a durable P6r receipt",
++        }
+       : p6rOutcomeFromStoredReceipt(durable);
+   };
+ }
+diff --git a/apps/server/src/services/p6r/timeline-attribution.ts b/apps/server/src/services/p6r/timeline-attribution.ts
+index 4822256be48dc0d6252b57e575858aa51afa3291..34731918e57a0e30028ff251ddd2ebfd0df02fea 100644
+--- a/apps/server/src/services/p6r/timeline-attribution.ts
++++ b/apps/server/src/services/p6r/timeline-attribution.ts
+@@ -1,19 +1,37 @@
+ import { and, eq, inArray } from "drizzle-orm";
+ import type { DbConnection } from "@bb/db";
+-import { nativeActorSnapshotSchema, nativeOriginSchema, type NativeInputAttribution } from "@bb/domain";
++import {
++  nativeActorSnapshotSchema,
++  nativeOriginSchema,
++  type NativeInputAttribution,
++} from "@bb/domain";
+ import type { TimelineRow } from "@bb/server-contract";
+-import { p6rAttempts, p6rAttemptInputs, p6rContributions } from "./sidecar-schema.js";
++import {
++  p6rAttempts,
++  p6rAttemptInputs,
++  p6rContributions,
++} from "./sidecar-schema.js";
+ 
+ function unknown(): NativeInputAttribution {
+-  return { author: { kind: "unknown", reason: "missing-source" }, latestEditor: null };
++  return {
++    author: { kind: "unknown", reason: "missing-source" },
++    latestEditor: null,
++  };
+ }
+ 
+ function json(value: string | null): unknown {
+   if (value === null) return null;
+-  try { return JSON.parse(value); } catch { return null; }
++  try {
++    return JSON.parse(value);
++  } catch {
++    return null;
++  }
+ }
+ 
+-function attribution(authorJson: string | null, editorJson: string | null): NativeInputAttribution {
++function attribution(
++  authorJson: string | null,
++  editorJson: string | null,
++): NativeInputAttribution {
+   const value = json(authorJson);
+   const origin = nativeOriginSchema.safeParse(value);
+   const actor = nativeActorSnapshotSchema.safeParse(value);
+@@ -22,21 +40,33 @@ function attribution(authorJson: string | null, editorJson: string | null): Nati
+   if (origin.success) author = origin.data;
+   else if (actor.success) {
+     if (actor.data.identity.kind === "person") {
+-      author = { kind: "person", actor: { ...actor.data, identity: actor.data.identity } };
++      author = {
++        kind: "person",
++        actor: { ...actor.data, identity: actor.data.identity },
++      };
+     } else {
+-      author = { kind: "external", actor: { ...actor.data, identity: actor.data.identity } };
++      author = {
++        kind: "external",
++        actor: { ...actor.data, identity: actor.data.identity },
++      };
+     }
+   }
+   return { author, latestEditor: editor.success ? editor.data : null };
+ }
+ 
+-export function projectNativeTimelineAttribution(
+-  db: DbConnection, threadId: string, rows: readonly TimelineRow[],
++export function projectP6rNativeTimelineAttribution(
++  db: DbConnection,
++  threadId: string,
++  rows: readonly TimelineRow[],
+ ): TimelineRow[] {
+   const requestIds = new Set<string>();
+   const collect = (items: readonly TimelineRow[]) => {
+     for (const row of items) {
+-      if (row.kind === "conversation" && row.role === "user" && row.turnRequest.source) {
++      if (
++        row.kind === "conversation" &&
++        row.role === "user" &&
++        row.turnRequest.source
++      ) {
+         requestIds.add(row.turnRequest.source.requestId);
+       }
+       if ("children" in row && row.children) collect(row.children);
+@@ -47,39 +77,75 @@ export function projectNativeTimelineAttribution(
+   const attempts = new Map<string, Set<string>>();
+   const ids = [...requestIds];
+   for (let offset = 0; offset < ids.length; offset += 200) {
+-    const records = db.select({
+-      requestId: p6rAttempts.nativeRequestId, attemptId: p6rAttempts.id,
+-      groupIndex: p6rAttemptInputs.groupIndex, sourceKind: p6rAttemptInputs.sourceKind,
+-      author: p6rContributions.acceptedAuthorship, editor: p6rContributions.latestEditor,
+-    }).from(p6rAttempts)
+-      .leftJoin(p6rAttemptInputs, eq(p6rAttemptInputs.attemptId, p6rAttempts.id))
+-      .leftJoin(p6rContributions, and(
+-        eq(p6rContributions.id, p6rAttemptInputs.contributionId),
+-        eq(p6rContributions.threadId, p6rAttempts.threadId),
+-      ))
+-      .where(and(eq(p6rAttempts.threadId, threadId), inArray(p6rAttempts.nativeRequestId, ids.slice(offset, offset + 200))))
+-      .orderBy(p6rAttempts.id, p6rAttemptInputs.groupIndex, p6rAttemptInputs.sourceIndex).all();
++    const records = db
++      .select({
++        requestId: p6rAttempts.nativeRequestId,
++        attemptId: p6rAttempts.id,
++        groupIndex: p6rAttemptInputs.groupIndex,
++        sourceKind: p6rAttemptInputs.sourceKind,
++        author: p6rContributions.acceptedAuthorship,
++        editor: p6rContributions.latestEditor,
++      })
++      .from(p6rAttempts)
++      .leftJoin(
++        p6rAttemptInputs,
++        eq(p6rAttemptInputs.attemptId, p6rAttempts.id),
++      )
++      .leftJoin(
++        p6rContributions,
++        and(
++          eq(p6rContributions.id, p6rAttemptInputs.contributionId),
++          eq(p6rContributions.threadId, p6rAttempts.threadId),
++        ),
++      )
++      .where(
++        and(
++          eq(p6rAttempts.threadId, threadId),
++          inArray(p6rAttempts.nativeRequestId, ids.slice(offset, offset + 200)),
++        ),
++      )
++      .orderBy(
++        p6rAttempts.id,
++        p6rAttemptInputs.groupIndex,
++        p6rAttemptInputs.sourceIndex,
++      )
++      .all();
+     for (const record of records) {
+       if (record.requestId === null) continue;
+       const seen = attempts.get(record.requestId) ?? new Set<string>();
+       seen.add(record.attemptId);
+       attempts.set(record.requestId, seen);
+       if (record.groupIndex === null) continue;
+-      const requestGroups = groups.get(record.requestId) ?? new Map<number, NativeInputAttribution[]>();
++      const requestGroups =
++        groups.get(record.requestId) ??
++        new Map<number, NativeInputAttribution[]>();
+       const sources = requestGroups.get(record.groupIndex) ?? [];
+-      sources.push(record.sourceKind === "contribution" ? attribution(record.author, record.editor) : unknown());
++      sources.push(
++        record.sourceKind === "contribution"
++          ? attribution(record.author, record.editor)
++          : unknown(),
++      );
+       requestGroups.set(record.groupIndex, sources);
+       groups.set(record.requestId, requestGroups);
+     }
+   }
+-  const decorate = (items: readonly TimelineRow[]): TimelineRow[] => items.map((row) => {
+-    if (row.kind === "conversation" && row.role === "user" && row.turnRequest.source) {
+-      const { requestId, inputGroupIndex } = row.turnRequest.source;
+-      const sources = attempts.get(requestId)?.size === 1 ? groups.get(requestId)?.get(inputGroupIndex) : undefined;
+-      return { ...row, attribution: sources?.length ? sources : [unknown()] };
+-    }
+-    if ("children" in row && row.children) return { ...row, children: decorate(row.children) };
+-    return row;
+-  });
++  const decorate = (items: readonly TimelineRow[]): TimelineRow[] =>
++    items.map((row) => {
++      if (
++        row.kind === "conversation" &&
++        row.role === "user" &&
++        row.turnRequest.source
++      ) {
++        const { requestId, inputGroupIndex } = row.turnRequest.source;
++        const sources =
++          attempts.get(requestId)?.size === 1
++            ? groups.get(requestId)?.get(inputGroupIndex)
++            : undefined;
++        return { ...row, attribution: sources?.length ? sources : [unknown()] };
++      }
++      if ("children" in row && row.children)
++        return { ...row, children: decorate(row.children) };
++      return row;
++    });
+   return decorate(rows);
+ }
+diff --git a/apps/server/src/services/plugins/plugin-runtime.ts b/apps/server/src/services/plugins/plugin-runtime.ts
+index 2bf70574c3215475fa267d25151864ee69137201..8002acc928426d77713e03df405d462ea45174ff 100644
+--- a/apps/server/src/services/plugins/plugin-runtime.ts
++++ b/apps/server/src/services/plugins/plugin-runtime.ts
+@@ -35,7 +35,12 @@ import {
+ } from "@bb/plugin-build";
+ import { PluginHostArtifactRegistry } from "./plugin-host-artifact-registry.js";
+ import { getPluginBuildToolchain } from "./build-toolchain.js";
+-import { createNodeBbSdk, createRequestTimeoutFetch, DEFAULT_BB_REQUEST_TIMEOUT_MS, type BbSdk } from "@bb/sdk";
++import {
++  createNodeBbSdk,
++  createRequestTimeoutFetch,
++  DEFAULT_BB_REQUEST_TIMEOUT_MS,
++  type BbSdk,
++} from "@bb/sdk";
+ import { experimental_aiServicesHostContract } from "@get-bb/plugin-sdk/ai-services";
+ import {
+   getInstalledPlugin,
+@@ -98,6 +103,13 @@ const PLUGIN_SDK_SPECIFIER = "@get-bb/plugin-sdk";
+ 
+ const LEGACY_PLUGIN_SDK_SPECIFIER = "@bb/plugin-sdk";
+ 
++const PLUGIN_SDK_RUNTIME_SUBPATHS = [
++  "ai-services",
++  "host",
++  "provider-bridge",
++  "provider-bridge/acp",
++] as const;
++
+ async function hashFile(
+   path: string,
+ ): Promise<{ digest: string; byteLength: number }> {
+@@ -117,11 +129,26 @@ export function pluginSdkAliasFor(runtimePath: string): Record<string, string> {
+   };
+ }
+ 
++function pluginSdkSubpathAliases(): Record<string, string> {
++  const require = createRequire(import.meta.url);
++  return Object.fromEntries(
++    PLUGIN_SDK_RUNTIME_SUBPATHS.flatMap((subpath) => {
++      const specifier = `${PLUGIN_SDK_SPECIFIER}/${subpath}`;
++      try {
++        return [[specifier, require.resolve(specifier)]];
++      } catch {
++        return [];
++      }
++    }),
++  );
++}
++
+ const pluginSdkAlias = pluginSdkAliasFor(
+   existsSync(pluginSdkRuntimePath)
+     ? pluginSdkRuntimePath
+     : createRequire(import.meta.url).resolve(PLUGIN_SDK_SPECIFIER),
+ );
++Object.assign(pluginSdkAlias, pluginSdkSubpathAliases());
+ 
+ interface MutableRoot {
+   id: number;
+@@ -312,10 +339,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+ 
+   const loaded = new Map<string, LoadedPlugin>();
+   const lastLoadPublished = new Map<string, boolean>();
+-  const interactionLifetimes = new WeakMap<
+-    PluginApiHandle,
+-    AbortController
+-  >();
++  const interactionLifetimes = new WeakMap<PluginApiHandle, AbortController>();
+   deps.pendingInteractions?.setPluginDirectory({
+     isLoaded: (pluginId) => loaded.has(pluginId),
+   });
+@@ -1151,6 +1175,13 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+     if (!deps.providerRegistry) {
+       throw new Error("the provider registry is unavailable in this host");
+     }
++    // A plugin whose bridge could not be built leaves its declared providers
++    // visible but unavailable.  When that same plugin is repaired, its staged
++    // live registration must replace the placeholder before the registry sees
++    // it; otherwise it is mistaken for a different plugin shadowing itself.
++    if (args.available) {
++      disposeUnavailableProviderRegistrations(args.row.id);
++    }
+     const declaredIcon =
+       args.declaration.icon === undefined
+         ? null
+@@ -1340,7 +1371,9 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+     );
+     const interactionLifetime = new AbortController();
+     const internalFetch = deps.createSdkFetch?.({
+-      pluginId: row.id, generation: p6rGeneration, lifetime: interactionLifetime.signal,
++      pluginId: row.id,
++      generation: p6rGeneration,
++      lifetime: interactionLifetime.signal,
+     });
+     let scopedSdk: { baseUrl: string; sdk: BbSdk } | undefined;
+     let handle!: PluginApiHandle;
+@@ -1350,12 +1383,17 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+       db: deps.db,
+       dataDir: deps.dataDir,
+       getSdk: () => {
+-        if (internalFetch === undefined || boundLoopbackBaseUrl === undefined) return boundSdk;
++        if (internalFetch === undefined || boundLoopbackBaseUrl === undefined)
++          return boundSdk;
+         if (scopedSdk?.baseUrl !== boundLoopbackBaseUrl) {
+           scopedSdk = {
+             baseUrl: boundLoopbackBaseUrl,
+-            sdk: createNodeBbSdk({ baseUrl: boundLoopbackBaseUrl,
+-              fetch: createRequestTimeoutFetch({ timeoutMs: DEFAULT_BB_REQUEST_TIMEOUT_MS, fetch: internalFetch }),
++            sdk: createNodeBbSdk({
++              baseUrl: boundLoopbackBaseUrl,
++              fetch: createRequestTimeoutFetch({
++                timeoutMs: DEFAULT_BB_REQUEST_TIMEOUT_MS,
++                fetch: internalFetch,
++              }),
+             }),
+           };
+         }
+@@ -1584,7 +1622,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+     const preparedP6rProvider =
+       p6rCandidate === undefined
+         ? null
+-        : deps.p6rIdentity?.preparedProvider(row.id, p6rGeneration) ?? null;
++        : (deps.p6rIdentity?.preparedProvider(row.id, p6rGeneration) ?? null);
+     const plugin: LoadedPlugin = {
+       manifest,
+       handle,
+diff --git a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
+index 239463ff0613dbc438b2df8c5d3c36c60e274e20..dc58476aba4e13f4122b339bd133f661552531b2 100644
+--- a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
++++ b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/SKILL.md
+@@ -41,6 +41,11 @@ the same change.
+ 
+ - Read references/backend-foundation.md for the factory, logging, settings,
+   storage, server information, and host access.
++- Use `bb.experimental_facets` only for bounded shared-thread facets; its
++  target grants are capability-scoped and must not be treated as generic
++  thread-write authority.
++- Use `bb.experimental_p6rIdentity` only when the host exposes the optional
++  P6R admission contract; ordinary hosts may omit it.
+ - Read references/backend-sdk.md for projects, environments, threads,
+   interactions, provider models, browser sessions, and event history.
+ - Read references/backend-api-index.md to check every public backend, host,
+diff --git a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/backend-api-index.md b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/backend-api-index.md
+index 31831b96fbc6b22f02fab9779b745ec258226c0a..a251fc328a69509f198ff9416df7762ad71d5517 100644
+--- a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/backend-api-index.md
++++ b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/backend-api-index.md
+@@ -245,6 +245,28 @@ Read the installed declarations for exact current signatures.
+ 
+ ## `@get-bb/plugin-sdk/ai-services`
+ 
++### P6R and thread-facet additions
++
++- `ExperimentalP6rAcceptanceRequest`
++- `ExperimentalP6rAcceptanceSource`
++- `ExperimentalP6rForkRequestHandle`
++- `ExperimentalP6rIdentityProtocol`
++- `ExperimentalP6rInvocationContext`
++- `ExperimentalP6rInvocationRegistration`
++- `ExperimentalP6rInvocationRouteClass`
++- `ExperimentalP6rInvocationScope`
++- `ExperimentalP6rInvocationValidity`
++- `ExperimentalP6rProviderRegistration`
++- `ExperimentalP6rRequestHandle`
++- `ExperimentalP6rResult`
++- `ExperimentalThreadFacetCardinality`
++- `ExperimentalThreadFacetHandle`
++- `ExperimentalThreadFacetReplacement`
++- `ExperimentalThreadFacetTarget`
++- `ExperimentalThreadFacetTargetGrant`
++- `ExperimentalThreadFacetTargetPage`
++- `ExperimentalThreadFacets`
++
+ - `experimental_aiInferenceCompleteInputSchema`
+ - `experimental_aiInferenceCompleteOutputSchema`
+ - `experimental_aiServiceErrorCodeSchema`
+diff --git a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/provider-bridge-api-index.md b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/provider-bridge-api-index.md
+index 55f7c255d78a3ce4d6987f8d5e572bcc076ae321..87a0b3df221ef07fda3bde1b9da37621c716cb84 100644
+--- a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/provider-bridge-api-index.md
++++ b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/provider-bridge-api-index.md
+@@ -99,6 +99,7 @@ Read the installed declarations for exact current signatures.
+ - `experimental_withTitle`
+ - `extensionKindSchema`
+ - `extractResultText`
++- `formatPromptInputForProvider`
+ - `getRawSdkMessage`
+ - `getRecordProperty`
+ - `getStringProperty`
+diff --git a/apps/server/test/app/skeleton.test.ts b/apps/server/test/app/skeleton.test.ts
+index d3bad4f2e3f569ec247d0f20341a666e03bb0f1e..c85e9552c2c2e0e51908dc8d9f5ccc90cd360218 100644
+--- a/apps/server/test/app/skeleton.test.ts
++++ b/apps/server/test/app/skeleton.test.ts
+@@ -273,7 +273,7 @@ describe("server skeleton", () => {
+               "SELECT COUNT(*) AS count FROM __p6r_migrations",
+             )
+             .get()?.count,
+-        ).toBe(1);
++        ).toBe(4);
+         expect(
+           initial.$client
+             .prepare(
+@@ -293,7 +293,7 @@ describe("server skeleton", () => {
+               "SELECT COUNT(*) AS count FROM __p6r_migrations",
+             )
+             .get()?.count,
+-        ).toBe(1);
++        ).toBe(4);
+       } finally {
+         restarted.$client.close();
+       }
+diff --git a/apps/server/test/services/p6r/sidecar-store.test.ts b/apps/server/test/services/p6r/sidecar-store.test.ts
+index ae67832effa8e50864828b587c9620b0c51aebba..7dc36294b436b9972c760aaa7a20b6acc9df0b4f 100644
+--- a/apps/server/test/services/p6r/sidecar-store.test.ts
++++ b/apps/server/test/services/p6r/sidecar-store.test.ts
+@@ -1,5 +1,13 @@
+ import { expect, describe, it } from "vitest";
+-import { appendDaemonEventsInTransaction, createConnection, createProject, createThread, migrate, noopNotifier, upsertHost } from "@bb/db";
++import {
++  appendDaemonEventsInTransaction,
++  createConnection,
++  createProject,
++  createThread,
++  migrate,
++  noopNotifier,
++  upsertHost,
++} from "@bb/db";
+ import { turnScope } from "@bb/domain";
+ import {
+   p6rAttemptInputs,
+@@ -32,7 +40,11 @@ function createMigratedDb() {
+ }
+ 
+ function createStoredThread(db: ReturnType<typeof createMigratedDb>): string {
+-  const host = upsertHost(db, noopNotifier, { id: "host-1", name: "Host", type: "persistent" });
++  const host = upsertHost(db, noopNotifier, {
++    id: "host-1",
++    name: "Host",
++    type: "persistent",
++  });
+   const { project } = createProject(db, noopNotifier, {
+     name: "Project",
+     source: { hostId: host.id, path: "/project", type: "local_path" },
+@@ -48,7 +60,9 @@ function createStoredThread(db: ReturnType<typeof createMigratedDb>): string {
+   return thread.id;
+ }
+ 
+-function draft(overrides: Partial<P6rAcceptanceDraft> = {}): P6rAcceptanceDraft {
++function draft(
++  overrides: Partial<P6rAcceptanceDraft> = {},
++): P6rAcceptanceDraft {
+   return {
+     assertLive: () => ({ ok: true }),
+     contribution: {
+@@ -256,7 +270,9 @@ describe("P6r sidecar storage", () => {
+       db.transaction((tx) =>
+         recordP6rNativeWriteInTransaction(
+           tx,
+-          nativeWriteOrigin({ validate: () => ({ code: "invalidated", ok: false }) }),
++          nativeWriteOrigin({
++            validate: () => ({ code: "invalidated", ok: false }),
++          }),
+           nativeWriteDraft(),
+         ),
+       ),
+@@ -309,7 +325,7 @@ describe("P6r sidecar storage", () => {
+       db.$client
+         .prepare("SELECT COUNT(*) AS count FROM __p6r_migrations")
+         .get(),
+-    ).toEqual({ count: 3 });
++    ).toEqual({ count: 4 });
+     expect(
+       db.$client
+         .prepare(
+@@ -321,9 +337,7 @@ describe("P6r sidecar storage", () => {
+ 
+   it("persists one instance namespace independently of its data directory path", () => {
+     const db = createMigratedDb();
+-    expect(initializeP6rInstanceNamespace(db, () => "first")).toBe(
+-      "p6r:first",
+-    );
++    expect(initializeP6rInstanceNamespace(db, () => "first")).toBe("p6r:first");
+     expect(initializeP6rInstanceNamespace(db, () => "second")).toBe(
+       "p6r:first",
+     );
+@@ -372,39 +386,90 @@ describe("P6r sidecar storage", () => {
+   it("links an attempt only to its exact accepted native request and turn", () => {
+     const db = createMigratedDb();
+     const threadId = createStoredThread(db);
+-    db.transaction((tx) => acceptP6rOperationInTransaction(tx, draft({
+-      attempt: {
+-        createdAt: 100,
+-        id: "attempt-1",
+-        inputs: [{ contributionId: "contribution-1", groupIndex: 0, snapshot: { text: "original" }, sourceIndex: 0, sourceKind: "contribution" }],
+-        nativeRequestId: "request-1",
+-        threadId,
+-      },
+-      contribution: { ...draft().contribution, threadId },
+-      receipt: { ...draft().receipt, threadId },
+-    })));
+-    db.transaction((tx) => appendDaemonEventsInTransaction(tx, [
+-      { data: "{}", environmentId: null, itemId: null, itemKind: null, parentToolCallId: null, providerThreadId: "provider-1", scope: turnScope("turn-1"), threadId, type: "turn/started" },
+-      { data: JSON.stringify({ clientRequestId: "request-1" }), environmentId: null, itemId: null, itemKind: null, parentToolCallId: null, providerThreadId: "provider-1", scope: turnScope("turn-1"), threadId, type: "turn/input/accepted" },
+-      { data: JSON.stringify({ clientRequestId: "other-request" }), environmentId: null, itemId: null, itemKind: null, parentToolCallId: null, providerThreadId: "provider-1", scope: turnScope("turn-1"), threadId, type: "turn/input/accepted" },
+-    ]));
+-
+-    expect(listP6rAttempts(db, "plugin-a", { operationId: "operation-1" })).toMatchObject([
++    db.transaction((tx) =>
++      acceptP6rOperationInTransaction(
++        tx,
++        draft({
++          attempt: {
++            createdAt: 100,
++            id: "attempt-1",
++            inputs: [
++              {
++                contributionId: "contribution-1",
++                groupIndex: 0,
++                snapshot: { text: "original" },
++                sourceIndex: 0,
++                sourceKind: "contribution",
++              },
++            ],
++            nativeRequestId: "request-1",
++            threadId,
++          },
++          contribution: { ...draft().contribution, threadId },
++          receipt: { ...draft().receipt, threadId },
++        }),
++      ),
++    );
++    db.transaction((tx) =>
++      appendDaemonEventsInTransaction(tx, [
++        {
++          data: "{}",
++          environmentId: null,
++          itemId: null,
++          itemKind: null,
++          parentToolCallId: null,
++          providerThreadId: "provider-1",
++          scope: turnScope("turn-1"),
++          threadId,
++          type: "turn/started",
++        },
++        {
++          data: JSON.stringify({ clientRequestId: "request-1" }),
++          environmentId: null,
++          itemId: null,
++          itemKind: null,
++          parentToolCallId: null,
++          providerThreadId: "provider-1",
++          scope: turnScope("turn-1"),
++          threadId,
++          type: "turn/input/accepted",
++        },
++        {
++          data: JSON.stringify({ clientRequestId: "other-request" }),
++          environmentId: null,
++          itemId: null,
++          itemKind: null,
++          parentToolCallId: null,
++          providerThreadId: "provider-1",
++          scope: turnScope("turn-1"),
++          threadId,
++          type: "turn/input/accepted",
++        },
++      ]),
++    );
++
++    expect(
++      listP6rAttempts(db, "plugin-a", { operationId: "operation-1" }),
++    ).toMatchObject([
+       { id: "attempt-1", nativeRequestId: "request-1", nativeTurnId: "turn-1" },
+     ]);
+-    expect(linkP6rNativeTurnForRequest(db, {
+-      nativeRequestId: "request-1",
+-      threadId,
+-      turnId: "turn-other",
+-    })).toBe(false);
+-    expect(linkP6rNativeTurnForRequest(db, {
+-      nativeRequestId: "request-1",
+-      threadId,
+-      turnId: "turn-1",
+-    })).toBe(true);
+-    expect(listP6rAttempts(db, "plugin-a", { operationId: "operation-1" })).toMatchObject([
+-      { id: "attempt-1", nativeTurnId: "turn-1" },
+-    ]);
++    expect(
++      linkP6rNativeTurnForRequest(db, {
++        nativeRequestId: "request-1",
++        threadId,
++        turnId: "turn-other",
++      }),
++    ).toBe(false);
++    expect(
++      linkP6rNativeTurnForRequest(db, {
++        nativeRequestId: "request-1",
++        threadId,
++        turnId: "turn-1",
++      }),
++    ).toBe(true);
++    expect(
++      listP6rAttempts(db, "plugin-a", { operationId: "operation-1" }),
++    ).toMatchObject([{ id: "attempt-1", nativeTurnId: "turn-1" }]);
+   });
+ 
+   it("isolates equal operation identifiers by their stable plugin namespace", () => {
+@@ -419,8 +484,12 @@ describe("P6r sidecar storage", () => {
+       ),
+     );
+     expect(first.receipt.operationId).toBe(second.receipt.operationId);
+-    expect(lookupP6rOperationReceipt(db, "plugin-a", "operation-1")).toMatchObject({ payloadHash: "hash-1" });
+-    expect(lookupP6rOperationReceipt(db, "plugin-b", "operation-1")).toMatchObject({ payloadHash: "hash-b" });
++    expect(
++      lookupP6rOperationReceipt(db, "plugin-a", "operation-1"),
++    ).toMatchObject({ payloadHash: "hash-1" });
++    expect(
++      lookupP6rOperationReceipt(db, "plugin-b", "operation-1"),
++    ).toMatchObject({ payloadHash: "hash-b" });
+   });
+ 
+   it("retains copied authorship and prior attempt snapshots through a replacement edit", () => {
+@@ -482,7 +551,10 @@ describe("P6r sidecar storage", () => {
+     expect(db.select().from(p6rContributions).all()).toMatchObject([
+       {
+         id: "8:plugin-a14:contribution-1",
+-        acceptedAuthorship: JSON.stringify({ kind: "external", subject: "author-1" }),
++        acceptedAuthorship: JSON.stringify({
++          kind: "external",
++          subject: "author-1",
++        }),
+         currentProjection: JSON.stringify({ text: "original" }),
+       },
+       {
+@@ -491,7 +563,10 @@ describe("P6r sidecar storage", () => {
+       },
+       {
+         id: "8:plugin-a17:contribution-edit",
+-        acceptedAuthorship: JSON.stringify({ kind: "external", subject: "author-1" }),
++        acceptedAuthorship: JSON.stringify({
++          kind: "external",
++          subject: "author-1",
++        }),
+         currentProjection: JSON.stringify({ text: "edited" }),
+         latestEditor: JSON.stringify({ subject: "editor-2" }),
+         replacesContributionId: "8:plugin-a14:contribution-1",
+diff --git a/apps/server/test/services/p6r/timeline-attribution.test.ts b/apps/server/test/services/p6r/timeline-attribution.test.ts
+index c8355c0e88bf850258ca71de82f895ceabe68b18..deaef2e35b48a2c9afafd604cda363cea8b2f726 100644
+--- a/apps/server/test/services/p6r/timeline-attribution.test.ts
++++ b/apps/server/test/services/p6r/timeline-attribution.test.ts
+@@ -3,40 +3,145 @@ import { eq } from "drizzle-orm";
+ import { timelineUserConversationRowSchema } from "@bb/server-contract";
+ import { withTestHarness } from "../../helpers/test-app.js";
+ import { seedThreadFixture } from "../../helpers/seed.js";
+-import { p6rAttempts, p6rAttemptInputs, p6rContributions } from "../../../src/services/p6r/sidecar-schema.js";
+-import { projectNativeTimelineAttribution } from "../../../src/services/p6r/timeline-attribution.js";
++import {
++  p6rAttempts,
++  p6rAttemptInputs,
++  p6rContributions,
++} from "../../../src/services/p6r/sidecar-schema.js";
++import { projectP6rNativeTimelineAttribution } from "../../../src/services/p6r/timeline-attribution.js";
+ 
+ it("joins exact request/group facts and rejects foreign or malformed evidence without changing cached rows", async () => {
+   await withTestHarness(async (harness) => {
+     const { thread } = seedThreadFixture(harness);
+     const other = seedThreadFixture(harness).thread;
+-    const alice = { evidence: "provider-verified", identity: { kind: "person", key: "person:a", issuer: "fixture", subject: "a" },
+-      presentation: { displayName: "Alice", handle: null, avatarUrl: "/avatars/a.png" } };
+-    const external = { evidence: "integration-asserted", identity: { kind: "external", key: "external:b", pluginId: "rosetta-slack", subject: "b" },
+-      presentation: { displayName: "Bob", handle: null, avatarUrl: null } };
+-    harness.db.insert(p6rContributions).values([
+-      { id: "a", threadId: thread.id, acceptedAt: 1, acceptedAuthorship: JSON.stringify(alice), latestEditor: JSON.stringify(alice), initialInput: "[]", currentProjection: "[]" },
+-      { id: "b", threadId: thread.id, acceptedAt: 2, acceptedAuthorship: JSON.stringify(external), latestEditor: JSON.stringify(alice), initialInput: "[]", currentProjection: "[]" },
+-      { id: "foreign", threadId: other.id, acceptedAt: 3, acceptedAuthorship: JSON.stringify(alice), latestEditor: "null", initialInput: "[]", currentProjection: "[]" },
+-    ]).run();
+-    harness.db.insert(p6rAttempts).values({ id: "attempt", threadId: thread.id, nativeRequestId: "request", createdAt: 1 }).run();
+-    harness.db.insert(p6rAttemptInputs).values(["a", "b", "foreign"].map((contributionId, groupIndex) => ({
+-      attemptId: "attempt", groupIndex, sourceIndex: 0, sourceKind: "contribution", contributionId, snapshot: "[]",
+-    }))).run();
+-    const row = (groupIndex: number) => timelineUserConversationRowSchema.parse({
+-      id: String(groupIndex), threadId: thread.id, turnId: "turn", sourceSeqStart: 99, sourceSeqEnd: 99,
+-      startedAt: 1, createdAt: 1, kind: "conversation", role: "user", text: "same text", attachments: null,
+-      initiator: "user", senderThreadId: null, systemMessageKind: "unlabeled", systemMessageSubject: null, mentions: [],
+-      turnRequest: { kind: "steer", isGrouped: true, status: "accepted", source: { requestId: "request", inputGroupIndex: groupIndex } },
+-    });
++    const alice = {
++      evidence: "provider-verified",
++      identity: {
++        kind: "person",
++        key: "person:a",
++        issuer: "fixture",
++        subject: "a",
++      },
++      presentation: {
++        displayName: "Alice",
++        handle: null,
++        avatarUrl: "/avatars/a.png",
++      },
++    };
++    const external = {
++      evidence: "integration-asserted",
++      identity: {
++        kind: "external",
++        key: "external:b",
++        pluginId: "rosetta-slack",
++        subject: "b",
++      },
++      presentation: { displayName: "Bob", handle: null, avatarUrl: null },
++    };
++    harness.db
++      .insert(p6rContributions)
++      .values([
++        {
++          id: "a",
++          threadId: thread.id,
++          acceptedAt: 1,
++          acceptedAuthorship: JSON.stringify(alice),
++          latestEditor: JSON.stringify(alice),
++          initialInput: "[]",
++          currentProjection: "[]",
++        },
++        {
++          id: "b",
++          threadId: thread.id,
++          acceptedAt: 2,
++          acceptedAuthorship: JSON.stringify(external),
++          latestEditor: JSON.stringify(alice),
++          initialInput: "[]",
++          currentProjection: "[]",
++        },
++        {
++          id: "foreign",
++          threadId: other.id,
++          acceptedAt: 3,
++          acceptedAuthorship: JSON.stringify(alice),
++          latestEditor: "null",
++          initialInput: "[]",
++          currentProjection: "[]",
++        },
++      ])
++      .run();
++    harness.db
++      .insert(p6rAttempts)
++      .values({
++        id: "attempt",
++        threadId: thread.id,
++        nativeRequestId: "request",
++        createdAt: 1,
++      })
++      .run();
++    harness.db
++      .insert(p6rAttemptInputs)
++      .values(
++        ["a", "b", "foreign"].map((contributionId, groupIndex) => ({
++          attemptId: "attempt",
++          groupIndex,
++          sourceIndex: 0,
++          sourceKind: "contribution",
++          contributionId,
++          snapshot: "[]",
++        })),
++      )
++      .run();
++    const row = (groupIndex: number) =>
++      timelineUserConversationRowSchema.parse({
++        id: String(groupIndex),
++        threadId: thread.id,
++        turnId: "turn",
++        sourceSeqStart: 99,
++        sourceSeqEnd: 99,
++        startedAt: 1,
++        createdAt: 1,
++        kind: "conversation",
++        role: "user",
++        text: "same text",
++        attachments: null,
++        initiator: "user",
++        senderThreadId: null,
++        systemMessageKind: "unlabeled",
++        systemMessageSubject: null,
++        mentions: [],
++        turnRequest: {
++          kind: "steer",
++          isGrouped: true,
++          status: "accepted",
++          source: { requestId: "request", inputGroupIndex: groupIndex },
++        },
++      });
+     const rows = [row(1), row(2), row(3)];
+-    expect(projectNativeTimelineAttribution(harness.db, thread.id, rows)).toMatchObject([
+-      { attribution: [{ author: { kind: "external", actor: external }, latestEditor: alice }] },
++    expect(
++      projectP6rNativeTimelineAttribution(harness.db, thread.id, rows),
++    ).toMatchObject([
++      {
++        attribution: [
++          {
++            author: { kind: "external", actor: external },
++            latestEditor: alice,
++          },
++        ],
++      },
+       { attribution: [{ author: { kind: "unknown" } }] },
+       { attribution: [{ author: { kind: "unknown" } }] },
+     ]);
+     expect(rows.every((value) => value.attribution === undefined)).toBe(true);
+-    harness.db.update(p6rContributions).set({ acceptedAuthorship: "{broken", latestEditor: "null" }).where(eq(p6rContributions.id, "b")).run();
+-    expect(projectNativeTimelineAttribution(harness.db, thread.id, rows)[0]).toMatchObject({ attribution: [{ author: { kind: "unknown" }, latestEditor: null }] });
++    harness.db
++      .update(p6rContributions)
++      .set({ acceptedAuthorship: "{broken", latestEditor: "null" })
++      .where(eq(p6rContributions.id, "b"))
++      .run();
++    expect(
++      projectP6rNativeTimelineAttribution(harness.db, thread.id, rows)[0],
++    ).toMatchObject({
++      attribution: [{ author: { kind: "unknown" }, latestEditor: null }],
++    });
+   });
+ });
+diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
+index f6fcd28252c58b5154132955af02dba2983667ce..074dcf14bc023a3627d2824412e38374c9634684 100644
+--- a/packages/db/test/migrate.test.ts
++++ b/packages/db/test/migrate.test.ts
+@@ -298,7 +298,32 @@ function dropThreadConversationOutlinesTable(db: DbConnection): void {
+   db.$client.prepare("DROP TABLE IF EXISTS thread_conversation_outlines").run();
+ }
+ 
++function dropLatestExecutionAndFacetSchema(db: DbConnection): void {
++  db.$client.exec(`
++    DROP TABLE IF EXISTS thread_facet_snapshots;
++    DROP TABLE IF EXISTS thread_facet_relations;
++    DROP TABLE IF EXISTS thread_facet_reconciliation_targets;
++    DROP TABLE IF EXISTS thread_facet_principal_profiles;
++    DROP TABLE IF EXISTS thread_facet_owners;
++    DROP TABLE IF EXISTS thread_facet_members;
++    DROP TABLE IF EXISTS thread_facet_declarations;
++    DROP TABLE IF EXISTS thread_facet_cursor_keys;
++  `);
++  const threadColumns = new Set(
++    db.$client
++      .prepare<[], TableInfoRow>("PRAGMA table_info(threads)")
++      .all()
++      .map((column) => column.name),
++  );
++  if (threadColumns.has("execution_revision")) {
++    db.$client
++      .prepare("ALTER TABLE threads DROP COLUMN execution_revision")
++      .run();
++  }
++}
++
+ function dropRewindAddedTables(db: DbConnection): void {
++  dropLatestExecutionAndFacetSchema(db);
+   dropThreadConversationOutlinesTable(db);
+   db.$client.prepare("DROP TABLE IF EXISTS thread_tabs").run();
+   db.$client.prepare("DROP TABLE IF EXISTS automation_runs").run();
+@@ -2154,6 +2179,7 @@ describe("migrate", () => {
+       dropMarketplaceCatalogSchema(db);
+       dropEventParentToolCallIdColumn(db);
+       dropQueueReworkSchema(db);
++      dropLatestExecutionAndFacetSchema(db);
+ 
+       restoreLegacyThreadOriginColumn(db);
+       migrate(db);
+@@ -2559,6 +2585,7 @@ describe("migrate", () => {
+       dropMarketplaceCatalogSchema(db);
+       dropEventParentToolCallIdColumn(db);
+       dropQueueReworkSchema(db);
++      dropLatestExecutionAndFacetSchema(db);
+ 
+       restoreLegacyThreadOriginColumn(db);
+       expect(
+@@ -2661,6 +2688,7 @@ describe("migrate", () => {
+       dropMarketplaceCatalogSchema(db);
+       dropEventParentToolCallIdColumn(db);
+       dropQueueReworkSchema(db);
++      dropLatestExecutionAndFacetSchema(db);
+ 
+       restoreLegacyThreadOriginColumn(db);
+       expect(() => migrate(db)).not.toThrow();
+@@ -5230,6 +5258,7 @@ describe("migrate", () => {
+       dropEventParentToolCallIdColumn(db);
+       dropMarketplaceStatsColumn(db);
+       dropQueueReworkSchema(db);
++      dropLatestExecutionAndFacetSchema(db);
+       db.$client
+         .prepare<DeleteMigrationParameters>(
+           "DELETE FROM __drizzle_migrations WHERE created_at >= ?",
+diff --git a/packages/plugin-build/src/build-plugin-host.ts b/packages/plugin-build/src/build-plugin-host.ts
+index 9a234ede996fbaa576f9ea1fd1467583e7118efd..b2ca2aea4a96002cc6196de4c988ee446700c8e5 100644
+--- a/packages/plugin-build/src/build-plugin-host.ts
++++ b/packages/plugin-build/src/build-plugin-host.ts
+@@ -46,6 +46,7 @@ ${PLUGIN_SDK_DEFINE_HOST_ENTRY_RUNTIME}`;
+ 
+ const PLUGIN_SDK_HOST_SUBPATH = "./host";
+ const PLUGIN_SDK_HOST_FALLBACK_SPECIFIER = "@get-bb/plugin-sdk/host";
++const PLUGIN_SDK_SUBPATH_FILTER = /^@get-bb\/plugin-sdk\//;
+ const PLUGIN_SDK_HOST_FALLBACK_EXPORTS: ReadonlySet<string> = new Set([
+   "experimental_defineHostEntry",
+ ]);
+@@ -412,17 +413,19 @@ export async function buildPluginHost(
+               `^${escapeRegex(PLUGIN_SDK_HOST_FALLBACK_SPECIFIER)}$`,
+             );
+             build.onResolve({ filter: hostFilter }, async (args) => {
+-              if (args.pluginData === PLUGIN_SDK_HOST_FALLBACK_NAMESPACE) {
+-                return undefined;
+-              }
+-              const installed = await build.resolve(args.path, {
+-                resolveDir: args.resolveDir,
+-                kind: args.kind,
+-                importer: args.importer,
+-                pluginData: PLUGIN_SDK_HOST_FALLBACK_NAMESPACE,
+-              });
+-              if (installed.errors.length === 0 && installed.path !== "") {
+-                return { path: installed.path };
++              const packageDir = await installedPluginSdkDirectory(
++                args.resolveDir,
++              );
++              const target =
++                packageDir === null
++                  ? null
++                  : await installedPluginSdkExportTarget(
++                      packageDir,
++                      PLUGIN_SDK_HOST_SUBPATH,
++                    );
++              if (packageDir !== null && target !== null) {
++                const targetPath = resolve(packageDir, target);
++                if (await pathExists(targetPath)) return { path: targetPath };
+               }
+               const importerSource = /\.[cm]?[jt]sx?$/u.test(args.importer)
+                 ? await readFile(args.importer, "utf8").catch(() => null)
+@@ -440,7 +443,7 @@ export async function buildPluginHost(
+                       text: await unresolvedHostSdkError({
+                         resolveDir: args.resolveDir,
+                         names: beyondStub,
+-                        esbuildErrors: installed.errors,
++                        esbuildErrors: [],
+                       }),
+                     },
+                   ],
+@@ -451,6 +454,26 @@ export async function buildPluginHost(
+                 namespace: PLUGIN_SDK_HOST_FALLBACK_NAMESPACE,
+               };
+             });
++            build.onResolve(
++              { filter: PLUGIN_SDK_SUBPATH_FILTER },
++              async (args) => {
++                const packageDir = await installedPluginSdkDirectory(
++                  args.resolveDir,
++                );
++                const subpath = `.${args.path.slice(
++                  PLUGIN_SDK_PACKAGE_NAME.length,
++                )}`;
++                const target =
++                  packageDir === null
++                    ? null
++                    : await installedPluginSdkExportTarget(packageDir, subpath);
++                if (packageDir !== null && target !== null) {
++                  const targetPath = resolve(packageDir, target);
++                  if (await pathExists(targetPath)) return { path: targetPath };
++                }
++                return undefined;
++              },
++            );
+             build.onLoad(
+               { filter: /.*/, namespace: PLUGIN_SDK_HOST_FALLBACK_NAMESPACE },
+               () => ({
+diff --git a/packages/plugin-build/src/build-plugin-server.ts b/packages/plugin-build/src/build-plugin-server.ts
+index eb28a73fcc7909d622e9b20660db555a98881bb4..ea7e01ecfb89377630b3663097eb1378ef674bda 100644
+--- a/packages/plugin-build/src/build-plugin-server.ts
++++ b/packages/plugin-build/src/build-plugin-server.ts
+@@ -189,14 +189,24 @@ export async function buildPluginServer(
+                 if (args.pluginData === PLUGIN_SDK_SUBPATH_RESOLVE_MARK) {
+                   return undefined;
+                 }
+-                const installed = await build.resolve(args.path, {
+-                  resolveDir: args.resolveDir,
+-                  kind: args.kind,
+-                  importer: args.importer,
+-                  pluginData: PLUGIN_SDK_SUBPATH_RESOLVE_MARK,
+-                });
+-                if (installed.errors.length === 0 && installed.path !== "") {
+-                  return { path: installed.path };
++                const packageDir = await installedPluginSdkDirectory(
++                  args.resolveDir,
++                );
++                const subpath = `.${args.path.slice(
++                  PLUGIN_SDK_PACKAGE_NAME.length,
++                )}`;
++                const target =
++                  packageDir === null
++                    ? null
++                    : await installedPluginSdkExportTarget(packageDir, subpath);
++                if (packageDir !== null && target !== null) {
++                  const targetPath = resolve(packageDir, target);
++                  if (await pathExists(targetPath)) {
++                    // esbuild's source condition resolves a package subpath by
++                    // appending it to the root source entry (index.ts/host).
++                    // Resolve the package export directly instead.
++                    return { path: targetPath };
++                  }
+                 }
+                 return {
+                   errors: [
+@@ -204,7 +214,7 @@ export async function buildPluginServer(
+                       text: await unresolvedSdkSubpathError({
+                         specifier: args.path,
+                         resolveDir: args.resolveDir,
+-                        esbuildErrors: installed.errors,
++                        esbuildErrors: [],
+                       }),
+                     },
+                   ],
+@@ -246,7 +256,10 @@ export async function buildPluginServer(
+         kind: "plugin-server-build",
+         configuration: {
+           entry: await receiptFile(rootDir, serverEntry),
+-          packageManifest: await receiptFile(rootDir, join(rootDir, "package.json")),
++          packageManifest: await receiptFile(
++            rootDir,
++            join(rootDir, "package.json"),
++          ),
+           packageName,
+           pluginVersion,
+           bbVersion,
+@@ -265,7 +278,13 @@ export async function buildPluginServer(
+           ),
+           sdkManifests: await receiptExistingFiles(rootDir, [
+             BUILD_SDK_MANIFEST,
+-            join(rootDir, "node_modules", "@get-bb", "plugin-sdk", "package.json"),
++            join(
++              rootDir,
++              "node_modules",
++              "@get-bb",
++              "plugin-sdk",
++              "package.json",
++            ),
+             join(rootDir, "node_modules", "@bb", "plugin-sdk", "package.json"),
+           ]),
+           externalManifests,
+diff --git a/packages/plugin-sdk/src/provider-bridge.ts b/packages/plugin-sdk/src/provider-bridge.ts
+index 8d77292be7f0ed6016ebcc27ba92ac3e356ca4c8..4d14a8c4f9434087dfa0a925e421a0683aae4ac0 100644
+--- a/packages/plugin-sdk/src/provider-bridge.ts
++++ b/packages/plugin-sdk/src/provider-bridge.ts
+@@ -47,6 +47,7 @@ export {
+   PROVIDER_BRIDGE_EXPORT_NAME,
+   experimental_defineProviderBridge,
+ } from "@bb/provider-bridge-protocol/bridge-kit";
++export { formatPromptInputForProvider } from "@bb/provider-bridge-protocol";
+ export type {
+   ProviderBridgeContext,
+   ProviderBridgeDefinition,
+diff --git a/plugins/provider-acp/src/native-roots/omp.ts b/plugins/provider-acp/src/native-roots/omp.ts
+index 2a6c681ecfe38995c052950256a9a305d08d198e..47fabcf029687153685b38086b1d38c6a8e06ee8 100644
+--- a/plugins/provider-acp/src/native-roots/omp.ts
++++ b/plugins/provider-acp/src/native-roots/omp.ts
+@@ -11,10 +11,8 @@ import type {
+ } from "./resolver.js";
+ import {
+   configuredSkillRoot,
+-  isPathWithinDirectory,
+   readParsedFile,
+   resolveConfiguredPath,
+-  resolveProjectAncestorDirectories,
+   resolveStoredPath,
+   skillsRoot,
+   type ResolvedRootOrigin,
+@@ -80,25 +78,32 @@ async function resolveOmpConfiguredSkillRoots(
+     path.join(agentDir, "config.yml"),
+     path.join(agentDir, "config.yaml"),
+   ];
+-  const configPaths = [
++  const configPaths: Array<{
++    origin: ResolvedRootOrigin;
++    path: string;
++  }> = [
+     ...(args.cwd === null
+       ? []
+-      : [path.join(args.cwd, OMP_DIR_NAME, "config.yml")]),
++      : [
++          {
++            origin: "project" as const,
++            path: path.join(args.cwd, OMP_DIR_NAME, "config.yml"),
++          },
++        ]),
+     ...(
+       args.env.PI_CONFIG_FILES?.split(path.delimiter).filter(Boolean) ?? []
+-    ).map((filePath) =>
+-      resolveConfiguredPath({
++    ).map((filePath) => ({
++      // An explicit PI_CONFIG_FILES entry is operator/user configuration even
++      // when an ancestor happens to be a Git worktree (for example /tmp/.git).
++      origin: "user" as const,
++      path: resolveConfiguredPath({
+         basePath: cwd,
+         env: args.env,
+         homeDir: args.homeDir,
+         value: filePath,
+       }),
+-    ),
++    })),
+   ];
+-  const projectRootPath =
+-    args.cwd === null
+-      ? null
+-      : (await resolveProjectAncestorDirectories(args.cwd)).projectRootPath;
+   let customDirectories: string[] = [];
+   let customOrigin: ResolvedRootOrigin = "user";
+   for (const configPath of userConfigPaths) {
+@@ -112,19 +117,15 @@ async function resolveOmpConfiguredSkillRoots(
+       break;
+     }
+   }
+-  for (const configPath of configPaths) {
+-    const config = await readParsedFile(
+-      configPath,
++  for (const config of configPaths) {
++    const parsedConfig = await readParsedFile(
++      config.path,
+       parseYaml,
+       ompSkillConfigSchema,
+     );
+-    if (config?.skills?.customDirectories !== undefined) {
+-      customDirectories = config.skills.customDirectories;
+-      customOrigin =
+-        projectRootPath !== null &&
+-        isPathWithinDirectory(projectRootPath, configPath)
+-          ? "project"
+-          : "user";
++    if (parsedConfig?.skills?.customDirectories !== undefined) {
++      customDirectories = parsedConfig.skills.customDirectories;
++      customOrigin = config.origin;
+     }
+   }
+   return customDirectories.map((configuredPath) =>
+diff --git a/plugins/provider-claude-code/server.ts b/plugins/provider-claude-code/server.ts
+index ac28b9378d04e8e0b7dfbe178ac7c48e598336fc..2a7f26d422febcce94224e9beca464655655a480 100644
+--- a/plugins/provider-claude-code/server.ts
++++ b/plugins/provider-claude-code/server.ts
+@@ -4,7 +4,7 @@ import {
+   CLAUDE_XHIGH_CAPABLE_REASONING_EFFORT_DATA,
+   DEFAULT_CLAUDE_CODE_MODEL,
+ } from "./src/model-catalog-data.js";
+-import { CLAUDE_NATIVE_ROOTS_DECLARATION } from "./src/native-roots.js";
++import { CLAUDE_NATIVE_ROOTS_DECLARATION } from "./src/native-roots-declaration.js";
+ 
+ export default function plugin(bb: BbPluginApi) {
+   bb.settings.define({
+diff --git a/plugins/provider-claude-code/src/bridge/bridge.ts b/plugins/provider-claude-code/src/bridge/bridge.ts
+index 45b1fbd6a2bc6d4a97b736497e94b07484ce6ab3..953dbe64ca2e6b93b91fdf488c098250faa720f5 100644
+--- a/plugins/provider-claude-code/src/bridge/bridge.ts
++++ b/plugins/provider-claude-code/src/bridge/bridge.ts
+@@ -25,8 +25,8 @@ import {
+   withoutBridgeRuntimeEnv,
+   type BridgeToolCallRequest,
+   experimental_defineProviderBridge,
++  formatPromptInputForProvider,
+ } from "@get-bb/plugin-sdk/provider-bridge";
+-import { formatPromptInputForProvider } from "@bb/provider-bridge-protocol";
+ import { randomUUID } from "node:crypto";
+ import { join as joinPath, resolve as resolvePath } from "node:path";
+ import { isDeepStrictEqual } from "node:util";
+diff --git a/plugins/provider-claude-code/src/native-roots-declaration.ts b/plugins/provider-claude-code/src/native-roots-declaration.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..0e9124776b2a37da109870611ab5a5c3176dd3d6
+--- /dev/null
++++ b/plugins/provider-claude-code/src/native-roots-declaration.ts
+@@ -0,0 +1,25 @@
++import type { PluginProviderDeclaration } from "@get-bb/plugin-sdk";
++
++export const CLAUDE_NATIVE_ROOTS_DECLARATION: Pick<
++  PluginProviderDeclaration,
++  | "experimental_nativeSkillRoots"
++  | "experimental_nativeCommandRoots"
++  | "experimental_resolvesNativeRoots"
++> = {
++  experimental_nativeSkillRoots: {
++    user: [
++      { path: ".claude/skills", skipIfManifest: ".claude-plugin/plugin.json" },
++    ],
++    project: [
++      {
++        path: ".claude/skills",
++        ancestors: true,
++        skipIfManifest: ".claude-plugin/plugin.json",
++      },
++    ],
++  },
++  experimental_nativeCommandRoots: {
++    project: [".claude/commands"],
++  },
++  experimental_resolvesNativeRoots: true,
++};
+diff --git a/plugins/provider-claude-code/src/native-roots.ts b/plugins/provider-claude-code/src/native-roots.ts
+index d0a66f378a7aad20d3b6350c2b35fc5990fd91d6..15f89bc3ccabbc04907d15583811626bfeb2dad3 100644
+--- a/plugins/provider-claude-code/src/native-roots.ts
++++ b/plugins/provider-claude-code/src/native-roots.ts
+@@ -1,5 +1,4 @@
+ import path from "node:path";
+-import type { PluginProviderDeclaration } from "@get-bb/plugin-sdk";
+ import {
+   experimental_filterResolvedNativeRoots,
+   experimental_resolveClaudePluginRoots,
+@@ -8,30 +7,6 @@ import {
+   type ExperimentalVendorPluginRoots,
+ } from "@get-bb/plugin-sdk/host";
+ 
+-export const CLAUDE_NATIVE_ROOTS_DECLARATION: Pick<
+-  PluginProviderDeclaration,
+-  | "experimental_nativeSkillRoots"
+-  | "experimental_nativeCommandRoots"
+-  | "experimental_resolvesNativeRoots"
+-> = {
+-  experimental_nativeSkillRoots: {
+-    user: [
+-      { path: ".claude/skills", skipIfManifest: ".claude-plugin/plugin.json" },
+-    ],
+-    project: [
+-      {
+-        path: ".claude/skills",
+-        ancestors: true,
+-        skipIfManifest: ".claude-plugin/plugin.json",
+-      },
+-    ],
+-  },
+-  experimental_nativeCommandRoots: {
+-    project: [".claude/commands"],
+-  },
+-  experimental_resolvesNativeRoots: true,
+-};
+-
+ const CLAUDE_PLUGIN_MANIFEST_MARKER = ".claude-plugin/plugin.json";
+ 
+ type ClaudeResolvedRoot = ExperimentalVendorPluginRoots["skills"][number];
+diff --git a/plugins/provider-codex/server.ts b/plugins/provider-codex/server.ts
+index bb0bfb4e2af28b4b6720af87d998f9682186132c..03cf7f1905d0f0fd7d752aaaa8c21a313754ea1d 100644
+--- a/plugins/provider-codex/server.ts
++++ b/plugins/provider-codex/server.ts
+@@ -1,6 +1,6 @@
+ import type { BbPluginApi } from "@get-bb/plugin-sdk";
+ import { codexExtensionKinds } from "./src/extension-kinds.js";
+-import { CODEX_NATIVE_ROOTS_DECLARATION } from "./src/native-roots.js";
++import { CODEX_NATIVE_ROOTS_DECLARATION } from "./src/native-roots-declaration.js";
+ 
+ export default function plugin(bb: BbPluginApi) {
+   bb.experimental_aiServices.register({
+diff --git a/plugins/provider-codex/src/bridge/bridge.ts b/plugins/provider-codex/src/bridge/bridge.ts
+index 5dd0cf52ea0035135f52bf70cc1b56f975145d6f..d06d8a6d53db6967e0a6e56a47b70eeba44ba86f 100644
+--- a/plugins/provider-codex/src/bridge/bridge.ts
++++ b/plugins/provider-codex/src/bridge/bridge.ts
+@@ -44,10 +44,10 @@ import {
+   type ProviderPostInitializeRequest,
+   type ProviderRuntimeEvent,
+   experimental_defineProviderBridge,
++  formatPromptInputForProvider,
+   type ProviderRecoveryHint,
+ } from "@get-bb/plugin-sdk/provider-bridge";
+ import { z } from "zod";
+-import { formatPromptInputForProvider } from "@bb/provider-bridge-protocol";
+ import {
+   CODEX_MACOS_PERMISSION_EXTENSION_KIND,
+   summarizeCodexMacOsPermissions,
+diff --git a/plugins/provider-codex/src/native-roots-declaration.ts b/plugins/provider-codex/src/native-roots-declaration.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..85be9247828b22fe0e178509ba35780cae52fec2
+--- /dev/null
++++ b/plugins/provider-codex/src/native-roots-declaration.ts
+@@ -0,0 +1,12 @@
++import type { PluginProviderDeclaration } from "@get-bb/plugin-sdk";
++
++export const CODEX_NATIVE_ROOTS_DECLARATION: Pick<
++  PluginProviderDeclaration,
++  "experimental_nativeSkillRoots" | "experimental_resolvesNativeRoots"
++> = {
++  experimental_nativeSkillRoots: {
++    user: [".codex/skills", ".agents/skills"],
++    project: [".codex/skills", { path: ".agents/skills", ancestors: true }],
++  },
++  experimental_resolvesNativeRoots: true,
++};
+diff --git a/plugins/provider-codex/src/native-roots.ts b/plugins/provider-codex/src/native-roots.ts
+index c81cd2592717a0d66b262b79791489fd67a819b7..f004ad390cd1d3ce0c2e821cb111de69c94ef846 100644
+--- a/plugins/provider-codex/src/native-roots.ts
++++ b/plugins/provider-codex/src/native-roots.ts
+@@ -1,7 +1,6 @@
+ import type { Dirent } from "node:fs";
+ import fs from "node:fs/promises";
+ import path from "node:path";
+-import type { PluginProviderDeclaration } from "@get-bb/plugin-sdk";
+ import {
+   experimental_filterResolvedNativeRoots,
+   experimental_resolveVendorPluginRoots,
+@@ -11,17 +10,6 @@ import {
+ import { z } from "zod";
+ import { resolveCodexHome } from "./codex-home.js";
+ 
+-export const CODEX_NATIVE_ROOTS_DECLARATION: Pick<
+-  PluginProviderDeclaration,
+-  "experimental_nativeSkillRoots" | "experimental_resolvesNativeRoots"
+-> = {
+-  experimental_nativeSkillRoots: {
+-    user: [".codex/skills", ".agents/skills"],
+-    project: [".codex/skills", { path: ".agents/skills", ancestors: true }],
+-  },
+-  experimental_resolvesNativeRoots: true,
+-};
+-
+ export type CodexResolvedSkillRoot = NonNullable<
+   ExperimentalNativeRootsResolveAnswer["skills"]
+ >[number];
+diff --git a/plugins/provider-pi/src/bridge/bridge.ts b/plugins/provider-pi/src/bridge/bridge.ts
+index ebf85bd35e01135f4ce8d99e4fc26d1e4f0e2e88..456fd8b22ca36b1035562fe5a5d1cd499ee2e8db 100644
+--- a/plugins/provider-pi/src/bridge/bridge.ts
++++ b/plugins/provider-pi/src/bridge/bridge.ts
+@@ -42,8 +42,8 @@ import {
+   type InitializeResult,
+   type ThreadDelta,
+   type ThreadEventContextWindowUsage,
++  formatPromptInputForProvider,
+ } from "@get-bb/plugin-sdk/provider-bridge";
+-import { formatPromptInputForProvider } from "@bb/provider-bridge-protocol";
+ import type { ImageContent } from "@earendil-works/pi-ai";
+ import { createPiDeltaTranslator } from "../delta-translation.js";
+ import {
+diff --git a/plugins/provider-pi/src/declaration.ts b/plugins/provider-pi/src/declaration.ts
+index 9d942ad6fa5df95af18476ed9eb57baa3a84dbd1..4dd5122c5cab144b5cb0e8f02b0a86b2f0313bc4 100644
+--- a/plugins/provider-pi/src/declaration.ts
++++ b/plugins/provider-pi/src/declaration.ts
+@@ -1,5 +1,5 @@
+ import type { PluginProviderDeclaration } from "@get-bb/plugin-sdk";
+-import { PI_NATIVE_ROOTS_DECLARATION } from "./native-roots.js";
++import { PI_NATIVE_ROOTS_DECLARATION } from "./native-roots-declaration.js";
+ 
+ export function piProviderDeclaration(): PluginProviderDeclaration {
+   return {
+diff --git a/plugins/provider-pi/src/native-roots-declaration.ts b/plugins/provider-pi/src/native-roots-declaration.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..22413cf22d1feb80d35ae5a7bffc7d20554dc7d0
+--- /dev/null
++++ b/plugins/provider-pi/src/native-roots-declaration.ts
+@@ -0,0 +1,12 @@
++import type { PluginProviderDeclaration } from "@get-bb/plugin-sdk";
++
++export const PI_NATIVE_ROOTS_DECLARATION: Pick<
++  PluginProviderDeclaration,
++  "experimental_nativeSkillRoots" | "experimental_resolvesNativeRoots"
++> = {
++  experimental_nativeSkillRoots: {
++    user: [".pi/agent/skills", ".agents/skills"],
++    project: [".pi/skills", ".agents/skills"],
++  },
++  experimental_resolvesNativeRoots: true,
++};
+diff --git a/plugins/provider-pi/src/native-roots.ts b/plugins/provider-pi/src/native-roots.ts
+index cd581f1041f01dcda4a7fa032252809a54bbde42..e96325163071c5e2d6a197f657bf403def99cae8 100644
+--- a/plugins/provider-pi/src/native-roots.ts
++++ b/plugins/provider-pi/src/native-roots.ts
+@@ -1,23 +1,11 @@
+ import { readFile } from "node:fs/promises";
+ import path from "node:path";
+-import type { PluginProviderDeclaration } from "@get-bb/plugin-sdk";
+ import {
+   experimental_filterResolvedNativeRoots,
+   type ExperimentalNativeRootsResolveAnswer,
+ } from "@get-bb/plugin-sdk/host";
+ import { z } from "zod";
+ 
+-export const PI_NATIVE_ROOTS_DECLARATION: Pick<
+-  PluginProviderDeclaration,
+-  "experimental_nativeSkillRoots" | "experimental_resolvesNativeRoots"
+-> = {
+-  experimental_nativeSkillRoots: {
+-    user: [".pi/agent/skills", ".agents/skills"],
+-    project: [".pi/skills", ".agents/skills"],
+-  },
+-  experimental_resolvesNativeRoots: true,
+-};
+-
+ const piSettingsSchema = z
+   .object({ skills: z.array(z.string()).optional() })
+   .passthrough();
+diff --git a/tests/integration/native-roots-golden/pipeline.ts b/tests/integration/native-roots-golden/pipeline.ts
+index 331f0866fcce7d71025fdfe26736008d9652614f..eb22f6364ee55f0c2f2c78aac5cc8302eb6c7ba0 100644
+--- a/tests/integration/native-roots-golden/pipeline.ts
++++ b/tests/integration/native-roots-golden/pipeline.ts
+@@ -25,18 +25,12 @@ import {
+   acpProviderDeclaration,
+   resolveAcpNativeRoots,
+ } from "../../../plugins/provider-acp/src/native-roots/index.js";
+-import {
+-  CLAUDE_NATIVE_ROOTS_DECLARATION,
+-  resolveClaudeNativeRoots,
+-} from "../../../plugins/provider-claude-code/src/native-roots.js";
+-import {
+-  CODEX_NATIVE_ROOTS_DECLARATION,
+-  resolveCodexNativeRoots,
+-} from "../../../plugins/provider-codex/src/native-roots.js";
+-import {
+-  PI_NATIVE_ROOTS_DECLARATION,
+-  resolvePiNativeRoots,
+-} from "../../../plugins/provider-pi/src/native-roots.js";
++import { CLAUDE_NATIVE_ROOTS_DECLARATION } from "../../../plugins/provider-claude-code/src/native-roots-declaration.js";
++import { resolveClaudeNativeRoots } from "../../../plugins/provider-claude-code/src/native-roots.js";
++import { CODEX_NATIVE_ROOTS_DECLARATION } from "../../../plugins/provider-codex/src/native-roots-declaration.js";
++import { resolveCodexNativeRoots } from "../../../plugins/provider-codex/src/native-roots.js";
++import { PI_NATIVE_ROOTS_DECLARATION } from "../../../plugins/provider-pi/src/native-roots-declaration.js";
++import { resolvePiNativeRoots } from "../../../plugins/provider-pi/src/native-roots.js";
+ 
+ export interface PipelineInput {
+   providerId: string;

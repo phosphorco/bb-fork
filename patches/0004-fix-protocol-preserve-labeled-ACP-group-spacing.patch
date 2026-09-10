@@ -1,0 +1,39 @@
+From c9a082d1a3fd25977c151de7195bb4ffc8dfd868 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Thu, 10 Sep 2026 01:00:21 -0400
+Subject: [PATCH 4/5] fix(protocol): preserve labeled ACP group spacing
+
+---
+ .../provider-bridge-protocol/src/input-provenance.test.ts    | 2 +-
+ packages/provider-bridge-protocol/src/input-provenance.ts    | 5 ++++-
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/packages/provider-bridge-protocol/src/input-provenance.test.ts b/packages/provider-bridge-protocol/src/input-provenance.test.ts
+index 88d597895e14cac328d4e5500c030f5e7f8f9ef5..547b45df4d1a3b34b86847d9ec5771ba320013f2 100644
+--- a/packages/provider-bridge-protocol/src/input-provenance.test.ts
++++ b/packages/provider-bridge-protocol/src/input-provenance.test.ts
+@@ -58,7 +58,7 @@ describe("formatPromptInputForProvider", () => {
+         mentions: [],
+       },
+       input[0],
+-      { type: "text", text: "\n\n", mentions: [] },
++      { type: "text", text: "\n", mentions: [] },
+       input[2],
+     ]);
+   });
+diff --git a/packages/provider-bridge-protocol/src/input-provenance.ts b/packages/provider-bridge-protocol/src/input-provenance.ts
+index 8c60cf118d6c9fd7d7c6137dbd58b3ef1ec0c942..116a64007110db090975cad264fe1e53bdd7887b 100644
+--- a/packages/provider-bridge-protocol/src/input-provenance.ts
++++ b/packages/provider-bridge-protocol/src/input-provenance.ts
+@@ -76,7 +76,10 @@ export function formatPromptInputForProvider(
+       );
+     }
+     if (groupIndex > 0) {
+-      formatted.push({ type: "text", text: "\n\n", mentions: [] });
++      // ACP providers delimit adjacent text blocks with a newline when they
++      // serialize them. One explicit newline therefore preserves the intended
++      // blank line between labeled provenance groups without adding a second.
++      formatted.push({ type: "text", text: "\n", mentions: [] });
+     }
+     const label = sourceLabel(provenance);
+     if (label !== null) {
