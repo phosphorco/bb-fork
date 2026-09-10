@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { p6rRecoverFromStaleDynamicImport } from "../lib/chunk-load-recovery";
 
 /**
  * The last boundary above the router.
@@ -37,6 +38,7 @@ export class AppErrorBoundary extends Component<
     // The component stack is the part a screenshot of the console never has,
     // and the part that names the subtree at fault.
     console.error("[bb] the app crashed", error, info.componentStack);
+    p6rRecoverFromStaleDynamicImport(error);
   }
 
   override render(): ReactNode {
