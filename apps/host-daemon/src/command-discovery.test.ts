@@ -45,6 +45,9 @@ async function makeWorkspaceFixture(): Promise<WorkspaceFixture> {
   const cwd = path.join(tempRoot, "workspace");
   const homeDir = path.join(tempRoot, "home");
   await mkdir(cwd, { recursive: true });
+  // Tests which assert project-root boundaries must not inherit an accidental
+  // repository marker from the host's temporary-directory ancestor.
+  await mkdir(path.join(cwd, ".git"));
   await mkdir(homeDir, { recursive: true });
   return { cwd, homeDir };
 }
@@ -747,10 +750,11 @@ describe("resolveDeclaredScanRoots", () => {
     ]);
   });
 
-  it("does not walk above a cwd without a repository marker and lists the cwd once", async () => {
+  it("does not walk above an explicit cwd boundary and lists the cwd once", async () => {
     const fixture = await makeWorkspaceFixture();
     const cwd = path.join(fixture.cwd, "standalone");
     await mkdir(cwd, { recursive: true });
+    await mkdir(path.join(cwd, ".git"));
     await writeFileEnsuringDir(
       path.join(fixture.cwd, ".agents", "skills", "parent-skill", "SKILL.md"),
       skillFile("parent-skill"),

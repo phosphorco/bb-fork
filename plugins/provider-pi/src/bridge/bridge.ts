@@ -42,8 +42,8 @@ import {
   type InitializeResult,
   type ThreadDelta,
   type ThreadEventContextWindowUsage,
+  formatPromptInputForProvider,
 } from "@get-bb/plugin-sdk/provider-bridge";
-import { formatPromptInputForProvider } from "@bb/provider-bridge-protocol";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { createPiDeltaTranslator } from "../delta-translation.js";
 import {

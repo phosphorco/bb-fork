@@ -25,8 +25,8 @@ import {
   withoutBridgeRuntimeEnv,
   type BridgeToolCallRequest,
   experimental_defineProviderBridge,
+  formatPromptInputForProvider,
 } from "@get-bb/plugin-sdk/provider-bridge";
-import { formatPromptInputForProvider } from "@bb/provider-bridge-protocol";
 import { randomUUID } from "node:crypto";
 import { join as joinPath, resolve as resolvePath } from "node:path";
 import { isDeepStrictEqual } from "node:util";

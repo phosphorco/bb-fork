@@ -4,7 +4,7 @@ import {
   CLAUDE_XHIGH_CAPABLE_REASONING_EFFORT_DATA,
   DEFAULT_CLAUDE_CODE_MODEL,
 } from "./src/model-catalog-data.js";
-import { CLAUDE_NATIVE_ROOTS_DECLARATION } from "./src/native-roots.js";
+import { CLAUDE_NATIVE_ROOTS_DECLARATION } from "./src/native-roots-declaration.js";
 
 export default function plugin(bb: BbPluginApi) {
   bb.settings.define({

@@ -99,6 +99,7 @@ Read the installed declarations for exact current signatures.
 - `experimental_withTitle`
 - `extensionKindSchema`
 - `extractResultText`
+- `formatPromptInputForProvider`
 - `getRawSdkMessage`
 - `getRecordProperty`
 - `getStringProperty`

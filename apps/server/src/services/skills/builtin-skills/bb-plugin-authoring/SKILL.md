@@ -41,6 +41,11 @@ the same change.
 
 - Read references/backend-foundation.md for the factory, logging, settings,
   storage, server information, and host access.
+- Use `bb.experimental_facets` only for bounded shared-thread facets; its
+  target grants are capability-scoped and must not be treated as generic
+  thread-write authority.
+- Use `bb.experimental_p6rIdentity` only when the host exposes the optional
+  P6R admission contract; ordinary hosts may omit it.
 - Read references/backend-sdk.md for projects, environments, threads,
   interactions, provider models, browser sessions, and event history.
 - Read references/backend-api-index.md to check every public backend, host,

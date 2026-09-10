@@ -1,7 +1,6 @@
 import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { PluginProviderDeclaration } from "@get-bb/plugin-sdk";
 import {
   experimental_filterResolvedNativeRoots,
   experimental_resolveVendorPluginRoots,
@@ -10,17 +9,6 @@ import {
 } from "@get-bb/plugin-sdk/host";
 import { z } from "zod";
 import { resolveCodexHome } from "./codex-home.js";
-
-export const CODEX_NATIVE_ROOTS_DECLARATION: Pick<
-  PluginProviderDeclaration,
-  "experimental_nativeSkillRoots" | "experimental_resolvesNativeRoots"
-> = {
-  experimental_nativeSkillRoots: {
-    user: [".codex/skills", ".agents/skills"],
-    project: [".codex/skills", { path: ".agents/skills", ancestors: true }],
-  },
-  experimental_resolvesNativeRoots: true,
-};
 
 export type CodexResolvedSkillRoot = NonNullable<
   ExperimentalNativeRootsResolveAnswer["skills"]

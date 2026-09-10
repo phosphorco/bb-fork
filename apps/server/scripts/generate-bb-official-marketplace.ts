@@ -151,9 +151,10 @@ export async function readPluginGitDates(args: {
         continue;
       }
       const current = dates.get(plugin.name);
+      const canonicalDate = new Date(date).toISOString().replace(".000Z", "Z");
       dates.set(plugin.name, {
-        publishedAt: date,
-        updatedAt: current?.updatedAt ?? date,
+        publishedAt: canonicalDate,
+        updatedAt: current?.updatedAt ?? canonicalDate,
       });
     }
   }

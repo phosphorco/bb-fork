@@ -11,10 +11,8 @@ import type {
 } from "./resolver.js";
 import {
   configuredSkillRoot,
-  isPathWithinDirectory,
   readParsedFile,
   resolveConfiguredPath,
-  resolveProjectAncestorDirectories,
   resolveStoredPath,
   skillsRoot,
   type ResolvedRootOrigin,
@@ -80,25 +78,32 @@ async function resolveOmpConfiguredSkillRoots(
     path.join(agentDir, "config.yml"),
     path.join(agentDir, "config.yaml"),
   ];
-  const configPaths = [
+  const configPaths: Array<{
+    origin: ResolvedRootOrigin;
+    path: string;
+  }> = [
     ...(args.cwd === null
       ? []
-      : [path.join(args.cwd, OMP_DIR_NAME, "config.yml")]),
+      : [
+          {
+            origin: "project" as const,
+            path: path.join(args.cwd, OMP_DIR_NAME, "config.yml"),
+          },
+        ]),
     ...(
       args.env.PI_CONFIG_FILES?.split(path.delimiter).filter(Boolean) ?? []
-    ).map((filePath) =>
-      resolveConfiguredPath({
+    ).map((filePath) => ({
+      // An explicit PI_CONFIG_FILES entry is operator/user configuration even
+      // when an ancestor happens to be a Git worktree (for example /tmp/.git).
+      origin: "user" as const,
+      path: resolveConfiguredPath({
         basePath: cwd,
         env: args.env,
         homeDir: args.homeDir,
         value: filePath,
       }),
-    ),
+    })),
   ];
-  const projectRootPath =
-    args.cwd === null
-      ? null
-      : (await resolveProjectAncestorDirectories(args.cwd)).projectRootPath;
   let customDirectories: string[] = [];
   let customOrigin: ResolvedRootOrigin = "user";
   for (const configPath of userConfigPaths) {
@@ -112,19 +117,15 @@ async function resolveOmpConfiguredSkillRoots(
       break;
     }
   }
-  for (const configPath of configPaths) {
-    const config = await readParsedFile(
-      configPath,
+  for (const config of configPaths) {
+    const parsedConfig = await readParsedFile(
+      config.path,
       parseYaml,
       ompSkillConfigSchema,
     );
-    if (config?.skills?.customDirectories !== undefined) {
-      customDirectories = config.skills.customDirectories;
-      customOrigin =
-        projectRootPath !== null &&
-        isPathWithinDirectory(projectRootPath, configPath)
-          ? "project"
-          : "user";
+    if (parsedConfig?.skills?.customDirectories !== undefined) {
+      customDirectories = parsedConfig.skills.customDirectories;
+      customOrigin = config.origin;
     }
   }
   return customDirectories.map((configuredPath) =>

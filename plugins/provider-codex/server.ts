@@ -1,6 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { codexExtensionKinds } from "./src/extension-kinds.js";
-import { CODEX_NATIVE_ROOTS_DECLARATION } from "./src/native-roots.js";
+import { CODEX_NATIVE_ROOTS_DECLARATION } from "./src/native-roots-declaration.js";
 
 export default function plugin(bb: BbPluginApi) {
   bb.experimental_aiServices.register({

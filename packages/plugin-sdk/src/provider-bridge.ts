@@ -47,6 +47,7 @@ export {
   PROVIDER_BRIDGE_EXPORT_NAME,
   experimental_defineProviderBridge,
 } from "@bb/provider-bridge-protocol/bridge-kit";
+export { formatPromptInputForProvider } from "@bb/provider-bridge-protocol";
 export type {
   ProviderBridgeContext,
   ProviderBridgeDefinition,

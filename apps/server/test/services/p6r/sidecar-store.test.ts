@@ -1,5 +1,13 @@
 import { expect, describe, it } from "vitest";
-import { appendDaemonEventsInTransaction, createConnection, createProject, createThread, migrate, noopNotifier, upsertHost } from "@bb/db";
+import {
+  appendDaemonEventsInTransaction,
+  createConnection,
+  createProject,
+  createThread,
+  migrate,
+  noopNotifier,
+  upsertHost,
+} from "@bb/db";
 import { turnScope } from "@bb/domain";
 import {
   p6rAttemptInputs,
@@ -32,7 +40,11 @@ function createMigratedDb() {
 }
 
 function createStoredThread(db: ReturnType<typeof createMigratedDb>): string {
-  const host = upsertHost(db, noopNotifier, { id: "host-1", name: "Host", type: "persistent" });
+  const host = upsertHost(db, noopNotifier, {
+    id: "host-1",
+    name: "Host",
+    type: "persistent",
+  });
   const { project } = createProject(db, noopNotifier, {
     name: "Project",
     source: { hostId: host.id, path: "/project", type: "local_path" },
@@ -48,7 +60,9 @@ function createStoredThread(db: ReturnType<typeof createMigratedDb>): string {
   return thread.id;
 }
 
-function draft(overrides: Partial<P6rAcceptanceDraft> = {}): P6rAcceptanceDraft {
+function draft(
+  overrides: Partial<P6rAcceptanceDraft> = {},
+): P6rAcceptanceDraft {
   return {
     assertLive: () => ({ ok: true }),
     contribution: {
@@ -256,7 +270,9 @@ describe("P6r sidecar storage", () => {
       db.transaction((tx) =>
         recordP6rNativeWriteInTransaction(
           tx,
-          nativeWriteOrigin({ validate: () => ({ code: "invalidated", ok: false }) }),
+          nativeWriteOrigin({
+            validate: () => ({ code: "invalidated", ok: false }),
+          }),
           nativeWriteDraft(),
         ),
       ),
@@ -309,7 +325,7 @@ describe("P6r sidecar storage", () => {
       db.$client
         .prepare("SELECT COUNT(*) AS count FROM __p6r_migrations")
         .get(),
-    ).toEqual({ count: 3 });
+    ).toEqual({ count: 4 });
     expect(
       db.$client
         .prepare(
@@ -321,9 +337,7 @@ describe("P6r sidecar storage", () => {
 
   it("persists one instance namespace independently of its data directory path", () => {
     const db = createMigratedDb();
-    expect(initializeP6rInstanceNamespace(db, () => "first")).toBe(
-      "p6r:first",
-    );
+    expect(initializeP6rInstanceNamespace(db, () => "first")).toBe("p6r:first");
     expect(initializeP6rInstanceNamespace(db, () => "second")).toBe(
       "p6r:first",
     );
@@ -372,39 +386,90 @@ describe("P6r sidecar storage", () => {
   it("links an attempt only to its exact accepted native request and turn", () => {
     const db = createMigratedDb();
     const threadId = createStoredThread(db);
-    db.transaction((tx) => acceptP6rOperationInTransaction(tx, draft({
-      attempt: {
-        createdAt: 100,
-        id: "attempt-1",
-        inputs: [{ contributionId: "contribution-1", groupIndex: 0, snapshot: { text: "original" }, sourceIndex: 0, sourceKind: "contribution" }],
-        nativeRequestId: "request-1",
-        threadId,
-      },
-      contribution: { ...draft().contribution, threadId },
-      receipt: { ...draft().receipt, threadId },
-    })));
-    db.transaction((tx) => appendDaemonEventsInTransaction(tx, [
-      { data: "{}", environmentId: null, itemId: null, itemKind: null, parentToolCallId: null, providerThreadId: "provider-1", scope: turnScope("turn-1"), threadId, type: "turn/started" },
-      { data: JSON.stringify({ clientRequestId: "request-1" }), environmentId: null, itemId: null, itemKind: null, parentToolCallId: null, providerThreadId: "provider-1", scope: turnScope("turn-1"), threadId, type: "turn/input/accepted" },
-      { data: JSON.stringify({ clientRequestId: "other-request" }), environmentId: null, itemId: null, itemKind: null, parentToolCallId: null, providerThreadId: "provider-1", scope: turnScope("turn-1"), threadId, type: "turn/input/accepted" },
-    ]));
+    db.transaction((tx) =>
+      acceptP6rOperationInTransaction(
+        tx,
+        draft({
+          attempt: {
+            createdAt: 100,
+            id: "attempt-1",
+            inputs: [
+              {
+                contributionId: "contribution-1",
+                groupIndex: 0,
+                snapshot: { text: "original" },
+                sourceIndex: 0,
+                sourceKind: "contribution",
+              },
+            ],
+            nativeRequestId: "request-1",
+            threadId,
+          },
+          contribution: { ...draft().contribution, threadId },
+          receipt: { ...draft().receipt, threadId },
+        }),
+      ),
+    );
+    db.transaction((tx) =>
+      appendDaemonEventsInTransaction(tx, [
+        {
+          data: "{}",
+          environmentId: null,
+          itemId: null,
+          itemKind: null,
+          parentToolCallId: null,
+          providerThreadId: "provider-1",
+          scope: turnScope("turn-1"),
+          threadId,
+          type: "turn/started",
+        },
+        {
+          data: JSON.stringify({ clientRequestId: "request-1" }),
+          environmentId: null,
+          itemId: null,
+          itemKind: null,
+          parentToolCallId: null,
+          providerThreadId: "provider-1",
+          scope: turnScope("turn-1"),
+          threadId,
+          type: "turn/input/accepted",
+        },
+        {
+          data: JSON.stringify({ clientRequestId: "other-request" }),
+          environmentId: null,
+          itemId: null,
+          itemKind: null,
+          parentToolCallId: null,
+          providerThreadId: "provider-1",
+          scope: turnScope("turn-1"),
+          threadId,
+          type: "turn/input/accepted",
+        },
+      ]),
+    );
 
-    expect(listP6rAttempts(db, "plugin-a", { operationId: "operation-1" })).toMatchObject([
+    expect(
+      listP6rAttempts(db, "plugin-a", { operationId: "operation-1" }),
+    ).toMatchObject([
       { id: "attempt-1", nativeRequestId: "request-1", nativeTurnId: "turn-1" },
     ]);
-    expect(linkP6rNativeTurnForRequest(db, {
-      nativeRequestId: "request-1",
-      threadId,
-      turnId: "turn-other",
-    })).toBe(false);
-    expect(linkP6rNativeTurnForRequest(db, {
-      nativeRequestId: "request-1",
-      threadId,
-      turnId: "turn-1",
-    })).toBe(true);
-    expect(listP6rAttempts(db, "plugin-a", { operationId: "operation-1" })).toMatchObject([
-      { id: "attempt-1", nativeTurnId: "turn-1" },
-    ]);
+    expect(
+      linkP6rNativeTurnForRequest(db, {
+        nativeRequestId: "request-1",
+        threadId,
+        turnId: "turn-other",
+      }),
+    ).toBe(false);
+    expect(
+      linkP6rNativeTurnForRequest(db, {
+        nativeRequestId: "request-1",
+        threadId,
+        turnId: "turn-1",
+      }),
+    ).toBe(true);
+    expect(
+      listP6rAttempts(db, "plugin-a", { operationId: "operation-1" }),
+    ).toMatchObject([{ id: "attempt-1", nativeTurnId: "turn-1" }]);
   });
 
   it("isolates equal operation identifiers by their stable plugin namespace", () => {
@@ -419,8 +484,12 @@ describe("P6r sidecar storage", () => {
       ),
     );
     expect(first.receipt.operationId).toBe(second.receipt.operationId);
-    expect(lookupP6rOperationReceipt(db, "plugin-a", "operation-1")).toMatchObject({ payloadHash: "hash-1" });
-    expect(lookupP6rOperationReceipt(db, "plugin-b", "operation-1")).toMatchObject({ payloadHash: "hash-b" });
+    expect(
+      lookupP6rOperationReceipt(db, "plugin-a", "operation-1"),
+    ).toMatchObject({ payloadHash: "hash-1" });
+    expect(
+      lookupP6rOperationReceipt(db, "plugin-b", "operation-1"),
+    ).toMatchObject({ payloadHash: "hash-b" });
   });
 
   it("retains copied authorship and prior attempt snapshots through a replacement edit", () => {
@@ -482,7 +551,10 @@ describe("P6r sidecar storage", () => {
     expect(db.select().from(p6rContributions).all()).toMatchObject([
       {
         id: "8:plugin-a14:contribution-1",
-        acceptedAuthorship: JSON.stringify({ kind: "external", subject: "author-1" }),
+        acceptedAuthorship: JSON.stringify({
+          kind: "external",
+          subject: "author-1",
+        }),
         currentProjection: JSON.stringify({ text: "original" }),
       },
       {
@@ -491,7 +563,10 @@ describe("P6r sidecar storage", () => {
       },
       {
         id: "8:plugin-a17:contribution-edit",
-        acceptedAuthorship: JSON.stringify({ kind: "external", subject: "author-1" }),
+        acceptedAuthorship: JSON.stringify({
+          kind: "external",
+          subject: "author-1",
+        }),
         currentProjection: JSON.stringify({ text: "edited" }),
         latestEditor: JSON.stringify({ subject: "editor-2" }),
         replacesContributionId: "8:plugin-a14:contribution-1",

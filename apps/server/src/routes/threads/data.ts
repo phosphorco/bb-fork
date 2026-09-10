@@ -364,7 +364,14 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
       },
     );
 
-    const full = { ...cachedTimeline, rows: projectNativeTimelineAttribution(deps.db, thread.id, cachedTimeline.rows) };
+    const full = {
+      ...cachedTimeline,
+      rows: projectP6rNativeTimelineAttribution(
+        deps.db,
+        thread.id,
+        cachedTimeline.rows,
+      ),
+    };
     const afterSequence = parseOptionalInteger(
       query.afterSequence,
       "afterSequence",
@@ -698,4 +705,4 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
     }
   });
 }
-import { projectNativeTimelineAttribution } from "../../services/p6r/timeline-attribution.js";
+import { projectP6rNativeTimelineAttribution } from "../../services/p6r/timeline-attribution.js";

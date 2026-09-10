@@ -245,6 +245,28 @@ Read the installed declarations for exact current signatures.
 
 ## `@get-bb/plugin-sdk/ai-services`
 
+### P6R and thread-facet additions
+
+- `ExperimentalP6rAcceptanceRequest`
+- `ExperimentalP6rAcceptanceSource`
+- `ExperimentalP6rForkRequestHandle`
+- `ExperimentalP6rIdentityProtocol`
+- `ExperimentalP6rInvocationContext`
+- `ExperimentalP6rInvocationRegistration`
+- `ExperimentalP6rInvocationRouteClass`
+- `ExperimentalP6rInvocationScope`
+- `ExperimentalP6rInvocationValidity`
+- `ExperimentalP6rProviderRegistration`
+- `ExperimentalP6rRequestHandle`
+- `ExperimentalP6rResult`
+- `ExperimentalThreadFacetCardinality`
+- `ExperimentalThreadFacetHandle`
+- `ExperimentalThreadFacetReplacement`
+- `ExperimentalThreadFacetTarget`
+- `ExperimentalThreadFacetTargetGrant`
+- `ExperimentalThreadFacetTargetPage`
+- `ExperimentalThreadFacets`
+
 - `experimental_aiInferenceCompleteInputSchema`
 - `experimental_aiInferenceCompleteOutputSchema`
 - `experimental_aiServiceErrorCodeSchema`

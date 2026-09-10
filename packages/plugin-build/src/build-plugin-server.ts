@@ -189,14 +189,24 @@ export async function buildPluginServer(
                 if (args.pluginData === PLUGIN_SDK_SUBPATH_RESOLVE_MARK) {
                   return undefined;
                 }
-                const installed = await build.resolve(args.path, {
-                  resolveDir: args.resolveDir,
-                  kind: args.kind,
-                  importer: args.importer,
-                  pluginData: PLUGIN_SDK_SUBPATH_RESOLVE_MARK,
-                });
-                if (installed.errors.length === 0 && installed.path !== "") {
-                  return { path: installed.path };
+                const packageDir = await installedPluginSdkDirectory(
+                  args.resolveDir,
+                );
+                const subpath = `.${args.path.slice(
+                  PLUGIN_SDK_PACKAGE_NAME.length,
+                )}`;
+                const target =
+                  packageDir === null
+                    ? null
+                    : await installedPluginSdkExportTarget(packageDir, subpath);
+                if (packageDir !== null && target !== null) {
+                  const targetPath = resolve(packageDir, target);
+                  if (await pathExists(targetPath)) {
+                    // esbuild's source condition resolves a package subpath by
+                    // appending it to the root source entry (index.ts/host).
+                    // Resolve the package export directly instead.
+                    return { path: targetPath };
+                  }
                 }
                 return {
                   errors: [
@@ -204,7 +214,7 @@ export async function buildPluginServer(
                       text: await unresolvedSdkSubpathError({
                         specifier: args.path,
                         resolveDir: args.resolveDir,
-                        esbuildErrors: installed.errors,
+                        esbuildErrors: [],
                       }),
                     },
                   ],
@@ -246,7 +256,10 @@ export async function buildPluginServer(
         kind: "plugin-server-build",
         configuration: {
           entry: await receiptFile(rootDir, serverEntry),
-          packageManifest: await receiptFile(rootDir, join(rootDir, "package.json")),
+          packageManifest: await receiptFile(
+            rootDir,
+            join(rootDir, "package.json"),
+          ),
           packageName,
           pluginVersion,
           bbVersion,
@@ -265,7 +278,13 @@ export async function buildPluginServer(
           ),
           sdkManifests: await receiptExistingFiles(rootDir, [
             BUILD_SDK_MANIFEST,
-            join(rootDir, "node_modules", "@get-bb", "plugin-sdk", "package.json"),
+            join(
+              rootDir,
+              "node_modules",
+              "@get-bb",
+              "plugin-sdk",
+              "package.json",
+            ),
             join(rootDir, "node_modules", "@bb", "plugin-sdk", "package.json"),
           ]),
           externalManifests,

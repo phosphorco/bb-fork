@@ -1,5 +1,5 @@
 import type { PluginProviderDeclaration } from "@get-bb/plugin-sdk";
-import { PI_NATIVE_ROOTS_DECLARATION } from "./native-roots.js";
+import { PI_NATIVE_ROOTS_DECLARATION } from "./native-roots-declaration.js";
 
 export function piProviderDeclaration(): PluginProviderDeclaration {
   return {

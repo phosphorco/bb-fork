@@ -35,7 +35,12 @@ import {
 } from "@bb/plugin-build";
 import { PluginHostArtifactRegistry } from "./plugin-host-artifact-registry.js";
 import { getPluginBuildToolchain } from "./build-toolchain.js";
-import { createNodeBbSdk, createRequestTimeoutFetch, DEFAULT_BB_REQUEST_TIMEOUT_MS, type BbSdk } from "@bb/sdk";
+import {
+  createNodeBbSdk,
+  createRequestTimeoutFetch,
+  DEFAULT_BB_REQUEST_TIMEOUT_MS,
+  type BbSdk,
+} from "@bb/sdk";
 import { experimental_aiServicesHostContract } from "@get-bb/plugin-sdk/ai-services";
 import {
   getInstalledPlugin,
@@ -98,6 +103,13 @@ const PLUGIN_SDK_SPECIFIER = "@get-bb/plugin-sdk";
 
 const LEGACY_PLUGIN_SDK_SPECIFIER = "@bb/plugin-sdk";
 
+const PLUGIN_SDK_RUNTIME_SUBPATHS = [
+  "ai-services",
+  "host",
+  "provider-bridge",
+  "provider-bridge/acp",
+] as const;
+
 async function hashFile(
   path: string,
 ): Promise<{ digest: string; byteLength: number }> {
@@ -117,11 +129,26 @@ export function pluginSdkAliasFor(runtimePath: string): Record<string, string> {
   };
 }
 
+function pluginSdkSubpathAliases(): Record<string, string> {
+  const require = createRequire(import.meta.url);
+  return Object.fromEntries(
+    PLUGIN_SDK_RUNTIME_SUBPATHS.flatMap((subpath) => {
+      const specifier = `${PLUGIN_SDK_SPECIFIER}/${subpath}`;
+      try {
+        return [[specifier, require.resolve(specifier)]];
+      } catch {
+        return [];
+      }
+    }),
+  );
+}
+
 const pluginSdkAlias = pluginSdkAliasFor(
   existsSync(pluginSdkRuntimePath)
     ? pluginSdkRuntimePath
     : createRequire(import.meta.url).resolve(PLUGIN_SDK_SPECIFIER),
 );
+Object.assign(pluginSdkAlias, pluginSdkSubpathAliases());
 
 interface MutableRoot {
   id: number;
@@ -312,10 +339,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
 
   const loaded = new Map<string, LoadedPlugin>();
   const lastLoadPublished = new Map<string, boolean>();
-  const interactionLifetimes = new WeakMap<
-    PluginApiHandle,
-    AbortController
-  >();
+  const interactionLifetimes = new WeakMap<PluginApiHandle, AbortController>();
   deps.pendingInteractions?.setPluginDirectory({
     isLoaded: (pluginId) => loaded.has(pluginId),
   });
@@ -1151,6 +1175,13 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     if (!deps.providerRegistry) {
       throw new Error("the provider registry is unavailable in this host");
     }
+    // A plugin whose bridge could not be built leaves its declared providers
+    // visible but unavailable.  When that same plugin is repaired, its staged
+    // live registration must replace the placeholder before the registry sees
+    // it; otherwise it is mistaken for a different plugin shadowing itself.
+    if (args.available) {
+      disposeUnavailableProviderRegistrations(args.row.id);
+    }
     const declaredIcon =
       args.declaration.icon === undefined
         ? null
@@ -1340,7 +1371,9 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     );
     const interactionLifetime = new AbortController();
     const internalFetch = deps.createSdkFetch?.({
-      pluginId: row.id, generation: p6rGeneration, lifetime: interactionLifetime.signal,
+      pluginId: row.id,
+      generation: p6rGeneration,
+      lifetime: interactionLifetime.signal,
     });
     let scopedSdk: { baseUrl: string; sdk: BbSdk } | undefined;
     let handle!: PluginApiHandle;
@@ -1350,12 +1383,17 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       db: deps.db,
       dataDir: deps.dataDir,
       getSdk: () => {
-        if (internalFetch === undefined || boundLoopbackBaseUrl === undefined) return boundSdk;
+        if (internalFetch === undefined || boundLoopbackBaseUrl === undefined)
+          return boundSdk;
         if (scopedSdk?.baseUrl !== boundLoopbackBaseUrl) {
           scopedSdk = {
             baseUrl: boundLoopbackBaseUrl,
-            sdk: createNodeBbSdk({ baseUrl: boundLoopbackBaseUrl,
-              fetch: createRequestTimeoutFetch({ timeoutMs: DEFAULT_BB_REQUEST_TIMEOUT_MS, fetch: internalFetch }),
+            sdk: createNodeBbSdk({
+              baseUrl: boundLoopbackBaseUrl,
+              fetch: createRequestTimeoutFetch({
+                timeoutMs: DEFAULT_BB_REQUEST_TIMEOUT_MS,
+                fetch: internalFetch,
+              }),
             }),
           };
         }
@@ -1584,7 +1622,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     const preparedP6rProvider =
       p6rCandidate === undefined
         ? null
-        : deps.p6rIdentity?.preparedProvider(row.id, p6rGeneration) ?? null;
+        : (deps.p6rIdentity?.preparedProvider(row.id, p6rGeneration) ?? null);
     const plugin: LoadedPlugin = {
       manifest,
       handle,

@@ -298,7 +298,32 @@ function dropThreadConversationOutlinesTable(db: DbConnection): void {
   db.$client.prepare("DROP TABLE IF EXISTS thread_conversation_outlines").run();
 }
 
+function dropLatestExecutionAndFacetSchema(db: DbConnection): void {
+  db.$client.exec(`
+    DROP TABLE IF EXISTS thread_facet_snapshots;
+    DROP TABLE IF EXISTS thread_facet_relations;
+    DROP TABLE IF EXISTS thread_facet_reconciliation_targets;
+    DROP TABLE IF EXISTS thread_facet_principal_profiles;
+    DROP TABLE IF EXISTS thread_facet_owners;
+    DROP TABLE IF EXISTS thread_facet_members;
+    DROP TABLE IF EXISTS thread_facet_declarations;
+    DROP TABLE IF EXISTS thread_facet_cursor_keys;
+  `);
+  const threadColumns = new Set(
+    db.$client
+      .prepare<[], TableInfoRow>("PRAGMA table_info(threads)")
+      .all()
+      .map((column) => column.name),
+  );
+  if (threadColumns.has("execution_revision")) {
+    db.$client
+      .prepare("ALTER TABLE threads DROP COLUMN execution_revision")
+      .run();
+  }
+}
+
 function dropRewindAddedTables(db: DbConnection): void {
+  dropLatestExecutionAndFacetSchema(db);
   dropThreadConversationOutlinesTable(db);
   db.$client.prepare("DROP TABLE IF EXISTS thread_tabs").run();
   db.$client.prepare("DROP TABLE IF EXISTS automation_runs").run();
@@ -2154,6 +2179,7 @@ describe("migrate", () => {
       dropMarketplaceCatalogSchema(db);
       dropEventParentToolCallIdColumn(db);
       dropQueueReworkSchema(db);
+      dropLatestExecutionAndFacetSchema(db);
 
       restoreLegacyThreadOriginColumn(db);
       migrate(db);
@@ -2559,6 +2585,7 @@ describe("migrate", () => {
       dropMarketplaceCatalogSchema(db);
       dropEventParentToolCallIdColumn(db);
       dropQueueReworkSchema(db);
+      dropLatestExecutionAndFacetSchema(db);
 
       restoreLegacyThreadOriginColumn(db);
       expect(
@@ -2661,6 +2688,7 @@ describe("migrate", () => {
       dropMarketplaceCatalogSchema(db);
       dropEventParentToolCallIdColumn(db);
       dropQueueReworkSchema(db);
+      dropLatestExecutionAndFacetSchema(db);
 
       restoreLegacyThreadOriginColumn(db);
       expect(() => migrate(db)).not.toThrow();
@@ -5230,6 +5258,7 @@ describe("migrate", () => {
       dropEventParentToolCallIdColumn(db);
       dropMarketplaceStatsColumn(db);
       dropQueueReworkSchema(db);
+      dropLatestExecutionAndFacetSchema(db);
       db.$client
         .prepare<DeleteMigrationParameters>(
           "DELETE FROM __drizzle_migrations WHERE created_at >= ?",

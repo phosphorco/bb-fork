@@ -25,18 +25,12 @@ import {
   acpProviderDeclaration,
   resolveAcpNativeRoots,
 } from "../../../plugins/provider-acp/src/native-roots/index.js";
-import {
-  CLAUDE_NATIVE_ROOTS_DECLARATION,
-  resolveClaudeNativeRoots,
-} from "../../../plugins/provider-claude-code/src/native-roots.js";
-import {
-  CODEX_NATIVE_ROOTS_DECLARATION,
-  resolveCodexNativeRoots,
-} from "../../../plugins/provider-codex/src/native-roots.js";
-import {
-  PI_NATIVE_ROOTS_DECLARATION,
-  resolvePiNativeRoots,
-} from "../../../plugins/provider-pi/src/native-roots.js";
+import { CLAUDE_NATIVE_ROOTS_DECLARATION } from "../../../plugins/provider-claude-code/src/native-roots-declaration.js";
+import { resolveClaudeNativeRoots } from "../../../plugins/provider-claude-code/src/native-roots.js";
+import { CODEX_NATIVE_ROOTS_DECLARATION } from "../../../plugins/provider-codex/src/native-roots-declaration.js";
+import { resolveCodexNativeRoots } from "../../../plugins/provider-codex/src/native-roots.js";
+import { PI_NATIVE_ROOTS_DECLARATION } from "../../../plugins/provider-pi/src/native-roots-declaration.js";
+import { resolvePiNativeRoots } from "../../../plugins/provider-pi/src/native-roots.js";
 
 export interface PipelineInput {
   providerId: string;

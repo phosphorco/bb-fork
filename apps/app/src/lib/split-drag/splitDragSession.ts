@@ -171,16 +171,19 @@ export function beginSplitDrag(config: SplitDragConfig): void {
 }
 
 function swallowNextClick(): void {
+  // Keep the DOM global captured for the delayed cleanup. Vitest can tear down
+  // a jsdom environment before this timer fires, at which point resolving the
+  // global `window` would otherwise throw an unhandled error.
+  const eventTarget = window;
   const swallow = (event: MouseEvent): void => {
     event.stopPropagation();
     event.preventDefault();
-    window.removeEventListener("click", swallow, true);
+    eventTarget.removeEventListener("click", swallow, true);
   };
-  window.addEventListener("click", swallow, true);
-  window.setTimeout(
-    () => window.removeEventListener("click", swallow, true),
-    300,
-  );
+  eventTarget.addEventListener("click", swallow, true);
+  eventTarget.setTimeout(() => {
+    eventTarget.removeEventListener("click", swallow, true);
+  }, 300);
 }
 
 function paneElementAt(clientX: number, clientY: number): HTMLElement | null {

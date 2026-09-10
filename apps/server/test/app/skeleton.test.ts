@@ -273,7 +273,7 @@ describe("server skeleton", () => {
               "SELECT COUNT(*) AS count FROM __p6r_migrations",
             )
             .get()?.count,
-        ).toBe(1);
+        ).toBe(4);
         expect(
           initial.$client
             .prepare(
@@ -293,7 +293,7 @@ describe("server skeleton", () => {
               "SELECT COUNT(*) AS count FROM __p6r_migrations",
             )
             .get()?.count,
-        ).toBe(1);
+        ).toBe(4);
       } finally {
         restarted.$client.close();
       }

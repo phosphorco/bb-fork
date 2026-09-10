@@ -46,6 +46,7 @@ ${PLUGIN_SDK_DEFINE_HOST_ENTRY_RUNTIME}`;
 
 const PLUGIN_SDK_HOST_SUBPATH = "./host";
 const PLUGIN_SDK_HOST_FALLBACK_SPECIFIER = "@get-bb/plugin-sdk/host";
+const PLUGIN_SDK_SUBPATH_FILTER = /^@get-bb\/plugin-sdk\//;
 const PLUGIN_SDK_HOST_FALLBACK_EXPORTS: ReadonlySet<string> = new Set([
   "experimental_defineHostEntry",
 ]);
@@ -412,17 +413,19 @@ export async function buildPluginHost(
               `^${escapeRegex(PLUGIN_SDK_HOST_FALLBACK_SPECIFIER)}$`,
             );
             build.onResolve({ filter: hostFilter }, async (args) => {
-              if (args.pluginData === PLUGIN_SDK_HOST_FALLBACK_NAMESPACE) {
-                return undefined;
-              }
-              const installed = await build.resolve(args.path, {
-                resolveDir: args.resolveDir,
-                kind: args.kind,
-                importer: args.importer,
-                pluginData: PLUGIN_SDK_HOST_FALLBACK_NAMESPACE,
-              });
-              if (installed.errors.length === 0 && installed.path !== "") {
-                return { path: installed.path };
+              const packageDir = await installedPluginSdkDirectory(
+                args.resolveDir,
+              );
+              const target =
+                packageDir === null
+                  ? null
+                  : await installedPluginSdkExportTarget(
+                      packageDir,
+                      PLUGIN_SDK_HOST_SUBPATH,
+                    );
+              if (packageDir !== null && target !== null) {
+                const targetPath = resolve(packageDir, target);
+                if (await pathExists(targetPath)) return { path: targetPath };
               }
               const importerSource = /\.[cm]?[jt]sx?$/u.test(args.importer)
                 ? await readFile(args.importer, "utf8").catch(() => null)
@@ -440,7 +443,7 @@ export async function buildPluginHost(
                       text: await unresolvedHostSdkError({
                         resolveDir: args.resolveDir,
                         names: beyondStub,
-                        esbuildErrors: installed.errors,
+                        esbuildErrors: [],
                       }),
                     },
                   ],
@@ -451,6 +454,26 @@ export async function buildPluginHost(
                 namespace: PLUGIN_SDK_HOST_FALLBACK_NAMESPACE,
               };
             });
+            build.onResolve(
+              { filter: PLUGIN_SDK_SUBPATH_FILTER },
+              async (args) => {
+                const packageDir = await installedPluginSdkDirectory(
+                  args.resolveDir,
+                );
+                const subpath = `.${args.path.slice(
+                  PLUGIN_SDK_PACKAGE_NAME.length,
+                )}`;
+                const target =
+                  packageDir === null
+                    ? null
+                    : await installedPluginSdkExportTarget(packageDir, subpath);
+                if (packageDir !== null && target !== null) {
+                  const targetPath = resolve(packageDir, target);
+                  if (await pathExists(targetPath)) return { path: targetPath };
+                }
+                return undefined;
+              },
+            );
             build.onLoad(
               { filter: /.*/, namespace: PLUGIN_SDK_HOST_FALLBACK_NAMESPACE },
               () => ({

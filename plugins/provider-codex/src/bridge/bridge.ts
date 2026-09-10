@@ -44,10 +44,10 @@ import {
   type ProviderPostInitializeRequest,
   type ProviderRuntimeEvent,
   experimental_defineProviderBridge,
+  formatPromptInputForProvider,
   type ProviderRecoveryHint,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { z } from "zod";
-import { formatPromptInputForProvider } from "@bb/provider-bridge-protocol";
 import {
   CODEX_MACOS_PERMISSION_EXTENSION_KIND,
   summarizeCodexMacOsPermissions,

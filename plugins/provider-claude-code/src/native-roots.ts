@@ -1,5 +1,4 @@
 import path from "node:path";
-import type { PluginProviderDeclaration } from "@get-bb/plugin-sdk";
 import {
   experimental_filterResolvedNativeRoots,
   experimental_resolveClaudePluginRoots,
@@ -7,30 +6,6 @@ import {
   type ExperimentalClaudePluginRootsArgs,
   type ExperimentalVendorPluginRoots,
 } from "@get-bb/plugin-sdk/host";
-
-export const CLAUDE_NATIVE_ROOTS_DECLARATION: Pick<
-  PluginProviderDeclaration,
-  | "experimental_nativeSkillRoots"
-  | "experimental_nativeCommandRoots"
-  | "experimental_resolvesNativeRoots"
-> = {
-  experimental_nativeSkillRoots: {
-    user: [
-      { path: ".claude/skills", skipIfManifest: ".claude-plugin/plugin.json" },
-    ],
-    project: [
-      {
-        path: ".claude/skills",
-        ancestors: true,
-        skipIfManifest: ".claude-plugin/plugin.json",
-      },
-    ],
-  },
-  experimental_nativeCommandRoots: {
-    project: [".claude/commands"],
-  },
-  experimental_resolvesNativeRoots: true,
-};
 
 const CLAUDE_PLUGIN_MANIFEST_MARKER = ".claude-plugin/plugin.json";
 

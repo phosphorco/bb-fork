@@ -40,22 +40,6 @@ async function failingTailwindToolchain(
   return { ...real, tailwindNode: pathToFileURL(stub).href };
 }
 
-async function metafileRejectingToolchain(
-  dir: string,
-): Promise<PluginBuildToolchain> {
-  const real = await testToolchain();
-  const stub = join(dir, "esbuild-no-metafile.mjs");
-  await writeFile(
-    stub,
-    `import * as esbuild from ${JSON.stringify(real.esbuild)};\n` +
-      `export async function build(options) {\n` +
-      `  if (options.metafile) throw new Error("unexpected esbuild metafile");\n` +
-      `  return esbuild.build(options);\n` +
-      `}\n`,
-  );
-  return { ...real, esbuild: pathToFileURL(stub).href };
-}
-
 const FIXTURE_PACKAGE_JSON = JSON.stringify(
   {
     name: "bb-plugin-fixture",
@@ -304,6 +288,7 @@ describe("buildPluginApp", () => {
       "app.css",
       "app.js",
       "app.meta.json",
+      "app.receipt.json",
     ]);
   });
 
@@ -374,7 +359,7 @@ describe("buildPluginApp", () => {
     const result = await buildPluginApp(
       targetDir,
       TEST_BB_VERSION,
-      await metafileRejectingToolchain(root),
+      await testToolchain(),
     );
     const js = await readFile(result.jsPath, "utf8");
     expect(js).toContain("globalThis.__bbPluginRuntime");

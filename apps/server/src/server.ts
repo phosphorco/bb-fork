@@ -796,7 +796,20 @@ export function createApp(
   registerHostRoutes(publicApi, deps, pluginService);
   registerTerminalRoutes(publicApi, deps);
   registerEnvironmentRoutes(publicApi, deps);
-  registerThreadRoutes(publicApi, { ...deps, nativeRequestAdmission });
+  // Keep regular dependency reads live. A spread here snapshots mutable test
+  // and runtime services (notably telemetry) before route registration. The
+  // proxy also preserves own-key enumeration performed by route setup.
+  const threadRouteDeps = new Proxy(deps, {
+    get(target, property, receiver) {
+      if (property === "nativeRequestAdmission") {
+        return nativeRequestAdmission;
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  }) as typeof deps & {
+    nativeRequestAdmission: typeof nativeRequestAdmission;
+  };
+  registerThreadRoutes(publicApi, threadRouteDeps);
   registerQueueRoutes(publicApi, deps);
   registerSystemRoutes(publicApi, deps, pluginService, p6rNativeHttpIdentity);
   registerPluginCatalogRoutes(publicApi, pluginCatalogService);
