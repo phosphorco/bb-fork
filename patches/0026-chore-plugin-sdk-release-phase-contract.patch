@@ -1,0 +1,310 @@
+From 881e8dc6f924ccf4ffc7fdf3c034758598c8394d Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Wed, 16 Sep 2026 17:53:08 +0200
+Subject: [PATCH] chore(plugin-sdk): release phase contract
+
+---
+ .../test/public/public-thread-data.test.ts    | 142 ++++++++++++++++++
+ packages/domain/src/plugin-sdk-version.ts     |   2 +-
+ packages/plugin-sdk/package.json              |   2 +-
+ packages/sdk/test/sdk.test.ts                 | 103 +++++++++++++
+ 4 files changed, 247 insertions(+), 2 deletions(-)
+
+diff --git a/apps/server/test/public/public-thread-data.test.ts b/apps/server/test/public/public-thread-data.test.ts
+index 65343b9535f7e7cafffbda701193fbbbb923dced..43ca3302ef41e7afb29dad7035c7a8b60f41f72e 100644
+--- a/apps/server/test/public/public-thread-data.test.ts
++++ b/apps/server/test/public/public-thread-data.test.ts
+@@ -23,6 +23,7 @@ import {
+ import {
+   encodeClientTurnRequestIdNumber,
+   turnRequestEventDataSchema,
++  threadEventRowSchema,
+   threadQueuedMessageSchema,
+   threadScope,
+   threadSchema,
+@@ -5081,6 +5082,147 @@ describe("public thread data routes", () => {
+     });
+   });
+ 
++  it("round-trips optional agent-message phase and causal identity through event list and wait", async () => {
++    await withTestHarness(async (harness) => {
++      const { environment, thread } = seedThreadFixture(harness);
++      const providerThreadId = "provider-phase-1";
++      const scope = turnScope("turn-phase-1");
++
++      seedEvent(harness.deps, {
++        threadId: thread.id,
++        environmentId: environment.id,
++        providerThreadId,
++        scope,
++        sequence: 1,
++        type: "item/completed",
++        data: {
++          item: { type: "agentMessage", id: "msg-legacy", text: "legacy" },
++        },
++      });
++      seedEvent(harness.deps, {
++        threadId: thread.id,
++        environmentId: environment.id,
++        providerThreadId,
++        scope,
++        sequence: 2,
++        type: "item/completed",
++        data: {
++          item: {
++            type: "agentMessage",
++            id: "msg-null",
++            text: "unknown",
++            phase: null,
++          },
++        },
++      });
++      seedEvent(harness.deps, {
++        threadId: thread.id,
++        environmentId: environment.id,
++        providerThreadId,
++        scope,
++        sequence: 3,
++        type: "item/completed",
++        data: {
++          item: {
++            type: "agentMessage",
++            id: "msg-final",
++            text: "final",
++            phase: "final_answer",
++          },
++        },
++      });
++      seedEvent(harness.deps, {
++        threadId: thread.id,
++        environmentId: environment.id,
++        providerThreadId,
++        scope,
++        sequence: 4,
++        type: "turn/completed",
++        data: { status: "completed" },
++      });
++
++      const listResponse = await harness.app.request(
++        `/api/v1/threads/${thread.id}/events?types=item%2Fcompleted%2Cturn%2Fcompleted&order=asc`,
++      );
++      expect(listResponse.status).toBe(200);
++      const listed = threadEventRowSchema
++        .array()
++        .parse(await readJson(listResponse));
++      expect(listed).toHaveLength(4);
++      expect(listed).toMatchObject([
++        {
++          seq: 1,
++          threadId: thread.id,
++          scope,
++          type: "item/completed",
++          data: {
++            providerThreadId,
++            item: { id: "msg-legacy", text: "legacy", type: "agentMessage" },
++          },
++        },
++        {
++          seq: 2,
++          threadId: thread.id,
++          scope,
++          type: "item/completed",
++          data: {
++            providerThreadId,
++            item: {
++              id: "msg-null",
++              phase: null,
++              text: "unknown",
++              type: "agentMessage",
++            },
++          },
++        },
++        {
++          seq: 3,
++          threadId: thread.id,
++          scope,
++          type: "item/completed",
++          data: {
++            providerThreadId,
++            item: {
++              id: "msg-final",
++              phase: "final_answer",
++              text: "final",
++              type: "agentMessage",
++            },
++          },
++        },
++        {
++          seq: 4,
++          threadId: thread.id,
++          scope,
++          type: "turn/completed",
++          data: { providerThreadId, status: "completed" },
++        },
++      ]);
++      expect(listed[0]?.data).not.toHaveProperty("item.phase");
++
++      const waitResponse = await harness.app.request(
++        `/api/v1/threads/${thread.id}/events/wait?type=item%2Fcompleted&afterSeq=2&waitMs=1000`,
++      );
++      expect(waitResponse.status).toBe(200);
++      const waited = threadEventRowSchema.parse(await readJson(waitResponse));
++      expect(waited).toMatchObject({
++        seq: 3,
++        threadId: thread.id,
++        scope,
++        type: "item/completed",
++        data: {
++          providerThreadId,
++          item: {
++            id: "msg-final",
++            phase: "final_answer",
++            text: "final",
++            type: "agentMessage",
++          },
++        },
++      });
++    });
++  });
++
+   it("rejects thread event list pages above the public limit", async () => {
+     await withTestHarness(async (harness) => {
+       const { environment, thread } = seedThreadFixture(harness);
+diff --git a/packages/domain/src/plugin-sdk-version.ts b/packages/domain/src/plugin-sdk-version.ts
+index 6f1ad6600069f5f8e083ac6a529533f19cd9b9ed..8ce10095c075857806290483fa3f5c88201aaa53 100644
+--- a/packages/domain/src/plugin-sdk-version.ts
++++ b/packages/domain/src/plugin-sdk-version.ts
+@@ -1,3 +1,3 @@
+-export const PLUGIN_SDK_VERSION = "0.4.54";
++export const PLUGIN_SDK_VERSION = "0.4.98";
+ 
+ export const PLUGIN_SDK_MAJOR = Number(PLUGIN_SDK_VERSION.split(".", 1)[0]);
+diff --git a/packages/plugin-sdk/package.json b/packages/plugin-sdk/package.json
+index 3bb53e1bd70ed0ebef1ccd49dc59eea40095680c..080553b43f6b4d233c983e85c97922034fc98ced 100644
+--- a/packages/plugin-sdk/package.json
++++ b/packages/plugin-sdk/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "@get-bb/plugin-sdk",
+-  "version": "0.4.54",
++  "version": "0.4.98",
+   "homepage": "https://github.com/get-bb/bb#readme",
+   "bugs": {
+     "url": "https://github.com/get-bb/bb/issues"
+diff --git a/packages/sdk/test/sdk.test.ts b/packages/sdk/test/sdk.test.ts
+index b0243611a9dbd57a590bf6ceb7a0c7555f6c4959..ce1928e2d3b54732039f05256d592340273a4f28 100644
+--- a/packages/sdk/test/sdk.test.ts
++++ b/packages/sdk/test/sdk.test.ts
+@@ -173,6 +173,109 @@ describe("@bb/sdk", () => {
+     ]);
+   });
+ 
++  it("preserves phase and causal identity through thread event list and wait", async () => {
++    const providerThreadId = "provider-phase-1";
++    const scope = { kind: "turn", turnId: "turn-phase-1" };
++    const rows: JsonValue[] = [
++      {
++        id: "evt-legacy",
++        seq: 1,
++        threadId: "thr_test",
++        createdAt: 1,
++        scope,
++        type: "item/completed",
++        data: {
++          providerThreadId,
++          item: { id: "msg-legacy", text: "legacy", type: "agentMessage" },
++        },
++      },
++      {
++        id: "evt-null",
++        seq: 2,
++        threadId: "thr_test",
++        createdAt: 2,
++        scope,
++        type: "item/completed",
++        data: {
++          providerThreadId,
++          item: {
++            id: "msg-null",
++            phase: null,
++            text: "unknown",
++            type: "agentMessage",
++          },
++        },
++      },
++      {
++        id: "evt-final",
++        seq: 3,
++        threadId: "thr_test",
++        createdAt: 3,
++        scope,
++        type: "item/completed",
++        data: {
++          providerThreadId,
++          item: {
++            id: "msg-final",
++            phase: "final_answer",
++            text: "final",
++            type: "agentMessage",
++          },
++        },
++      },
++    ];
++    const queue = createFetchQueue([{ body: rows }, { body: rows[2] }]);
++    const sdk = createBbSdk({
++      transport: createHttpTransport({
++        baseUrl: "http://bb.test",
++        fetch: queue.fetch,
++        runtime: "node",
++      }),
++    });
++
++    const listed = await sdk.threads.events.list({
++      threadId: "thr_test",
++      types: ["item/completed"],
++    });
++    expect(listed).toMatchObject(rows);
++    expect(listed[0]?.data).not.toHaveProperty("item.phase");
++
++    const waited = await sdk.threads.events.wait({
++      afterSeq: "2",
++      threadId: "thr_test",
++      type: "item/completed",
++      waitMs: "1000",
++    });
++    expect(waited).toMatchObject({
++      id: "evt-final",
++      seq: 3,
++      threadId: "thr_test",
++      scope,
++      type: "item/completed",
++      data: {
++        providerThreadId,
++        item: {
++          id: "msg-final",
++          phase: "final_answer",
++          text: "final",
++          type: "agentMessage",
++        },
++      },
++    });
++    expect(queue.requests).toEqual([
++      {
++        bodyText: undefined,
++        method: "GET",
++        url: "http://bb.test/api/v1/threads/thr_test/events?types=item%2Fcompleted",
++      },
++      {
++        bodyText: undefined,
++        method: "GET",
++        url: "http://bb.test/api/v1/threads/thr_test/events/wait?afterSeq=2&type=item%2Fcompleted&waitMs=1000",
++      },
++    ]);
++  });
++
+   it("forwards read abort signals to fetch", async () => {
+     const controller = new AbortController();
+     let receivedSignal: AbortSignal | null | undefined;
+-- 
+2.53.0
+
