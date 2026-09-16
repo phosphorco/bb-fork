@@ -1,0 +1,492 @@
+From 715fe9d078a8345a48ce055fa888e40a85f43e83 Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Wed, 16 Sep 2026 16:31:38 +0200
+Subject: [PATCH] feat(provider-codex): preserve agent message phase
+
+---
+ packages/domain/src/provider-event.ts         |   9 ++
+ .../domain/test/stored-thread-event.test.ts   |  70 +++++++++++
+ .../src/assembler/delta-assembler.test.ts     |  70 +++++++++++
+ .../src/assembler/delta-assembler.ts          |  16 ++-
+ .../provider-bridge-grammar.v2.snapshot.json  |   3 +-
+ .../src/thread-delta.test.ts                  |  28 +++++
+ .../src/thread-delta.ts                       |   7 +-
+ .../src/delta-translation.test.ts             | 109 ++++++++++++++++++
+ .../provider-codex/src/delta-translation.ts   |   8 +-
+ plugins/provider-codex/src/schemas.ts         |   7 ++
+ 10 files changed, 322 insertions(+), 5 deletions(-)
+
+diff --git a/packages/domain/src/provider-event.ts b/packages/domain/src/provider-event.ts
+index b98325c7fe152855e0a78565a00e29df96d55251..40ecf8d826a556fa5fa1b0322050cec9832dcd46 100644
+--- a/packages/domain/src/provider-event.ts
++++ b/packages/domain/src/provider-event.ts
+@@ -373,6 +373,14 @@ export type ThreadEventBackgroundTaskItem = z.infer<
+   typeof threadEventBackgroundTaskItemSchema
+ >;
+ 
++export const threadEventAgentMessagePhaseSchema = z.enum([
++  "commentary",
++  "final_answer",
++]);
++export type ThreadEventAgentMessagePhase = z.infer<
++  typeof threadEventAgentMessagePhaseSchema
++>;
++
+ export const threadEventItemSchema = z.discriminatedUnion("type", [
+   z
+     .object({
+@@ -387,6 +395,7 @@ export const threadEventItemSchema = z.discriminatedUnion("type", [
+     type: z.literal("agentMessage"),
+     id: z.string(),
+     text: z.string(),
++    phase: threadEventAgentMessagePhaseSchema.nullable().optional(),
+     ...itemPresentationField,
+     parentToolCallId: z.string().optional(),
+   }),
+diff --git a/packages/domain/test/stored-thread-event.test.ts b/packages/domain/test/stored-thread-event.test.ts
+index d6800edc7b0e3b3cfdc5c866a345f26cc03d58e3..ffa5e4a658913c683e58acde0cc9c50428f4cba4 100644
+--- a/packages/domain/test/stored-thread-event.test.ts
++++ b/packages/domain/test/stored-thread-event.test.ts
+@@ -155,6 +155,76 @@ describe("parseStoredThreadEvent", () => {
+     expect(event).not.toHaveProperty("turnId");
+   });
+ 
++  it("round-trips agent-message phase with its causal identity and preserves legacy absence", () => {
++    const data = {
++      providerThreadId: "provider-1",
++      item: {
++        type: "agentMessage",
++        id: "assistant-1",
++        text: "final",
++        phase: "final_answer",
++      },
++    } as const;
++    const event = parseStoredThreadEvent({
++      type: "item/completed",
++      threadId: "thread-1",
++      providerThreadId: "provider-1",
++      scope: turnScope("turn-1"),
++      data,
++    });
++    expect(event).toMatchObject({
++      type: "item/completed",
++      threadId: "thread-1",
++      providerThreadId: "provider-1",
++      scope: turnScope("turn-1"),
++      item: {
++        type: "agentMessage",
++        id: "assistant-1",
++        phase: "final_answer",
++      },
++    });
++    expect(
++      parseThreadEventRow({
++        id: "event-1",
++        type: "item/completed",
++        threadId: "thread-1",
++        seq: 1,
++        createdAt: 1,
++        scope: turnScope("turn-1"),
++        data,
++      }),
++    ).toMatchObject({
++      data: {
++        providerThreadId: "provider-1",
++        item: {
++          id: "assistant-1",
++          phase: "final_answer",
++        },
++      },
++    });
++
++    const legacy = parseStoredThreadEvent({
++      type: "item/completed",
++      threadId: "thread-1",
++      providerThreadId: "provider-1",
++      scope: turnScope("turn-1"),
++      data: {
++        item: {
++          type: "agentMessage",
++          id: "assistant-legacy",
++          text: "legacy",
++        },
++      },
++    });
++    expect(legacy).toMatchObject({ type: "item/completed" });
++    if (
++      legacy.type === "item/completed" &&
++      legacy.item.type === "agentMessage"
++    ) {
++      expect(legacy.item).not.toHaveProperty("phase");
++    }
++  });
++
+   it("keeps host connection loss compatible with legacy interruption readers", () => {
+     const data = {
+       reason: "host-daemon-restarted",
+diff --git a/packages/provider-bridge-protocol/src/assembler/delta-assembler.test.ts b/packages/provider-bridge-protocol/src/assembler/delta-assembler.test.ts
+index 2e9d216771dab8de387329261d97efe66515a649..cbaa7e9bee4ab0f7216d58f6a43d7d30cbd4c53b 100644
+--- a/packages/provider-bridge-protocol/src/assembler/delta-assembler.test.ts
++++ b/packages/provider-bridge-protocol/src/assembler/delta-assembler.test.ts
+@@ -1187,6 +1187,76 @@ describe("delta assembler unified streaming dialect", () => {
+       : undefined;
+   }
+ 
++  it("preserves agent-message phase through open, close, and streamed settlement", () => {
++    const assembler = createAssembler();
++    assemble(assembler, { kind: "turn.open" });
++    const opened = itemOf(
++      assemble(assembler, {
++        kind: "item.open",
++        key: { providerItemId: "interim-1" },
++        item: {
++          type: "agentMessage",
++          text: "interim",
++          phase: "commentary",
++        },
++      })[0],
++    );
++    expect(opened).toMatchObject({
++      type: "agentMessage",
++      phase: "commentary",
++    });
++    const closed = itemOf(
++      assemble(assembler, {
++        kind: "item.close",
++        key: { providerItemId: "interim-1" },
++        status: "completed",
++        item: {
++          type: "agentMessage",
++          text: "interim",
++          phase: "commentary",
++        },
++      })[0],
++    );
++    expect(closed).toMatchObject({
++      type: "agentMessage",
++      id: opened?.id,
++      phase: "commentary",
++    });
++
++    const streamed = itemOf(
++      assemble(assembler, {
++        kind: "item.open",
++        key: { providerItemId: "final-1" },
++        item: {
++          type: "agentMessage",
++          text: "",
++          phase: "final_answer",
++        },
++      })[0],
++    );
++    assemble(assembler, {
++      kind: "item.textDelta",
++      key: { providerItemId: "final-1" },
++      channel: "agentMessage",
++      text: "final",
++    });
++    const settled = itemOf(
++      assemble(assembler, {
++        kind: "item.textClose",
++        key: { providerItemId: "final-1" },
++        channel: "agentMessage",
++      })[0],
++    );
++    expect(settled).toEqual(
++      expect.objectContaining({
++        type: "agentMessage",
++        id: streamed?.id,
++        text: "final",
++        phase: "final_answer",
++      }),
++    );
++  });
++
+   it("synthesizes item/started for an anonymous stream and settles it from the accumulated text", () => {
+     const assembler = createAssembler();
+     assemble(assembler, { kind: "turn.open" });
+diff --git a/packages/provider-bridge-protocol/src/assembler/delta-assembler.ts b/packages/provider-bridge-protocol/src/assembler/delta-assembler.ts
+index 83102ada2fcc9391932780ceb609e3e9871dd098..3d74da831b15dbccfa7b6c83c6f10b9b122150f8 100644
+--- a/packages/provider-bridge-protocol/src/assembler/delta-assembler.ts
++++ b/packages/provider-bridge-protocol/src/assembler/delta-assembler.ts
+@@ -762,7 +762,12 @@ export function createDeltaAssembler(
+         );
+       case "agentMessage":
+         return withParentToolCallId(
+-          { type: "agentMessage", id: bbItemId, text: shape.text },
++          {
++            type: "agentMessage",
++            id: bbItemId,
++            text: shape.text,
++            ...(shape.phase === undefined ? {} : { phase: shape.phase }),
++          },
+           parentToolCallId,
+         );
+       case "reasoning":
+@@ -1161,7 +1166,14 @@ export function createDeltaAssembler(
+       case "agentMessage":
+         return withPresentation(
+           withParentToolCallId(
+-            { type: "agentMessage", id: open.bbItemId, text },
++            {
++              type: "agentMessage",
++              id: open.bbItemId,
++              text,
++              ...(open.item.phase === undefined
++                ? {}
++                : { phase: open.item.phase }),
++            },
+             open.item.parentToolCallId,
+           ),
+           open.item.presentation,
+diff --git a/packages/provider-bridge-protocol/src/contract-tests/provider-bridge-grammar.v2.snapshot.json b/packages/provider-bridge-protocol/src/contract-tests/provider-bridge-grammar.v2.snapshot.json
+index 70adc3443368e91fc8de4f476a78dcbe85b5dbc4..0654ae77cbe97fecf4239f930c6073c63fa6bf38 100644
+--- a/packages/provider-bridge-protocol/src/contract-tests/provider-bridge-grammar.v2.snapshot.json
++++ b/packages/provider-bridge-protocol/src/contract-tests/provider-bridge-grammar.v2.snapshot.json
+@@ -177,7 +177,8 @@
+   "itemShapes": {
+     "agentMessage": {
+       "type": "required",
+-      "text": "required"
++      "text": "required",
++      "phase": "optional"
+     },
+     "backgroundTask": {
+       "type": "required",
+diff --git a/packages/provider-bridge-protocol/src/thread-delta.test.ts b/packages/provider-bridge-protocol/src/thread-delta.test.ts
+index f9698af26d6a26c7b93254108953ee29dcc20080..a81ad515de5e0faca5c34a5033176cf0599cfe7a 100644
+--- a/packages/provider-bridge-protocol/src/thread-delta.test.ts
++++ b/packages/provider-bridge-protocol/src/thread-delta.test.ts
+@@ -112,6 +112,34 @@ describe("thread delta schemas", () => {
+     ).toBe(false);
+   });
+ 
++  it("keeps agent-message phase optional and rejects unknown canonical values", () => {
++    for (const item of [
++      { type: "agentMessage", text: "legacy" },
++      { type: "agentMessage", text: "unknown", phase: null },
++      { type: "agentMessage", text: "interim", phase: "commentary" },
++      { type: "agentMessage", text: "final", phase: "final_answer" },
++    ]) {
++      expect(
++        threadDeltaSchema.safeParse({
++          kind: "item.open",
++          key: { providerItemId: "message-1" },
++          item,
++        }).success,
++      ).toBe(true);
++    }
++    expect(
++      threadDeltaSchema.safeParse({
++        kind: "item.open",
++        key: { providerItemId: "message-1" },
++        item: {
++          type: "agentMessage",
++          text: "future",
++          phase: "future_phase",
++        },
++      }).success,
++    ).toBe(false);
++  });
++
+   it("rejects empty-string join-key members while allowing their omission", () => {
+     expect(
+       threadDeltaSchema.safeParse({
+diff --git a/packages/provider-bridge-protocol/src/thread-delta.ts b/packages/provider-bridge-protocol/src/thread-delta.ts
+index a12c159bba3a61c6a8fb8680e69b80ac274abd16..804ffd8460169e6500dc69915cfd428627ad8573 100644
+--- a/packages/provider-bridge-protocol/src/thread-delta.ts
++++ b/packages/provider-bridge-protocol/src/thread-delta.ts
+@@ -9,6 +9,7 @@ import {
+   providerRateLimitStateSchema,
+   providerRawEventSchema,
+   threadEventItemPresentationSchema,
++  threadEventAgentMessagePhaseSchema,
+   threadEventItemStatusSchema,
+   threadEventPlanStepSchema,
+   threadEventSearchModeSchema,
+@@ -134,7 +135,11 @@ export const deltaItemShapeSchema = z.discriminatedUnion("type", [
+     durationMs: z.number().optional(),
+   }),
+   z.object({ type: z.literal("compaction") }),
+-  z.object({ type: z.literal("agentMessage"), text: z.string() }),
++  z.object({
++    type: z.literal("agentMessage"),
++    text: z.string(),
++    phase: threadEventAgentMessagePhaseSchema.nullable().optional(),
++  }),
+   z.object({
+     type: z.literal("reasoning"),
+     summary: z.array(z.string()),
+diff --git a/plugins/provider-codex/src/delta-translation.test.ts b/plugins/provider-codex/src/delta-translation.test.ts
+index 25e5534d51ad43d22f0edcd801c2277d6b065e24..f1c1dc60911031ae2315d13a17d050d4148a014e 100644
+--- a/plugins/provider-codex/src/delta-translation.test.ts
++++ b/plugins/provider-codex/src/delta-translation.test.ts
+@@ -456,12 +456,121 @@ describe("codex item translation", () => {
+           type: "agentMessage",
+           id: harness.itemId("item-1"),
+           text: "Hello",
++          phase: null,
+           presentation: AGENT_MESSAGE_PRESENTATION,
+         },
+       }),
+     );
+   });
+ 
++  it("preserves distinct interim and final agent-message phases in one provider turn", () => {
++    const harness = createHarness();
++    const interim = harness.translate(
++      codexEvent("item/completed", {
++        threadId: "provider-thread-1",
++        turnId: "turn-1",
++        completedAtMs: 0,
++        item: {
++          type: "agentMessage",
++          id: "interim-1",
++          text: "i".repeat(93),
++          phase: "commentary",
++          memoryCitation: null,
++          delivery: null,
++        },
++      }),
++    );
++    const final = harness.translate(
++      codexEvent("item/completed", {
++        threadId: "provider-thread-1",
++        turnId: "turn-1",
++        completedAtMs: 1,
++        item: {
++          type: "agentMessage",
++          id: "final-1",
++          text: "f".repeat(1182),
++          phase: "final_answer",
++          memoryCitation: null,
++          delivery: null,
++        },
++      }),
++    );
++    const turn = harness.translate(
++      codexEvent("turn/completed", {
++        threadId: "provider-thread-1",
++        turn: codexTurn({ id: "turn-1", status: "completed", error: null }),
++      }),
++    );
++
++    const completed = [...interim, ...final].filter(
++      (event): event is Extract<ThreadEvent, { type: "item/completed" }> =>
++        event.type === "item/completed" && event.item.type === "agentMessage",
++    );
++    expect(completed).toEqual([
++      expect.objectContaining({
++        scope: turnScope(harness.turnId("turn-1")),
++        item: expect.objectContaining({
++          id: harness.itemId("interim-1"),
++          text: "i".repeat(93),
++          phase: "commentary",
++        }),
++      }),
++      expect.objectContaining({
++        scope: turnScope(harness.turnId("turn-1")),
++        item: expect.objectContaining({
++          id: harness.itemId("final-1"),
++          text: "f".repeat(1182),
++          phase: "final_answer",
++        }),
++      }),
++    ]);
++    expect(turn).toContainEqual(
++      expect.objectContaining({
++        type: "turn/completed",
++        scope: turnScope(harness.turnId("turn-1")),
++        status: "completed",
++      }),
++    );
++  });
++
++  it("does not turn missing or unrecognized Codex phases into final answers", () => {
++    const harness = createHarness();
++    for (const item of [
++      {
++        type: "agentMessage",
++        id: "missing-phase",
++        text: "missing",
++        memoryCitation: null,
++        delivery: null,
++      },
++      {
++        type: "agentMessage",
++        id: "future-phase",
++        text: "future",
++        phase: "future_phase",
++        memoryCitation: null,
++        delivery: null,
++      },
++    ]) {
++      const events = harness.translate({
++        jsonrpc: "2.0",
++        method: "item/completed",
++        params: {
++          threadId: "t1",
++          turnId: "turn-1",
++          completedAtMs: 0,
++          item,
++        },
++      });
++      const completed = events.find(
++        (event): event is Extract<ThreadEvent, { type: "item/completed" }> =>
++          event.type === "item/completed" && event.item.type === "agentMessage",
++      );
++      expect(completed?.item).toMatchObject({ text: item.text });
++      expect(completed?.item).not.toHaveProperty("phase");
++    }
++  });
++
+   it("suppresses item/started with userMessage as a provider echo", () => {
+     const harness = createHarness();
+     const events = harness.translate(
+diff --git a/plugins/provider-codex/src/delta-translation.ts b/plugins/provider-codex/src/delta-translation.ts
+index 6be485117444e42fffda8bab0f4451fa2f951b15..99bcd8929e461ec182db69be15e63c5a1583a85b 100644
+--- a/plugins/provider-codex/src/delta-translation.ts
++++ b/plugins/provider-codex/src/delta-translation.ts
+@@ -773,7 +773,13 @@ function translateCodexItemShape(
+     case "agentMessage":
+       return {
+         kind: "translated",
+-        shape: { type: "agentMessage", text: parsedItem.text },
++        shape: {
++          type: "agentMessage",
++          text: parsedItem.text,
++          ...(parsedItem.phase === undefined
++            ? {}
++            : { phase: parsedItem.phase }),
++        },
+         presentation: AGENT_MESSAGE_PRESENTATION,
+         status: "completed",
+         approvalDenied: false,
+diff --git a/plugins/provider-codex/src/schemas.ts b/plugins/provider-codex/src/schemas.ts
+index add605da4526dc52ff8268b9d4a9d3e13397b0ca..d1c7928c41d9ec4562e4e96c347167daa6970e86 100644
+--- a/plugins/provider-codex/src/schemas.ts
++++ b/plugins/provider-codex/src/schemas.ts
+@@ -25,6 +25,12 @@ const codexItemStatusSchema = z.enum([
+ ]);
+ export type CodexItemStatus = z.infer<typeof codexItemStatusSchema>;
+ 
++const codexAgentMessagePhaseSchema = z
++  .enum(["commentary", "final_answer"])
++  .nullable()
++  .optional()
++  .catch(undefined);
++
+ const codexPlanStepStatusSchema = z.enum([
+   "pending",
+   "inProgress",
+@@ -349,6 +355,7 @@ export const codexHandledThreadItemSchema = z.discriminatedUnion("type", [
+       type: z.literal("agentMessage"),
+       id: z.string(),
+       text: z.string(),
++      phase: codexAgentMessagePhaseSchema,
+     })
+     .passthrough(),
+   z
+-- 
+2.53.0
+
