@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'usage: %s <upstream-commit-or-tag>\n' "${0##*/}" >&2
+  exit 2
+}
+
+[[ $# -eq 1 ]] || usage
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+upstream="$repo_root/upstream"
+target_ref="$1"
+
+[[ -d "$upstream/.git" || -f "$upstream/.git" ]] || {
+  printf 'error: initialize the upstream submodule first\n' >&2
+  exit 1
+}
+
+base="$(tr -d '[:space:]' < "$repo_root/upstream.lock")"
+target="$(git -C "$upstream" rev-parse --verify "$target_ref^{commit}")"
+
+if ! git -C "$upstream" merge-base --is-ancestor "$base" "$target"; then
+  printf 'error: target %s is not a descendant of locked base %s\n' "$target" "$base" >&2
+  exit 1
+fi
+
+(cd "$repo_root/patches" && sha256sum --check sha256 >/dev/null)
+
+probe_root="$(mktemp -d "${TMPDIR:-/tmp}/bb-upstream-replay.XXXXXX")"
+probe_tree="$probe_root/tree"
+
+cleanup() {
+  if git -C "$upstream" worktree list --porcelain | grep -Fqx "worktree $probe_tree"; then
+    git -C "$upstream" worktree remove --force "$probe_tree"
+  fi
+  rmdir "$probe_root" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+git -C "$upstream" worktree add --detach "$probe_tree" "$target" >/dev/null
+
+printf 'base=%s\n' "$base"
+printf 'target=%s\n' "$target"
+
+applied=0
+while IFS= read -r patch_name; do
+  [[ -z "$patch_name" || "$patch_name" == \#* ]] && continue
+  printf 'apply=%s\n' "$patch_name"
+  if ! GIT_COMMITTER_NAME="bb upstream replay probe" \
+    GIT_COMMITTER_EMAIL="bb-upstream-replay@invalid.local" \
+    git -C "$probe_tree" am --3way --committer-date-is-author-date \
+      "$repo_root/patches/$patch_name" >/dev/null 2>&1; then
+    conflicted="$(git -C "$probe_tree" diff --name-only --diff-filter=U)"
+    conflict_count="$(printf '%s\n' "$conflicted" | sed '/^$/d' | wc -l | tr -d ' ')"
+    printf 'result=conflict\n'
+    printf 'applied=%s\n' "$applied"
+    printf 'failed=%s\n' "$patch_name"
+    printf 'conflicted_paths=%s\n' "$conflict_count"
+    printf '%s\n' "$conflicted"
+    exit 3
+  fi
+  applied=$((applied + 1))
+done < "$repo_root/patches/series"
+
+printf 'result=clean-replay\n'
+printf 'applied=%s\n' "$applied"
+printf 'tree=%s\n' "$(git -C "$probe_tree" rev-parse 'HEAD^{tree}')"

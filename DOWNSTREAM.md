@@ -47,12 +47,16 @@
 17. **Tailnet provider auto-selection** chooses the installed Tailnet identity
     provider when the configured Serve-owned host matches, while preserving
     explicit boundary configuration and machine fallback.
+18. **ACP native-root isolation** keeps provider tests independent of the
+    caller's workspace roots.
+23. **Sidebar layout provider** adds the native layout-provider seam while
+    retaining plugin sidebar composition.
 
 ## Exact source receipt
 
 - Upstream: `10bacbc0fb1ead6c1f1a728b395bdb1f60e52f93`.
 - Materialized package: `bb-app@0.42.1` plus the reviewed downstream queue.
-- Patch queue: sixteen patches (stable numbers 1–17, excluding retired patch 4)
+- Patch queue: eighteen patches (stable numbers 1–18 and 23, excluding retired patch 4)
   in `patches/series`; this queue is the current implementation candidate, while
   running deployments may remain on earlier historical compositions until root-owned
   integration and activation.

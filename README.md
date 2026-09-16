@@ -47,7 +47,7 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The sixteen patches form the current implementation candidate. Patch 4 was
+The eighteen patches form the current implementation candidate. Patch 4 was
 removed: plugins use upstream `auth: "none"` for routes that validate their own
 connection tokens. Remaining patch filenames retain their stable numbers. Patch 16
 consolidates the previous native identity patches 16–23, including the authored
@@ -82,3 +82,7 @@ Patch 17 automatically selects the installed Tailnet identity provider when
 `BB_TAILNET_IDENTITY_OWNED_HOST` already declares the Serve authority. Custom
 `BB_P6R_IDENTITY_BOUNDARY` configuration takes precedence. Ordinary requests
 without person evidence retain machine attribution.
+
+Patch 18 isolates ACP native-root tests from the caller workspace. Patch 23
+adds the native sidebar layout-provider seam while retaining the existing
+plugin layout contract.
