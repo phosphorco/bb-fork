@@ -51,12 +51,16 @@
     caller's workspace roots.
 23. **Sidebar layout provider** adds the native layout-provider seam while
     retaining plugin sidebar composition.
+24. **Codex agent-message phase** preserves optional provider-declared phase
+    through bridge and durable event contracts without inferring finality.
+25. **Resource sidebar helper restoration** retains the original generic
+    resource-sidebar helper used by native Plugins and Skills entries.
 
 ## Exact source receipt
 
 - Upstream: `10bacbc0fb1ead6c1f1a728b395bdb1f60e52f93`.
 - Materialized package: `bb-app@0.42.1` plus the reviewed downstream queue.
-- Patch queue: eighteen patches (stable numbers 1–18 and 23, excluding retired patch 4)
+- Patch queue: twenty patches (stable numbers 1–3, 5–18, and 23–25, excluding retired patch 4)
   in `patches/series`; this queue is the current implementation candidate, while
   running deployments may remain on earlier historical compositions until root-owned
   integration and activation.
