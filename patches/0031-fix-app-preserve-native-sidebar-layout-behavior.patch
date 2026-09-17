@@ -1,0 +1,116 @@
+From 43c373b2fd6283bff4e55b840c245068e0ce6c90 Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Thu, 17 Sep 2026 03:40:49 +0200
+Subject: [PATCH] fix(app): preserve native sidebar layout behavior
+
+---
+ .../plugin/PluginNavSidebarItems.tsx          | 30 ++++++++++++++-----
+ 1 file changed, 22 insertions(+), 8 deletions(-)
+
+diff --git a/apps/app/src/components/plugin/PluginNavSidebarItems.tsx b/apps/app/src/components/plugin/PluginNavSidebarItems.tsx
+index 1d4c7405d..1d8887ac2 100644
+--- a/apps/app/src/components/plugin/PluginNavSidebarItems.tsx
++++ b/apps/app/src/components/plugin/PluginNavSidebarItems.tsx
+@@ -65,7 +65,10 @@ import {
+ import { usePaneContentSplitIndicator } from "@/components/sidebar/paneContentSplitIndicator";
+ import type { MiniMapSlot } from "@/components/sidebar/paneContentSplitIndicator";
+ import { SplitPaneMiniMap } from "@/components/sidebar/SplitPaneMiniMap";
+-import { SIDEBAR_MORE_ACTION_TRIGGER_CLASS } from "@/components/sidebar/sidebarRowClasses";
++import {
++  SIDEBAR_CONTROL_STATE_CLASS,
++  SIDEBAR_MORE_ACTION_TRIGGER_CLASS,
++} from "@/components/sidebar/sidebarRowClasses";
+ import {
+   SIDEBAR_HOVER_ACTIONS_CLASS,
+   SIDEBAR_HOVER_ACTIONS_FADE_CLASS,
+@@ -349,13 +352,13 @@ function PluginNavSidebarItemList({
+   );
+ 
+   useEffect(() => {
+-    if (externalLayout !== null) return;
++    if (externalLayout === null) return;
+     if (haveSameOrder(effectiveOrder, normalizedOrder)) return;
+     persistPreferences(normalizedOrder, normalizedVisibleKeys);
+   }, [effectiveOrder, externalLayout, normalizedOrder, normalizedVisibleKeys, persistPreferences]);
+ 
+   useEffect(() => {
+-    if (externalLayout !== null) return;
++    if (externalLayout === null) return;
+     if (
+       effectiveVisibleKeys === null ||
+       normalizedVisibleKeys === null ||
+@@ -578,8 +581,8 @@ function SidebarNavigationMoreRow({
+                 aria-label="More sidebar navigation"
+                 className={cn(
+                   PROJECT_LIST_ACTION_BUTTON_CLASS,
+-                  "w-full",
+-                  isMenuOpen && "bg-sidebar-accent text-sidebar-foreground",
++                  "w-full text-muted-foreground hover:text-sidebar-foreground focus-visible:text-sidebar-foreground data-[state=open]:text-sidebar-foreground",
++                  isMenuOpen && "bg-sidebar-accent",
+                 )}
+                 data-testid={MORE_TRIGGER_TEST_ID}
+               >
+@@ -1145,6 +1148,7 @@ function PluginNavSidebarItem({
+     <SidebarNavRowChrome
+       {...props}
+       rowKey={rowKey}
++      loading={panel === null}
+       title={chrome.title}
+       icon={<PluginIcon pluginId={chrome.pluginId} icon={chrome.icon} />}
+       isActive={pathname === path || pathname.startsWith(`${path}/`)}
+@@ -1165,6 +1169,7 @@ function PluginNavSidebarItem({
+ 
+ interface SidebarNavRowChromeProps {
+   rowKey: string;
++  loading?: boolean;
+   title: string;
+   icon: ReactNode;
+   isActive: boolean;
+@@ -1181,6 +1186,7 @@ interface SidebarNavRowChromeProps {
+ 
+ function SidebarNavRowChrome({
+   rowKey,
++  loading = false,
+   title,
+   icon,
+   isActive,
+@@ -1227,7 +1233,12 @@ function SidebarNavRowChrome({
+         <div
+           ref={rowRef}
+           style={rowStyle}
+-          className={cn(SIDEBAR_HOVER_ACTIONS_ROW_CLASS, "relative")}
++          className={cn(
++            SIDEBAR_HOVER_ACTIONS_ROW_CLASS,
++            "relative",
++            !loading &&
++              "motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200",
++          )}
+           data-sidebar-navigation-item={rowKey}
+         >
+           <Button
+@@ -1239,7 +1250,10 @@ function SidebarNavRowChrome({
+               "w-full pr-7",
+               accessory && "pr-18",
+               isActive && "bg-sidebar-accent text-sidebar-foreground",
++              loading &&
++                "text-sidebar-foreground/55 dark:text-sidebar-foreground/55 [&_svg]:opacity-60",
+             )}
++            aria-busy={loading || undefined}
+             aria-current={isActive ? "page" : undefined}
+             ref={dragBindings?.setActivatorNodeRef}
+             {...dragBindings?.attributes}
+@@ -1290,9 +1304,9 @@ function SidebarNavRowChrome({
+                   size="icon"
+                   aria-label={`${title} panel options`}
+                   className={cn(
+-                    "rounded-md p-0 text-muted-foreground",
+-                    "data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-foreground",
++                    "rounded-md p-0",
+                     SIDEBAR_MORE_ACTION_TRIGGER_CLASS,
++                    SIDEBAR_CONTROL_STATE_CLASS,
+                   )}
+                 >
+                   <Icon
+-- 
+2.53.0
+
