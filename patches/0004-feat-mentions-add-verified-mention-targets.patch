@@ -1,7 +1,7 @@
-From a5ecc3bde8a43e16fe97d34911a8641091ddf4f2 Mon Sep 17 00:00:00 2001
+From da2c174d3c219db70495bc7c433ad15be4db9e39 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
-Subject: [PATCH 04/16] feat(mentions): add verified mention targets
+Subject: [PATCH 04/21] feat(mentions): add verified mention targets
 
 ---
  apps/server/src/internal/events.ts            |   3 +
@@ -13,34 +13,34 @@ Subject: [PATCH 04/16] feat(mentions): add verified mention targets
  .../plugins/plugin-service-internal.ts        |   3 +-
  .../src/services/plugins/plugin-service.ts    |  51 ++++-
  .../src/services/threads/dispatch-attempt.ts  |   4 +
- .../src/services/threads/queued-messages.ts   |  20 +-
- .../src/services/threads/thread-create.ts     |  11 +-
+ .../src/services/threads/queued-messages.ts   |  31 ++-
+ .../src/services/threads/thread-create.ts     |  18 +-
  .../src/services/threads/thread-events.ts     |  19 ++
  .../services/threads/thread-facet-query.ts    |  13 ++
- .../services/threads/thread-provisioning.ts   |  41 ++--
- .../src/services/threads/thread-send.ts       |  34 +++-
+ .../services/threads/thread-provisioning.ts   |   9 +-
+ .../src/services/threads/thread-send.ts       |  80 ++++----
  .../services/threads/thread-turn-dispatch.ts  |   3 +
  .../daemon-forged-mention-http.test.ts        | 107 ++++++++++
  .../p6r/mention-target-service-paths.test.ts  | 102 ++++++++++
  .../test/services/p6r/mention-targets.test.ts | 192 ++++++++++++++++++
  .../services/p6r/provider-registry.test.ts    | 114 ++++++++++-
- docs/api_to_audit.md                          |  18 ++
+ docs/api_to_audit.md                          |  19 ++
  packages/db/src/data/events.ts                |   3 +
  packages/domain/src/change-kinds.ts           |   1 +
  packages/domain/src/thread-events.ts          |  28 +++
  packages/plugin-api-map/src/surfaces.ts       |  15 ++
  packages/plugin-sdk/src/backend-contract.ts   |   8 +-
- 26 files changed, 1093 insertions(+), 96 deletions(-)
+ 26 files changed, 1096 insertions(+), 126 deletions(-)
  create mode 100644 apps/server/src/services/p6r/participant-projection.ts
  create mode 100644 apps/server/test/internal/daemon-forged-mention-http.test.ts
  create mode 100644 apps/server/test/services/p6r/mention-target-service-paths.test.ts
  create mode 100644 apps/server/test/services/p6r/mention-targets.test.ts
 
 diff --git a/apps/server/src/internal/events.ts b/apps/server/src/internal/events.ts
-index 3ca15d7e3c9a8b6a6074c69fde46ce3c5d993753..5b6388d041f2eda912cd5fbf7550568641b7468a 100644
+index b04d4e54aef467d60e1062770dbc24da4a3fff1d..8a7f0accc15f85ce5ca37f2e0288902ba13acc74 100644
 --- a/apps/server/src/internal/events.ts
 +++ b/apps/server/src/internal/events.ts
-@@ -925,6 +925,9 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
+@@ -920,6 +920,9 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
          throw error;
        }
        const events = ungroupHostDaemonEvents(payload.eventGroups);
@@ -536,15 +536,16 @@ index 0ab0afc5fee798ada455506be34694595da7da32..89e633fc6a8f507fa90158497c30db55
 +  return (await resolvePluginMentionInputs(input)).contextInputs;
  }
 diff --git a/apps/server/src/services/plugins/plugin-service-internal.ts b/apps/server/src/services/plugins/plugin-service-internal.ts
-index 078f688b147e5bd66a69c30ea73b7d954f18e0b4..e6f8f023503cc8f695d2e18f3a586b4e2e97db90 100644
+index e4b40147538ea6345a9f1f424529408de8bbe1e7..02ec95c94e6d1bf2d4e768f7d5919e3f1cc0347d 100644
 --- a/apps/server/src/services/plugins/plugin-service-internal.ts
 +++ b/apps/server/src/services/plugins/plugin-service-internal.ts
-@@ -1,3 +1,4 @@
+@@ -1,4 +1,5 @@
+ import type { MachineEnrollmentService } from "../machines/machine-services.js";
 +import type { P6rMentionTarget } from "@bb/domain";
  import type { AiServiceRegistry } from "../ai/ai-service-registry.js";
  import type { DbConnection } from "@bb/db";
  import type {
-@@ -214,7 +215,7 @@ export interface PluginMentionSearchGroup {
+@@ -212,7 +213,7 @@ export interface PluginMentionSearchGroup {
  }
  
  export type PluginMentionResolveResult =
@@ -554,12 +555,12 @@ index 078f688b147e5bd66a69c30ea73b7d954f18e0b4..e6f8f023503cc8f695d2e18f3a586b4e
  
  export interface PluginThreadEventEmitter {
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index 4d852c4d7f7a9de67c1aaab271b30283c59ac86f..be79233a128d09bc95c17aaeee1bc80e05c18e65 100644
+index f95c08b83e427494160ac6eefd03a67882901a69..e7500bd7df8bc0d95ce8c546ddf036120e5fa3bc 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
-@@ -2773,15 +2773,62 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
-             if (timer !== undefined) clearTimeout(timer);
-           }
+@@ -2366,15 +2366,62 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+             `timed out after ${mentionResolveTimeoutMs}ms`,
+           );
            const context = (result as { context?: unknown } | null)?.context;
 +          const target = (result as { experimental_target?: unknown } | null)?.experimental_target;
 +          const selected =
@@ -623,23 +624,26 @@ index 4d852c4d7f7a9de67c1aaab271b30283c59ac86f..be79233a128d09bc95c17aaeee1bc80e
      },
  
 diff --git a/apps/server/src/services/threads/dispatch-attempt.ts b/apps/server/src/services/threads/dispatch-attempt.ts
-index 6e846d58983778851b2ccc67c8e03d98656297f8..a8b1459e06c1725c44233cf820a8409135720574 100644
+index e7524aa95f32d84755baa0b445a6a6991a2f1de0..f6641c3ead98267addf42c36cffc3ae30b6ad8d0 100644
 --- a/apps/server/src/services/threads/dispatch-attempt.ts
 +++ b/apps/server/src/services/threads/dispatch-attempt.ts
-@@ -1,3 +1,4 @@
+@@ -3,6 +3,7 @@ import {
+   cancelPreparingMachinePause,
+   isMachineWaitingForExecution,
+ } from "../machines/lifecycle.js";
 +import { p6rMentionTargetSchema } from "@bb/domain";
  import {
    deleteClaimedQueuedThreadMessageBatchInTransaction,
    getEnvironment,
-@@ -93,6 +94,7 @@ import { restoreFailedProviderLaunchRequest } from "../environments/provider-orc
-  * the wait.
-  */
+@@ -91,6 +92,7 @@ import type { TurnRequestRetryMarker } from "./thread-events.js";
+ import { restoreInterruptedThreadStartupRequest } from "./thread-provisioning.js";
+ 
  export const pendingThreadStartContextSchema = z.object({
 +  p6rMentionedTargets: z.array(p6rMentionTargetSchema).max(256).optional(),
    environmentIntent: threadProvisionEnvironmentIntentSchema,
    fork: threadForkDescriptorSchema.nullable(),
    /** Provider-facing input when it differs from the persisted start seed. */
-@@ -730,6 +732,7 @@ async function admitPendingThread(
+@@ -740,6 +742,7 @@ async function admitPendingThread(
      environmentIntent: startContext.environmentIntent,
      execution,
      fork: startContext.fork,
@@ -647,7 +651,7 @@ index 6e846d58983778851b2ccc67c8e03d98656297f8..a8b1459e06c1725c44233cf820a84091
      input: args.payload.input,
      ...(startContext.providerInput === undefined
        ? {}
-@@ -818,6 +821,7 @@ async function launchAdmittedThread(
+@@ -816,6 +819,7 @@ async function launchAdmittedThread(
      environmentIntent: startContext.environmentIntent,
      execution: admission.execution,
      fork: startContext.fork,
@@ -656,7 +660,7 @@ index 6e846d58983778851b2ccc67c8e03d98656297f8..a8b1459e06c1725c44233cf820a84091
      ...(startContext.providerInput !== undefined
        ? { providerInput: startContext.providerInput }
 diff --git a/apps/server/src/services/threads/queued-messages.ts b/apps/server/src/services/threads/queued-messages.ts
-index 9ef63558cf9d5bcb78ea8db9bfaac0b5d757cfa7..a456a266cc3882c75dce40bb5840605cf1e47df3 100644
+index 112468ff41e074185b7f4780841fc407342b7a58..79f282c56197b46412a72fedf463a907702f9fd4 100644
 --- a/apps/server/src/services/threads/queued-messages.ts
 +++ b/apps/server/src/services/threads/queued-messages.ts
 @@ -1,3 +1,4 @@
@@ -664,20 +668,30 @@ index 9ef63558cf9d5bcb78ea8db9bfaac0b5d757cfa7..a456a266cc3882c75dce40bb5840605c
  import {
    claimQueuedThreadMessageGroup,
    claimNextQueuedThreadMessageGroup,
-@@ -47,7 +48,7 @@ import {
+@@ -52,6 +53,7 @@ import {
    buildExecutionOptions,
    prepareTurnSubmitCommandPayload,
  } from "./thread-commands.js";
--import { resolvePluginMentionContextInputs } from "../plugins/plugin-mentions.js";
 +import { resolvePluginMentionInputs } from "../plugins/plugin-mentions.js";
  import {
    prependDeferredFirstTurnContext,
    requireDeferredFirstTurnContextCurrent,
-@@ -469,7 +470,17 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
+@@ -78,7 +80,6 @@ import {
+ } from "./queue-waits.js";
+ import { recordQueuedMessageDrainFailure } from "./queue-drain-failure.js";
+ import {
+-  appendPluginMentionContext,
+   captureUserMessageSentTelemetry,
+   ensureThreadIsWritable,
+   formatAgentThreadInput,
+@@ -472,10 +473,25 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
      }),
    );
-   let input = groupedInputForRuntime(inputGroups);
--  const pluginMentionContext = await resolvePluginMentionContextInputs(input);
+   let input = flattenPromptInputGroups(inputGroups);
+-  ({ input, inputGroups } = await appendPluginMentionContext({
+-    input,
+-    inputGroups,
+-  }));
 +  const { contextInputs: pluginMentionContext, targets: p6rMentionedTargets } =
 +    queuedMessage.payload.kind !== "retry"
 +      ? await resolvePluginMentionInputs(input)
@@ -689,10 +703,18 @@ index 9ef63558cf9d5bcb78ea8db9bfaac0b5d757cfa7..a456a266cc3882c75dce40bb5840605c
 +            queuedMessage.payload.retryOfTurnRequestId,
 +          ),
 +        };
-   if (pluginMentionContext.length > 0) {
-     input = [...input, ...pluginMentionContext];
-     const lastGroup = inputGroups[inputGroups.length - 1]!;
-@@ -543,13 +554,14 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
++  if (pluginMentionContext.length > 0) {
++    input = [...input, ...pluginMentionContext];
++    const lastGroup = inputGroups[inputGroups.length - 1]!;
++    inputGroups = [
++      ...inputGroups.slice(0, -1),
++      [...lastGroup, ...pluginMentionContext],
++    ];
++  }
+   const deferredFirstTurnContext = resolveDeferredFirstTurnContext(
+     deps.db,
+     thread.id,
+@@ -541,13 +557,14 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
          queuedMessages: args.queuedMessages,
        });
        if (!consumed) {
@@ -710,25 +732,29 @@ index 9ef63558cf9d5bcb78ea8db9bfaac0b5d757cfa7..a456a266cc3882c75dce40bb5840605c
          requestMethod: "turn/start",
          senderThreadId,
 diff --git a/apps/server/src/services/threads/thread-create.ts b/apps/server/src/services/threads/thread-create.ts
-index 2ff752482d8ba13c053e5904e8c8b221a56e0715..cd09d3c8c20b6203f12c0b3a8e66d195138d71e9 100644
+index 245eb7666b1fd6ef44d70bf819c06a482dfc5deb..bd8bc6f2170ff283b2dc78eb77719bc460b264bf 100644
 --- a/apps/server/src/services/threads/thread-create.ts
 +++ b/apps/server/src/services/threads/thread-create.ts
 @@ -1,4 +1,5 @@
- import { withEnvironmentPathAdmission } from "../environments/path-admission.js";
+ import { assertEnvironmentPathAvailable } from "../environments/path-admission.js";
 +import type { P6rMentionTarget } from "@bb/domain";
  import {
    deleteThread,
    getEnvironment,
-@@ -29,7 +30,7 @@ import {
+@@ -29,10 +30,8 @@ import {
    resolveProjectExecutionDefaultsForCreate,
  } from "./project-execution-defaults.js";
  import { validatePromptAttachmentReferences } from "../projects/attachments.js";
--import { resolvePluginMentionContextInputs } from "../plugins/plugin-mentions.js";
+-import {
+-  appendPluginMentionContext,
+-  captureUserMessageSentTelemetry,
+-} from "./thread-send.js";
++import { captureUserMessageSentTelemetry } from "./thread-send.js";
 +import { resolvePluginMentionInputs } from "../plugins/plugin-mentions.js";
  import {
    attemptDispatch,
    hostIdForEnvironmentIntent,
-@@ -64,6 +65,7 @@ import { getEnvironmentProvider } from "../plugins/plugin-environment-provider-r
+@@ -73,6 +72,7 @@ import {
  type ThreadCreateDeps = LoggedPendingInteractionWorkSessionDeps;
  
  interface CreateProvisioningThreadArgs {
@@ -736,7 +762,7 @@ index 2ff752482d8ba13c053e5904e8c8b221a56e0715..cd09d3c8c20b6203f12c0b3a8e66d195
    environmentId: string | null;
    executionDefaults: Parameters<
      typeof buildExecutionOptions
-@@ -381,6 +383,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
+@@ -383,6 +383,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
      );
  
      const startContext: PendingThreadStartContext = {
@@ -744,19 +770,22 @@ index 2ff752482d8ba13c053e5904e8c8b221a56e0715..cd09d3c8c20b6203f12c0b3a8e66d195
        environmentIntent: args.environmentIntent,
        fork: args.fork?.descriptor ?? null,
        ...(args.providerInput !== undefined
-@@ -479,9 +482,8 @@ export async function createThreadFromRequest(
-     );
+@@ -506,9 +507,11 @@ export async function createThreadFromRequest(
    }
+   const pluginMetadata = resolveCreateThreadPluginMetadata(rawRequestInput);
    const requestInput = { ...rawRequestInput };
--  const pluginMentionContext = await resolvePluginMentionContextInputs(
--    requestInput.input,
--  );
+-  requestInput.input = (
+-    await appendPluginMentionContext({ input: requestInput.input })
+-  ).input;
 +  const { contextInputs: pluginMentionContext, targets: p6rMentionedTargets } =
 +    await resolvePluginMentionInputs(requestInput.input);
-   if (pluginMentionContext.length > 0) {
-     requestInput.input = [...requestInput.input, ...pluginMentionContext];
-   }
-@@ -692,6 +694,7 @@ export async function createThreadFromRequest(
++  if (pluginMentionContext.length > 0) {
++    requestInput.input = [...requestInput.input, ...pluginMentionContext];
++  }
+   assertProjectWorkspaceCompatibility(project, requestInput);
+   const originKind = requestInput.originKind ?? null;
+   const sourceThreadId =
+@@ -725,6 +728,7 @@ export async function createThreadFromRequest(
    }
  
    const createArgs = {
@@ -765,16 +794,16 @@ index 2ff752482d8ba13c053e5904e8c8b221a56e0715..cd09d3c8c20b6203f12c0b3a8e66d195
      environmentIntent,
      executionDefaults: resolvedExecutionDefaults,
 diff --git a/apps/server/src/services/threads/thread-events.ts b/apps/server/src/services/threads/thread-events.ts
-index d9c9bc51b8a68b3400b10f8df3377352f49a525b..dc767cd58b80c63dbc87480312e604e415dac492 100644
+index 8d27716268c26da59831d93e2e521bd1acfd6d76..073e8ebb468351994a89cdb67d096abb1a23de81 100644
 --- a/apps/server/src/services/threads/thread-events.ts
 +++ b/apps/server/src/services/threads/thread-events.ts
 @@ -1,3 +1,5 @@
 +import { projectP6rParticipantsInTransaction } from "../p6r/participant-projection.js";
 +import type { P6rMentionTarget } from "@bb/domain";
- import { z } from "zod";
  import {
    appendStoredThreadEventsInTransaction,
-@@ -72,6 +74,7 @@ export interface TurnRequestRetryMarker {
+   createEventId,
+@@ -73,6 +75,7 @@ export interface TurnRequestRetryMarker {
  }
  
  interface ClientTurnRequestedEventArgs {
@@ -782,7 +811,7 @@ index d9c9bc51b8a68b3400b10f8df3377352f49a525b..dc767cd58b80c63dbc87480312e604e4
    /**
     * Set only when a `turn.failed` retry row is dispatching, marking this turn
     * as attempt N of an earlier request rather than something the user just
-@@ -266,6 +269,9 @@ function buildClientTurnRequestedEventData(
+@@ -216,6 +219,9 @@ function buildClientTurnRequestedEventData(
        ? { systemMessageSubject: args.systemMessageSubject }
        : {}),
      input: args.input,
@@ -792,7 +821,7 @@ index d9c9bc51b8a68b3400b10f8df3377352f49a525b..dc767cd58b80c63dbc87480312e604e4
      ...(args.inputGroups !== undefined
        ? { inputGroups: args.inputGroups }
        : {}),
-@@ -381,6 +387,19 @@ function appendThreadEventsInTransactionWithAttention(
+@@ -336,6 +342,19 @@ function appendThreadEventsInTransactionWithAttention(
  ): AppendThreadEventsTransactionResult {
    assertStoredTurnStartedForEvents(db, args);
    const sequences = appendStoredThreadEventsInTransaction(db, args);
@@ -848,16 +877,18 @@ index 625fa6192508641f9fd4e3651af5093960b38d05..9fc6be737bda483333ec0981a89434bb
        threadId,
        sourceVersion,
 diff --git a/apps/server/src/services/threads/thread-provisioning.ts b/apps/server/src/services/threads/thread-provisioning.ts
-index b9a5b87e9bf4daa2008d14ce8cc40339dd0aa557..743586f7db6c8357bc1feb7eb6b315e72d39d922 100644
+index 133107b6f07eb0ee22d44bb8e3657d5d28675522..6728beb472703be50959361315da3f7e1e02f5c3 100644
 --- a/apps/server/src/services/threads/thread-provisioning.ts
 +++ b/apps/server/src/services/threads/thread-provisioning.ts
-@@ -1,4 +1,5 @@
+@@ -3,6 +3,7 @@ import { sweepProviderMachine } from "../machines/provider-orchestration.js";
+ import { cancelProviderEnvironmentCreation } from "../environments/environment-engine.js";
+ import { getPreparingEnvironment } from "@bb/db";
  import { getThread, type DbTransaction, type EnvironmentRow } from "@bb/db";
 +import type { P6rMentionTarget } from "@bb/domain";
  import {
    type EnvironmentProviderSelection,
    type PromptInput,
-@@ -46,6 +47,7 @@ import { runtimeErrorLogFields } from "../lib/error-log-fields.js";
+@@ -53,6 +54,7 @@ import { runtimeErrorLogFields } from "../lib/error-log-fields.js";
  import { recordAcceptedPromptHistoryEntry } from "../prompt-history.js";
  
  export interface ThreadProvisionRequestArgs {
@@ -865,7 +896,7 @@ index b9a5b87e9bf4daa2008d14ce8cc40339dd0aa557..743586f7db6c8357bc1feb7eb6b315e7
    environmentIntent: ThreadProvisionEnvironmentIntent;
    execution: ResolvedThreadExecutionOptions;
    fork: ThreadForkDescriptor | null;
-@@ -64,6 +66,7 @@ export interface PreappendedThreadProvisionRequest {
+@@ -71,6 +73,7 @@ export interface PreappendedThreadProvisionRequest {
  }
  
  interface RequestThreadTargetReprovisionArgs {
@@ -873,7 +904,7 @@ index b9a5b87e9bf4daa2008d14ce8cc40339dd0aa557..743586f7db6c8357bc1feb7eb6b315e7
    beforeRequestAppendInTransaction?: (args: { tx: DbTransaction }) => void;
    environment: EnvironmentRow;
    execution: ResolvedThreadExecutionOptions;
-@@ -235,6 +238,7 @@ export function appendThreadProvisionRequestInTransaction(
+@@ -240,6 +243,7 @@ export function appendThreadProvisionRequestInTransaction(
        environmentId: args.thread.environmentId,
        type: "client/turn/requested",
        input: args.input,
@@ -881,7 +912,7 @@ index b9a5b87e9bf4daa2008d14ce8cc40339dd0aa557..743586f7db6c8357bc1feb7eb6b315e7
        execution: args.execution,
        initiator,
        senderThreadId,
-@@ -242,8 +246,7 @@ export function appendThreadProvisionRequestInTransaction(
+@@ -247,8 +251,7 @@ export function appendThreadProvisionRequestInTransaction(
        source: "spawn",
        target,
        requestId: createClientTurnRequestId(),
@@ -891,47 +922,15 @@ index b9a5b87e9bf4daa2008d14ce8cc40339dd0aa557..743586f7db6c8357bc1feb7eb6b315e7
    recordAcceptedPromptHistoryEntry(
      { db: tx },
      {
-@@ -273,20 +276,25 @@ export function requestThreadProvision(
-   const senderThreadId = args.startedOnBehalfOf?.senderThreadId ?? null;
-   const target: TurnRequestTarget = { kind: "thread-start" };
-   const preappended = args.preappendedRequest;
--  const request = preappended === undefined
--    ? appendClientTurnEvent(deps, {
--        threadId: args.thread.id,
--        environmentId: args.thread.environmentId,
--        type: "client/turn/requested",
--        input: args.input,
--        execution: args.execution,
--        initiator,
--        senderThreadId,
--        requestMethod: "thread/start",
--        source: "spawn",
--        target,
--      })
--    : { requestId: preappended.clientRequestId, sequence: preappended.requestSequence };
-+  const request =
-+    preappended === undefined
-+      ? appendClientTurnEvent(deps, {
-+          threadId: args.thread.id,
-+          environmentId: args.thread.environmentId,
-+          type: "client/turn/requested",
-+          input: args.input,
-+          p6rMentionedTargets: args.p6rMentionedTargets,
-+          execution: args.execution,
-+          initiator,
-+          senderThreadId,
-+          requestMethod: "thread/start",
-+          source: "spawn",
-+          target,
-+        })
-+      : {
-+          requestId: preappended.clientRequestId,
-+          sequence: preappended.requestSequence,
-+        };
-   if (preappended !== undefined) {
-     deps.hub.notifyThread(
-       args.thread.id,
-@@ -374,6 +382,7 @@ function appendReprovisionTurnRequest(
+@@ -286,6 +289,7 @@ export function requestThreadProvision(
+             environmentId: args.thread.environmentId,
+             type: "client/turn/requested",
+             input: args.input,
++            p6rMentionedTargets: args.p6rMentionedTargets,
+             execution: args.execution,
+             initiator,
+             senderThreadId,
+@@ -397,6 +401,7 @@ function appendReprovisionTurnRequest(
              environmentId: args.environment.id,
              type: "client/turn/requested",
              input: args.input,
@@ -940,7 +939,7 @@ index b9a5b87e9bf4daa2008d14ce8cc40339dd0aa557..743586f7db6c8357bc1feb7eb6b315e7
                ? { inputGroups: args.inputGroups }
                : {}),
 diff --git a/apps/server/src/services/threads/thread-send.ts b/apps/server/src/services/threads/thread-send.ts
-index aaf1df243be3c62832edf8368aa9f8242631e4a6..3e3adc1c7f2a3bf1125d1c1bc8efb9267f93ab67 100644
+index 025876999fe8b4f2e44cb2230ebc2c187e635d6d..83bae6b6fef881fade1f37cc7ecc272ef98379bb 100644
 --- a/apps/server/src/services/threads/thread-send.ts
 +++ b/apps/server/src/services/threads/thread-send.ts
 @@ -1,3 +1,5 @@
@@ -949,7 +948,7 @@ index aaf1df243be3c62832edf8368aa9f8242631e4a6..3e3adc1c7f2a3bf1125d1c1bc8efb926
  import {
    getEnvironment,
    getThread,
-@@ -62,7 +64,7 @@ import {
+@@ -65,15 +67,13 @@ import {
    throwThreadNotWritable,
  } from "../lib/lifecycle-api-errors.js";
  import { validatePromptAttachmentReferences } from "../projects/attachments.js";
@@ -958,7 +957,15 @@ index aaf1df243be3c62832edf8368aa9f8242631e4a6..3e3adc1c7f2a3bf1125d1c1bc8efb926
  import { clearThreadContext } from "./thread-context-clear.js";
  import { withThreadSendGuard } from "./thread-context-mutation-guard.js";
  import {
-@@ -148,6 +150,7 @@ interface SendThreadMessageQueueRequest {
+   prependDeferredFirstTurnContext,
+   requireDeferredFirstTurnContextCurrent,
+   resolveDeferredFirstTurnContext,
+-  type GroupedPrompt,
+-  type PromptWithGroups,
+ } from "./deferred-first-turn-context.js";
+ import type { TelemetryEvent } from "../system/telemetry.js";
+ 
+@@ -154,6 +154,7 @@ interface SendThreadMessageQueueRequest {
  }
  
  interface AppendAndQueueSendThreadMessageArgs {
@@ -966,7 +973,49 @@ index aaf1df243be3c62832edf8368aa9f8242631e4a6..3e3adc1c7f2a3bf1125d1c1bc8efb926
    afterAppendInTransaction?: SendThreadMessageTransactionCommit;
    /** Retry provenance; absent for an original dispatch. */
    retryOf?: TurnRequestRetryMarker;
-@@ -349,6 +352,7 @@ function captureUserMessageSentTelemetry(
+@@ -333,41 +334,6 @@ export function formatAgentThreadInput(
+   });
+ }
+ 
+-export function appendPluginMentionContext(
+-  prompt: GroupedPrompt,
+-): Promise<GroupedPrompt>;
+-export function appendPluginMentionContext(
+-  prompt: PromptWithGroups,
+-): Promise<PromptWithGroups>;
+-export async function appendPluginMentionContext(
+-  prompt: PromptWithGroups,
+-): Promise<PromptWithGroups> {
+-  const pluginMentionContext = await resolvePluginMentionContextInputs(
+-    prompt.input,
+-  );
+-  if (pluginMentionContext.length === 0) {
+-    return prompt;
+-  }
+-  const inputGroups = prompt.inputGroups;
+-  return {
+-    input: [...prompt.input, ...pluginMentionContext],
+-    ...(inputGroups !== undefined
+-      ? {
+-          inputGroups:
+-            inputGroups.length > 0
+-              ? [
+-                  ...inputGroups.slice(0, -1),
+-                  [
+-                    ...inputGroups[inputGroups.length - 1]!,
+-                    ...pluginMentionContext,
+-                  ],
+-                ]
+-              : inputGroups,
+-        }
+-      : {}),
+-  };
+-}
+-
+ type UserMessageSentProperties = Extract<
+   TelemetryEvent,
+   { name: "user_message_sent" }
+@@ -392,6 +358,7 @@ export function captureUserMessageSentTelemetry(
  }
  
  function appendAndQueueSendThreadMessageInTransaction({
@@ -974,7 +1023,7 @@ index aaf1df243be3c62832edf8368aa9f8242631e4a6..3e3adc1c7f2a3bf1125d1c1bc8efb926
    afterAppendInTransaction,
    retryOf,
    beforeAppendInTransaction,
-@@ -377,6 +381,7 @@ function appendAndQueueSendThreadMessageInTransaction({
+@@ -420,6 +387,7 @@ function appendAndQueueSendThreadMessageInTransaction({
              type: "client/turn/requested",
              ...(retryOf !== undefined ? { retryOf } : {}),
              input,
@@ -982,11 +1031,14 @@ index aaf1df243be3c62832edf8368aa9f8242631e4a6..3e3adc1c7f2a3bf1125d1c1bc8efb926
              ...(inputGroups !== undefined ? { inputGroups } : {}),
              execution,
              initiator,
-@@ -470,7 +475,17 @@ async function sendThreadMessageWithoutContextClear(
+@@ -513,10 +481,27 @@ async function sendThreadMessageWithoutContextClear(
              senderThreadId,
            })
          : payload.input;
--  const pluginMentionContext = await resolvePluginMentionContextInputs(input);
+-  ({ input, inputGroups } = await appendPluginMentionContext({
+-    input,
+-    ...(inputGroups !== undefined ? { inputGroups } : {}),
+-  }));
 +  const { contextInputs: pluginMentionContext, targets: p6rMentionedTargets } =
 +    args.retryOf === undefined
 +      ? await resolvePluginMentionInputs(input)
@@ -998,10 +1050,20 @@ index aaf1df243be3c62832edf8368aa9f8242631e4a6..3e3adc1c7f2a3bf1125d1c1bc8efb926
 +            args.retryOf.requestId,
 +          ),
 +        };
-   if (pluginMentionContext.length > 0) {
-     input = [...input, ...pluginMentionContext];
-     if (inputGroups !== undefined && inputGroups.length > 0) {
-@@ -561,6 +576,7 @@ async function sendThreadMessageWithoutContextClear(
++  if (pluginMentionContext.length > 0) {
++    input = [...input, ...pluginMentionContext];
++    if (inputGroups !== undefined && inputGroups.length > 0) {
++      const lastGroup = inputGroups[inputGroups.length - 1]!;
++      inputGroups = [
++        ...inputGroups.slice(0, -1),
++        [...lastGroup, ...pluginMentionContext],
++      ];
++    }
++  }
+   const deferredFirstTurnContext = resolveDeferredFirstTurnContext(
+     deps.db,
+     thread.id,
+@@ -597,6 +582,7 @@ async function sendThreadMessageWithoutContextClear(
  
    if (
      await dispatchTurnDuringReprovision({
@@ -1009,7 +1071,7 @@ index aaf1df243be3c62832edf8368aa9f8242631e4a6..3e3adc1c7f2a3bf1125d1c1bc8efb926
        beforeRequestAppendInTransaction: beforeAppendInTransaction,
        deps,
        environment,
-@@ -633,6 +649,7 @@ async function sendThreadMessageWithoutContextClear(
+@@ -673,6 +659,7 @@ async function sendThreadMessageWithoutContextClear(
          }
        : await prepareReadyThreadTurnCommand(deps, commandArgs);
      const queuedRequest = appendAndQueueSendThreadMessageInTransaction({
@@ -1017,7 +1079,7 @@ index aaf1df243be3c62832edf8368aa9f8242631e4a6..3e3adc1c7f2a3bf1125d1c1bc8efb926
        afterAppendInTransaction,
        ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
        beforeAppendInTransaction: ({ tx }) => {
-@@ -670,10 +687,10 @@ async function sendThreadMessageWithoutContextClear(
+@@ -710,10 +697,10 @@ async function sendThreadMessageWithoutContextClear(
        thread,
      });
      deps.hub.notifyThread(
@@ -1032,18 +1094,7 @@ index aaf1df243be3c62832edf8368aa9f8242631e4a6..3e3adc1c7f2a3bf1125d1c1bc8efb926
      startLiveHostCommand(deps, {
        command: command.command,
        hostId: readyEnvironment.hostId,
-@@ -696,8 +713,8 @@ async function sendThreadMessageWithoutContextClear(
-       );
-     }
-     if (shouldCaptureUserMessageSent) {
--      captureUserMessageSentTelemetry(deps, thread);
--    }
-+    captureUserMessageSentTelemetry(deps, thread);
-+  }
-     return;
-   }
- 
-@@ -726,6 +743,7 @@ async function sendThreadMessageWithoutContextClear(
+@@ -770,6 +757,7 @@ async function sendThreadMessageWithoutContextClear(
      requestId,
    });
    const queuedRequest = appendAndQueueSendThreadMessageInTransaction({
@@ -1052,7 +1103,7 @@ index aaf1df243be3c62832edf8368aa9f8242631e4a6..3e3adc1c7f2a3bf1125d1c1bc8efb926
      ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
      beforeAppendInTransaction,
 diff --git a/apps/server/src/services/threads/thread-turn-dispatch.ts b/apps/server/src/services/threads/thread-turn-dispatch.ts
-index 186468fbb83746f0c228c3ea71bdf81c12fbf03f..fd0aa61ea1ca17d07a8d2a5bdd9437cdffda26d2 100644
+index 61ce97b0760f05cb0d9aac62aed16367476273af..163bdd6d44a3734f46e5552adcc8baf400b81438 100644
 --- a/apps/server/src/services/threads/thread-turn-dispatch.ts
 +++ b/apps/server/src/services/threads/thread-turn-dispatch.ts
 @@ -1,3 +1,4 @@
@@ -1070,7 +1121,7 @@ index 186468fbb83746f0c228c3ea71bdf81c12fbf03f..fd0aa61ea1ca17d07a8d2a5bdd9437cd
    environment: EnvironmentRow;
 @@ -76,6 +78,7 @@ export async function dispatchTurnDuringReprovision(
      }
-     const context = requestThreadTargetReprovision(args.deps, {
+     requestThreadTargetReprovision(args.deps, {
        beforeRequestAppendInTransaction: args.beforeRequestAppendInTransaction,
 +      p6rMentionedTargets: args.p6rMentionedTargets,
        environment: args.environment,
@@ -1622,13 +1673,14 @@ index 88dc269d9bc6a238bfc807500530724ecb1c2a22..6bd657717b50cabe2a49c51e490638ed
 +  });
 +});
 diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
-index b7a0cc877695fb830f28abf5aaaa16c53f04f9eb..aee3f33ee713e0da9578e22c0f976ba58adfc13e 100644
+index 5373d6b89f1eca82c325a9e1602bb6ad6264a0eb..2ae96a7bcedbea539cb7a45b2d13eb1e9b085fec 100644
 --- a/docs/api_to_audit.md
 +++ b/docs/api_to_audit.md
-@@ -2549,3 +2549,21 @@ describing it as merely too large.
-    boolean indicating whether a detail read can succeed.
- 3. Verify old persisted previews and mixed-version clients still receive a
-    deterministic state before making the field stable.
+@@ -2966,3 +2966,22 @@ same-id isolation and legacy override fallback,
+ asset-vs-glyph precedence, cross-plugin overrides, reload/error/recursion behavior,
+ accessibility and theme rendering on desktop and mobile. Keep metadata fetching
+ and plugin branding separate from provider artwork resolution.
++
 +## `PluginMentionProviderRegistration.resolve().experimental_target`
 +
 +Selects a person by issuer and subject from the resolver plugin's active P6R provider. The host derives the canonical key and current directory presentation, then freezes a mentioned target in the client request. A target is distinct from authorship. Retries reuse the retained target. Missing, ambiguous, foreign or retired provider evidence blocks the send.
@@ -1648,7 +1700,7 @@ index b7a0cc877695fb830f28abf5aaaa16c53f04f9eb..aee3f33ee713e0da9578e22c0f976ba5
 +revocation/deadlines, durable operation finality and exact request/tool linkage.
 +Ordinary native UI attribution and presence are separate capabilities.
 diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
-index c29366cac42b8b671c347db439a11c007cf32922..f4f37141a0144c26e2950b338f2144943d76c2bb 100644
+index 0fadaac607ed2ddf58700cb94afbeeabf1088827..7d28b221fa4b314868f7ff7d087e47a855d448c1 100644
 --- a/packages/db/src/data/events.ts
 +++ b/packages/db/src/data/events.ts
 @@ -736,6 +736,9 @@ export function appendDaemonEventsInTransaction(
@@ -1662,7 +1714,7 @@ index c29366cac42b8b671c347db439a11c007cf32922..f4f37141a0144c26e2950b338f214494
      return {
        acceptedEvents: [],
 diff --git a/packages/domain/src/change-kinds.ts b/packages/domain/src/change-kinds.ts
-index be10d423406d7c065dedd4817938a8ce1f4312f4..c6a24011cc39fc8d36922b7fef5558aa28539a13 100644
+index 85bfd9778761345665f61c82592c53b16f556c42..370ae55dd1b661808fc20f1a1668eb80ebe3ae3a 100644
 --- a/packages/domain/src/change-kinds.ts
 +++ b/packages/domain/src/change-kinds.ts
 @@ -14,6 +14,7 @@ export const THREAD_CHANGE_KINDS = [
@@ -1674,7 +1726,7 @@ index be10d423406d7c065dedd4817938a8ce1f4312f4..c6a24011cc39fc8d36922b7fef5558aa
    "interactions-changed",
    "status-changed",
 diff --git a/packages/domain/src/thread-events.ts b/packages/domain/src/thread-events.ts
-index 939675e4bb70dc89db535889ab2ca69d61e276ab..058e7911f938f9527a03000347ec932da833e16a 100644
+index 299f912a2da0efa1020bcf50780c8542ebbeab0a..b4733adfafaf556879b773b7e22b0f043d3a9f2a 100644
 --- a/packages/domain/src/thread-events.ts
 +++ b/packages/domain/src/thread-events.ts
 @@ -74,6 +74,33 @@ export type ClientTurnLifecycleEventData = z.infer<
@@ -1720,10 +1772,10 @@ index 939675e4bb70dc89db535889ab2ca69d61e276ab..058e7911f938f9527a03000347ec932d
    request: z.object({
      method: z.enum(["thread/start", "turn/start"]),
 diff --git a/packages/plugin-api-map/src/surfaces.ts b/packages/plugin-api-map/src/surfaces.ts
-index 188da2dc119daac3928d98b3724a19b798b96c1f..67e7550dad0154cd116ad8f3ff9beb194810472a 100644
+index cc5c20d354bf752699e0eed29bc6c1850493706f..fc446bdd2c7370e03a737507c7608a832002514e 100644
 --- a/packages/plugin-api-map/src/surfaces.ts
 +++ b/packages/plugin-api-map/src/surfaces.ts
-@@ -337,9 +337,11 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+@@ -339,9 +339,11 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
            "Answer each keystroke after the trigger with a list of items to show",
            "Claim one or more of the trigger characters @, #, $, !, and ~. Omit them to answer the default @",
            "Turn a picked item into a chip in the draft prompt, and send its content to the agent along with the message",
@@ -1735,15 +1787,15 @@ index 188da2dc119daac3928d98b3724a19b798b96c1f..67e7550dad0154cd116ad8f3ff9beb19
            "PluginMentionSearchContext",
            "PluginMentionItem",
          ],
-@@ -558,6 +560,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+@@ -567,6 +569,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
        {
          title: "Data & platform",
          surfaceIds: [
 +          "identity-provider",
            "storage",
            "bb-sdk",
-           "desktop-browsers",
-@@ -809,6 +812,18 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+           "thread-plugin-metadata",
+@@ -913,6 +916,18 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
          ],
          experimental: true,
        },
@@ -1763,10 +1815,10 @@ index 188da2dc119daac3928d98b3724a19b798b96c1f..67e7550dad0154cd116ad8f3ff9beb19
          id: "storage",
          tagline: "Namespaced KV plus your own SQLite",
 diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
-index 4b1413c3110143d36c11e427a377f1f1f59dc675..02b1db3f6d85cb3688ee5ca1cbc08e7c61532a7c 100644
+index d2cfb65130b0937d63473922328e7cc660c3c910..e47cc494a31782fd23b837b403e2d4f3f9d1fc9c 100644
 --- a/packages/plugin-sdk/src/backend-contract.ts
 +++ b/packages/plugin-sdk/src/backend-contract.ts
-@@ -1561,6 +1561,8 @@ export interface PluginMentionItem {
+@@ -1659,6 +1659,8 @@ export interface PluginMentionItem {
    icon?: string;
  }
  
@@ -1775,7 +1827,7 @@ index 4b1413c3110143d36c11e427a377f1f1f59dc675..02b1db3f6d85cb3688ee5ca1cbc08e7c
  export interface PluginMentionProviderRegistration {
    /** Unique within this plugin: [a-zA-Z0-9_-]+ (no ":" — the host composes
     * wire item ids as "<providerId>:<itemId>"). */
-@@ -1585,9 +1587,11 @@ export interface PluginMentionProviderRegistration {
+@@ -1683,9 +1685,11 @@ export interface PluginMentionProviderRegistration {
     * Resolves one picked item into agent context, called once per unique
     * item at message send time. The returned `context` is attached to the
     * message as an agent-visible (user-hidden) prompt input. Throwing blocks

@@ -1,16 +1,16 @@
-From f79c8e0f8f3b416b507472bdb6cc9e7440de3a3d Mon Sep 17 00:00:00 2001
+From f0f22b8278341ed0e743be937d5bee5d82c79aa9 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:56:03 +0200
-Subject: [PATCH 14/16] fix(tests): preserve deterministic downstream
+Subject: [PATCH 14/21] fix(tests): preserve deterministic downstream
  integration witnesses
 
 ---
  .../generate-bb-official-marketplace.ts       |  5 ++--
  ...blic-thread-context-clear-dispatch.test.ts |  4 +--
  .../thread-progress-native-facet.test.ts      |  6 ++---
- packages/sdk/src/realtime-client.ts           | 14 ++++++++--
+ packages/sdk/src/realtime-client.ts           |  9 ++++++-
  packages/sdk/test/realtime-client.test.ts     | 26 +++++++++++++++++++
- 5 files changed, 46 insertions(+), 9 deletions(-)
+ 5 files changed, 42 insertions(+), 8 deletions(-)
  create mode 100644 packages/sdk/test/realtime-client.test.ts
 
 diff --git a/apps/server/scripts/generate-bb-official-marketplace.ts b/apps/server/scripts/generate-bb-official-marketplace.ts
@@ -83,18 +83,18 @@ index 590adb6cfe542adfa760550ad817fccb77932516..01b48dc3b3d3a2b265696e9cce5ffd95
 +  }, 75_000);
  });
 diff --git a/packages/sdk/src/realtime-client.ts b/packages/sdk/src/realtime-client.ts
-index 7268e8ed434eb9187fffe263810f02f85583a019..ddc09544a21f58b1c1028e9449cabfb5f519bdb7 100644
+index a42ff2166ac33c2b8d2ccf797baf5cee70dcb178..119b5cea315bb692c70b34853ac22ecf7d9b8187 100644
 --- a/packages/sdk/src/realtime-client.ts
 +++ b/packages/sdk/src/realtime-client.ts
-@@ -129,8 +129,15 @@ function optionalTargetIdMatches(args: OptionalTargetIdMatchesArgs): boolean {
- }
- 
- export function wrapStandardWebsocket(socket: WebSocket): BbRealtimeSocket {
+@@ -130,8 +130,15 @@ export function createRealtimeSocketAdapter(socket: {
+   readonly readyState: number;
+   send(data: string): void;
+ }): BbRealtimeSocket {
 +  let closeRequested = false;
-   const adapter: BbRealtimeSocket = {
+   return {
 -    close: () => socket.close(),
 +    close: () => {
-+      if (closeRequested) {
++      if (closeRequested || socket.readyState > SOCKET_OPEN) {
 +        return;
 +      }
 +      closeRequested = true;
@@ -103,18 +103,6 @@ index 7268e8ed434eb9187fffe263810f02f85583a019..ddc09544a21f58b1c1028e9449cabfb5
      onclose: null,
      onerror: null,
      onmessage: null,
-@@ -142,7 +149,10 @@ export function wrapStandardWebsocket(socket: WebSocket): BbRealtimeSocket {
-   };
-   socket.onopen = () => adapter.onopen?.();
-   socket.onmessage = (event) => adapter.onmessage?.({ data: event.data });
--  socket.onclose = () => adapter.onclose?.();
-+  socket.onclose = () => {
-+    closeRequested = true;
-+    adapter.onclose?.();
-+  };
-   socket.onerror = () => adapter.onerror?.();
-   return adapter;
- }
 diff --git a/packages/sdk/test/realtime-client.test.ts b/packages/sdk/test/realtime-client.test.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..23ede341635cc2b2bbb9350181d2614de468da1e

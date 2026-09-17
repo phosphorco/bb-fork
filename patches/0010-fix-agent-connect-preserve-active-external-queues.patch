@@ -1,7 +1,7 @@
-From ae2446313309f41da3dddddf0b6421d2528d6c0f Mon Sep 17 00:00:00 2001
+From 81aa547f5861ec876d90ef9a8ab4593c73cbc55f Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
-Subject: [PATCH 10/16] fix(agent-connect): preserve active external queues
+Subject: [PATCH 10/21] fix(agent-connect): preserve active external queues
 
 ---
  .../src/services/p6r/native-acceptance.ts     |   7 +-
@@ -57,7 +57,7 @@ index bb006df44b12ff0ad8f4b7dc5b37c998b94778b5..d2e7bd0d293d4621d04b0401ac250fdf
      sourceIndex: 0,
      sourceKind: "contribution",
 diff --git a/apps/server/src/services/threads/queued-messages.ts b/apps/server/src/services/threads/queued-messages.ts
-index a456a266cc3882c75dce40bb5840605cf1e47df3..6b1327d8f5bb636d6128e08ff9a076796e0e5b2c 100644
+index 79f282c56197b46412a72fedf463a907702f9fd4..2500b689c2d035c14a9f87b464a6c9949e592a61 100644
 --- a/apps/server/src/services/threads/queued-messages.ts
 +++ b/apps/server/src/services/threads/queued-messages.ts
 @@ -1,4 +1,7 @@
@@ -69,7 +69,7 @@ index a456a266cc3882c75dce40bb5840605cf1e47df3..6b1327d8f5bb636d6128e08ff9a07679
  import {
    claimQueuedThreadMessageGroup,
    claimNextQueuedThreadMessageGroup,
-@@ -462,6 +465,12 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
+@@ -465,6 +468,12 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
    const queuedMessages = args.queuedMessages.map(toThreadQueuedMessage);
    const queuedMessage = queuedMessages[0]!;
  
@@ -82,9 +82,9 @@ index a456a266cc3882c75dce40bb5840605cf1e47df3..6b1327d8f5bb636d6128e08ff9a07679
    const senderThreadId = args.queuedMessages[0]!.senderThreadId;
    let inputGroups = args.queuedMessages.map((claimedQueuedMessage) =>
      formatQueuedMessageInputForSender({
-@@ -696,30 +705,32 @@ async function sendClaimedQueuedMessageForThread(
+@@ -699,30 +708,32 @@ async function sendClaimedQueuedMessageForThread(
    );
-   const input = groupedInputForRuntime(inputGroups);
+   const input = flattenPromptInputGroups(inputGroups);
    const lead = args.queuedMessages[0]!;
 -  const p6rReservation = p6rQueuedOperationReservation(deps.db, lead.id);
 -  const p6rQueuedInput =
@@ -134,7 +134,7 @@ index a456a266cc3882c75dce40bb5840605cf1e47df3..6b1327d8f5bb636d6128e08ff9a07679
        ? {}
        : {
            pendingStartCommit: ({ provision, tx }) => {
-@@ -727,35 +738,43 @@ async function sendClaimedQueuedMessageForThread(
+@@ -730,35 +741,43 @@ async function sendClaimedQueuedMessageForThread(
                tx,
                provision,
              );
@@ -203,7 +203,7 @@ index a456a266cc3882c75dce40bb5840605cf1e47df3..6b1327d8f5bb636d6128e08ff9a07679
          };
    const outcome = await attemptDispatch(deps, {
 diff --git a/apps/server/test/services/p6r/native-acceptance.test.ts b/apps/server/test/services/p6r/native-acceptance.test.ts
-index 93f47427ec6538c8a9f3048cc0f3f828ccbfbb14..d413168fdab022097eb4726de1160b59aaa9d48e 100644
+index e94af25a53392a0d43028851ede6f6c6d0b7f3f1..0c0390d4d9e6b6381b68ca5ceb5242ecd2696e25 100644
 --- a/apps/server/test/services/p6r/native-acceptance.test.ts
 +++ b/apps/server/test/services/p6r/native-acceptance.test.ts
 @@ -1,5 +1,7 @@
@@ -234,7 +234,7 @@ index 93f47427ec6538c8a9f3048cc0f3f828ccbfbb14..d413168fdab022097eb4726de1160b59
  import { listQueuedThreadCommands } from "../../helpers/commands.js";
  import {
    configuredAcpProvider,
-@@ -281,6 +291,396 @@ describe("P6r native acceptance", () => {
+@@ -283,6 +293,396 @@ describe("P6r native acceptance", () => {
      });
    });
  

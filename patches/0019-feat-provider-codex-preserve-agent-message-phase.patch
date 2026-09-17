@@ -1,28 +1,331 @@
-From 65393e292a8f9ebcee17fd97382fbcfae6c4b5ca Mon Sep 17 00:00:00 2001
+From 3226512737877b9f4dcdb64e052b75b5c279fe83 Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
-Date: Thu, 17 Sep 2026 03:17:18 +0200
-Subject: [PATCH] test(provider-parity): record Codex message phases
+Date: Wed, 16 Sep 2026 16:31:38 +0200
+Subject: [PATCH 19/21] feat(provider-codex): preserve agent message phase
 
 ---
- .../bridge\342\206\222runtime.current.ndjson" |  8 +++---
- .../bridge\342\206\222runtime.current.ndjson" |  8 +++---
- .../bridge\342\206\222runtime.current.ndjson" |  8 +++---
- .../bridge\342\206\222runtime.current.ndjson" | 28 +++++++++----------
- .../bridge\342\206\222runtime.current.ndjson" |  4 +--
- .../bridge\342\206\222runtime.current.ndjson" |  4 +--
- .../bridge\342\206\222runtime.current.ndjson" |  8 +++---
- .../bridge\342\206\222runtime.current.ndjson" |  8 +++---
- .../bridge\342\206\222runtime.current.ndjson" |  8 +++---
- .../bridge\342\206\222runtime.current.ndjson" | 28 +++++++++----------
- .../bridge\342\206\222runtime.current.ndjson" |  8 +++---
- .../bridge\342\206\222runtime.current.ndjson" |  8 +++---
- .../bridge\342\206\222runtime.current.ndjson" |  8 +++---
- .../bridge\342\206\222runtime.current.ndjson" |  4 +--
- .../bridge\342\206\222runtime.current.ndjson" |  4 +--
- 15 files changed, 72 insertions(+), 72 deletions(-)
+ .../test/public/public-thread-data.test.ts    | 142 ++++++++++++++++++
+ packages/domain/src/plugin-sdk-version.ts     |   2 +-
+ packages/domain/src/provider-event.ts         |   9 ++
+ .../domain/test/stored-thread-event.test.ts   |  70 +++++++++
+ packages/plugin-sdk/package.json              |   2 +-
+ .../bridge\342\206\222runtime.current.ndjson" |   8 +-
+ .../bridge\342\206\222runtime.current.ndjson" |   8 +-
+ .../bridge\342\206\222runtime.current.ndjson" |   8 +-
+ .../bridge\342\206\222runtime.current.ndjson" |  28 ++--
+ .../bridge\342\206\222runtime.current.ndjson" |   4 +-
+ .../bridge\342\206\222runtime.current.ndjson" |   4 +-
+ .../bridge\342\206\222runtime.current.ndjson" |   8 +-
+ .../bridge\342\206\222runtime.current.ndjson" |   8 +-
+ .../bridge\342\206\222runtime.current.ndjson" |   8 +-
+ .../bridge\342\206\222runtime.current.ndjson" |  28 ++--
+ .../bridge\342\206\222runtime.current.ndjson" |   8 +-
+ .../bridge\342\206\222runtime.current.ndjson" |   8 +-
+ .../bridge\342\206\222runtime.current.ndjson" |   8 +-
+ .../bridge\342\206\222runtime.current.ndjson" |   4 +-
+ .../bridge\342\206\222runtime.current.ndjson" |   4 +-
+ .../src/assembler/delta-assembler.test.ts     |  70 +++++++++
+ .../src/assembler/delta-assembler.ts          |  16 +-
+ .../provider-bridge-grammar.v2.snapshot.json  |   3 +-
+ .../src/thread-delta.test.ts                  |  28 ++++
+ .../src/thread-delta.ts                       |   7 +-
+ packages/sdk/test/sdk.test.ts                 | 103 +++++++++++++
+ .../src/delta-translation.test.ts             | 109 ++++++++++++++
+ .../provider-codex/src/delta-translation.ts   |   8 +-
+ plugins/provider-codex/src/schemas.ts         |   7 +
+ 29 files changed, 641 insertions(+), 79 deletions(-)
 
+diff --git a/apps/server/test/public/public-thread-data.test.ts b/apps/server/test/public/public-thread-data.test.ts
+index 6bab07a4e8baca8087405946a4f871c269a0aaa5..28d466e210b295241cdc176e0acf03c81cc6323d 100644
+--- a/apps/server/test/public/public-thread-data.test.ts
++++ b/apps/server/test/public/public-thread-data.test.ts
+@@ -25,6 +25,7 @@ import {
+ import {
+   encodeClientTurnRequestIdNumber,
+   turnRequestEventDataSchema,
++  threadEventRowSchema,
+   threadQueuedMessageSchema,
+   threadScope,
+   threadSchema,
+@@ -5088,6 +5089,147 @@ describe("public thread data routes", () => {
+     });
+   });
+ 
++  it("round-trips optional agent-message phase and causal identity through event list and wait", async () => {
++    await withTestHarness(async (harness) => {
++      const { environment, thread } = seedThreadFixture(harness);
++      const providerThreadId = "provider-phase-1";
++      const scope = turnScope("turn-phase-1");
++
++      seedEvent(harness.deps, {
++        threadId: thread.id,
++        environmentId: environment.id,
++        providerThreadId,
++        scope,
++        sequence: 1,
++        type: "item/completed",
++        data: {
++          item: { type: "agentMessage", id: "msg-legacy", text: "legacy" },
++        },
++      });
++      seedEvent(harness.deps, {
++        threadId: thread.id,
++        environmentId: environment.id,
++        providerThreadId,
++        scope,
++        sequence: 2,
++        type: "item/completed",
++        data: {
++          item: {
++            type: "agentMessage",
++            id: "msg-null",
++            text: "unknown",
++            phase: null,
++          },
++        },
++      });
++      seedEvent(harness.deps, {
++        threadId: thread.id,
++        environmentId: environment.id,
++        providerThreadId,
++        scope,
++        sequence: 3,
++        type: "item/completed",
++        data: {
++          item: {
++            type: "agentMessage",
++            id: "msg-final",
++            text: "final",
++            phase: "final_answer",
++          },
++        },
++      });
++      seedEvent(harness.deps, {
++        threadId: thread.id,
++        environmentId: environment.id,
++        providerThreadId,
++        scope,
++        sequence: 4,
++        type: "turn/completed",
++        data: { status: "completed" },
++      });
++
++      const listResponse = await harness.app.request(
++        `/api/v1/threads/${thread.id}/events?types=item%2Fcompleted%2Cturn%2Fcompleted&order=asc`,
++      );
++      expect(listResponse.status).toBe(200);
++      const listed = threadEventRowSchema
++        .array()
++        .parse(await readJson(listResponse));
++      expect(listed).toHaveLength(4);
++      expect(listed).toMatchObject([
++        {
++          seq: 1,
++          threadId: thread.id,
++          scope,
++          type: "item/completed",
++          data: {
++            providerThreadId,
++            item: { id: "msg-legacy", text: "legacy", type: "agentMessage" },
++          },
++        },
++        {
++          seq: 2,
++          threadId: thread.id,
++          scope,
++          type: "item/completed",
++          data: {
++            providerThreadId,
++            item: {
++              id: "msg-null",
++              phase: null,
++              text: "unknown",
++              type: "agentMessage",
++            },
++          },
++        },
++        {
++          seq: 3,
++          threadId: thread.id,
++          scope,
++          type: "item/completed",
++          data: {
++            providerThreadId,
++            item: {
++              id: "msg-final",
++              phase: "final_answer",
++              text: "final",
++              type: "agentMessage",
++            },
++          },
++        },
++        {
++          seq: 4,
++          threadId: thread.id,
++          scope,
++          type: "turn/completed",
++          data: { providerThreadId, status: "completed" },
++        },
++      ]);
++      expect(listed[0]?.data).not.toHaveProperty("item.phase");
++
++      const waitResponse = await harness.app.request(
++        `/api/v1/threads/${thread.id}/events/wait?type=item%2Fcompleted&afterSeq=2&waitMs=1000`,
++      );
++      expect(waitResponse.status).toBe(200);
++      const waited = threadEventRowSchema.parse(await readJson(waitResponse));
++      expect(waited).toMatchObject({
++        seq: 3,
++        threadId: thread.id,
++        scope,
++        type: "item/completed",
++        data: {
++          providerThreadId,
++          item: {
++            id: "msg-final",
++            phase: "final_answer",
++            text: "final",
++            type: "agentMessage",
++          },
++        },
++      });
++    });
++  });
++
+   it("rejects thread event list pages above the public limit", async () => {
+     await withTestHarness(async (harness) => {
+       const { environment, thread } = seedThreadFixture(harness);
+diff --git a/packages/domain/src/plugin-sdk-version.ts b/packages/domain/src/plugin-sdk-version.ts
+index de7f94ee19eab977d61d8d0522eb9b33245f93cc..8ce10095c075857806290483fa3f5c88201aaa53 100644
+--- a/packages/domain/src/plugin-sdk-version.ts
++++ b/packages/domain/src/plugin-sdk-version.ts
+@@ -1,3 +1,3 @@
+-export const PLUGIN_SDK_VERSION = "0.4.87";
++export const PLUGIN_SDK_VERSION = "0.4.98";
+ 
+ export const PLUGIN_SDK_MAJOR = Number(PLUGIN_SDK_VERSION.split(".", 1)[0]);
+diff --git a/packages/domain/src/provider-event.ts b/packages/domain/src/provider-event.ts
+index 837161699a71694780bdd78778a84920d40d3e2c..a14799e095066f19e6218cf90a8f5cfc525d64d4 100644
+--- a/packages/domain/src/provider-event.ts
++++ b/packages/domain/src/provider-event.ts
+@@ -372,6 +372,14 @@ export type ThreadEventBackgroundTaskItem = z.infer<
+   typeof threadEventBackgroundTaskItemSchema
+ >;
+ 
++export const threadEventAgentMessagePhaseSchema = z.enum([
++  "commentary",
++  "final_answer",
++]);
++export type ThreadEventAgentMessagePhase = z.infer<
++  typeof threadEventAgentMessagePhaseSchema
++>;
++
+ export const threadEventItemSchema = z.discriminatedUnion("type", [
+   z
+     .object({
+@@ -386,6 +394,7 @@ export const threadEventItemSchema = z.discriminatedUnion("type", [
+     type: z.literal("agentMessage"),
+     id: z.string(),
+     text: z.string(),
++    phase: threadEventAgentMessagePhaseSchema.nullable().optional(),
+     ...itemPresentationField,
+     parentToolCallId: z.string().optional(),
+   }),
+diff --git a/packages/domain/test/stored-thread-event.test.ts b/packages/domain/test/stored-thread-event.test.ts
+index d6800edc7b0e3b3cfdc5c866a345f26cc03d58e3..ffa5e4a658913c683e58acde0cc9c50428f4cba4 100644
+--- a/packages/domain/test/stored-thread-event.test.ts
++++ b/packages/domain/test/stored-thread-event.test.ts
+@@ -155,6 +155,76 @@ describe("parseStoredThreadEvent", () => {
+     expect(event).not.toHaveProperty("turnId");
+   });
+ 
++  it("round-trips agent-message phase with its causal identity and preserves legacy absence", () => {
++    const data = {
++      providerThreadId: "provider-1",
++      item: {
++        type: "agentMessage",
++        id: "assistant-1",
++        text: "final",
++        phase: "final_answer",
++      },
++    } as const;
++    const event = parseStoredThreadEvent({
++      type: "item/completed",
++      threadId: "thread-1",
++      providerThreadId: "provider-1",
++      scope: turnScope("turn-1"),
++      data,
++    });
++    expect(event).toMatchObject({
++      type: "item/completed",
++      threadId: "thread-1",
++      providerThreadId: "provider-1",
++      scope: turnScope("turn-1"),
++      item: {
++        type: "agentMessage",
++        id: "assistant-1",
++        phase: "final_answer",
++      },
++    });
++    expect(
++      parseThreadEventRow({
++        id: "event-1",
++        type: "item/completed",
++        threadId: "thread-1",
++        seq: 1,
++        createdAt: 1,
++        scope: turnScope("turn-1"),
++        data,
++      }),
++    ).toMatchObject({
++      data: {
++        providerThreadId: "provider-1",
++        item: {
++          id: "assistant-1",
++          phase: "final_answer",
++        },
++      },
++    });
++
++    const legacy = parseStoredThreadEvent({
++      type: "item/completed",
++      threadId: "thread-1",
++      providerThreadId: "provider-1",
++      scope: turnScope("turn-1"),
++      data: {
++        item: {
++          type: "agentMessage",
++          id: "assistant-legacy",
++          text: "legacy",
++        },
++      },
++    });
++    expect(legacy).toMatchObject({ type: "item/completed" });
++    if (
++      legacy.type === "item/completed" &&
++      legacy.item.type === "agentMessage"
++    ) {
++      expect(legacy.item).not.toHaveProperty("phase");
++    }
++  });
++
+   it("keeps host connection loss compatible with legacy interruption readers", () => {
+     const data = {
+       reason: "host-daemon-restarted",
+diff --git a/packages/plugin-sdk/package.json b/packages/plugin-sdk/package.json
+index 5d05bc1ab230cc3b2e51a39cc71889f8a1ec7f62..a5b9925a0249e2b7b94999f53cdd1df154f3454f 100644
+--- a/packages/plugin-sdk/package.json
++++ b/packages/plugin-sdk/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "@get-bb/plugin-sdk",
+-  "version": "0.4.87",
++  "version": "0.4.98",
+   "homepage": "https://github.com/get-bb/bb#readme",
+   "bugs": {
+     "url": "https://github.com/get-bb/bb/issues"
 diff --git "a/packages/provider-bridge-protocol/recordings/codex/approval-allow/bridge\342\206\222runtime.current.ndjson" "b/packages/provider-bridge-protocol/recordings/codex/approval-allow/bridge\342\206\222runtime.current.ndjson"
-index 8ee7eec87..a5494ab4a 100644
+index 8ee7eec8740a74cf83e75f8f3ac73175b89658fb..a5494ab4ac42e9abdfb8f1f11966aca3b268a73f 100644
 --- "a/packages/provider-bridge-protocol/recordings/codex/approval-allow/bridge\342\206\222runtime.current.ndjson"
 +++ "b/packages/provider-bridge-protocol/recordings/codex/approval-allow/bridge\342\206\222runtime.current.ndjson"
 @@ -4,7 +4,7 @@
@@ -54,7 +357,7 @@ index 8ee7eec87..a5494ab4a 100644
  {"ts":1787275685812,"run":1787275684670,"seq":22.741935483870968,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_adx74f9u2b\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787275685813,"run":1787275684670,"seq":22.774193548387096,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_adx74f9u2b\",\"deltas\":[{\"kind\":\"turn.boundary\",\"providerTurnId\":\"01a021ee-afb1-7ab3-8c1c-7ca6c06dca6b\",\"status\":\"completed\",\"providerCheckpointId\":\"01a021ee-afb1-7ab3-8c1c-7ca6c06dca6b\"}]}}"}
 diff --git "a/packages/provider-bridge-protocol/recordings/codex/approval-deny/bridge\342\206\222runtime.current.ndjson" "b/packages/provider-bridge-protocol/recordings/codex/approval-deny/bridge\342\206\222runtime.current.ndjson"
-index 7f32657e9..a57a0b7b0 100644
+index 7f32657e9a064d3e40062709dfabcf6719486416..a57a0b7b06db5493de44a8cb6ddee84ba51e33db 100644
 --- "a/packages/provider-bridge-protocol/recordings/codex/approval-deny/bridge\342\206\222runtime.current.ndjson"
 +++ "b/packages/provider-bridge-protocol/recordings/codex/approval-deny/bridge\342\206\222runtime.current.ndjson"
 @@ -4,7 +4,7 @@
@@ -88,7 +391,7 @@ index 7f32657e9..a57a0b7b0 100644
  {"ts":1787275884526,"run":1787275883591,"seq":22.771428571428572,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_u2tfvkng98\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787275884527,"run":1787275883591,"seq":22.8,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_u2tfvkng98\",\"deltas\":[{\"kind\":\"turn.boundary\",\"providerTurnId\":\"01a021f1-b7dd-7a10-b8ed-ecc5cb9cbeb7\",\"status\":\"completed\",\"providerCheckpointId\":\"01a021f1-b7dd-7a10-b8ed-ecc5cb9cbeb7\"}]}}"}
 diff --git "a/packages/provider-bridge-protocol/recordings/codex/archived-resume/bridge\342\206\222runtime.current.ndjson" "b/packages/provider-bridge-protocol/recordings/codex/archived-resume/bridge\342\206\222runtime.current.ndjson"
-index af33b3736..a6b8e0c75 100644
+index af33b373615b6e4169434a77c246f2ba7280d79c..a6b8e0c75c2c2d6c73406aa6850c5d9dd97ebd90 100644
 --- "a/packages/provider-bridge-protocol/recordings/codex/archived-resume/bridge\342\206\222runtime.current.ndjson"
 +++ "b/packages/provider-bridge-protocol/recordings/codex/archived-resume/bridge\342\206\222runtime.current.ndjson"
 @@ -4,9 +4,9 @@
@@ -116,7 +419,7 @@ index af33b3736..a6b8e0c75 100644
  {"ts":1787279638517,"run":1787279634396,"seq":49.21875,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_7ez8wtw5bq\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787279638518,"run":1787279634396,"seq":49.25,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_7ez8wtw5bq\",\"deltas\":[{\"kind\":\"turn.boundary\",\"providerTurnId\":\"01a0222a-fffe-79a2-b90c-c2694609e669\",\"status\":\"completed\",\"providerCheckpointId\":\"01a0222a-fffe-79a2-b90c-c2694609e669\"}]}}"}
 diff --git "a/packages/provider-bridge-protocol/recordings/codex/compaction/bridge\342\206\222runtime.current.ndjson" "b/packages/provider-bridge-protocol/recordings/codex/compaction/bridge\342\206\222runtime.current.ndjson"
-index 02f764853..c26563f8b 100644
+index 02f764853c06177e57e7786eef70316112c201ea..c26563f8b76a97712eea19cbe000e2fb5b591e3f 100644
 --- "a/packages/provider-bridge-protocol/recordings/codex/compaction/bridge\342\206\222runtime.current.ndjson"
 +++ "b/packages/provider-bridge-protocol/recordings/codex/compaction/bridge\342\206\222runtime.current.ndjson"
 @@ -6,46 +6,46 @@
@@ -202,7 +505,7 @@ index 02f764853..c26563f8b 100644
  {"ts":1787275110839,"run":1787275083748,"seq":114.42045454545455,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_9q2wgzsbad\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787275110840,"run":1787275083748,"seq":114.43181818181819,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_9q2wgzsbad\",\"deltas\":[{\"kind\":\"turn.boundary\",\"providerTurnId\":\"01a021e5-8334-74f2-8afc-75ee97e98d52\",\"status\":\"completed\",\"providerCheckpointId\":\"01a021e5-8334-74f2-8afc-75ee97e98d52\"}]}}"}
 diff --git "a/packages/provider-bridge-protocol/recordings/codex/empty-rollout/bridge\342\206\222runtime.current.ndjson" "b/packages/provider-bridge-protocol/recordings/codex/empty-rollout/bridge\342\206\222runtime.current.ndjson"
-index 8aab24a5e..b806403f4 100644
+index 8aab24a5eead70d32c5284354d24a6cd0de3eb9b..b806403f4c122bd5dd807a352f81ff949a0e823a 100644
 --- "a/packages/provider-bridge-protocol/recordings/codex/empty-rollout/bridge\342\206\222runtime.current.ndjson"
 +++ "b/packages/provider-bridge-protocol/recordings/codex/empty-rollout/bridge\342\206\222runtime.current.ndjson"
 @@ -4,9 +4,9 @@
@@ -218,7 +521,7 @@ index 8aab24a5e..b806403f4 100644
  {"ts":1787279661073,"run":1787279658214,"seq":22.38888888888889,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_es6zgj4gt7\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787279661074,"run":1787279658214,"seq":22.444444444444443,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_es6zgj4gt7\",\"deltas\":[{\"kind\":\"turn.boundary\",\"providerTurnId\":\"01a0222b-580e-7103-8e01-e8384b87a417\",\"status\":\"completed\",\"providerCheckpointId\":\"01a0222b-580e-7103-8e01-e8384b87a417\"}]}}"}
 diff --git "a/packages/provider-bridge-protocol/recordings/codex/fork/bridge\342\206\222runtime.current.ndjson" "b/packages/provider-bridge-protocol/recordings/codex/fork/bridge\342\206\222runtime.current.ndjson"
-index 9f82533e3..3872cb013 100644
+index 9f82533e3a37b469a595bd84bd24677fab7677ae..3872cb0131087a99d6ffd11ac8a1b5ed8b3cb697 100644
 --- "a/packages/provider-bridge-protocol/recordings/codex/fork/bridge\342\206\222runtime.current.ndjson"
 +++ "b/packages/provider-bridge-protocol/recordings/codex/fork/bridge\342\206\222runtime.current.ndjson"
 @@ -5,9 +5,9 @@
@@ -234,7 +537,7 @@ index 9f82533e3..3872cb013 100644
  {"ts":1787277411223,"run":1787277410150,"seq":23.4375,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_rciv6va95h\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787277411224,"run":1787277410150,"seq":23.5,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_rciv6va95h\",\"deltas\":[{\"kind\":\"turn.boundary\",\"providerTurnId\":\"01a02209-0394-7da3-a25a-f6bd7ecc3f70\",\"status\":\"completed\",\"providerCheckpointId\":\"01a02209-0394-7da3-a25a-f6bd7ecc3f70\"}]}}"}
 diff --git "a/packages/provider-bridge-protocol/recordings/codex/missing-rollout/bridge\342\206\222runtime.current.ndjson" "b/packages/provider-bridge-protocol/recordings/codex/missing-rollout/bridge\342\206\222runtime.current.ndjson"
-index 417052066..a0dc5c0f8 100644
+index 417052066ff32679ae5f383de5cef78a4149b417..a0dc5c0f86158954bd6d59a89c914cadbeb8cfe6 100644
 --- "a/packages/provider-bridge-protocol/recordings/codex/missing-rollout/bridge\342\206\222runtime.current.ndjson"
 +++ "b/packages/provider-bridge-protocol/recordings/codex/missing-rollout/bridge\342\206\222runtime.current.ndjson"
 @@ -4,9 +4,9 @@
@@ -262,7 +565,7 @@ index 417052066..a0dc5c0f8 100644
  {"ts":1787279566306,"run":1787279565372,"seq":25.21875,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_8f3zprb65y\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787279566307,"run":1787279565372,"seq":25.25,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_8f3zprb65y\",\"deltas\":[{\"kind\":\"turn.boundary\",\"providerTurnId\":\"01a02229-e5de-7212-a78c-f204f0f9e44c\",\"status\":\"completed\",\"providerCheckpointId\":\"01a02229-e5de-7212-a78c-f204f0f9e44c\"}]}}"}
 diff --git "a/packages/provider-bridge-protocol/recordings/codex/plan-mode/bridge\342\206\222runtime.current.ndjson" "b/packages/provider-bridge-protocol/recordings/codex/plan-mode/bridge\342\206\222runtime.current.ndjson"
-index 74b032694..c2b5742bd 100644
+index 74b032694681cf4851095b1bbc0ad5ae0eddd773..c2b5742bd796e30a9602cc1a2ed7df451273e2e6 100644
 --- "a/packages/provider-bridge-protocol/recordings/codex/plan-mode/bridge\342\206\222runtime.current.ndjson"
 +++ "b/packages/provider-bridge-protocol/recordings/codex/plan-mode/bridge\342\206\222runtime.current.ndjson"
 @@ -4,9 +4,9 @@
@@ -296,7 +599,7 @@ index 74b032694..c2b5742bd 100644
  {"ts":1787278458435,"run":1787277945526,"seq":52.6875,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_56ht4kz54q\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787278458436,"run":1787277945526,"seq":52.708333333333336,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_56ht4kz54q\",\"deltas\":[{\"kind\":\"turn.boundary\",\"providerTurnId\":\"01a02218-fe5f-7222-85ce-ae82a6b30f6c\",\"status\":\"completed\",\"providerCheckpointId\":\"01a02218-fe5f-7222-85ce-ae82a6b30f6c\"}]}}"}
 diff --git "a/packages/provider-bridge-protocol/recordings/codex/resume/bridge\342\206\222runtime.current.ndjson" "b/packages/provider-bridge-protocol/recordings/codex/resume/bridge\342\206\222runtime.current.ndjson"
-index 3bc72901b..811a4321d 100644
+index 3bc72901b6cdcb981fbe0997fd6afc061cd6ae4e..811a4321dc7b1364cf56c9e057503e561438fd4c 100644
 --- "a/packages/provider-bridge-protocol/recordings/codex/resume/bridge\342\206\222runtime.current.ndjson"
 +++ "b/packages/provider-bridge-protocol/recordings/codex/resume/bridge\342\206\222runtime.current.ndjson"
 @@ -4,9 +4,9 @@
@@ -324,7 +627,7 @@ index 3bc72901b..811a4321d 100644
  {"ts":1787277391098,"run":1787277389971,"seq":25.24137931034483,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_rsjqcswyh2\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787277391099,"run":1787277389971,"seq":25.275862068965516,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_rsjqcswyh2\",\"deltas\":[{\"kind\":\"turn.boundary\",\"providerTurnId\":\"01a02208-b4f8-73e3-ae6c-7231a43e3974\",\"status\":\"completed\",\"providerCheckpointId\":\"01a02208-b4f8-73e3-ae6c-7231a43e3974\"}]}}"}
 diff --git "a/packages/provider-bridge-protocol/recordings/codex/steer/bridge\342\206\222runtime.current.ndjson" "b/packages/provider-bridge-protocol/recordings/codex/steer/bridge\342\206\222runtime.current.ndjson"
-index 02f764853..c26563f8b 100644
+index 02f764853c06177e57e7786eef70316112c201ea..c26563f8b76a97712eea19cbe000e2fb5b591e3f 100644
 --- "a/packages/provider-bridge-protocol/recordings/codex/steer/bridge\342\206\222runtime.current.ndjson"
 +++ "b/packages/provider-bridge-protocol/recordings/codex/steer/bridge\342\206\222runtime.current.ndjson"
 @@ -6,46 +6,46 @@
@@ -410,7 +713,7 @@ index 02f764853..c26563f8b 100644
  {"ts":1787275110839,"run":1787275083748,"seq":114.42045454545455,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_9q2wgzsbad\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787275110840,"run":1787275083748,"seq":114.43181818181819,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_9q2wgzsbad\",\"deltas\":[{\"kind\":\"turn.boundary\",\"providerTurnId\":\"01a021e5-8334-74f2-8afc-75ee97e98d52\",\"status\":\"completed\",\"providerCheckpointId\":\"01a021e5-8334-74f2-8afc-75ee97e98d52\"}]}}"}
 diff --git "a/packages/provider-bridge-protocol/recordings/codex/stop-interrupt/bridge\342\206\222runtime.current.ndjson" "b/packages/provider-bridge-protocol/recordings/codex/stop-interrupt/bridge\342\206\222runtime.current.ndjson"
-index f8f24d10a..ce518dcd1 100644
+index f8f24d10add3d57879db0a7bb824ccf8261c19b3..ce518dcd1b2346b1652761eb45ceff96bb07cbbc 100644
 --- "a/packages/provider-bridge-protocol/recordings/codex/stop-interrupt/bridge\342\206\222runtime.current.ndjson"
 +++ "b/packages/provider-bridge-protocol/recordings/codex/stop-interrupt/bridge\342\206\222runtime.current.ndjson"
 @@ -4,14 +4,14 @@
@@ -443,7 +746,7 @@ index f8f24d10a..ce518dcd1 100644
  {"ts":1787275187019,"run":1787275186125,"seq":23.228571428571428,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_96xaqmfm8x\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787275187020,"run":1787275186125,"seq":23.257142857142856,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_96xaqmfm8x\",\"deltas\":[{\"kind\":\"turn.boundary\",\"providerTurnId\":\"01a021e7-1347-7270-b947-537050c6e73e\",\"status\":\"completed\",\"providerCheckpointId\":\"01a021e7-1347-7270-b947-537050c6e73e\"}]}}"}
 diff --git "a/packages/provider-bridge-protocol/recordings/codex/subagent/bridge\342\206\222runtime.current.ndjson" "b/packages/provider-bridge-protocol/recordings/codex/subagent/bridge\342\206\222runtime.current.ndjson"
-index ed7f5a884..480d7c2df 100644
+index ed7f5a88418d0e15530f683d59850862b312b4b7..480d7c2df22a1955090ac698019c4980dec5c189 100644
 --- "a/packages/provider-bridge-protocol/recordings/codex/subagent/bridge\342\206\222runtime.current.ndjson"
 +++ "b/packages/provider-bridge-protocol/recordings/codex/subagent/bridge\342\206\222runtime.current.ndjson"
 @@ -17,22 +17,22 @@
@@ -474,7 +777,7 @@ index ed7f5a884..480d7c2df 100644
  {"ts":1787277335505,"run":1787277334175,"seq":22.804878048780488,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_9fdxpp588k\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787277335506,"run":1787277334175,"seq":22.829268292682926,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_9fdxpp588k\",\"deltas\":[{\"kind\":\"turn.boundary\",\"providerTurnId\":\"01a02207-dbb5-7da3-8b29-b9d7e7e9f59f\",\"status\":\"completed\",\"providerCheckpointId\":\"01a02207-dbb5-7da3-8b29-b9d7e7e9f59f\"}]}}"}
 diff --git "a/packages/provider-bridge-protocol/recordings/codex/turn-tools/bridge\342\206\222runtime.current.ndjson" "b/packages/provider-bridge-protocol/recordings/codex/turn-tools/bridge\342\206\222runtime.current.ndjson"
-index 71a7c54f0..e2cf6d259 100644
+index 71a7c54f00af1758236856dc196bde2ffb87cd09..e2cf6d259eb8af9440e8c846f8c5609302333ea3 100644
 --- "a/packages/provider-bridge-protocol/recordings/codex/turn-tools/bridge\342\206\222runtime.current.ndjson"
 +++ "b/packages/provider-bridge-protocol/recordings/codex/turn-tools/bridge\342\206\222runtime.current.ndjson"
 @@ -4,7 +4,7 @@
@@ -508,7 +811,7 @@ index 71a7c54f0..e2cf6d259 100644
  {"ts":1787275050799,"run":1787275049875,"seq":22.816326530612244,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_svpp9yrm7p\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787275050800,"run":1787275049875,"seq":22.836734693877553,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_svpp9yrm7p\",\"deltas\":[{\"kind\":\"turn.diff\",\"diff\":\"diff --git a/math.js b/math.js\\nindex 8440c1ca01d1d48d4e1c118dfff922e9995cd39d..6de567f09a07235b90a27c0a73e8aae5f8799b11\\n--- a/math.js\\n+++ b/math.js\\n@@ -2,6 +2,10 @@\\n   return a + b;\\n }\\n \\n+export function subtract(a, b) {\\n+  return a - b;\\n+}\\n+\\n \\n export function subtract(a, b) {\\n   return a - b;\\n\",\"providerTurnId\":\"01a021e4-ff0a-7bf3-8023-962ba8347adf\"}]}}"}
 diff --git "a/packages/provider-bridge-protocol/recordings/codex/user-question/bridge\342\206\222runtime.current.ndjson" "b/packages/provider-bridge-protocol/recordings/codex/user-question/bridge\342\206\222runtime.current.ndjson"
-index 84905e356..1be5ed8ee 100644
+index 84905e356316866d227f6837f42ffbf43c4d69b1..1be5ed8eed3c0dfc1daf05c9dbc9fa967719be2d 100644
 --- "a/packages/provider-bridge-protocol/recordings/codex/user-question/bridge\342\206\222runtime.current.ndjson"
 +++ "b/packages/provider-bridge-protocol/recordings/codex/user-question/bridge\342\206\222runtime.current.ndjson"
 @@ -11,9 +11,9 @@
@@ -524,7 +827,7 @@ index 84905e356..1be5ed8ee 100644
  {"ts":1787277299052,"run":1787277296501,"seq":22.636363636363637,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_mezuckuy25\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787277299053,"run":1787277296501,"seq":22.681818181818183,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_mezuckuy25\",\"deltas\":[{\"kind\":\"turn.boundary\",\"providerTurnId\":\"01a02207-4d67-7043-b29f-4e979afe8abc\",\"status\":\"completed\",\"providerCheckpointId\":\"01a02207-4d67-7043-b29f-4e979afe8abc\"}]}}"}
 diff --git "a/packages/provider-bridge-protocol/recordings/codex/web-search/bridge\342\206\222runtime.current.ndjson" "b/packages/provider-bridge-protocol/recordings/codex/web-search/bridge\342\206\222runtime.current.ndjson"
-index 1202aa057..af4877a43 100644
+index 1202aa0570a92162123b476b802e2495f3e9d116..af4877a43c0c53a939ceb175bc360f14037a97ae 100644
 --- "a/packages/provider-bridge-protocol/recordings/codex/web-search/bridge\342\206\222runtime.current.ndjson"
 +++ "b/packages/provider-bridge-protocol/recordings/codex/web-search/bridge\342\206\222runtime.current.ndjson"
 @@ -9,9 +9,9 @@
@@ -539,6 +842,483 @@ index 1202aa057..af4877a43 100644
  {"ts":1787279446058,"run":1787279443667,"seq":22.57894736842105,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_kbyc2f5ivt\",\"deltas\":[{\"kind\":\"usage\",\"total\":{\"totalTokens\":44636,\"inputTokens\":44504,\"cachedInputTokens\":20224,\"outputTokens\":132,\"reasoningOutputTokens\":78},\"last\":{\"totalTokens\":24147,\"inputTokens\":24142,\"cachedInputTokens\":20224,\"outputTokens\":5,\"reasoningOutputTokens\":0},\"modelContextWindow\":258400,\"providerTurnId\":\"01a02228-1024-7680-bd98-b1dd3fd15eeb\"},{\"kind\":\"contextWindow\",\"used\":24147,\"size\":258400,\"estimated\":false,\"attach\":\"currentOrLast\",\"providerTurnId\":\"01a02228-1024-7680-bd98-b1dd3fd15eeb\"}]}}"}
  {"ts":1787279446059,"run":1787279443667,"seq":22.63157894736842,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_kbyc2f5ivt\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787279446060,"run":1787279443667,"seq":22.68421052631579,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_kbyc2f5ivt\",\"deltas\":[{\"kind\":\"turn.boundary\",\"providerTurnId\":\"01a02228-1024-7680-bd98-b1dd3fd15eeb\",\"status\":\"completed\",\"providerCheckpointId\":\"01a02228-1024-7680-bd98-b1dd3fd15eeb\"}]}}"}
+diff --git a/packages/provider-bridge-protocol/src/assembler/delta-assembler.test.ts b/packages/provider-bridge-protocol/src/assembler/delta-assembler.test.ts
+index 2e9d216771dab8de387329261d97efe66515a649..cbaa7e9bee4ab0f7216d58f6a43d7d30cbd4c53b 100644
+--- a/packages/provider-bridge-protocol/src/assembler/delta-assembler.test.ts
++++ b/packages/provider-bridge-protocol/src/assembler/delta-assembler.test.ts
+@@ -1187,6 +1187,76 @@ describe("delta assembler unified streaming dialect", () => {
+       : undefined;
+   }
+ 
++  it("preserves agent-message phase through open, close, and streamed settlement", () => {
++    const assembler = createAssembler();
++    assemble(assembler, { kind: "turn.open" });
++    const opened = itemOf(
++      assemble(assembler, {
++        kind: "item.open",
++        key: { providerItemId: "interim-1" },
++        item: {
++          type: "agentMessage",
++          text: "interim",
++          phase: "commentary",
++        },
++      })[0],
++    );
++    expect(opened).toMatchObject({
++      type: "agentMessage",
++      phase: "commentary",
++    });
++    const closed = itemOf(
++      assemble(assembler, {
++        kind: "item.close",
++        key: { providerItemId: "interim-1" },
++        status: "completed",
++        item: {
++          type: "agentMessage",
++          text: "interim",
++          phase: "commentary",
++        },
++      })[0],
++    );
++    expect(closed).toMatchObject({
++      type: "agentMessage",
++      id: opened?.id,
++      phase: "commentary",
++    });
++
++    const streamed = itemOf(
++      assemble(assembler, {
++        kind: "item.open",
++        key: { providerItemId: "final-1" },
++        item: {
++          type: "agentMessage",
++          text: "",
++          phase: "final_answer",
++        },
++      })[0],
++    );
++    assemble(assembler, {
++      kind: "item.textDelta",
++      key: { providerItemId: "final-1" },
++      channel: "agentMessage",
++      text: "final",
++    });
++    const settled = itemOf(
++      assemble(assembler, {
++        kind: "item.textClose",
++        key: { providerItemId: "final-1" },
++        channel: "agentMessage",
++      })[0],
++    );
++    expect(settled).toEqual(
++      expect.objectContaining({
++        type: "agentMessage",
++        id: streamed?.id,
++        text: "final",
++        phase: "final_answer",
++      }),
++    );
++  });
++
+   it("synthesizes item/started for an anonymous stream and settles it from the accumulated text", () => {
+     const assembler = createAssembler();
+     assemble(assembler, { kind: "turn.open" });
+diff --git a/packages/provider-bridge-protocol/src/assembler/delta-assembler.ts b/packages/provider-bridge-protocol/src/assembler/delta-assembler.ts
+index 2db5465b0627e6690b2c751df27e117ff9ec8805..f5c227ced4088b58addefca928a97ef48c9019a2 100644
+--- a/packages/provider-bridge-protocol/src/assembler/delta-assembler.ts
++++ b/packages/provider-bridge-protocol/src/assembler/delta-assembler.ts
+@@ -762,7 +762,12 @@ export function createDeltaAssembler(
+         );
+       case "agentMessage":
+         return withParentToolCallId(
+-          { type: "agentMessage", id: bbItemId, text: shape.text },
++          {
++            type: "agentMessage",
++            id: bbItemId,
++            text: shape.text,
++            ...(shape.phase === undefined ? {} : { phase: shape.phase }),
++          },
+           parentToolCallId,
+         );
+       case "reasoning":
+@@ -1161,7 +1166,14 @@ export function createDeltaAssembler(
+       case "agentMessage":
+         return withPresentation(
+           withParentToolCallId(
+-            { type: "agentMessage", id: open.bbItemId, text },
++            {
++              type: "agentMessage",
++              id: open.bbItemId,
++              text,
++              ...(open.item.phase === undefined
++                ? {}
++                : { phase: open.item.phase }),
++            },
+             open.item.parentToolCallId,
+           ),
+           open.item.presentation,
+diff --git a/packages/provider-bridge-protocol/src/contract-tests/provider-bridge-grammar.v2.snapshot.json b/packages/provider-bridge-protocol/src/contract-tests/provider-bridge-grammar.v2.snapshot.json
+index da96e35c5f85f73a8717fc3cd876af46ef4cf2ab..6a9d6130689d6ec6fb761ba3dcf92e15b335aefe 100644
+--- a/packages/provider-bridge-protocol/src/contract-tests/provider-bridge-grammar.v2.snapshot.json
++++ b/packages/provider-bridge-protocol/src/contract-tests/provider-bridge-grammar.v2.snapshot.json
+@@ -178,7 +178,8 @@
+   "itemShapes": {
+     "agentMessage": {
+       "type": "required",
+-      "text": "required"
++      "text": "required",
++      "phase": "optional"
+     },
+     "backgroundTask": {
+       "type": "required",
+diff --git a/packages/provider-bridge-protocol/src/thread-delta.test.ts b/packages/provider-bridge-protocol/src/thread-delta.test.ts
+index f9698af26d6a26c7b93254108953ee29dcc20080..a81ad515de5e0faca5c34a5033176cf0599cfe7a 100644
+--- a/packages/provider-bridge-protocol/src/thread-delta.test.ts
++++ b/packages/provider-bridge-protocol/src/thread-delta.test.ts
+@@ -112,6 +112,34 @@ describe("thread delta schemas", () => {
+     ).toBe(false);
+   });
+ 
++  it("keeps agent-message phase optional and rejects unknown canonical values", () => {
++    for (const item of [
++      { type: "agentMessage", text: "legacy" },
++      { type: "agentMessage", text: "unknown", phase: null },
++      { type: "agentMessage", text: "interim", phase: "commentary" },
++      { type: "agentMessage", text: "final", phase: "final_answer" },
++    ]) {
++      expect(
++        threadDeltaSchema.safeParse({
++          kind: "item.open",
++          key: { providerItemId: "message-1" },
++          item,
++        }).success,
++      ).toBe(true);
++    }
++    expect(
++      threadDeltaSchema.safeParse({
++        kind: "item.open",
++        key: { providerItemId: "message-1" },
++        item: {
++          type: "agentMessage",
++          text: "future",
++          phase: "future_phase",
++        },
++      }).success,
++    ).toBe(false);
++  });
++
+   it("rejects empty-string join-key members while allowing their omission", () => {
+     expect(
+       threadDeltaSchema.safeParse({
+diff --git a/packages/provider-bridge-protocol/src/thread-delta.ts b/packages/provider-bridge-protocol/src/thread-delta.ts
+index 6c91529d946854b06758dd8b572089da409103ef..4607771599c811d205eff818f021b0122a51d7d5 100644
+--- a/packages/provider-bridge-protocol/src/thread-delta.ts
++++ b/packages/provider-bridge-protocol/src/thread-delta.ts
+@@ -10,6 +10,7 @@ import {
+   providerRateLimitStateSchema,
+   providerRawEventSchema,
+   threadEventItemPresentationSchema,
++  threadEventAgentMessagePhaseSchema,
+   threadEventItemStatusSchema,
+   threadEventPlanStepSchema,
+   threadEventSearchModeSchema,
+@@ -135,7 +136,11 @@ export const deltaItemShapeSchema = z.discriminatedUnion("type", [
+     durationMs: z.number().optional(),
+   }),
+   z.object({ type: z.literal("compaction") }),
+-  z.object({ type: z.literal("agentMessage"), text: z.string() }),
++  z.object({
++    type: z.literal("agentMessage"),
++    text: z.string(),
++    phase: threadEventAgentMessagePhaseSchema.nullable().optional(),
++  }),
+   z.object({
+     type: z.literal("reasoning"),
+     summary: z.array(z.string()),
+diff --git a/packages/sdk/test/sdk.test.ts b/packages/sdk/test/sdk.test.ts
+index 22bd9e777519f4070fa952bcd305ed0ca093faa8..fd5dbca056e3ec90b50b4974d8e6c0440652eaab 100644
+--- a/packages/sdk/test/sdk.test.ts
++++ b/packages/sdk/test/sdk.test.ts
+@@ -296,6 +296,109 @@ describe("@bb/sdk", () => {
+     ]);
+   });
+ 
++  it("preserves phase and causal identity through thread event list and wait", async () => {
++    const providerThreadId = "provider-phase-1";
++    const scope = { kind: "turn", turnId: "turn-phase-1" };
++    const rows: JsonValue[] = [
++      {
++        id: "evt-legacy",
++        seq: 1,
++        threadId: "thr_test",
++        createdAt: 1,
++        scope,
++        type: "item/completed",
++        data: {
++          providerThreadId,
++          item: { id: "msg-legacy", text: "legacy", type: "agentMessage" },
++        },
++      },
++      {
++        id: "evt-null",
++        seq: 2,
++        threadId: "thr_test",
++        createdAt: 2,
++        scope,
++        type: "item/completed",
++        data: {
++          providerThreadId,
++          item: {
++            id: "msg-null",
++            phase: null,
++            text: "unknown",
++            type: "agentMessage",
++          },
++        },
++      },
++      {
++        id: "evt-final",
++        seq: 3,
++        threadId: "thr_test",
++        createdAt: 3,
++        scope,
++        type: "item/completed",
++        data: {
++          providerThreadId,
++          item: {
++            id: "msg-final",
++            phase: "final_answer",
++            text: "final",
++            type: "agentMessage",
++          },
++        },
++      },
++    ];
++    const queue = createFetchQueue([{ body: rows }, { body: rows[2] }]);
++    const sdk = createBbSdk({
++      transport: createHttpTransport({
++        baseUrl: "http://bb.test",
++        fetch: queue.fetch,
++        runtime: "node",
++      }),
++    });
++
++    const listed = await sdk.threads.events.list({
++      threadId: "thr_test",
++      types: ["item/completed"],
++    });
++    expect(listed).toMatchObject(rows);
++    expect(listed[0]?.data).not.toHaveProperty("item.phase");
++
++    const waited = await sdk.threads.events.wait({
++      afterSeq: "2",
++      threadId: "thr_test",
++      type: "item/completed",
++      waitMs: "1000",
++    });
++    expect(waited).toMatchObject({
++      id: "evt-final",
++      seq: 3,
++      threadId: "thr_test",
++      scope,
++      type: "item/completed",
++      data: {
++        providerThreadId,
++        item: {
++          id: "msg-final",
++          phase: "final_answer",
++          text: "final",
++          type: "agentMessage",
++        },
++      },
++    });
++    expect(queue.requests).toEqual([
++      {
++        bodyText: undefined,
++        method: "GET",
++        url: "http://bb.test/api/v1/threads/thr_test/events?types=item%2Fcompleted",
++      },
++      {
++        bodyText: undefined,
++        method: "GET",
++        url: "http://bb.test/api/v1/threads/thr_test/events/wait?afterSeq=2&type=item%2Fcompleted&waitMs=1000",
++      },
++    ]);
++  });
++
+   it("forwards read abort signals to fetch", async () => {
+     const controller = new AbortController();
+     let receivedSignal: AbortSignal | null | undefined;
+diff --git a/plugins/provider-codex/src/delta-translation.test.ts b/plugins/provider-codex/src/delta-translation.test.ts
+index 25e5534d51ad43d22f0edcd801c2277d6b065e24..f1c1dc60911031ae2315d13a17d050d4148a014e 100644
+--- a/plugins/provider-codex/src/delta-translation.test.ts
++++ b/plugins/provider-codex/src/delta-translation.test.ts
+@@ -456,12 +456,121 @@ describe("codex item translation", () => {
+           type: "agentMessage",
+           id: harness.itemId("item-1"),
+           text: "Hello",
++          phase: null,
+           presentation: AGENT_MESSAGE_PRESENTATION,
+         },
+       }),
+     );
+   });
+ 
++  it("preserves distinct interim and final agent-message phases in one provider turn", () => {
++    const harness = createHarness();
++    const interim = harness.translate(
++      codexEvent("item/completed", {
++        threadId: "provider-thread-1",
++        turnId: "turn-1",
++        completedAtMs: 0,
++        item: {
++          type: "agentMessage",
++          id: "interim-1",
++          text: "i".repeat(93),
++          phase: "commentary",
++          memoryCitation: null,
++          delivery: null,
++        },
++      }),
++    );
++    const final = harness.translate(
++      codexEvent("item/completed", {
++        threadId: "provider-thread-1",
++        turnId: "turn-1",
++        completedAtMs: 1,
++        item: {
++          type: "agentMessage",
++          id: "final-1",
++          text: "f".repeat(1182),
++          phase: "final_answer",
++          memoryCitation: null,
++          delivery: null,
++        },
++      }),
++    );
++    const turn = harness.translate(
++      codexEvent("turn/completed", {
++        threadId: "provider-thread-1",
++        turn: codexTurn({ id: "turn-1", status: "completed", error: null }),
++      }),
++    );
++
++    const completed = [...interim, ...final].filter(
++      (event): event is Extract<ThreadEvent, { type: "item/completed" }> =>
++        event.type === "item/completed" && event.item.type === "agentMessage",
++    );
++    expect(completed).toEqual([
++      expect.objectContaining({
++        scope: turnScope(harness.turnId("turn-1")),
++        item: expect.objectContaining({
++          id: harness.itemId("interim-1"),
++          text: "i".repeat(93),
++          phase: "commentary",
++        }),
++      }),
++      expect.objectContaining({
++        scope: turnScope(harness.turnId("turn-1")),
++        item: expect.objectContaining({
++          id: harness.itemId("final-1"),
++          text: "f".repeat(1182),
++          phase: "final_answer",
++        }),
++      }),
++    ]);
++    expect(turn).toContainEqual(
++      expect.objectContaining({
++        type: "turn/completed",
++        scope: turnScope(harness.turnId("turn-1")),
++        status: "completed",
++      }),
++    );
++  });
++
++  it("does not turn missing or unrecognized Codex phases into final answers", () => {
++    const harness = createHarness();
++    for (const item of [
++      {
++        type: "agentMessage",
++        id: "missing-phase",
++        text: "missing",
++        memoryCitation: null,
++        delivery: null,
++      },
++      {
++        type: "agentMessage",
++        id: "future-phase",
++        text: "future",
++        phase: "future_phase",
++        memoryCitation: null,
++        delivery: null,
++      },
++    ]) {
++      const events = harness.translate({
++        jsonrpc: "2.0",
++        method: "item/completed",
++        params: {
++          threadId: "t1",
++          turnId: "turn-1",
++          completedAtMs: 0,
++          item,
++        },
++      });
++      const completed = events.find(
++        (event): event is Extract<ThreadEvent, { type: "item/completed" }> =>
++          event.type === "item/completed" && event.item.type === "agentMessage",
++      );
++      expect(completed?.item).toMatchObject({ text: item.text });
++      expect(completed?.item).not.toHaveProperty("phase");
++    }
++  });
++
+   it("suppresses item/started with userMessage as a provider echo", () => {
+     const harness = createHarness();
+     const events = harness.translate(
+diff --git a/plugins/provider-codex/src/delta-translation.ts b/plugins/provider-codex/src/delta-translation.ts
+index 56322742f6a85afdbf4b30866c4bab6d67bc11f1..2ecb3dcc3997862a251a3b3c8c5a43e75976756b 100644
+--- a/plugins/provider-codex/src/delta-translation.ts
++++ b/plugins/provider-codex/src/delta-translation.ts
+@@ -773,7 +773,13 @@ function translateCodexItemShape(
+     case "agentMessage":
+       return {
+         kind: "translated",
+-        shape: { type: "agentMessage", text: parsedItem.text },
++        shape: {
++          type: "agentMessage",
++          text: parsedItem.text,
++          ...(parsedItem.phase === undefined
++            ? {}
++            : { phase: parsedItem.phase }),
++        },
+         presentation: AGENT_MESSAGE_PRESENTATION,
+         status: "completed",
+         approvalDenied: false,
+diff --git a/plugins/provider-codex/src/schemas.ts b/plugins/provider-codex/src/schemas.ts
+index 1700e4c4cd12401fd7f2212a3354692105bf15f9..a92d16476508878d443c09693227c782ae6aec87 100644
+--- a/plugins/provider-codex/src/schemas.ts
++++ b/plugins/provider-codex/src/schemas.ts
+@@ -25,6 +25,12 @@ const codexItemStatusSchema = z.enum([
+ ]);
+ export type CodexItemStatus = z.infer<typeof codexItemStatusSchema>;
+ 
++const codexAgentMessagePhaseSchema = z
++  .enum(["commentary", "final_answer"])
++  .nullable()
++  .optional()
++  .catch(undefined);
++
+ const codexPlanStepStatusSchema = z.enum([
+   "pending",
+   "inProgress",
+@@ -349,6 +355,7 @@ export const codexHandledThreadItemSchema = z.discriminatedUnion("type", [
+       type: z.literal("agentMessage"),
+       id: z.string(),
+       text: z.string(),
++      phase: codexAgentMessagePhaseSchema,
+     })
+     .passthrough(),
+   z
 -- 
 2.53.0
 

@@ -17,50 +17,51 @@
 2. **Retained facets and execution** composes the still-required Thread Facet,
    execution, sidebar, appearance, recovery, and provider behavior.
 3. **Consumer compatibility witnesses** pins the plugin and host-facing seams.
-4. **Retired: capability-authenticated routes.** The fork-specific auth mode
-   and its patch are removed. Plugin-owned connection tokens use upstream
-   `auth: "none"`; the plugin handler retains any token validation.
-5. **Verified mention targets** adds authenticated mention recipients without
+4. **Verified mention targets** adds authenticated mention recipients without
    conflating recipients and authors.
-6. **Built sidecar migrations** includes the generated P6R migration payloads.
-7. **Plugin presentation compatibility** preserves the existing plugin-facing
+5. **Built sidecar migrations** includes the generated P6R migration payloads.
+6. **Plugin presentation compatibility** preserves the existing plugin-facing
    identity presentation contracts.
-8. **Sidebar participants and guidance** integrates participant presentation
+7. **Sidebar participants and guidance** integrates participant presentation
    with the current sidebar behavior.
-9. **Execution cache invalidation** rejects stale execution projections.
-10. **Transport error mapping** retains HTTP/RPC error compatibility. Its former
-    person-only admission gate is removed by consolidated patch 16.
-11. **Active external queues** preserves queued Agent Connect work across the
+8. **Execution cache invalidation** rejects stale execution projections.
+9. **Transport error mapping** retains HTTP/RPC error compatibility. Its former
+    person-only admission gate is removed by consolidated patch 15.
+10. **Active external queues** preserves queued Agent Connect work across the
     reviewed identity boundary.
-12. **Pending call history** retains exact operation history until turn linkage
+11. **Pending call history** retains exact operation history until turn linkage
     is complete.
-13. **Pkl highlighting** adds shared Markdown and Monaco syntax coloring.
-14. **Migration-fixture rewind** keeps upstream replay tests valid after the downstream identity migrations.
-15. **Integration determinism** updates renamed mention seams and canonicalizes Git timestamps in downstream witnesses.
-16. **Best-effort native attribution** consolidates the former patches 16–23.
+12. **Pkl highlighting** adds shared Markdown and Monaco syntax coloring.
+13. **Migration-fixture rewind** keeps upstream replay tests valid after the
+    downstream identity migrations.
+14. **Integration determinism** updates renamed mention seams and canonicalizes
+    Git timestamps in downstream witnesses.
+15. **Best-effort native attribution** consolidates the former native identity patches.
     It supplies stable machine fallback, retains original authors and later
     editors, presents identity in settings/timeline/CLI, and emits only minimal
     sender wrappers. It removes signed browser lineage and native person-gate
     validation plumbing. Provider enrichment remains bounded; durable history,
     receipts, queue/retry semantics and independent access controls remain.
 
-17. **Tailnet provider auto-selection** chooses the installed Tailnet identity
+16. **Tailnet provider auto-selection** chooses the installed Tailnet identity
     provider when the configured Serve-owned host matches, while preserving
     explicit boundary configuration and machine fallback.
-18. **ACP native-root isolation** keeps provider tests independent of the
+17. **ACP native-root isolation** keeps provider tests independent of the
     caller's workspace roots.
-23. **Sidebar layout provider** adds the native layout-provider seam while
-    retaining plugin sidebar composition.
-24. **Codex agent-message phase** preserves optional provider-declared phase
+18. **Sidebar layout provider** adds the native layout-provider seam while
+    retaining plugin sidebar composition, native behavior, and the generic
+    Plugins/Skills resource helper.
+19. **Codex agent-message phase** preserves optional provider-declared phase
     through bridge and durable event contracts without inferring finality.
-25. **Resource sidebar helper restoration** retains the original generic
-    resource-sidebar helper used by native Plugins and Skills entries.
+20. **Workflow-shell isolation** keeps shell tests independent of ambient loaded
+    state.
+21. **Path-browser cleanup** makes virtualized test teardown deterministic.
 
 ## Exact source receipt
 
-- Upstream: `10bacbc0fb1ead6c1f1a728b395bdb1f60e52f93`.
-- Materialized package: `bb-app@0.42.1` plus the reviewed downstream queue.
-- Patch queue: twenty patches (stable numbers 1–3, 5–18, and 23–25, excluding retired patch 4)
+- Upstream: `267938526dfcbc0edb228ce827b5bec202c1af97` (`desktop-v0.43.1`).
+- Materialized package: `bb-app@0.43.1` plus the reviewed downstream queue.
+- Patch queue: twenty-one logical patches
   in `patches/series`; this queue is the current implementation candidate, while
   running deployments may remain on earlier historical compositions until root-owned
   integration and activation.
@@ -80,7 +81,7 @@
   native work. Accepted snapshots remain separate from message text; historical
   unknown messages remain unknown.
 - Queued native input uses the existing nullable `p6r_authors` column and
-  generated migration `0116_p6r_downstream_schema`. Consolidated patch 16
+  generated migration `0119_p6r_downstream_schema`. Consolidated patch 15
   reads legacy author arrays and author/editor envelopes, adding machine actors
   without a new column. Edits preserve original authors atomically; corrupt
   metadata rejects the edit. Drain and retry preserve roles across grouped input.

@@ -1,21 +1,21 @@
-From 9914959f966a4fa863896eb815d8b8bebc747b18 Mon Sep 17 00:00:00 2001
+From 1c1b5e7ea873d810fddf29e0fc0b1601fdf67ef3 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
-Subject: [PATCH 09/16] fix(auth): enforce the reviewed admission boundary
+Subject: [PATCH 09/21] fix(auth): enforce the reviewed admission boundary
 
 ---
  apps/server/src/routes/plugins.ts             |  13 +-
  apps/server/src/server.ts                     |   3 +
  .../src/services/p6r/identity-protocol.ts     |  27 +-
- .../src/services/plugins/plugin-service.ts    |  40 ++-
+ .../src/services/plugins/plugin-service.ts    |  48 ++-
  .../services/p6r/identity-protocol.test.ts    | 108 ++++++-
  .../plugin-p6r-admission-boundary.test.ts     | 288 ++++++++++++++++++
  packages/plugin-sdk/src/rpc-contract.ts       |   2 +
- 7 files changed, 468 insertions(+), 13 deletions(-)
+ 7 files changed, 475 insertions(+), 14 deletions(-)
  create mode 100644 apps/server/test/services/plugins/plugin-p6r-admission-boundary.test.ts
 
 diff --git a/apps/server/src/routes/plugins.ts b/apps/server/src/routes/plugins.ts
-index 89866e8e1c92e78f2c09ab1a38c4ec4360da79f7..3bdeb74f65920441ef4ba9da93fe1f1c8d12313c 100644
+index 1d8e8194d8f54808555826ccc288c74d22ad1d54..7a7e586bc2e3cedc1a6a382a74ac046d00dcf076 100644
 --- a/apps/server/src/routes/plugins.ts
 +++ b/apps/server/src/routes/plugins.ts
 @@ -841,10 +841,15 @@ export function registerPluginRoutes(
@@ -39,10 +39,10 @@ index 89866e8e1c92e78f2c09ab1a38c4ec4360da79f7..3bdeb74f65920441ef4ba9da93fe1f1c
      return context.json({ ok: true, result: outcome.result });
    });
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
-index 39de8a8b532d3479e1ed37f430c889733a0d6f7c..a387bd65823d3cc55f8fd22df0f9c7968176192f 100644
+index 1098073b504ada90d49ebf2981c7ead06d1b916b..7f49ee76414d3f18ceedcc34b75bf96e2c44107b 100644
 --- a/apps/server/src/server.ts
 +++ b/apps/server/src/server.ts
-@@ -648,6 +648,9 @@ export function createApp(
+@@ -665,6 +665,9 @@ export function createApp(
        forwardRpc: (input) => pluginService.forwardP6rRpc(input),
      },
      now: Date.now,
@@ -105,11 +105,11 @@ index e12c37017be619900f53676753b9ea30d1d4758e..8ba2bcaff79b8eef666531fbe76bb391
        if (captured.ok) { const session = snapshotSession(trusted.session); requests.set(input.request, { scope: captured.scope, session }); scopeSessions.set(captured.scope, session); scopeRequests.set(captured.scope, input.request); }
        return captured;
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index 898bffad8c939ea078cd0e4180f1ba29cb5796af..c67e21df6584f69a94c2892870940eac499ec68b 100644
+index 00ac415f5e52634114f0ad93c210d4ce49b9f5f1..75235569ded7260b4917ebaeed047dc08df5cf8b 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
-@@ -137,7 +137,10 @@ import { createPluginRegistration } from "./plugin-registration.js";
- import { createPluginRuntime, forgetMutableRoot } from "./plugin-runtime.js";
+@@ -145,7 +145,10 @@ import { createPluginRuntime, forgetMutableRoot } from "./plugin-runtime.js";
+ import { nextCronRunAt, raceTimeout } from "./plugin-time-box.js";
  import { createPluginUpdates } from "./plugin-updates.js";
  import { retainP6rHttpResponse } from "./plugin-p6r-http.js";
 -import type { P6rJson } from "../p6r/identity-protocol.js";
@@ -119,9 +119,9 @@ index 898bffad8c939ea078cd0e4180f1ba29cb5796af..c67e21df6584f69a94c2892870940eac
 +} from "../p6r/identity-protocol.js";
  import type { P6rInvocationScope } from "../p6r/invocation-registry.js";
  
- import { pluginUpdateCheckEntrySchema } from "./plugin-service-internal.js";
-@@ -477,6 +480,26 @@ function rpcBoundaryFailure(
-   });
+ import type {
+@@ -411,6 +414,26 @@ function throwRpcBoundaryError(error: PluginRpcError): never {
+   throw new PluginRpcBoundaryError(error);
  }
  
 +function p6rCaptureTransportFailure(
@@ -144,10 +144,10 @@ index 898bffad8c939ea078cd0e4180f1ba29cb5796af..c67e21df6584f69a94c2892870940eac
 +  };
 +}
 +
- async function validateRpcValue(
-   schema: StandardSchemaV1,
-   value: unknown,
-@@ -2157,7 +2180,14 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+ function normalizeAgentToolResult(
+   name: string,
+   result: unknown,
+@@ -1789,7 +1812,14 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
              routeClass: binding.routeClass,
            });
            if (!capture.ok) {
@@ -163,19 +163,50 @@ index 898bffad8c939ea078cd0e4180f1ba29cb5796af..c67e21df6584f69a94c2892870940eac
            }
            const abort = () => capture.scope.release();
            context.req.raw.signal.addEventListener("abort", abort, {
-@@ -2270,10 +2300,8 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1881,8 +1911,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+             handler.outputSchema,
+             result,
+             "output",
++            throwRpcBoundaryError,
+           );
+-          return normalizeRpcJsonResult(parsedOutput);
++          return normalizeRpcJsonResult(parsedOutput, throwRpcBoundaryError);
+         }
+         if (
+           binding.pluginId !== id ||
+@@ -1903,9 +1934,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
            routeClass: binding.routeClass,
          });
          if (!capture.ok) {
 -          throw new PluginRpcBoundaryError({
 -            code: "handler_error",
 -            message: "P6r invocation scope is unavailable",
--          });
 +          const failure = p6rCaptureTransportFailure(capture);
-+          throw rpcBoundaryFailure(failure.code, failure.message);
++          throwRpcBoundaryError({
++            code: failure.code,
++            message: failure.message,
+           });
          }
          let result: unknown;
-         try {
+@@ -1958,6 +1990,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+         handler.inputSchema,
+         args.input,
+         "input",
++        throwRpcBoundaryError,
+       );
+       const derived = args.deriveScope(binding.generation);
+       if (derived === null) {
+@@ -1983,8 +2016,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+         handler.outputSchema,
+         outcome.value,
+         "output",
++        throwRpcBoundaryError,
+       );
+-      return normalizeRpcJsonResult(parsedOutput);
++      return normalizeRpcJsonResult(parsedOutput, throwRpcBoundaryError);
+     },
+ 
+     async httpToken(id, options) {
 diff --git a/apps/server/test/services/p6r/identity-protocol.test.ts b/apps/server/test/services/p6r/identity-protocol.test.ts
 index ce0306c94dc5e8db63b766b6cfb3e19f6092ac81..c612957a3a001cc8a4b27359c0f103d8ae3989ae 100644
 --- a/apps/server/test/services/p6r/identity-protocol.test.ts

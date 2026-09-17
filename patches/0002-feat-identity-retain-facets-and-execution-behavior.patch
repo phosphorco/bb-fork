@@ -1,12 +1,12 @@
-From b06bbdcde87985402ed1a60439a45ee01f6433a6 Mon Sep 17 00:00:00 2001
+From 3a214d48bd1553dfec80402127773f0a187aac55 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
-Subject: [PATCH 02/16] feat(identity): retain facets and execution behavior
+Subject: [PATCH 02/21] feat(identity): retain facets and execution behavior
 
 ---
  apps/server/src/routes/threads/base.ts        |  34 +
- .../server/src/services/plugins/plugin-api.ts | 213 +++++-
- .../src/services/system/execution-options.ts  |  22 +-
+ .../server/src/services/plugins/plugin-api.ts | 212 +++++-
+ .../src/services/system/execution-options.ts  |  18 +-
  .../threads/thread-execution-batch.ts         | 479 +++++++++++++
  .../threads/thread-execution-override.ts      |  63 +-
  .../services/threads/thread-facet-query.ts    | 627 ++++++++++++++++++
@@ -14,28 +14,28 @@ Subject: [PATCH 02/16] feat(identity): retain facets and execution behavior
  .../plugins/plugin-authoring-docs.test.ts     |   1 +
  .../threads/thread-execution-batch.test.ts    | 118 ++++
  .../threads/thread-execution-override.test.ts |  24 +
- packages/db/src/data/events.ts                | 135 ++--
+ packages/db/src/data/events.ts                | 128 ++--
  packages/db/src/data/index.ts                 |   3 +
  .../db/src/data/project-execution-defaults.ts |   6 +-
  packages/db/src/data/threads.ts               |  14 +
- .../src/__tests__/public-types.test.ts        |  38 +-
+ .../src/__tests__/public-types.test.ts        |  34 +
  packages/plugin-sdk/src/backend-contract.ts   |  51 ++
  .../src/testing/fake-plugin-host.ts           |  24 +
- packages/sdk/src/areas/threads.ts             | 102 ++-
+ packages/sdk/src/areas/threads.ts             |  99 +++
  packages/sdk/test/public-types.test.ts        |   4 +
  packages/server-contract/src/api/threads.ts   | 326 +++++++++
  packages/server-contract/src/public-api.ts    |  45 ++
- 21 files changed, 2379 insertions(+), 65 deletions(-)
+ 21 files changed, 2369 insertions(+), 56 deletions(-)
  create mode 100644 apps/server/src/services/threads/thread-execution-batch.ts
  create mode 100644 apps/server/src/services/threads/thread-facet-query.ts
  create mode 100644 apps/server/test/public/public-thread-facets.test.ts
  create mode 100644 apps/server/test/services/threads/thread-execution-batch.test.ts
 
 diff --git a/apps/server/src/routes/threads/base.ts b/apps/server/src/routes/threads/base.ts
-index ba0f88a4fd8a6f45dd06af1dba8b7d572f698db2..b16c8575bc9624b10e4f9f5a0f2f3e12c430f629 100644
+index 633e75c4719bb2935180e7f8f8733a4e40823920..a819ce1bad46c3fc0ac7020540ab82c2693a6bdc 100644
 --- a/apps/server/src/routes/threads/base.ts
 +++ b/apps/server/src/routes/threads/base.ts
-@@ -57,7 +57,15 @@ import {
+@@ -61,7 +61,15 @@ import {
  import { assertValidParentThread } from "../../services/threads/thread-parent.js";
  import { handleThreadOwnershipChange } from "../../services/threads/thread-ownership.js";
  import { applyThreadExecutionOverride } from "../../services/threads/thread-execution-override.js";
@@ -51,7 +51,7 @@ index ba0f88a4fd8a6f45dd06af1dba8b7d572f698db2..b16c8575bc9624b10e4f9f5a0f2f3e12
  
  function parseThreadIncludes(query: ThreadGetQuery): Set<ThreadIncludeOption> {
    const includes = new Set<ThreadIncludeOption>();
-@@ -298,6 +306,32 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
+@@ -295,6 +303,32 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
      );
    });
  
@@ -85,11 +85,13 @@ index ba0f88a4fd8a6f45dd06af1dba8b7d572f698db2..b16c8575bc9624b10e4f9f5a0f2f3e12
      const searchQuery = query.query.trim();
      if (countNonWhitespaceChars(searchQuery) < 2) {
 diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
-index 61163cdc0c909f3eb214fc9fcb9fe35187e01e5b..511c93ef7c015ed56cb8b6722ec679516bb52967 100644
+index b7a4c640c8674d173a667b2a55b8925959dfd867..4ec776fa219960a294eba62dd12b31c35dd737de 100644
 --- a/apps/server/src/services/plugins/plugin-api.ts
 +++ b/apps/server/src/services/plugins/plugin-api.ts
-@@ -1,11 +1,17 @@
--import { createHash } from "node:crypto";
+@@ -6,14 +6,21 @@ import {
+ import { createMachineBootstrapApi } from "../machines/bootstrap.js";
+ import type { MachineEnrollments } from "../machines/enrollments.js";
+ import { listServerAccessProviders } from "./plugin-server-access-registry.js";
 +import { createHash, randomUUID } from "node:crypto";
  import { mkdirSync } from "node:fs";
  import { join } from "node:path";
@@ -99,6 +101,7 @@ index 61163cdc0c909f3eb214fc9fcb9fe35187e01e5b..511c93ef7c015ed56cb8b6722ec67951
    deletePluginKvValue,
 +  activatePluginThreadFacetDeclarations,
    getPluginKvValue,
+   getHost,
 +  listPriorThreadFacetSnapshotTargets,
 +  markThreadFacetOwnerGenerationReady,
 +  markThreadFacetOwnerGenerationUnavailable,
@@ -107,7 +110,7 @@ index 61163cdc0c909f3eb214fc9fcb9fe35187e01e5b..511c93ef7c015ed56cb8b6722ec67951
    listPluginKvKeys,
    setPluginKvValue,
    type DbConnection,
-@@ -45,6 +51,11 @@ import type {
+@@ -51,6 +58,11 @@ import type {
    PluginAiServiceDeclaration,
    PluginAiServices,
    ExperimentalP6rIdentityProtocol,
@@ -119,11 +122,11 @@ index 61163cdc0c909f3eb214fc9fcb9fe35187e01e5b..511c93ef7c015ed56cb8b6722ec67951
    PluginProviderDeclaration,
    ExperimentalPluginProviderEnvContext,
    ExperimentalPluginProviderEnvEntry,
-@@ -312,7 +323,34 @@ export type PluginProviderEnvHealthResolver = (
-   | null
-   | Promise<ExperimentalPluginProviderEnvHealth | null>;
+@@ -332,7 +344,34 @@ function withPluginThreadAttribution<
+   return { ...args, ...attribution };
+ }
  
--function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): BbSdk {
+-function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): PluginBbSdk {
 +interface ThreadFacetTargetRecord {
 +  thread: ExperimentalThreadFacetTarget;
 +  threadId: string;
@@ -151,13 +154,13 @@ index 61163cdc0c909f3eb214fc9fcb9fe35187e01e5b..511c93ef7c015ed56cb8b6722ec67951
 +  registerThreadFacetTarget: <T extends ExperimentalThreadFacetTarget>(
 +    thread: T,
 +  ) => T,
-+): BbSdk {
++): PluginBbSdk {
    return {
      ...sdk,
      threads: {
-@@ -337,6 +375,12 @@ function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): BbSdk {
-             : {}),
-         });
+@@ -363,6 +402,12 @@ function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): PluginBbSdk {
+       spawn(args: ThreadSpawnArgs) {
+         return sdk.threads.spawn(withPluginThreadAttribution(args, pluginId));
        },
 +      async get(args) {
 +        return registerThreadFacetTarget(await sdk.threads.get(args));
@@ -168,13 +171,13 @@ index 61163cdc0c909f3eb214fc9fcb9fe35187e01e5b..511c93ef7c015ed56cb8b6722ec67951
      },
    };
  }
-@@ -527,10 +571,15 @@ export function createPluginApi(options: {
+@@ -555,10 +600,15 @@ export function createPluginApi(options: {
    } = options;
    let invalidated = false;
    let activated = false;
 +  let facetAuthorityRevoked = false;
 +  let facetsCommitted = false;
-   let wrappedSdk: BbSdk | undefined;
+   let wrappedSdk: PluginBbSdk | undefined;
    let pendingNeedsConfiguration: string | null = null;
    const pendingAgentToolProblems: string[] = [];
    const pendingSharedPorts = new Map<string, readonly number[]>();
@@ -184,7 +187,7 @@ index 61163cdc0c909f3eb214fc9fcb9fe35187e01e5b..511c93ef7c015ed56cb8b6722ec67951
    const disposeHooks: Array<() => void | Promise<void>> = [];
    const settingsRecord: PluginApiHandle["settings"] = {
      descriptors: {},
-@@ -570,6 +619,149 @@ export function createPluginApi(options: {
+@@ -609,6 +659,149 @@ export function createPluginApi(options: {
      if (invalidated) throw new PluginContextStaleError(pluginId);
    }
  
@@ -334,7 +337,7 @@ index 61163cdc0c909f3eb214fc9fcb9fe35187e01e5b..511c93ef7c015ed56cb8b6722ec67951
    const prefix = `[plugin:${pluginId}]`;
    function emitLog(
      level: "debug" | "info" | "warn" | "error",
-@@ -1582,6 +1774,7 @@ export function createPluginApi(options: {
+@@ -1305,6 +1498,7 @@ export function createPluginApi(options: {
      server,
      hosts,
      experimental_aiServices,
@@ -342,7 +345,7 @@ index 61163cdc0c909f3eb214fc9fcb9fe35187e01e5b..511c93ef7c015ed56cb8b6722ec67951
      ...(p6rIdentity === undefined
        ? {}
        : { experimental_p6rIdentity: p6rIdentity.protocol }),
-@@ -1594,7 +1787,7 @@ export function createPluginApi(options: {
+@@ -1317,7 +1511,7 @@ export function createPluginApi(options: {
              "use it inside handlers, services, or timers, not at factory load time",
          );
        }
@@ -351,7 +354,7 @@ index 61163cdc0c909f3eb214fc9fcb9fe35187e01e5b..511c93ef7c015ed56cb8b6722ec67951
        return wrappedSdk;
      },
      onDispose(hook) {
-@@ -1642,6 +1835,19 @@ export function createPluginApi(options: {
+@@ -1368,6 +1562,19 @@ export function createPluginApi(options: {
        );
        providerRegistrations.flush();
        aiServiceRegistrations.flush();
@@ -371,7 +374,7 @@ index 61163cdc0c909f3eb214fc9fcb9fe35187e01e5b..511c93ef7c015ed56cb8b6722ec67951
        activated = true;
        const cliWarning = cliRecord.registration
          ? pluginCliCollisionWarning(pluginId, cliRecord.registration.name)
-@@ -1676,6 +1882,7 @@ export function createPluginApi(options: {
+@@ -1402,6 +1609,7 @@ export function createPluginApi(options: {
        }
      },
      invalidate() {
@@ -380,10 +383,10 @@ index 61163cdc0c909f3eb214fc9fcb9fe35187e01e5b..511c93ef7c015ed56cb8b6722ec67951
      },
    };
 diff --git a/apps/server/src/services/system/execution-options.ts b/apps/server/src/services/system/execution-options.ts
-index cf0e688df6c1abe3218feb81e611c665031e4c46..8389d9fb088be7f94a875111ee42b0de3ad1f84f 100644
+index ea82c76ccc039f9b0662c2f25f6a632ccf334055..96bd207321b80743b62fd42923a39165b06b4f45 100644
 --- a/apps/server/src/services/system/execution-options.ts
 +++ b/apps/server/src/services/system/execution-options.ts
-@@ -43,6 +43,7 @@ interface BuildModelLoadErrorArgs {
+@@ -47,6 +47,7 @@ interface BuildModelLoadErrorArgs {
  
  interface ResolveSystemProviderModelsArgs {
    cwd?: string;
@@ -391,18 +394,7 @@ index cf0e688df6c1abe3218feb81e611c665031e4c46..8389d9fb088be7f94a875111ee42b0de
    hostId: string;
    providerId: string;
  }
-@@ -201,9 +202,7 @@ async function listInstalledPluginProviderInfos(
-                 bridgeLaunch,
-               },
-             });
--            return (
--              result.supported && result.health.status !== "not_installed"
--            );
-+            return result.supported && result.health.status !== "not_installed";
-           })();
-         if (cached === undefined) {
-           deps.providerRegistry.rememberInstalled(cacheKey, installed);
-@@ -302,6 +301,7 @@ export async function resolveSystemProviderModels(
+@@ -320,6 +321,7 @@ export async function resolveSystemProviderModels(
  
    const result = await loadSystemProviderModels(deps, {
      ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
@@ -410,7 +402,7 @@ index cf0e688df6c1abe3218feb81e611c665031e4c46..8389d9fb088be7f94a875111ee42b0de
      hostId: args.hostId,
      provider,
    });
-@@ -521,10 +521,12 @@ async function loadSystemProviderModels(
+@@ -539,10 +541,12 @@ async function loadSystemProviderModels(
    deps: LoggedWorkSessionDeps,
    {
      cwd,
@@ -423,7 +415,7 @@ index cf0e688df6c1abe3218feb81e611c665031e4c46..8389d9fb088be7f94a875111ee42b0de
      hostId: string;
      provider: ProviderInfo;
    },
-@@ -547,7 +549,7 @@ async function loadSystemProviderModels(
+@@ -565,7 +569,7 @@ async function loadSystemProviderModels(
    try {
      const { models, selectedOnlyModels } = await listProviderModelsMemoized(
        deps,
@@ -432,7 +424,7 @@ index cf0e688df6c1abe3218feb81e611c665031e4c46..8389d9fb088be7f94a875111ee42b0de
      );
      return {
        models,
-@@ -591,7 +593,15 @@ type ProviderListModelsCommand = Extract<
+@@ -609,7 +613,15 @@ type ProviderListModelsCommand = Extract<
  
  async function listProviderModelsMemoized(
    deps: LoggedWorkSessionDeps,
@@ -449,7 +441,7 @@ index cf0e688df6c1abe3218feb81e611c665031e4c46..8389d9fb088be7f94a875111ee42b0de
  ): Promise<ProviderModelListMemoValue> {
    const probe = (): Promise<ProviderModelListMemoValue> =>
      callHostRetryableOnlineRpc(deps, {
-@@ -600,7 +610,7 @@ async function listProviderModelsMemoized(
+@@ -618,7 +630,7 @@ async function listProviderModelsMemoized(
        command,
      });
    const daemonSessionId = deps.hub.getDaemonSessionIdForHost(hostId);
@@ -1822,17 +1814,17 @@ index 0000000000000000000000000000000000000000..ce83a1800dac8ec24752592a3b36b64c
 +  });
 +});
 diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-index a114ea517110d1715bdf6fbcb045ad200fb7514f..7deb6e85a2b16db00ce92a80270f803b37aa848d 100644
+index b46a55e3434d628a86c8cff7239964395219454b..51ead32c80f5e6f35aa5ef79777f8dc37fe9421d 100644
 --- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
 +++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-@@ -163,6 +163,7 @@ const BB_PLUGIN_API_KEYS = [
+@@ -165,6 +165,7 @@ const BB_PLUGIN_API_KEYS = [
    "server",
    "hosts",
    "experimental_aiServices",
 +  "experimental_facets",
    "experimental_hooks",
    "experimental_environments",
-   "experimental_p6rIdentity",
+   "experimental_machines",
 diff --git a/apps/server/test/services/threads/thread-execution-batch.test.ts b/apps/server/test/services/threads/thread-execution-batch.test.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..f39afb15fa33ff4eb1bf35a19ca45a5ff852f5d2
@@ -2000,7 +1992,7 @@ index f46a783271051fce3e0b4c3d712ce226a7a35fd8..a299f8929254ba9de843877773795819
      expect(
        resolveThreadExecutionOverrideUpdate(registry, {
 diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
-index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c007cf32922 100644
+index a8c687ffa370362e8d00984114ed5b7810159454..0fadaac607ed2ddf58700cb94afbeeabf1088827 100644
 --- a/packages/db/src/data/events.ts
 +++ b/packages/db/src/data/events.ts
 @@ -89,7 +89,9 @@ export function queryInSqliteVariableBatches<TValue, TRow>(
@@ -2090,17 +2082,7 @@ index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c00
        .filter((row) => isTerminalItemEventType(row.type))
        .map(buildItemLifecycleKey),
    );
-@@ -1277,8 +1283,7 @@ export interface ListStoredTimelineWindowEventRowsArgs {
- export type GetStoredTimelineWindowEventDataBytesArgs =
-   ListStoredTimelineWindowEventRowsArgs;
- 
--export interface FindStoredTimelineWindowByteBudgetFloorArgs
--  extends ListStoredTimelineWindowEventRowsArgs {
-+export interface FindStoredTimelineWindowByteBudgetFloorArgs extends ListStoredTimelineWindowEventRowsArgs {
-   maxDataBytes: number;
- }
- 
-@@ -1471,7 +1476,8 @@ export function listLatestThreadStateEventRowsByThreadIds(
+@@ -1451,7 +1457,8 @@ export function listLatestThreadStateEventRowsByThreadIds(
        return db
          .select(storedEventRowFields)
          .from(events)
@@ -2110,7 +2092,7 @@ index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c00
          SELECT latest_state.rowid
          FROM ${events} AS latest_state INDEXED BY events_thread_state_thread_sequence_idx
          WHERE latest_state.thread_id IN (${threadIdList})
-@@ -1483,7 +1489,8 @@ export function listLatestThreadStateEventRowsByThreadIds(
+@@ -1463,7 +1470,8 @@ export function listLatestThreadStateEventRowsByThreadIds(
                AND candidate.type ${stateTypesPredicate}
                AND ${kindPredicate}
            )
@@ -2120,7 +2102,7 @@ index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c00
          .all();
      },
  
-@@ -1694,7 +1701,9 @@ export function listStoredDelegatingItemRowsByItemIds(
+@@ -1655,7 +1663,9 @@ export function listStoredDelegatingItemRowsByItemIds(
    }
  
    return db
@@ -2131,7 +2113,7 @@ index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c00
      .from(events)
      .where(
        and(
-@@ -1847,7 +1856,9 @@ export function listStoredItemLifecycleRowsByItems(
+@@ -1806,7 +1816,9 @@ export function listStoredItemLifecycleRowsByItems(
    }
  
    return db
@@ -2142,7 +2124,7 @@ index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c00
      .from(events)
      .where(
        and(
-@@ -1901,7 +1912,9 @@ export function listStoredClientTurnRequestIdsInRange(
+@@ -1860,7 +1872,9 @@ export function listStoredClientTurnRequestIdsInRange(
  ): ClientTurnRequestId[] {
    const rows = db
      .select({
@@ -2153,7 +2135,7 @@ index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c00
      })
      .from(events)
      .where(
-@@ -1925,7 +1938,9 @@ export function getStoredTurnRequestEventForTurn(
+@@ -1884,7 +1898,9 @@ export function getStoredTurnRequestEventForTurn(
    const acceptedInput =
      db
        .select({
@@ -2164,7 +2146,7 @@ index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c00
        })
        .from(events)
        .where(
-@@ -2314,8 +2329,7 @@ export function listLatestOpenBackgroundTaskStateRowsForThread(
+@@ -2223,8 +2239,7 @@ export function listLatestOpenBackgroundTaskStateRowsForThread(
    args: ListLatestOpenBackgroundTaskStateRowsForThreadArgs,
  ): StoredEventRow[] {
    const startedType = "item/started" satisfies ThreadEventType;
@@ -2174,7 +2156,7 @@ index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c00
    const completedType =
      "item/backgroundTask/completed" satisfies ThreadEventType;
    const completed = alias(events, "completed_background_task_state");
-@@ -2480,9 +2494,7 @@ function listStoredTurnStartedKeysChunk(
+@@ -2389,9 +2404,7 @@ function listStoredTurnStartedKeysChunk(
      .all();
  
    return rows.flatMap((row) =>
@@ -2185,18 +2167,7 @@ index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c00
    );
  }
  
-@@ -2635,7 +2647,9 @@ export function listRecentStoredEventRows(
-   }
- 
-   return db
--    .select(storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars))
-+    .select(
-+      storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars),
-+    )
-     .from(events)
-     .where(and(...conditions))
-     .orderBy(events.sequence)
-@@ -3148,8 +3162,7 @@ export function findStoredTimelineWindowByteBudgetFloor(
+@@ -2933,8 +2946,7 @@ export function findStoredTimelineWindowByteBudgetFloor(
    const query = db
      .select({
        createdAt: events.createdAt,
@@ -2206,7 +2177,7 @@ index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c00
        sequence: events.sequence,
        turnId: events.turnId,
      })
-@@ -3260,7 +3273,9 @@ export function listStoredTimelineWindowEventRows(
+@@ -3045,7 +3057,9 @@ export function listStoredTimelineWindowEventRows(
    args: ListStoredTimelineWindowEventRowsArgs,
  ): StoredEventRow[] {
    return db
@@ -2217,7 +2188,7 @@ index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c00
      .from(events)
      .where(and(...storedTimelineWindowConditions(args)))
      .orderBy(events.sequence)
-@@ -3368,7 +3383,10 @@ export function getLatestThreadSystemErrorEventRow(
+@@ -3153,7 +3167,10 @@ export function getLatestThreadSystemErrorEventRow(
        .select(storedEventRowFields)
        .from(events)
        .where(
@@ -2229,7 +2200,7 @@ index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c00
        )
        .orderBy(desc(events.sequence))
        .limit(1)
-@@ -3651,6 +3669,46 @@ export function listThreadIdsWithLatestHostDaemonRestartInterruption(
+@@ -3431,6 +3448,46 @@ export function listThreadIdsWithLatestHostDaemonRestartInterruption(
      .map((row) => row.threadId);
  }
  
@@ -2276,7 +2247,7 @@ index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c00
  export function getLastStoredTurnRequestEvent(
    db: DbQueryConnection,
    threadId: string,
-@@ -3898,8 +3956,7 @@ export function listOpenBackgroundTaskItemRowsForHost(
+@@ -3678,8 +3735,7 @@ export function listOpenBackgroundTaskItemRowsForHost(
    args: ListOpenBackgroundTaskItemRowsForHostArgs,
  ): OpenBackgroundTaskItemRow[] {
    const startedType = "item/started" satisfies ThreadEventType;
@@ -2286,7 +2257,7 @@ index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c00
    const completedType =
      "item/backgroundTask/completed" satisfies ThreadEventType;
    const settled = alias(events, "settled_background_task");
-@@ -3955,8 +4012,7 @@ export function listOpenBackgroundTaskItemRowsForThread(
+@@ -3735,8 +3791,7 @@ export function listOpenBackgroundTaskItemRowsForThread(
    args: ListOpenBackgroundTaskItemRowsForThreadArgs,
  ): OpenBackgroundTaskItemRow[] {
    const startedType = "item/started" satisfies ThreadEventType;
@@ -2296,7 +2267,7 @@ index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c00
    const completedType =
      "item/backgroundTask/completed" satisfies ThreadEventType;
    const settled = alias(events, "settled_thread_background_task");
-@@ -4010,8 +4066,7 @@ export function pruneBackgroundTaskProgressEvents(
+@@ -3790,8 +3845,7 @@ export function pruneBackgroundTaskProgressEvents(
    db: DbConnection,
    args: PruneBackgroundTaskProgressEventsArgs,
  ): number {
@@ -2307,18 +2278,18 @@ index 87fbd6f3f51e020cc3f15938ea774fc6de0739f0..c29366cac42b8b671c347db439a11c00
      "item/backgroundTask/completed" satisfies ThreadEventType;
  
 diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
-index 2fb41f8fe1955a51bed1917f2d615accf67861d7..8e7949494c0d4883c31744c77728ac2ae4fb29df 100644
+index 25f27d4ebb3ce9c386f76a0495c97f03dc334758..3fc4bcfc3e30364a85c2e2cac39fdd27c0da275e 100644
 --- a/packages/db/src/data/index.ts
 +++ b/packages/db/src/data/index.ts
-@@ -85,6 +85,7 @@ export {
+@@ -82,6 +82,7 @@ export {
+   listUnarchivedHiddenSourceThreads,
    listRunningThreads,
-   listThreads,
    listThreadsWithPendingInteractionState,
 +  listThreadsWithPendingInteractionStateByIds,
    listThreadsWithPendingInteractionStateForProjects,
    pinThread,
    reorderPinnedThread,
-@@ -299,6 +300,7 @@ export {
+@@ -296,6 +297,7 @@ export {
    hasStoredTurnStarted,
    getLastStoredProviderThreadId,
    getLastStoredTurnRequestEvent,
@@ -2326,9 +2297,9 @@ index 2fb41f8fe1955a51bed1917f2d615accf67861d7..8e7949494c0d4883c31744c77728ac2a
    getStoredTurnRequestEventForTurn,
    getLatestThreadOutputEventRow,
    getLatestStoredConversationOutlineSequence,
-@@ -387,6 +389,7 @@ export type {
+@@ -375,6 +377,7 @@ export type {
+   StoredEventRow,
    StoredThreadEventDataRow,
-   StandardTimelineSegmentAnchorRow,
    ThreadClientTurnRequestKey,
 +  ListLastStoredTurnRequestEventsByThreadIdsArgs,
    StoredTurnRequestEventRow,
@@ -2366,10 +2337,10 @@ index 8de603736406a09b02b33f9ab729ba843fbebc00..37afa170de06f880e91fec542851730c
  ): Map<string, ProjectExecutionDefaults> {
    const byProjectId = new Map<string, ProjectExecutionDefaults>();
 diff --git a/packages/db/src/data/threads.ts b/packages/db/src/data/threads.ts
-index 2c7cd7d67f1fd5dbc977c58bb039b1fa0732b884..78f359dee97a2b71e1a60dfc9584f1af3c6ffa5e 100644
+index ab8a9fd18a1e30a78ab7b01e0e7f8960727222ef..050e9c642f87e0e5be0b7ba6662eb3571f571f8b 100644
 --- a/packages/db/src/data/threads.ts
 +++ b/packages/db/src/data/threads.ts
-@@ -1341,6 +1341,20 @@ export function listThreadsWithPendingInteractionState(
+@@ -1318,6 +1318,20 @@ export function listThreadsWithPendingInteractionState(
    return rows.map(toThreadWithPendingInteractionState);
  }
  
@@ -2391,32 +2362,29 @@ index 2c7cd7d67f1fd5dbc977c58bb039b1fa0732b884..78f359dee97a2b71e1a60dfc9584f1af
    const unreadThread = or(
      isNull(threads.lastReadAt),
 diff --git a/packages/plugin-sdk/src/__tests__/public-types.test.ts b/packages/plugin-sdk/src/__tests__/public-types.test.ts
-index b7b06286ee5bef91cc41e6de0d1120e4ceb00c89..eec28feba4b284a4d18357e45f9ab7920b2f0878 100644
+index 0d7b209f5ea9a4890796c1e346fbc17950364f89..11069f3d5dcaf99bcbdb515ddd5600a7e51b3da4 100644
 --- a/packages/plugin-sdk/src/__tests__/public-types.test.ts
 +++ b/packages/plugin-sdk/src/__tests__/public-types.test.ts
-@@ -1,6 +1,12 @@
- import { readFile } from "node:fs/promises";
- import { describe, expect, expectTypeOf, it } from "vitest";
--import type { BbPluginApi } from "../index.js";
-+import type {
-+  BbPluginApi,
+@@ -7,6 +7,10 @@ import type {
+   PluginEnvironmentProviderDeclaration,
+   PluginEnvironments,
+   ReadonlyJsonValue,
 +  ExperimentalP6rAcceptanceRequest,
 +  ExperimentalP6rIdentityProtocol,
 +  ExperimentalP6rInvocationContext,
 +  ExperimentalP6rInvocationScope,
-+} from "../index.js";
+ } from "../index.js";
+ import type { PluginProviderIconRegistration } from "../app-contract.js";
  
- type ExpectedBbPluginApiKey =
-   | "agents"
-@@ -9,6 +15,7 @@ type ExpectedBbPluginApiKey =
+@@ -17,6 +21,7 @@ type ExpectedBbPluginApiKey =
    | "events"
    | "experimental_aiServices"
    | "experimental_environments"
 +  | "experimental_facets"
    | "experimental_hooks"
-   | "experimental_p6rIdentity"
-   | "hosts"
-@@ -34,6 +41,13 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
+   | "experimental_machines"
+   | "experimental_serverAccess"
+@@ -44,6 +49,13 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
    "PluginAiServiceDeclaration",
    "PluginAiServiceKind",
    "PluginAiServices",
@@ -2430,8 +2398,8 @@ index b7b06286ee5bef91cc41e6de0d1120e4ceb00c89..eec28feba4b284a4d18357e45f9ab792
    "PluginAgentConfiguration",
    "PluginAgentConfigurationContext",
    "PluginAgentToolContentPart",
-@@ -189,6 +203,28 @@ describe("backend plugin SDK public surface", () => {
-     expectTypeOf<keyof BbPluginApi>().toEqualTypeOf<ExpectedBbPluginApiKey>();
+@@ -228,6 +240,28 @@ describe("backend plugin SDK public surface", () => {
+     expectTypeOf(borrowNestedValue).toBeFunction();
    });
  
 +  it("exposes the optional enhanced identity protocol without product models", () => {
@@ -2460,10 +2428,10 @@ index b7b06286ee5bef91cc41e6de0d1120e4ceb00c89..eec28feba4b284a4d18357e45f9ab792
      const [backendContract, declarations] = await Promise.all([
        readFile(new URL("../backend-contract.ts", import.meta.url), "utf8"),
 diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
-index fdd71350c3f60d066493f8c8576f868d401d4a78..4b1413c3110143d36c11e427a377f1f1f59dc675 100644
+index 61c944b3e4871caad4fe95942ca18e20cf6afba7..d2cfb65130b0937d63473922328e7cc660c3c910 100644
 --- a/packages/plugin-sdk/src/backend-contract.ts
 +++ b/packages/plugin-sdk/src/backend-contract.ts
-@@ -1732,6 +1732,52 @@ export interface PluginHosts {
+@@ -1830,6 +1830,52 @@ export interface PluginHosts {
    declareSharedPorts(hostId: string, ports: readonly number[]): void;
  }
  
@@ -2516,7 +2484,7 @@ index fdd71350c3f60d066493f8c8576f868d401d4a78..4b1413c3110143d36c11e427a377f1f1
  // ---------------------------------------------------------------------------
  // Status + the API root.
  // ---------------------------------------------------------------------------
-@@ -1807,6 +1853,11 @@ export interface BbPluginApi {
+@@ -1933,6 +1979,11 @@ export interface BbPluginApi {
     * inference, voice transcription). See `@get-bb/plugin-sdk/ai-services`.
     */
    readonly experimental_aiServices: PluginAiServices;
@@ -2529,10 +2497,10 @@ index fdd71350c3f60d066493f8c8576f868d401d4a78..4b1413c3110143d36c11e427a377f1f1
     * The full BB SDK, bound to this server over loopback (design §4.1).
     * Bind-gated: reading this before the host binds the SDK throws. The real
 diff --git a/packages/plugin-sdk/src/testing/fake-plugin-host.ts b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
-index 591cb4c0629e45185e8610e6cefa753e681b4c9c..93439eea3d0a4cc381aac030609d54e7a35c6209 100644
+index c3aed2f11a6e7e4df9fc2032bc46f11f614cc519..126ce4f82b4fd23039d1ee204f7121a3ce85ad3a 100644
 --- a/packages/plugin-sdk/src/testing/fake-plugin-host.ts
 +++ b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
-@@ -51,6 +51,10 @@ import {
+@@ -54,6 +54,10 @@ import {
  } from "../internal/host-policy.js";
  import type {
    BbPluginApi,
@@ -2543,7 +2511,7 @@ index 591cb4c0629e45185e8610e6cefa753e681b4c9c..93439eea3d0a4cc381aac030609d54e7
    PluginAgentConfiguration,
    PluginAgentConfigurationContext,
    PluginAgentToolContext,
-@@ -2129,6 +2133,25 @@ function createFakePluginHostInternal(
+@@ -1462,6 +1466,25 @@ function createFakePluginHostInternal(
      },
    };
  
@@ -2569,7 +2537,7 @@ index 591cb4c0629e45185e8610e6cefa753e681b4c9c..93439eea3d0a4cc381aac030609d54e7
    const bb: BbPluginApi = {
      pluginId,
      log,
-@@ -2149,6 +2172,7 @@ function createFakePluginHostInternal(
+@@ -1498,6 +1521,7 @@ function createFakePluginHostInternal(
      server,
      hosts,
      experimental_aiServices,
@@ -2578,10 +2546,10 @@ index 591cb4c0629e45185e8610e6cefa753e681b4c9c..93439eea3d0a4cc381aac030609d54e7
        assertLive();
        return sdk;
 diff --git a/packages/sdk/src/areas/threads.ts b/packages/sdk/src/areas/threads.ts
-index 16a00daaf40f2f22782966dc086fd88288bcdc8e..1db1115e4714e21ce8fe5315f5ac12c023eff514 100644
+index 732b81cb4ec7e099f81a3f4c502c36acbd2316a2..53bfac1de831d3fc016bf713d069d3af0cf6e898 100644
 --- a/packages/sdk/src/areas/threads.ts
 +++ b/packages/sdk/src/areas/threads.ts
-@@ -32,6 +32,13 @@ import type {
+@@ -34,6 +34,13 @@ import type {
    ThreadCountQuery,
    ThreadCountResponse,
    ThreadListResponse,
@@ -2595,7 +2563,7 @@ index 16a00daaf40f2f22782966dc086fd88288bcdc8e..1db1115e4714e21ce8fe5315f5ac12c0
    ThreadRunningResponse,
    ThreadOpenResponse,
    ThreadPaneAction,
-@@ -95,6 +102,32 @@ export interface ThreadListArgs {
+@@ -99,6 +106,32 @@ export interface ThreadListArgs {
    unsectioned?: boolean;
  }
  
@@ -2628,7 +2596,7 @@ index 16a00daaf40f2f22782966dc086fd88288bcdc8e..1db1115e4714e21ce8fe5315f5ac12c0
  export interface ThreadSearchArgs extends ThreadSearchQuery {
    signal?: AbortSignal;
  }
-@@ -156,6 +189,8 @@ export type ThreadCountResult = ThreadCountResponse;
+@@ -160,6 +193,8 @@ export type ThreadCountResult = ThreadCountResponse;
   */
  export type ThreadRunningResult = ThreadRunningResponse;
  export type ThreadListResult = ThreadListResponse;
@@ -2637,17 +2605,7 @@ index 16a00daaf40f2f22782966dc086fd88288bcdc8e..1db1115e4714e21ce8fe5315f5ac12c0
  export type ThreadSearchResult = ThreadSearchResponse;
  export type ThreadResolveMentionsResult = ResolveThreadMentionsResponse;
  export interface ThreadOutputResponse {
-@@ -202,7 +237,8 @@ export type ThreadStorageFilesResult = ThreadStorageFileListResponse;
- export type ThreadStorageLocationResult = ThreadStorageLocationResponse;
- export type ThreadStoragePathsResult = ThreadStoragePathListResponse;
- export type ThreadChildSummaryResult = ThreadChildSummaryResponse;
--export type ThreadDefaultExecutionOptionsResult = ResolvedThreadExecutionOptions | null;
-+export type ThreadDefaultExecutionOptionsResult =
-+  ResolvedThreadExecutionOptions | null;
- export type ThreadConversationOutlineResult = ThreadConversationOutlineResponse;
- export type ThreadTimelineTurnSummaryDetailsResult =
-   TimelineTurnSummaryDetailsResponse;
-@@ -547,6 +583,16 @@ export interface ThreadsArea {
+@@ -574,6 +609,16 @@ export interface ThreadsArea {
    queue: ThreadQueueArea;
    interactions: ThreadInteractionsArea;
    list(args?: ThreadListArgs): Promise<ThreadListResult>;
@@ -2664,7 +2622,7 @@ index 16a00daaf40f2f22782966dc086fd88288bcdc8e..1db1115e4714e21ce8fe5315f5ac12c0
    listRunning(args?: { signal?: AbortSignal }): Promise<ThreadRunningResult>;
    markRead(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
    markUnread(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
-@@ -1127,6 +1173,60 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
+@@ -1185,6 +1230,60 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
          ),
        );
      },
@@ -2726,10 +2684,10 @@ index 16a00daaf40f2f22782966dc086fd88288bcdc8e..1db1115e4714e21ce8fe5315f5ac12c0
        return transport.readJson(
          transport.api.v1.threads[":id"].read.$post({
 diff --git a/packages/sdk/test/public-types.test.ts b/packages/sdk/test/public-types.test.ts
-index 2b279c733ca9d80cab64325319a0b9d89a31c318..4b2a49a7f709fca2e7d842f5932cecd03be59b0b 100644
+index 47b5ec96121bc5b1a5bddff6353351cb0e9a00dc..b4998a2e540b52344eacdbbc5118fc5f8b4d4aba 100644
 --- a/packages/sdk/test/public-types.test.ts
 +++ b/packages/sdk/test/public-types.test.ts
-@@ -368,7 +368,10 @@ type ExpectedThreadsKey =
+@@ -379,7 +379,10 @@ type ExpectedThreadsKey =
    | "defaultExecutionOptions"
    | "delete"
    | "editMessage"
@@ -2740,7 +2698,7 @@ index 2b279c733ca9d80cab64325319a0b9d89a31c318..4b2a49a7f709fca2e7d842f5932cecd0
    | "fork"
    | "get"
    | "interactions"
-@@ -382,6 +385,7 @@ type ExpectedThreadsKey =
+@@ -393,6 +396,7 @@ type ExpectedThreadsKey =
    | "pin"
    | "promptHistory"
    | "queue"
@@ -2749,10 +2707,10 @@ index 2b279c733ca9d80cab64325319a0b9d89a31c318..4b2a49a7f709fca2e7d842f5932cecd0
    | "reorderPinned"
    | "resolveMentions"
 diff --git a/packages/server-contract/src/api/threads.ts b/packages/server-contract/src/api/threads.ts
-index 12a01122b9f25c3ee39b50e39f7d5b14ca5d00ab..86029b499ee7a8d109426564e5dbc6a544123006 100644
+index fb9b3106b3e4483223e82e28893342a51bec4276..0a2456743f810c7605090ad17b4208e05f7f602b 100644
 --- a/packages/server-contract/src/api/threads.ts
 +++ b/packages/server-contract/src/api/threads.ts
-@@ -26,6 +26,9 @@ import {
+@@ -28,6 +28,9 @@ import {
    threadTimelineModelFallbackSchema,
    threadTimelinePendingTodosSchema,
    threadEventTypeValues,
@@ -2762,7 +2720,7 @@ index 12a01122b9f25c3ee39b50e39f7d5b14ca5d00ab..86029b499ee7a8d109426564e5dbc6a5
    threadVisibilitySchema,
    threadWithRuntimeSchema,
  } from "@bb/domain";
-@@ -371,6 +374,329 @@ export type SendQueuedMessageResponse = z.infer<
+@@ -413,6 +416,329 @@ export type SendQueuedMessageResponse = z.infer<
  export const threadListResponseSchema = z.array(threadListEntrySchema);
  export type ThreadListResponse = z.infer<typeof threadListResponseSchema>;
  
@@ -3093,10 +3051,10 @@ index 12a01122b9f25c3ee39b50e39f7d5b14ca5d00ab..86029b499ee7a8d109426564e5dbc6a5
  
  export const resolveThreadMentionsRequestSchema = z
 diff --git a/packages/server-contract/src/public-api.ts b/packages/server-contract/src/public-api.ts
-index 305cc443b06be058dc1c29872e9a6963e79b456b..790710b27a600b227abeee18940222a484f82ea6 100644
+index 2c074d47026a58148cdd6424a0ed4d054ca75bb8..b52089edf3f39692b48900dcd56cffdab4346884 100644
 --- a/packages/server-contract/src/public-api.ts
 +++ b/packages/server-contract/src/public-api.ts
-@@ -209,6 +209,14 @@ import type {
+@@ -219,6 +219,14 @@ import type {
    ThreadCountResponse,
    ThreadListQuery,
    ThreadListResponse,
@@ -3111,7 +3069,7 @@ index 305cc443b06be058dc1c29872e9a6963e79b456b..790710b27a600b227abeee18940222a4
    ThreadConversationOutlineResponse,
    ThreadOpenRequest,
    ThreadOpenResponse,
-@@ -331,6 +339,10 @@ import {
+@@ -349,6 +357,10 @@ import {
    threadHostFileContentQuerySchema,
    threadCountQuerySchema,
    threadListQuerySchema,
@@ -3122,7 +3080,7 @@ index 305cc443b06be058dc1c29872e9a6963e79b456b..790710b27a600b227abeee18940222a4
    threadOpenRequestSchema,
    threadPaneActionRequestSchema,
    threadSearchQuerySchema,
-@@ -1067,6 +1079,39 @@ export const publicApiRoutes = {
+@@ -1119,6 +1131,39 @@ export const publicApiRoutes = {
        ),
        response: jsonResponse<ThreadListResponse>(),
      }),

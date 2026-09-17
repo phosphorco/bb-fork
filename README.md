@@ -12,7 +12,7 @@
 
 This is a thin, auditable deployment overlay for [get-bb/bb](https://github.com/get-bb/bb). It does not carry a second copy of upstream source and it does not treat a long-lived Git branch as the release definition.
 
-The current base is exact upstream commit `10bacbc0fb1ead6c1f1a728b395bdb1f60e52f93` (`Skip pnpm install in env setup when node_modules already matches (#3433)`, bb-app 0.42.1). The lock records a reviewed source receipt rather than a moving branch or inferred release tag.
+The current base is exact upstream commit `267938526dfcbc0edb228ce827b5bec202c1af97` (`desktop-v0.43.1`, bb-app 0.43.1). The lock records a reviewed source receipt rather than a moving branch or inferred release tag.
 
 The deployable source is exactly:
 
@@ -47,12 +47,13 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The twenty patches form the current implementation candidate. Patch 4 was
-removed: plugins use upstream `auth: "none"` for routes that validate their own
-connection tokens. Remaining patch filenames retain their stable numbers. Patch 16
-consolidates the previous native identity patches 16–23, including the authored
-minimal sender wrapper. It adds machine attribution and removes native person
-admission callbacks and signed browser lineage while preserving accepted
+The twenty-one patches form the current implementation candidate. Obsolete
+compatibility-only follow-ups were folded into the logical patches they verify,
+and the old timeout-only Pi provider patch was dropped because upstream removed
+that test. Plugins use upstream `auth: "none"` for routes that validate their own
+connection tokens. Patch 15 consolidates the native identity work, including
+the authored minimal sender wrapper. It adds machine attribution and removes
+native person admission callbacks and signed browser lineage while preserving accepted
 original authors, later editors, queue/retry history and native command dispatch.
 The preceding patches retain the independent facet, execution, plugin, Agent
 Connect and editor changes.
@@ -78,13 +79,14 @@ the exact tree in `result-tree.lock`; historical deployments and review
 artifacts are evidence of their own composition, not proof that this candidate
 is active.
 
-Patch 17 automatically selects the installed Tailnet identity provider when
+Patch 16 automatically selects the installed Tailnet identity provider when
 `BB_TAILNET_IDENTITY_OWNED_HOST` already declares the Serve authority. Custom
 `BB_P6R_IDENTITY_BOUNDARY` configuration takes precedence. Ordinary requests
 without person evidence retain machine attribution.
 
-Patch 18 isolates ACP native-root tests from the caller workspace. Patch 23
+Patch 17 isolates ACP native-root tests from the caller workspace. Patch 18
 adds the native sidebar layout-provider seam while retaining the existing
-plugin layout contract. Patch 24 preserves the additive Codex agent-message
-phase. Patch 25 restores the original generic resource-sidebar helper that the
-native Plugins and Skills entries retain.
+plugin layout contract, native behavior, and generic Plugins/Skills resource
+helper. Patch 19 preserves the additive Codex agent-message
+phase. Patch 20 keeps workflow-shell tests independent of ambient loaded state,
+and patch 21 settles virtualized path-browser cleanup.
