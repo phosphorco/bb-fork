@@ -1,4 +1,4 @@
-From 77dd05c5b7cc0276b93db625bdaa9df636872cf4 Mon Sep 17 00:00:00 2001
+From ec1ac87ab99caa7ede1ef8f2421ca659fea08286 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
 Subject: [PATCH 05/21] fix(migrations): include built sidecar migrations
@@ -6,7 +6,10 @@ Subject: [PATCH 05/21] fix(migrations): include built sidecar migrations
 ---
  apps/server/package.json                      |  2 +-
  .../p6r/sidecar-built-artifact.test.ts        | 91 +++++++++++++++++++
- 2 files changed, 92 insertions(+), 1 deletion(-)
+ packages/db/drizzle/meta/_journal.json        |  9 +-
+ packages/db/src/migration-history.ts          |  1 +
+ packages/db/test/migration-journal.test.ts    | 35 ++++---
+ 5 files changed, 123 insertions(+), 15 deletions(-)
  create mode 100644 apps/server/test/services/p6r/sidecar-built-artifact.test.ts
 
 diff --git a/apps/server/package.json b/apps/server/package.json
@@ -119,6 +122,105 @@ index 0000000000000000000000000000000000000000..4b7fa3ef6de18944dc4da0a59caf6217
 +  },
 +  60_000,
 +);
+diff --git a/packages/db/drizzle/meta/_journal.json b/packages/db/drizzle/meta/_journal.json
+index dc22a4ebe619e7a82ac88a1cbb971cb0e384801d..2f8c341f6f2970033db18a778414122b25e497ef 100644
+--- a/packages/db/drizzle/meta/_journal.json
++++ b/packages/db/drizzle/meta/_journal.json
+@@ -834,6 +834,13 @@
+       "when": 1789175706080,
+       "tag": "0118_brave_marvel_zombies",
+       "breakpoints": true
++    },
++    {
++      "idx": 119,
++      "version": "6",
++      "when": 1789068314079,
++      "tag": "0119_soft_pandemic",
++      "breakpoints": true
+     }
+   ]
+-}
+\ No newline at end of file
++}
+diff --git a/packages/db/src/migration-history.ts b/packages/db/src/migration-history.ts
+index dbd4e5896b567ea4031e43e26f8224832b32a326..1bab29a971c473ce027a47ab3b95b6f63e936387 100644
+--- a/packages/db/src/migration-history.ts
++++ b/packages/db/src/migration-history.ts
+@@ -13,6 +13,7 @@ export const publishedMigrationWhens = [
+   { tag: "0000_baseline", when: 1778891867195 },
+   { tag: "0001_terminal_session_user_input", when: 1779139400000 },
+   { tag: "0002_closed_session_prune_indexes", when: 1779139400001 },
++  { tag: "0119_soft_pandemic", when: 1789068314079 },
+ ] as const satisfies readonly PublishedMigrationWhen[];
+ 
+ export const compatibleMigrationHashes = [
+diff --git a/packages/db/test/migration-journal.test.ts b/packages/db/test/migration-journal.test.ts
+index c9768e1d8acc7beb60e970448d4dafc23f975bdf..fa82ea5e322838c97638fd5539fc2071aaaa8e9c 100644
+--- a/packages/db/test/migration-journal.test.ts
++++ b/packages/db/test/migration-journal.test.ts
+@@ -15,10 +15,6 @@ const journalPath = resolve(
+   "meta",
+   "_journal.json",
+ );
+-const latestPublishedMigrationWhen = Math.max(
+-  ...publishedMigrationWhens.map((entry) => entry.when),
+-);
+-
+ interface JournalEntry {
+   idx: number;
+   when: number;
+@@ -55,12 +51,15 @@ function readSnapshot(idx: number): MigrationSnapshot {
+ }
+ 
+ describe("migration journal integrity", () => {
+-  it("has strictly increasing `when` timestamps", () => {
++  it("has increasing `when` timestamps except for carried published migrations", () => {
+     const { entries } = readJournal();
+ 
+     const violations: string[] = [];
+     for (let i = 1; i < entries.length; i++) {
+-      if (entries[i].when <= entries[i - 1].when) {
++      if (
++        entries[i].when <= entries[i - 1].when &&
++        !publishedMigrationWhensByTag.has(entries[i].tag)
++      ) {
+         violations.push(
+           `entries[${i}] ${entries[i].tag} (when=${entries[i].when}) <= ` +
+             `entries[${i - 1}] ${entries[i - 1].tag} (when=${entries[i - 1].when})`,
+@@ -123,16 +122,26 @@ describe("migration journal integrity", () => {
+     expect(violations).toEqual([]);
+   });
+ 
+-  it("keeps new migrations after the published migration history", () => {
++  it("keeps new migrations after the published history preceding them", () => {
+     const { entries } = readJournal();
+ 
+-    const violations = entries
+-      .filter((entry) => !publishedMigrationWhensByTag.has(entry.tag))
+-      .filter((entry) => entry.when <= latestPublishedMigrationWhen)
+-      .map(
+-        (entry) =>
++    const violations: string[] = [];
++    let latestPublishedMigrationWhen = Number.NEGATIVE_INFINITY;
++    for (const entry of entries) {
++      const publishedWhen = publishedMigrationWhensByTag.get(entry.tag);
++      if (publishedWhen !== undefined) {
++        latestPublishedMigrationWhen = Math.max(
++          latestPublishedMigrationWhen,
++          publishedWhen,
++        );
++        continue;
++      }
++      if (entry.when <= latestPublishedMigrationWhen) {
++        violations.push(
+           `${entry.tag} has when=${entry.when}, expected > ${latestPublishedMigrationWhen}`,
+-      );
++        );
++      }
++    }
+ 
+     expect(violations).toEqual([]);
+   });
 -- 
 2.53.0
 
