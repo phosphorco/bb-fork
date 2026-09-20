@@ -56,12 +56,15 @@
 20. **Workflow-shell isolation** keeps shell tests independent of ambient loaded
     state.
 21. **Path-browser cleanup** makes virtualized test teardown deterministic.
+22. **Plugin-route external CORS delegation** lets plugin routes provide their
+    own foreign-origin preflight and response headers without granting that
+    access through the core browser-CORS middleware.
 
 ## Exact source receipt
 
 - Upstream: `267938526dfcbc0edb228ce827b5bec202c1af97` (`desktop-v0.43.1`).
 - Materialized package: `bb-app@0.43.1` plus the reviewed downstream queue.
-- Patch queue: twenty-one logical patches
+- Patch queue: twenty-two logical patches
   in `patches/series`; this queue is the current implementation candidate, while
   running deployments may remain on earlier historical compositions until root-owned
   integration and activation.
