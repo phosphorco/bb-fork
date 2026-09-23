@@ -1,9 +1,10 @@
 # bb-fork
 
 > Policy update — 2026-09-09: the approved [Identities and multiplayer ADR](../docs/adrs/2026-09-identities-and-multiplayer.md)
-> governs this trusted shared deployment. Use verified people when available,
-> applicable carried attribution next, and a stable machine actor otherwise;
-> missing or failed person verification must not block ordinary operations.
+> governs attribution in this trusted shared deployment. Use verified people when
+> available, applicable carried attribution next, and a stable machine actor
+> otherwise. A configured owned Tailnet listener requires verified identity for
+> native public API admission; the separate local listener retains machine attribution.
 > Never relabel fallback as a verified person or redirect pending personal-state
 > writes to another owner. Independent access checks and data validation remain.
 > Earlier rejection requirements below are superseded; versioned API descriptions
@@ -12,7 +13,7 @@
 
 This is a thin, auditable deployment overlay for [get-bb/bb](https://github.com/get-bb/bb). It does not carry a second copy of upstream source and it does not treat a long-lived Git branch as the release definition.
 
-The current base is exact upstream commit `267938526dfcbc0edb228ce827b5bec202c1af97` (`desktop-v0.43.1`, bb-app 0.43.1). The lock records a reviewed source receipt rather than a moving branch or inferred release tag.
+The current base is exact upstream commit `78804e79d280998a3b4c3c965ec1b5845703bc0e`. The lock records a reviewed source receipt rather than a moving branch or inferred release tag.
 
 The deployable source is exactly:
 
@@ -47,7 +48,10 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The twenty-one patches form the current implementation candidate. Obsolete
+The thirty-two patches listed in `patches/series` form the current implementation
+candidate. Queue numbers 0022 and 0027 are intentionally absent: 0022 is a
+historical gap, and the former 0027 Monaco routing backport is supplied by
+upstream commit `283e6d7`. Obsolete
 compatibility-only follow-ups were folded into the logical patches they verify,
 and the old timeout-only Pi provider patch was dropped because upstream removed
 that test. Plugins use upstream `auth: "none"` for routes that validate their own
@@ -90,3 +94,19 @@ plugin layout contract, native behavior, and generic Plugins/Skills resource
 helper. Patch 19 preserves the additive Codex agent-message
 phase. Patch 20 keeps workflow-shell tests independent of ambient loaded state,
 and patch 21 settles virtualized path-browser cleanup.
+Patch 34 requires a verified provider actor before native public API routes run
+through the configured owned Tailnet listener. Plugin HTTP and RPC routes retain
+their own admission rules; local CLI and unconfigured instances retain machine
+attribution.
+
+## Verification boundary for this source receipt
+
+The source receipt is server-scoped, not a claim that every workspace package is
+green. It includes the migration/database suite, server/daemon/CLI typechecks,
+P6R queue and attribution behavior, artifact-v2 CLI behavior, and capped provider
+conformance. The desktop SQLite suite remains host-ineligible without GTK; the
+templates package has a separately diagnosed pack-infrastructure failure; and
+Context Magnet's full direct-plugin suite retains an external Codex router
+launcher-generation digest mismatch. These are explicit release-qualification
+limits, not waived checks, and this selection does not materialize, restart, or
+activate a deployment.

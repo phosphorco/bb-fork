@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+pnpm_bin="${PNPM_BIN:-$(command -v pnpm || true)}"
+if [[ -z "$pnpm_bin" ]]; then
+  pnpm_bin="$(find /home/ubuntu/.local/share/mise/installs/pnpm -maxdepth 2 -type f -name pnpm -perm -u+x | sort | tail -n 1)"
+fi
+test -n "$pnpm_bin"
+node_bin="${NODE_BIN:-}"
+if [[ -z "$node_bin" ]]; then
+  node_bin="$(command -v node || true)"
+fi
+if [[ -z "$node_bin" ]]; then
+  node_bin="/home/ubuntu/.local/share/mise/installs/node/22.19.0/bin/node"
+fi
+if [[ ! -x "$node_bin" ]]; then
+  node_bin="$(find /home/ubuntu/.local/share/mise/installs/node/22.* -maxdepth 3 -type f -name node -perm -u+x | sort | head -n 1)"
+fi
+test -n "$node_bin"
+export PATH="$(dirname "$pnpm_bin"):$(dirname "$node_bin"):$PATH"
+export GOMAXPROCS=2
+verification_root="$(mktemp -d "${BB_THREAD_STORAGE:-/home/ubuntu/.bb/thread-storage}/context-magnet-provider-admission-verify.XXXXXX")"
+output="$verification_root"
+virtual_store="$verification_root/pnpm-store"
+mkdir "$virtual_store"
+turbo_cache="$verification_root/turbo-cache"
+mkdir "$turbo_cache"
+trap 'rm -rf "$verification_root"' EXIT
+git clone --no-hardlinks "$repo_root/upstream" "$output/bb" >/dev/null
+git -C "$output/bb" config user.name 'context-magnet verifier'
+git -C "$output/bb" config user.email 'context-magnet@invalid.local'
+while IFS= read -r patch; do
+  git -C "$output/bb" am --3way --committer-date-is-author-date "$repo_root/patches/$patch" >/dev/null
+done < "$repo_root/patches/series"
+test "$(git -C "$output/bb" rev-parse 'HEAD^{tree}')" = "$(tr -d '[:space:]' < "$repo_root/result-tree.lock")"
+grep -q 'contextMagnetContributionTracePageSchema' "$output/bb/packages/domain/src/context-magnet-contribution-trace.ts"
+grep -q 'experimental_contextMagnetTrace' "$output/bb/packages/plugin-sdk/src/backend-contract.ts"
+grep -q 'context_magnet_contribution_traces' "$output/bb/packages/db/drizzle/0120_"*.sql
+test -s "$output/bb/packages/db/drizzle/meta/0120_snapshot.json"
+grep -q 'receipt_high_water_sequence' "$output/bb/packages/db/drizzle/0121_"*.sql
+test -s "$output/bb/packages/db/drizzle/meta/0121_snapshot.json"
+grep -q 'context_magnet_provider_admission_attempts' "$output/bb/packages/db/drizzle/0122_"*.sql
+grep -q 'context_magnet_provider_admission_sequences' "$output/bb/packages/db/drizzle/0122_"*.sql
+test -s "$output/bb/packages/db/drizzle/meta/0122_snapshot.json"
+grep -q 'threadConstructionResultSchema' "$output/bb/packages/provider-bridge-protocol/src/requests.ts"
+grep -q 'startThreadWithSettlement' "$output/bb/packages/agent-runtime/src/runtime.ts"
+grep -q 'appendContextMagnetProviderAdmissionObservations' "$output/bb/apps/server/src/services/threads/thread-lifecycle.ts"
+cd "$output/bb"
+"$pnpm_bin" install --frozen-lockfile --virtual-store-dir "$virtual_store"
+"$pnpm_bin" exec turbo run --cache-dir "$turbo_cache" typecheck --concurrency=2 --filter=@bb/domain --filter=@bb/db --filter=@bb/provider-bridge-protocol --filter=@bb/agent-runtime --filter=@bb/host-daemon-contract --filter=@bb/host-daemon --filter=@bb/server-contract --filter=@bb/sdk --filter=@bb/server
+"$pnpm_bin" exec turbo run --cache-dir "$turbo_cache" test --concurrency=2 --filter=@bb/domain -- test/context-magnet-contribution-trace.test.ts
+"$pnpm_bin" exec turbo run --cache-dir "$turbo_cache" test --concurrency=2 --filter=@bb/db -- test/data/context-magnet-contribution-traces.test.ts test/schema.test.ts test/migration-journal.test.ts
+"$pnpm_bin" exec turbo run --cache-dir "$turbo_cache" test --concurrency=2 --filter=@bb/server-contract -- test/contract.test.ts
+"$pnpm_bin" exec turbo run --cache-dir "$turbo_cache" test --concurrency=2 --filter=@bb/sdk -- test/sdk.test.ts test/node-entry.test.ts
+"$pnpm_bin" exec turbo run --cache-dir "$turbo_cache" test --concurrency=2 --filter=@bb/server -- test/public/public-thread-data.test.ts test/services/plugins/plugin-agent-tools.test.ts test/services/plugins/plugin-sdk.test.ts test/threads/thread-lifecycle-admission.test.ts
+"$pnpm_bin" exec turbo run --cache-dir "$turbo_cache" test --concurrency=2 --filter=@bb/host-daemon -- src/command-dispatch.test.ts
+"$pnpm_bin" exec turbo run --cache-dir "$turbo_cache" build:types --concurrency=2 --filter=@get-bb/plugin-sdk
+"$pnpm_bin" exec turbo run --cache-dir "$turbo_cache" build --concurrency=2 --filter=@bb/sdk
+"$pnpm_bin" exec turbo run --cache-dir "$turbo_cache" test --concurrency=2 --filter=@get-bb/plugin-sdk -- src/__tests__/context-magnet-host-policy.test.ts src/__tests__/public-types.test.ts src/__tests__/bundled-types.test.ts
+"$pnpm_bin" --filter bb-plugin-provider-codex test src/bridge/app-server-connection.test.ts src/bridge/bridge.admission.test.ts
+echo 'context-magnet provider admission overlay: OK'

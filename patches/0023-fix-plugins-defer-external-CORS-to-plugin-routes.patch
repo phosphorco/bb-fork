@@ -1,19 +1,19 @@
-From 488d4cfb98f37392e311e7ab0c9091c93d67cb9e Mon Sep 17 00:00:00 2001
+From febfcba8b80f81710b81db0b4aae40b8954ad76d Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Fri, 18 Sep 2026 19:25:00 +0200
-Subject: [PATCH 22/22] fix(plugins): defer external CORS to plugin routes
+Subject: [PATCH 22/31] fix(plugins): defer external CORS to plugin routes
 
 ---
- apps/server/src/server.ts                          | 27 ++++----
- .../test/services/plugins/plugin-wire.test.ts      | 81 ++++++++++++++++++++-
- packages/plugin-sdk/src/backend-contract.ts        |  5 ++
- 3 files changed, 100 insertions(+), 13 deletions(-)
+ apps/server/src/server.ts                     | 33 ++++----
+ .../test/services/plugins/plugin-wire.test.ts | 81 ++++++++++++++++++-
+ packages/plugin-sdk/src/backend-contract.ts   |  5 ++
+ 3 files changed, 103 insertions(+), 16 deletions(-)
 
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
-index 7180e3b39..33ab6dbd3 100644
+index 41103376dae4c2841ceb71bbbb7f5ab6fc9c0ad4..295972e36c956fdbb0898b2a9380eeb8a8d2974d 100644
 --- a/apps/server/src/server.ts
 +++ b/apps/server/src/server.ts
-@@ -466,18 +466,21 @@ export function createApp(
+@@ -511,21 +511,24 @@ export function createApp(
      }
      return runEventLoopWork(`${context.req.method} ${path}`, next);
    });
@@ -21,6 +21,9 @@ index 7180e3b39..33ab6dbd3 100644
 -    "*",
 -    cors({
 -      origin: (origin, context) => {
+-        if (context.req.path === "/health") {
+-          return "*";
+-        }
 -        const allowedCorsOrigins = allowedAppOrigins(deps);
 -        const requestOrigin = new URL(context.req.url).origin;
 -        if (origin === requestOrigin || allowedCorsOrigins.has(origin)) {
@@ -31,6 +34,9 @@ index 7180e3b39..33ab6dbd3 100644
 -    }),
 +  const browserCors = cors({
 +    origin: (origin, context) => {
++      if (context.req.path === "/health") {
++        return "*";
++      }
 +      const allowedCorsOrigins = allowedAppOrigins(deps);
 +      const requestOrigin = new URL(context.req.url).origin;
 +      if (origin === requestOrigin || allowedCorsOrigins.has(origin)) {
@@ -48,7 +54,7 @@ index 7180e3b39..33ab6dbd3 100644
    const compressResponse = compress();
    const compressApiJson = apiJsonCompression();
 diff --git a/apps/server/test/services/plugins/plugin-wire.test.ts b/apps/server/test/services/plugins/plugin-wire.test.ts
-index 249aab2bb..c179df800 100644
+index 249aab2bb190683af4bd03ea3543470ac8d4d7f4..c179df800c97b0558ac721feffd26093810b66a5 100644
 --- a/apps/server/test/services/plugins/plugin-wire.test.ts
 +++ b/apps/server/test/services/plugins/plugin-wire.test.ts
 @@ -45,6 +45,18 @@ const WIRE_SOURCE = `
@@ -162,10 +168,10 @@ index 249aab2bb..c179df800 100644
      const notJson = await rpc(harness, "echo", { x: 1 }, { contentType: null });
      expect(notJson.status).toBe(415);
 diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
-index 50cb59809..5d1d1fd8a 100644
+index 08987576293d172c5f4ed022becd2cfff0f0b8df..602c36e0b0b47e3256304a871331575f973eeed1 100644
 --- a/packages/plugin-sdk/src/backend-contract.ts
 +++ b/packages/plugin-sdk/src/backend-contract.ts
-@@ -807,6 +807,11 @@ export interface PluginHttp {
+@@ -840,6 +840,11 @@ export interface PluginHttp {
     * - "token": requires the per-plugin token (`bb plugin token <id>`) via
     *   the x-bb-plugin-token header or ?token=.
     * - "none": no checks — only for signature-verified webhooks.
@@ -179,3 +185,4 @@ index 50cb59809..5d1d1fd8a 100644
      method: string,
 -- 
 2.53.0
+

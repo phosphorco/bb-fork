@@ -1,7 +1,7 @@
-From 1b9f1ef29eea3f3070eff5bbceb41d95377b0935 Mon Sep 17 00:00:00 2001
+From 295c2f0c2190db0c4d828f4f615340ac87a7dcd8 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
-Subject: [PATCH 09/21] fix(auth): enforce the reviewed admission boundary
+Subject: [PATCH 09/31] fix(auth): enforce the reviewed admission boundary
 
 ---
  apps/server/src/routes/plugins.ts             |  13 +-
@@ -15,10 +15,10 @@ Subject: [PATCH 09/21] fix(auth): enforce the reviewed admission boundary
  create mode 100644 apps/server/test/services/plugins/plugin-p6r-admission-boundary.test.ts
 
 diff --git a/apps/server/src/routes/plugins.ts b/apps/server/src/routes/plugins.ts
-index 1d8e8194d8f54808555826ccc288c74d22ad1d54..7a7e586bc2e3cedc1a6a382a74ac046d00dcf076 100644
+index 7afa1d1f922dd2f38789036e34e3653ff08579ba..f419bf64f04535f84d4a473c627d5e2941dca7d2 100644
 --- a/apps/server/src/routes/plugins.ts
 +++ b/apps/server/src/routes/plugins.ts
-@@ -841,10 +841,15 @@ export function registerPluginRoutes(
+@@ -884,10 +884,15 @@ export function registerPluginRoutes(
        },
      );
      if (!outcome.ok) {
@@ -39,10 +39,10 @@ index 1d8e8194d8f54808555826ccc288c74d22ad1d54..7a7e586bc2e3cedc1a6a382a74ac046d
      return context.json({ ok: true, result: outcome.result });
    });
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
-index 1098073b504ada90d49ebf2981c7ead06d1b916b..7f49ee76414d3f18ceedcc34b75bf96e2c44107b 100644
+index 1270c89e82b5af0422c85fbe8b71dfab75ede20e..226d7268325f2ecd1f219d0a96db6acc4546f4f7 100644
 --- a/apps/server/src/server.ts
 +++ b/apps/server/src/server.ts
-@@ -665,6 +665,9 @@ export function createApp(
+@@ -722,6 +722,9 @@ export function createApp(
        forwardRpc: (input) => pluginService.forwardP6rRpc(input),
      },
      now: Date.now,
@@ -105,10 +105,10 @@ index e12c37017be619900f53676753b9ea30d1d4758e..8ba2bcaff79b8eef666531fbe76bb391
        if (captured.ok) { const session = snapshotSession(trusted.session); requests.set(input.request, { scope: captured.scope, session }); scopeSessions.set(captured.scope, session); scopeRequests.set(captured.scope, input.request); }
        return captured;
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index 00ac415f5e52634114f0ad93c210d4ce49b9f5f1..75235569ded7260b4917ebaeed047dc08df5cf8b 100644
+index 6f951bbd741378eae1b602985d3a5892a5b5f04d..b617e7af6bf0a9697268563ddc259d705f073fe3 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
-@@ -145,7 +145,10 @@ import { createPluginRuntime, forgetMutableRoot } from "./plugin-runtime.js";
+@@ -151,7 +151,10 @@ import {
  import { nextCronRunAt, raceTimeout } from "./plugin-time-box.js";
  import { createPluginUpdates } from "./plugin-updates.js";
  import { retainP6rHttpResponse } from "./plugin-p6r-http.js";
@@ -120,7 +120,7 @@ index 00ac415f5e52634114f0ad93c210d4ce49b9f5f1..75235569ded7260b4917ebaeed047dc0
  import type { P6rInvocationScope } from "../p6r/invocation-registry.js";
  
  import type {
-@@ -411,6 +414,26 @@ function throwRpcBoundaryError(error: PluginRpcError): never {
+@@ -458,6 +461,26 @@ function throwRpcBoundaryError(error: PluginRpcError): never {
    throw new PluginRpcBoundaryError(error);
  }
  
@@ -147,7 +147,7 @@ index 00ac415f5e52634114f0ad93c210d4ce49b9f5f1..75235569ded7260b4917ebaeed047dc0
  function normalizeAgentToolResult(
    name: string,
    result: unknown,
-@@ -1789,7 +1812,14 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1879,7 +1902,14 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
              routeClass: binding.routeClass,
            });
            if (!capture.ok) {
@@ -163,7 +163,7 @@ index 00ac415f5e52634114f0ad93c210d4ce49b9f5f1..75235569ded7260b4917ebaeed047dc0
            }
            const abort = () => capture.scope.release();
            context.req.raw.signal.addEventListener("abort", abort, {
-@@ -1881,8 +1911,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1971,8 +2001,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
              handler.outputSchema,
              result,
              "output",
@@ -174,7 +174,7 @@ index 00ac415f5e52634114f0ad93c210d4ce49b9f5f1..75235569ded7260b4917ebaeed047dc0
          }
          if (
            binding.pluginId !== id ||
-@@ -1903,9 +1934,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1993,9 +2024,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
            routeClass: binding.routeClass,
          });
          if (!capture.ok) {
@@ -188,7 +188,7 @@ index 00ac415f5e52634114f0ad93c210d4ce49b9f5f1..75235569ded7260b4917ebaeed047dc0
            });
          }
          let result: unknown;
-@@ -1958,6 +1990,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2048,6 +2080,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
          handler.inputSchema,
          args.input,
          "input",
@@ -196,7 +196,7 @@ index 00ac415f5e52634114f0ad93c210d4ce49b9f5f1..75235569ded7260b4917ebaeed047dc0
        );
        const derived = args.deriveScope(binding.generation);
        if (derived === null) {
-@@ -1983,8 +2016,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2073,8 +2106,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
          handler.outputSchema,
          outcome.value,
          "output",
@@ -628,7 +628,7 @@ index 0000000000000000000000000000000000000000..ff3e9b3240333efe787c4b5009d40400
 +  });
 +});
 diff --git a/packages/plugin-sdk/src/rpc-contract.ts b/packages/plugin-sdk/src/rpc-contract.ts
-index 46d2345ebb06af1299254b9b98815468bb42d55b..f2b9f804af8971ad75329344baabf5193c7df37e 100644
+index 7e1d45a5c97fc10296fe81913f77dc3edac13f54..dbbc0f9f4f41349fdf2a0d026bce764e3b9c6e82 100644
 --- a/packages/plugin-sdk/src/rpc-contract.ts
 +++ b/packages/plugin-sdk/src/rpc-contract.ts
 @@ -14,6 +14,8 @@ export type PluginRpcErrorCode =

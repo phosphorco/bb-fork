@@ -56,16 +56,57 @@
 20. **Workflow-shell isolation** keeps shell tests independent of ambient loaded
     state.
 21. **Path-browser cleanup** makes virtualized test teardown deterministic.
-22. **Plugin-route external CORS delegation** lets plugin routes provide their
+23. **Plugin-route external CORS delegation** lets plugin routes provide their
     own foreign-origin preflight and response headers without granting that
     access through the core browser-CORS middleware.
+24. **Modal Tailnet workload identity** lets Modal sandboxes exchange scoped
+    OIDC tokens for preauthorized ephemeral Tailscale nodes and routes their
+    TCP workloads through the userspace network stack.
+25. **Context Magnet contribution trace API** retains only explicit, bounded
+    host-supplied contribution evidence, with immutable pagination boundaries,
+    redactions, and model-owned receipt-tool consumption evidence. Its Node and
+    plugin-wrapped SDK paths send bounded decimal page limits through the same
+    validated public transport.
+26. **Context Magnet provider admission** retains host-created attempt IDs and
+    append-only constructed, accepted, or failed-settlement observations without
+    treating provider admission as model consumption. Provider acceptance is
+    checkpointed only after a validated non-empty provider ID: JSON-RPC
+    rejection, malformed response, and unavailable bridge settlement remain
+    bounded, while later local bookkeeping cannot contradict an acceptance.
+28. **Versioned lazy frontend artifacts** emit manifest-listed, content-hashed
+    JavaScript and CSS chunks in immutable generations. The server validates
+    every path and file hash, keeps a bounded in-memory generation history for
+    reload races, and reports an expired generation instead of mixing chunks.
+29. **Bounded optional config reload** limits best-effort launcher config reload
+    waits while preserving required-refresh failures and existing no-server
+    fallback behavior.
+30. **Template registry metadata** makes the external scaffold contract request
+    current public registry metadata without changing declared versions,
+    lockfiles, or install-save behavior.
+31. **Bounded first-party conformance replay** limits only the first-party
+    recorded-replay caller, retaining default helper behavior, all recorded
+    cells, per-cell deadlines, and deterministic result order.
+32. **Template pack diagnostics** retain bounded, sanitized child-process
+    receipts for the separately unresolved scaffold-pack infrastructure failure.
+33. **Legacy identity and Context Magnet migration bridge** admits only exact
+    supported historical ledger/schema prefixes, validates the complete target
+    structural contract, and commits bridge schema plus completion state
+    atomically before normal service use.
+34. **Owned Tailnet identity admission** rejects unauthenticated native public
+    API requests on the dedicated listener before route validation and reuses
+    the verified actor for thread authorship. Local CLI stays on a separate
+    loopback listener; plugin HTTP and RPC routes keep their own admission.
+
+Number 22 is intentionally absent: it was a historical queue gap. Number 27 is
+intentionally absent because upstream commit `283e6d7` already supplies the
+former Monaco routing change; it is not replayed downstream.
 
 ## Exact source receipt
 
-- Upstream: `267938526dfcbc0edb228ce827b5bec202c1af97` (`desktop-v0.43.1`).
-- Materialized package: `bb-app@0.43.1` plus the reviewed downstream queue.
-- Patch queue: twenty-two logical patches
-  in `patches/series`; this queue is the current implementation candidate, while
+- Upstream: `78804e79d280998a3b4c3c965ec1b5845703bc0e`.
+- Patch queue: thirty-two logical patches in `patches/series`; numbers 22 and
+  27 are intentionally absent as described above. This queue is the current
+  implementation candidate, while
   running deployments may remain on earlier historical compositions until root-owned
   integration and activation.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
@@ -115,3 +156,15 @@ See [the native identity maintenance note](plans/native-identity-settings-and-au
 for the integration footprint and validation limits. The ordered patch queue
 and result tree are canonical; historical review artifacts are supporting
 evidence, not a second deployment source.
+
+## Candidate verification boundary
+
+The replay receipt covers the server-scoped candidate: the migration/database
+suite, server/daemon/CLI typechecks, P6R queue and attribution behavior,
+artifact-v2 CLI behavior, and capped provider conformance suites. It is not a
+claim that the full workspace graph is green. In particular, desktop SQLite
+testing is host-ineligible without GTK, templates retain a separately diagnosed
+pack-infrastructure failure, and Context Magnet's direct-plugin full suite has
+an external Codex router launcher-generation digest mismatch. Those limitations
+remain release-qualification work; none was skipped, regenerated, or treated as
+evidence that a running deployment has changed.

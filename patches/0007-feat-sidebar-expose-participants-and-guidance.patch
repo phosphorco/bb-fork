@@ -1,7 +1,7 @@
-From 0b011f6a2eeb22d6409646d9f20b7177c659e3e2 Mon Sep 17 00:00:00 2001
+From 3bd4c9b4eb32606ef287ac237f4a91736dbe51ec Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
-Subject: [PATCH 07/21] feat(sidebar): expose participants and guidance
+Subject: [PATCH 07/31] feat(sidebar): expose participants and guidance
 
 ---
  .../src/lib/plugin-sidebar-threads.test.ts    | 22 +++++++
@@ -22,10 +22,10 @@ Subject: [PATCH 07/21] feat(sidebar): expose participants and guidance
  create mode 100644 plugins/bb-guide/skills/bb-plugin-authoring/references/identity-and-native-projections.md
 
 diff --git a/apps/app/src/lib/plugin-sidebar-threads.test.ts b/apps/app/src/lib/plugin-sidebar-threads.test.ts
-index f87ad6c2f004d351f6fa8065e2e75948cf49e887..694a6be745c444906309e28d0466f7ac1907a05b 100644
+index 7978bc1663ff009ea7310541d9fa2eaada0d69cc..c38c0436513b1bb736ff74429c50067365393448 100644
 --- a/apps/app/src/lib/plugin-sidebar-threads.test.ts
 +++ b/apps/app/src/lib/plugin-sidebar-threads.test.ts
-@@ -146,6 +146,28 @@ describe("toPluginSidebarThread", () => {
+@@ -225,6 +225,28 @@ describe("toPluginSidebarThread", () => {
      expect(toPluginSidebarThread(makeThread()).providerId).toBe("codex");
    });
  
@@ -55,17 +55,17 @@ index f87ad6c2f004d351f6fa8065e2e75948cf49e887..694a6be745c444906309e28d0466f7ac
      const mapped = toPluginSidebarThread(
        makeThread({ environmentHostId: "host_1" }),
 diff --git a/apps/app/src/lib/plugin-sidebar-threads.ts b/apps/app/src/lib/plugin-sidebar-threads.ts
-index d221a4eb33d315dc8f6daec1af9f1b68df199696..cceeb1feb20305cc44de87497e71a00525789626 100644
+index 43db673c5281ba2eec7214ace635b3298fd78174..654d0b89781b8f4275d3c8b3b93797097b201e90 100644
 --- a/apps/app/src/lib/plugin-sidebar-threads.ts
 +++ b/apps/app/src/lib/plugin-sidebar-threads.ts
-@@ -43,6 +43,7 @@ export function toPluginSidebarThread(
+@@ -52,6 +52,7 @@ export function toPluginSidebarThread(
      },
      indicator,
      indicatorLabel: getThreadListIndicatorLabel(indicator),
 +    p6rParticipants: entry.p6rParticipants,
      isUnread: !isThreadRead(entry),
      isPinned: entry.pinnedAt !== null,
-     isArchived: entry.archivedAt !== null,
+     pinnedAt: entry.pinnedAt,
 diff --git a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/identity-and-native-projections.md b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/identity-and-native-projections.md
 new file mode 100644
 index 0000000000000000000000000000000000000000..73aeabc7d61ece16d96543d7c7511891c2efde0a
@@ -137,7 +137,7 @@ index 0000000000000000000000000000000000000000..73aeabc7d61ece16d96543d7c7511891
 +- `P6rParticipantProfile`
 +- `P6rPluginRequestContext`
 diff --git a/apps/server/src/services/threads/thread-runtime-display.ts b/apps/server/src/services/threads/thread-runtime-display.ts
-index 8f8c9b3e05efc2399f9df5c962ec11cd4deb3c10..8f281b32692a95bd5314a90356b6572400f68611 100644
+index 4dc73f35993be42beba2f4e5aacc44a7894eefc4..63d8d58c2b83c35539e8088b93c961573d093aa5 100644
 --- a/apps/server/src/services/threads/thread-runtime-display.ts
 +++ b/apps/server/src/services/threads/thread-runtime-display.ts
 @@ -4,6 +4,7 @@ import {
@@ -156,7 +156,7 @@ index 8f8c9b3e05efc2399f9df5c962ec11cd4deb3c10..8f281b32692a95bd5314a90356b65724
    thread: ThreadWithPendingInteractionState;
  }
  
-@@ -566,6 +568,10 @@ export function toThreadListEntryResponses(
+@@ -567,6 +569,10 @@ export function toThreadListEntryResponses(
      deps,
      args.threads,
    );
@@ -167,7 +167,7 @@ index 8f8c9b3e05efc2399f9df5c962ec11cd4deb3c10..8f281b32692a95bd5314a90356b65724
    return args.threads.map((thread) => {
      return toThreadListEntryResponseFromLatestSession({
        activity: activityByThreadId.get(thread.id) ?? EMPTY_THREAD_ACTIVITY,
-@@ -578,6 +584,13 @@ export function toThreadListEntryResponses(
+@@ -579,6 +585,13 @@ export function toThreadListEntryResponses(
            ? null
            : (latestSessionByHostId.get(thread.environmentHostId) ?? null),
        now: args.now,
@@ -181,7 +181,7 @@ index 8f8c9b3e05efc2399f9df5c962ec11cd4deb3c10..8f281b32692a95bd5314a90356b65724
        thread,
      });
    });
-@@ -603,6 +616,7 @@ function toThreadListEntryResponseFromLatestSession(
+@@ -604,6 +617,7 @@ function toThreadListEntryResponseFromLatestSession(
        isWorktree: args.thread.environmentIsWorktree,
      }),
      hasPendingInteraction: args.thread.hasPendingInteraction,
@@ -190,7 +190,7 @@ index 8f8c9b3e05efc2399f9df5c962ec11cd4deb3c10..8f281b32692a95bd5314a90356b65724
        environmentHostId: args.thread.environmentHostId,
        hostConnected: args.hostConnected,
 diff --git a/apps/server/test/services/threads/thread-runtime-display.test.ts b/apps/server/test/services/threads/thread-runtime-display.test.ts
-index 679baab2d116f5b179985c70dd04259b374c5f65..a4d6e7df3171a8b6d19059daa156b84258d12095 100644
+index 80488565430ddad9ab262ac339d0116368b222e5..998382f0d7f5976170bf50a3c0dbbb9f0c0d6cc8 100644
 --- a/apps/server/test/services/threads/thread-runtime-display.test.ts
 +++ b/apps/server/test/services/threads/thread-runtime-display.test.ts
 @@ -15,6 +15,7 @@ import {
@@ -201,7 +201,7 @@ index 679baab2d116f5b179985c70dd04259b374c5f65..a4d6e7df3171a8b6d19059daa156b842
    setQueuedThreadMessageFailureReason,
    upsertHost,
    type DbConnection,
-@@ -441,6 +442,49 @@ describe("thread runtime display", () => {
+@@ -442,6 +443,49 @@ describe("thread runtime display", () => {
      ] satisfies ThreadRuntimeState[]);
    });
  
@@ -252,12 +252,12 @@ index 679baab2d116f5b179985c70dd04259b374c5f65..a4d6e7df3171a8b6d19059daa156b842
      const { db, hostId, hub } = setup();
      const empty = createThreadWithEnvironment({ db, hostId, status: "idle" });
 diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
-index 2ae96a7bcedbea539cb7a45b2d13eb1e9b085fec..340eb1f0ea94c066c69c3c9c0f189d0d8a0e1f19 100644
+index 2c4a6b0c62f81b70dd13814499589f3d607e1950..6bf084e9926c02c5c14a719accbcce758fe7461d 100644
 --- a/docs/api_to_audit.md
 +++ b/docs/api_to_audit.md
-@@ -2985,3 +2985,19 @@ not select a fallback actor.
+@@ -3241,3 +3241,19 @@ retired provider evidence blocks the send.
  Audit provider prepare/publish/retire, ingress ownership, credential selection,
- revocation/deadlines, durable operation finality and exact request/tool linkage.
+ revocation/deadlines, durable operation finality, and exact request/tool linkage.
  Ordinary native UI attribution and presence are separate capabilities.
 +
 +## Plugin presentation compatibility
@@ -300,10 +300,10 @@ index 741625deacd2a17c86d9af5223d3165b3e8d27b7..bb9084fb7992c98565a4fecca1256d31
    return result;
  }
 diff --git a/packages/domain/src/thread.ts b/packages/domain/src/thread.ts
-index 10d6620d1346659c751a67a3a306caf7c94a948f..ffdd3b93aed59ed46dcd12989702327eefe2965c 100644
+index 405edfee51a12f3f6f76560faec7ab23405f677a..4ec925107cc6a95bfc397a790840710cbfb6e156 100644
 --- a/packages/domain/src/thread.ts
 +++ b/packages/domain/src/thread.ts
-@@ -433,6 +433,12 @@ export const threadQueuedWorkValues = ["none", "waiting", "failed"] as const;
+@@ -437,6 +437,12 @@ export const threadQueuedWorkValues = ["none", "waiting", "failed"] as const;
  export const threadQueuedWorkSchema = z.enum(threadQueuedWorkValues);
  export type ThreadQueuedWork = z.infer<typeof threadQueuedWorkSchema>;
  
@@ -316,7 +316,7 @@ index 10d6620d1346659c751a67a3a306caf7c94a948f..ffdd3b93aed59ed46dcd12989702327e
  export const threadListEntrySchema = threadWithRuntimeSchema.extend({
    activity: threadActivityStateSchema,
    queuedWork: threadQueuedWorkSchema,
-@@ -445,5 +451,6 @@ export const threadListEntrySchema = threadWithRuntimeSchema.extend({
+@@ -449,5 +455,6 @@ export const threadListEntrySchema = threadWithRuntimeSchema.extend({
    environmentProviderId: z.string().nullable(),
    environmentIsWorktree: z.boolean().nullable(),
    environmentWorkspaceDisplayKind: environmentWorkspaceDisplayKindSchema,
@@ -324,26 +324,26 @@ index 10d6620d1346659c751a67a3a306caf7c94a948f..ffdd3b93aed59ed46dcd12989702327e
  });
  export type ThreadListEntry = z.infer<typeof threadListEntrySchema>;
 diff --git a/packages/plugin-api-map/src/surfaces.ts b/packages/plugin-api-map/src/surfaces.ts
-index fc446bdd2c7370e03a737507c7608a832002514e..8630c15a69df52a52c1003778dbaa40016287b7c 100644
+index 7a32350dd4d8839450c416ec7103b859539aacf1..d84507ca66ca6c44fecef27369b6d4015ed769d4 100644
 --- a/packages/plugin-api-map/src/surfaces.ts
 +++ b/packages/plugin-api-map/src/surfaces.ts
-@@ -110,6 +110,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
-         apiSymbols: [
-           "PluginThreadListRegistration",
-           "PluginSidebarThreadsState",
+@@ -156,6 +156,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+           "PluginEnvironmentProvidersState",
+           "useSdk",
+           "PluginBrowserBbSdk",
 +          "P6rParticipantProfile",
          ],
          experimental: true,
        },
-@@ -668,6 +669,8 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
-         apiSymbols: [
-           "PluginRpc",
+@@ -799,6 +800,8 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+           "PluginRpcMethodContract",
+           "PluginsArea.experimental_discoverRpc",
            "PluginHttp",
 +          "P6rPluginRequestContext",
 +          "P6rExperimentalPluginRoutes",
            "PluginRealtime",
-           "ExperimentalPluginWebSocket",
-           "ExperimentalPluginWebSocketContext",
+           "useRpc",
+           "PluginRpcClient",
 diff --git a/packages/plugin-sdk/src/__tests__/frontend-exports.test.ts b/packages/plugin-sdk/src/__tests__/frontend-exports.test.ts
 index b025fb20b762a9dba43de87c2a62a5ae34d7c08c..7bf0635c8098981a7896da3461e10bc2aa5eb3d5 100644
 --- a/packages/plugin-sdk/src/__tests__/frontend-exports.test.ts
@@ -370,10 +370,10 @@ index b025fb20b762a9dba43de87c2a62a5ae34d7c08c..7bf0635c8098981a7896da3461e10bc2
      const declarations = await readFile(
        new URL("../../bundled-types/bb-plugin-sdk-app.d.ts", import.meta.url),
 diff --git a/packages/plugin-sdk/src/app-contract.ts b/packages/plugin-sdk/src/app-contract.ts
-index d48cdf6d68254c646106efb0e7415f397a451286..0b786d07187b9dd9a58aa4e42d9001708f86a704 100644
+index 3e22d9388bbf5e9c1f2a732effc797a108d6e865..f16addb3989447041cbae240840ca54a294c4548 100644
 --- a/packages/plugin-sdk/src/app-contract.ts
 +++ b/packages/plugin-sdk/src/app-contract.ts
-@@ -852,6 +852,8 @@ export interface PluginSidebarThread {
+@@ -949,6 +949,8 @@ export interface PluginSidebarThread {
     */
    indicatorLabel: string | null;
  
@@ -381,8 +381,8 @@ index d48cdf6d68254c646106efb0e7415f397a451286..0b786d07187b9dd9a58aa4e42d900170
 +
    isUnread: boolean;
    isPinned: boolean;
-   isArchived: boolean;
-@@ -883,6 +885,13 @@ export interface PluginSidebarThread {
+   /** When the thread was pinned (epoch ms); null when unpinned. */
+@@ -1011,6 +1013,13 @@ export interface PluginSidebarThread {
    latestAttentionAt: number;
  }
  

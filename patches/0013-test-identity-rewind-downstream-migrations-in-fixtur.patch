@@ -1,7 +1,7 @@
-From 403059dca0c1af514c8ade5dd1ae789395304dba Mon Sep 17 00:00:00 2001
+From 6e3c8a31eb71c2f8e8ed1b9173b68d37cffdbfb2 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:46:17 +0200
-Subject: [PATCH 13/21] test(identity): rewind downstream migrations in
+Subject: [PATCH 13/31] test(identity): rewind downstream migrations in
  fixtures
 
 ---
@@ -9,10 +9,10 @@ Subject: [PATCH 13/21] test(identity): rewind downstream migrations in
  1 file changed, 28 insertions(+)
 
 diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
-index 2481ea7109cff1a77747d205e61ec6d2134caaea..193ee2ce312fed316218c9e850761910ad0c201f 100644
+index 6211c0ac05a39ec1f1699885d436f63fc9f4d625..1bfbbead6f5ce35482cd1c436fbfb56c936b087e 100644
 --- a/packages/db/test/migrate.test.ts
 +++ b/packages/db/test/migrate.test.ts
-@@ -721,6 +721,31 @@ function dropMarketplaceStatsColumn(db: DbConnection): void {
+@@ -723,6 +723,31 @@ function dropMarketplaceStatsColumn(db: DbConnection): void {
    }
  }
  
@@ -44,30 +44,30 @@ index 2481ea7109cff1a77747d205e61ec6d2134caaea..193ee2ce312fed316218c9e850761910
  /**
   * Undo migration 0110, the dispatch-queue rework.
   *
-@@ -768,6 +793,7 @@ function rewindEnvironmentProvisioningMigration(db: DbConnection): void {
- 
+@@ -796,6 +821,7 @@ function dropQueuedMessageAttemptColumns(db: DbConnection): void {
  function dropQueueReworkSchema(db: DbConnection): void {
+   dropQueuedMessageAttemptColumns(db);
    rewindEnvironmentProvisioningMigration(db);
 +  dropIdentityKernelSchema(db);
    // Indexes first: SQLite refuses to drop a column an existing index names.
    for (const index of [
      "queued_thread_messages_due_idx",
-@@ -5673,6 +5699,7 @@ describe("environment providers migration", () => {
-   function seedPreProviderEnvironments(db: DbConnection): void {
+@@ -5722,6 +5748,7 @@ describe("environment providers migration", () => {
+     db.$client.prepare("DROP TABLE IF EXISTS ui_preference_defaults").run();
      db.$client.prepare("DROP TABLE ui_preferences").run();
      db.$client.prepare("DROP TABLE retained_event_outputs").run();
 +    dropIdentityKernelSchema(db);
      rewindEnvironmentRowFactsMigration(db);
      rewindEnvironmentProvidersMigration(db);
-     db.$client
-@@ -6089,6 +6116,7 @@ describe("environment and thread startup ownership migration", () => {
+     dropQueuedMessageAttemptColumns(db);
+@@ -6136,6 +6163,7 @@ describe("environment and thread startup ownership migration", () => {
      (phase) => {
        const db = createMigratedConnection();
        try {
 +        dropIdentityKernelSchema(db);
          rewindMachineProvidersMigration(db);
          rewindEnvironmentProvisioningMigration(db);
-         const legacySchema = readFileSync(
+         dropQueuedMessageAttemptColumns(db);
 -- 
 2.53.0
 

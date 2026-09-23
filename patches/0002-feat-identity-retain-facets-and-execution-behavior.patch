@@ -1,20 +1,20 @@
-From 3a214d48bd1553dfec80402127773f0a187aac55 Mon Sep 17 00:00:00 2001
+From b3f1a04239a5cd61520657fefe6144b765776556 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
-Subject: [PATCH 02/21] feat(identity): retain facets and execution behavior
+Subject: [PATCH 02/31] feat(identity): retain facets and execution behavior
 
 ---
  apps/server/src/routes/threads/base.ts        |  34 +
  .../server/src/services/plugins/plugin-api.ts | 212 +++++-
- .../src/services/system/execution-options.ts  |  18 +-
+ .../providers/provider-model-catalog-store.ts |  51 +-
+ .../src/services/system/execution-options.ts  |   7 +-
  .../threads/thread-execution-batch.ts         | 479 +++++++++++++
- .../threads/thread-execution-override.ts      |  63 +-
  .../services/threads/thread-facet-query.ts    | 627 ++++++++++++++++++
+ .../provider-model-catalog-store.test.ts      |  73 ++
  .../test/public/public-thread-facets.test.ts  | 115 ++++
  .../plugins/plugin-authoring-docs.test.ts     |   1 +
  .../threads/thread-execution-batch.test.ts    | 118 ++++
  .../threads/thread-execution-override.test.ts |  24 +
- packages/db/src/data/events.ts                | 128 ++--
  packages/db/src/data/index.ts                 |   3 +
  .../db/src/data/project-execution-defaults.ts |   6 +-
  packages/db/src/data/threads.ts               |  14 +
@@ -25,17 +25,17 @@ Subject: [PATCH 02/21] feat(identity): retain facets and execution behavior
  packages/sdk/test/public-types.test.ts        |   4 +
  packages/server-contract/src/api/threads.ts   | 326 +++++++++
  packages/server-contract/src/public-api.ts    |  45 ++
- 21 files changed, 2369 insertions(+), 56 deletions(-)
+ 21 files changed, 2332 insertions(+), 15 deletions(-)
  create mode 100644 apps/server/src/services/threads/thread-execution-batch.ts
  create mode 100644 apps/server/src/services/threads/thread-facet-query.ts
  create mode 100644 apps/server/test/public/public-thread-facets.test.ts
  create mode 100644 apps/server/test/services/threads/thread-execution-batch.test.ts
 
 diff --git a/apps/server/src/routes/threads/base.ts b/apps/server/src/routes/threads/base.ts
-index 633e75c4719bb2935180e7f8f8733a4e40823920..a819ce1bad46c3fc0ac7020540ab82c2693a6bdc 100644
+index e26770630a79d38b4bbc09890f882f200642c181..63142b207ee8f8f57c5e5d9d68a1386c3527b825 100644
 --- a/apps/server/src/routes/threads/base.ts
 +++ b/apps/server/src/routes/threads/base.ts
-@@ -61,7 +61,15 @@ import {
+@@ -59,7 +59,15 @@ import {
  import { assertValidParentThread } from "../../services/threads/thread-parent.js";
  import { handleThreadOwnershipChange } from "../../services/threads/thread-ownership.js";
  import { applyThreadExecutionOverride } from "../../services/threads/thread-execution-override.js";
@@ -51,7 +51,7 @@ index 633e75c4719bb2935180e7f8f8733a4e40823920..a819ce1bad46c3fc0ac7020540ab82c2
  
  function parseThreadIncludes(query: ThreadGetQuery): Set<ThreadIncludeOption> {
    const includes = new Set<ThreadIncludeOption>();
-@@ -295,6 +303,32 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
+@@ -293,6 +301,32 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
      );
    });
  
@@ -85,13 +85,13 @@ index 633e75c4719bb2935180e7f8f8733a4e40823920..a819ce1bad46c3fc0ac7020540ab82c2
      const searchQuery = query.query.trim();
      if (countNonWhitespaceChars(searchQuery) < 2) {
 diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
-index b7a4c640c8674d173a667b2a55b8925959dfd867..4ec776fa219960a294eba62dd12b31c35dd737de 100644
+index 79a6dd2fd8a5571e22edbbea5b57c7c7897d50ac..a8cdd88b43d5dcbca554e948d8f3e824d7e098a5 100644
 --- a/apps/server/src/services/plugins/plugin-api.ts
 +++ b/apps/server/src/services/plugins/plugin-api.ts
-@@ -6,14 +6,21 @@ import {
- import { createMachineBootstrapApi } from "../machines/bootstrap.js";
- import type { MachineEnrollments } from "../machines/enrollments.js";
+@@ -9,14 +9,21 @@ import type { MachineEnrollments } from "../machines/enrollments.js";
  import { listServerAccessProviders } from "./plugin-server-access-registry.js";
+ import { detachActivePluginToolCallForUserInput } from "./plugin-tool-calls.js";
+ import { fillPluginPresentation } from "./plugin-presentation.js";
 +import { createHash, randomUUID } from "node:crypto";
  import { mkdirSync } from "node:fs";
  import { join } from "node:path";
@@ -110,7 +110,7 @@ index b7a4c640c8674d173a667b2a55b8925959dfd867..4ec776fa219960a294eba62dd12b31c3
    listPluginKvKeys,
    setPluginKvValue,
    type DbConnection,
-@@ -51,6 +58,11 @@ import type {
+@@ -55,6 +62,11 @@ import type {
    PluginAiServiceDeclaration,
    PluginAiServices,
    ExperimentalP6rIdentityProtocol,
@@ -122,7 +122,7 @@ index b7a4c640c8674d173a667b2a55b8925959dfd867..4ec776fa219960a294eba62dd12b31c3
    PluginProviderDeclaration,
    ExperimentalPluginProviderEnvContext,
    ExperimentalPluginProviderEnvEntry,
-@@ -332,7 +344,34 @@ function withPluginThreadAttribution<
+@@ -337,7 +349,34 @@ function withPluginThreadAttribution<
    return { ...args, ...attribution };
  }
  
@@ -158,7 +158,7 @@ index b7a4c640c8674d173a667b2a55b8925959dfd867..4ec776fa219960a294eba62dd12b31c3
    return {
      ...sdk,
      threads: {
-@@ -363,6 +402,12 @@ function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): PluginBbSdk {
+@@ -368,6 +407,12 @@ function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): PluginBbSdk {
        spawn(args: ThreadSpawnArgs) {
          return sdk.threads.spawn(withPluginThreadAttribution(args, pluginId));
        },
@@ -171,7 +171,7 @@ index b7a4c640c8674d173a667b2a55b8925959dfd867..4ec776fa219960a294eba62dd12b31c3
      },
    };
  }
-@@ -555,10 +600,15 @@ export function createPluginApi(options: {
+@@ -560,10 +605,15 @@ export function createPluginApi(options: {
    } = options;
    let invalidated = false;
    let activated = false;
@@ -187,7 +187,7 @@ index b7a4c640c8674d173a667b2a55b8925959dfd867..4ec776fa219960a294eba62dd12b31c3
    const disposeHooks: Array<() => void | Promise<void>> = [];
    const settingsRecord: PluginApiHandle["settings"] = {
      descriptors: {},
-@@ -609,6 +659,149 @@ export function createPluginApi(options: {
+@@ -614,6 +664,149 @@ export function createPluginApi(options: {
      if (invalidated) throw new PluginContextStaleError(pluginId);
    }
  
@@ -337,7 +337,7 @@ index b7a4c640c8674d173a667b2a55b8925959dfd867..4ec776fa219960a294eba62dd12b31c3
    const prefix = `[plugin:${pluginId}]`;
    function emitLog(
      level: "debug" | "info" | "warn" | "error",
-@@ -1305,6 +1498,7 @@ export function createPluginApi(options: {
+@@ -1332,6 +1525,7 @@ export function createPluginApi(options: {
      server,
      hosts,
      experimental_aiServices,
@@ -345,7 +345,7 @@ index b7a4c640c8674d173a667b2a55b8925959dfd867..4ec776fa219960a294eba62dd12b31c3
      ...(p6rIdentity === undefined
        ? {}
        : { experimental_p6rIdentity: p6rIdentity.protocol }),
-@@ -1317,7 +1511,7 @@ export function createPluginApi(options: {
+@@ -1344,7 +1538,7 @@ export function createPluginApi(options: {
              "use it inside handlers, services, or timers, not at factory load time",
          );
        }
@@ -354,7 +354,7 @@ index b7a4c640c8674d173a667b2a55b8925959dfd867..4ec776fa219960a294eba62dd12b31c3
        return wrappedSdk;
      },
      onDispose(hook) {
-@@ -1368,6 +1562,19 @@ export function createPluginApi(options: {
+@@ -1395,6 +1589,19 @@ export function createPluginApi(options: {
        );
        providerRegistrations.flush();
        aiServiceRegistrations.flush();
@@ -374,7 +374,7 @@ index b7a4c640c8674d173a667b2a55b8925959dfd867..4ec776fa219960a294eba62dd12b31c3
        activated = true;
        const cliWarning = cliRecord.registration
          ? pluginCliCollisionWarning(pluginId, cliRecord.registration.name)
-@@ -1402,6 +1609,7 @@ export function createPluginApi(options: {
+@@ -1429,6 +1636,7 @@ export function createPluginApi(options: {
        }
      },
      invalidate() {
@@ -382,77 +382,172 @@ index b7a4c640c8674d173a667b2a55b8925959dfd867..4ec776fa219960a294eba62dd12b31c3
        invalidated = true;
      },
    };
+diff --git a/apps/server/src/services/providers/provider-model-catalog-store.ts b/apps/server/src/services/providers/provider-model-catalog-store.ts
+index 4d9dc521b05253760330278e451b7135fd08b280..80908f6b40e9a4f99f67f4606a007da5d580f1db 100644
+--- a/apps/server/src/services/providers/provider-model-catalog-store.ts
++++ b/apps/server/src/services/providers/provider-model-catalog-store.ts
+@@ -47,7 +47,11 @@ type ProviderModelCatalogFailureCode = Exclude<
+ 
+ export type ProviderModelCatalogAccess =
+   | { kind: "picker" }
+-  | { kind: "validation"; requiredModel: string | null };
++  | {
++      kind: "validation";
++      requiredModel: string | null;
++      forceRefresh?: boolean;
++    };
+ 
+ type ProviderModelCatalogReadResult =
+   | {
+@@ -96,7 +100,7 @@ interface CatalogRefresh {
+   sessionId: string | null;
+   startedAt: number;
+   markedStale: boolean;
+-  promise: Promise<void>;
++  promise: Promise<RefreshResult>;
+ }
+ 
+ interface CatalogEntry {
+@@ -110,6 +114,10 @@ type RefreshSettlement =
+   | { ok: true; models: AvailableModel[]; selectedOnlyModels: AvailableModel[] }
+   | { ok: false; error: unknown };
+ 
++type RefreshResult =
++  | { ok: true }
++  | { ok: false; code: ProviderModelCatalogFailureCode };
++
+ type CatalogDecision =
+   | {
+       kind: "serve";
+@@ -203,6 +211,16 @@ function evaluate(
+   const active = failure !== null && now - failure.failedAt < FAILURE_TTL_MS;
+   if (servable !== null) {
+     const age = now - servable.fetchedAt;
++    if (access.kind === "validation" && access.forceRefresh === true) {
++      if (refreshed && failure !== null) {
++        return {
++          kind: "serve",
++          result: { kind: "error", code: failure.code },
++          backgroundRefresh: false,
++        };
++      }
++      if (!refreshed) return { kind: "wait" };
++    }
+     if (
+       access.kind === "validation" &&
+       !refreshed &&
+@@ -361,7 +379,7 @@ export function createProviderModelCatalogStore(options: {
+     entry: CatalogEntry,
+     refresh: CatalogRefresh,
+     settlement: RefreshSettlement,
+-  ): void {
++  ): RefreshResult {
+     const { hostId, providerId, scopeKey } = entry.key;
+     const now = options.now();
+     const log = (
+@@ -381,7 +399,7 @@ export function createProviderModelCatalogStore(options: {
+     };
+     if (entry.refresh !== refresh) {
+       log("info", { outcome: "superseded", changed: false });
+-      return;
++      return { ok: false, code: "failed" };
+     }
+     entry.refresh = null;
+     const before = pickerView(entry, refresh.fingerprint);
+@@ -418,7 +436,7 @@ export function createProviderModelCatalogStore(options: {
+           changed: false,
+           ...errorFields,
+         });
+-        return;
++        return { ok: false, code: "failed" };
+       }
+       const code =
+         error instanceof ApiError &&
+@@ -438,6 +456,9 @@ export function createProviderModelCatalogStore(options: {
+       schedulePush(deps, hostId);
+     }
+     log(level, { ...fields, changed });
++    return settlement.ok
++      ? { ok: true }
++      : { ok: false, code: entry.failure?.code ?? "failed" };
+   }
+ 
+   function startRefresh(
+@@ -445,14 +466,14 @@ export function createProviderModelCatalogStore(options: {
+     entry: CatalogEntry,
+     fingerprint: string,
+     bridgeLaunch: HostDaemonBridgeLaunch,
+-  ): Promise<void> {
++  ): Promise<RefreshResult> {
+     const { hostId, providerId, scopeKey } = entry.key;
+     const refresh: CatalogRefresh = {
+       fingerprint,
+       sessionId: deps.hub.getDaemonSessionIdForHost(hostId),
+       startedAt: options.now(),
+       markedStale: false,
+-      promise: Promise.resolve(),
++      promise: Promise.resolve({ ok: false, code: "failed" }),
+     };
+     entry.refresh = refresh;
+     refresh.promise = callHostOnlineRpc(deps, {
+@@ -481,7 +502,7 @@ export function createProviderModelCatalogStore(options: {
+     entry: CatalogEntry,
+     fingerprint: string,
+     bridgeLaunch: HostDaemonBridgeLaunch,
+-  ): Promise<void> {
++  ): Promise<RefreshResult> {
+     return entry.refresh?.fingerprint === fingerprint
+       ? entry.refresh.promise
+       : startRefresh(deps, entry, fingerprint, bridgeLaunch);
+@@ -519,7 +540,19 @@ export function createProviderModelCatalogStore(options: {
+           }
+           return decision.result;
+         }
+-        await joinOrStartRefresh(deps, entry, fingerprint, bridgeLaunch);
++        const refresh = await joinOrStartRefresh(
++          deps,
++          entry,
++          fingerprint,
++          bridgeLaunch,
++        );
++        if (
++          args.access.kind === "validation" &&
++          args.access.forceRefresh === true &&
++          !refresh.ok
++        ) {
++          return { kind: "error", code: refresh.code };
++        }
+       }
+     },
+ 
 diff --git a/apps/server/src/services/system/execution-options.ts b/apps/server/src/services/system/execution-options.ts
-index ea82c76ccc039f9b0662c2f25f6a632ccf334055..96bd207321b80743b62fd42923a39165b06b4f45 100644
+index 8e61b9daf4d7d21c80d3b84b7e46e680278ba1df..b217c069afe7020f50f5b7e06c5af311e02e34e5 100644
 --- a/apps/server/src/services/system/execution-options.ts
 +++ b/apps/server/src/services/system/execution-options.ts
-@@ -47,6 +47,7 @@ interface BuildModelLoadErrorArgs {
+@@ -48,6 +48,7 @@ interface BuildModelLoadErrorArgs {
  
  interface ResolveSystemProviderModelsArgs {
    cwd?: string;
-+  fresh?: boolean;
++  forceRefresh?: boolean;
    hostId: string;
    providerId: string;
  }
-@@ -320,6 +321,7 @@ export async function resolveSystemProviderModels(
- 
-   const result = await loadSystemProviderModels(deps, {
-     ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
-+    ...(args.fresh === undefined ? {} : { fresh: args.fresh }),
+@@ -301,7 +302,11 @@ export async function resolveSystemProviderModels(
+     cwd: args.cwd ?? null,
      hostId: args.hostId,
      provider,
+-    access: { kind: "validation", requiredModel: null },
++    access: {
++      kind: "validation",
++      requiredModel: null,
++      forceRefresh: args.forceRefresh,
++    },
    });
-@@ -539,10 +541,12 @@ async function loadSystemProviderModels(
-   deps: LoggedWorkSessionDeps,
-   {
-     cwd,
-+    fresh,
-     hostId,
-     provider,
-   }: {
-     cwd?: string;
-+    fresh?: boolean;
-     hostId: string;
-     provider: ProviderInfo;
-   },
-@@ -565,7 +569,7 @@ async function loadSystemProviderModels(
-   try {
-     const { models, selectedOnlyModels } = await listProviderModelsMemoized(
-       deps,
--      { command, hostId },
-+      { command, fresh, hostId },
-     );
-     return {
-       models,
-@@ -609,7 +613,15 @@ type ProviderListModelsCommand = Extract<
- 
- async function listProviderModelsMemoized(
-   deps: LoggedWorkSessionDeps,
--  { command, hostId }: { command: ProviderListModelsCommand; hostId: string },
-+  {
-+    command,
-+    fresh,
-+    hostId,
-+  }: {
-+    command: ProviderListModelsCommand;
-+    fresh?: boolean;
-+    hostId: string;
-+  },
- ): Promise<ProviderModelListMemoValue> {
-   const probe = (): Promise<ProviderModelListMemoValue> =>
-     callHostRetryableOnlineRpc(deps, {
-@@ -618,7 +630,7 @@ async function listProviderModelsMemoized(
-       command,
-     });
-   const daemonSessionId = deps.hub.getDaemonSessionIdForHost(hostId);
--  if (daemonSessionId === null) {
-+  if (fresh === true || daemonSessionId === null) {
-     return probe();
-   }
-   const memoKey = JSON.stringify([
+   const { models, selectedOnlyModels } = appendCustomModels(
+     deps.providerRegistry,
 diff --git a/apps/server/src/services/threads/thread-execution-batch.ts b/apps/server/src/services/threads/thread-execution-batch.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..4ee408534e076eb0a908c2d7b7f1869f2319eaf6
+index 0000000000000000000000000000000000000000..dc4998cdf997834a11b0cce06e1b9712a88d061f
 --- /dev/null
 +++ b/apps/server/src/services/threads/thread-execution-batch.ts
 @@ -0,0 +1,479 @@
@@ -582,7 +677,7 @@ index 0000000000000000000000000000000000000000..4ee408534e076eb0a908c2d7b7f1869f
 +async function catalogs(
 +  deps: LoggedWorkSessionDeps,
 +  rows: readonly ThreadExecutionProjectionRow[],
-+  fresh = false,
++  forceRefresh = false,
 +) {
 +  const routes = new Map<string, Route>();
 +  const byThread = new Map<string, Route>();
@@ -610,7 +705,7 @@ index 0000000000000000000000000000000000000000..4ee408534e076eb0a908c2d7b7f1869f
 +        const response = await resolveSystemProviderModels(deps, {
 +          providerId: value.providerId,
 +          hostId: value.hostId,
-+          fresh,
++          forceRefresh,
 +          ...(value.workspacePath === null ? {} : { cwd: value.workspacePath }),
 +        });
 +        const models = [...response.models, ...response.selectedOnlyModels];
@@ -935,130 +1030,6 @@ index 0000000000000000000000000000000000000000..4ee408534e076eb0a908c2d7b7f1869f
 +    ),
 +  };
 +}
-diff --git a/apps/server/src/services/threads/thread-execution-override.ts b/apps/server/src/services/threads/thread-execution-override.ts
-index bdff65d00336fe819e11bd90ba8c3076f162b37e..2fb5d6cb40df82b4ad4707fcee21d21a2bdd56cc 100644
---- a/apps/server/src/services/threads/thread-execution-override.ts
-+++ b/apps/server/src/services/threads/thread-execution-override.ts
-@@ -1,5 +1,6 @@
- import {
-   getProjectExecutionDefaults,
-+  getEnvironment,
-   getThreadExecutionOverride,
-   setThreadExecutionOverride,
-   type ThreadExecutionOverride,
-@@ -14,7 +15,8 @@ import {
- import { ApiError } from "../../errors.js";
- import type { LoggedWorkSessionDeps } from "../../types.js";
- import type { ProviderRegistryService } from "../providers/provider-registry.js";
--import { resolveSystemExecutionOptions } from "../system/execution-options.js";
-+import { resolveSystemProviderModels } from "../system/execution-options.js";
-+import { resolveSystemLookupHostId } from "../system/host-lookup.js";
- import { getLastExecutionOptions } from "./thread-events.js";
- import { getSupportedReasoningLevelsForProvider } from "./thread-reasoning-policy.js";
- 
-@@ -56,24 +58,39 @@ export function resolveThreadExecutionOverrideUpdate(
-     if (patch.model === null || patch.model === undefined) {
-       nextModel = null;
-     } else {
--      const target = models.find(
-+      const targets = models.filter(
-         (candidate) => candidate.model === patch.model,
-       );
--      if (!target) {
-+      if (targets.length === 0) {
-         throw new ApiError(
-           400,
-           "invalid_request",
-           `Model "${patch.model}" is not available in this thread's ${providerId} model catalog. Choose a model offered by ${providerId}; changing providers requires starting a new thread.`,
-         );
-       }
-+      if (targets.length > 1) {
-+        throw new ApiError(
-+          400,
-+          "invalid_request",
-+          `Model "${patch.model}" is ambiguous in this thread's ${providerId} model catalog. Refresh the catalog or choose a uniquely identified model.`,
-+        );
-+      }
-       nextModel = patch.model;
-     }
-   }
- 
-   const effectiveModel = nextModel ?? fallbackModel;
--  const effectiveModelEntry = effectiveModel
--    ? models.find((candidate) => candidate.model === effectiveModel)
--    : undefined;
-+  const effectiveModelEntries = effectiveModel
-+    ? models.filter((candidate) => candidate.model === effectiveModel)
-+    : [];
-+  if (effectiveModelEntries.length > 1) {
-+    throw new ApiError(
-+      400,
-+      "invalid_request",
-+      `Model "${effectiveModel}" is ambiguous in this thread's ${providerId} model catalog. Refresh the catalog or choose a uniquely identified model.`,
-+    );
-+  }
-+  const effectiveModelEntry = effectiveModelEntries[0];
-   const supportedReasoning: readonly ReasoningLevel[] = effectiveModelEntry
-     ? effectiveModelEntry.supportedReasoningEfforts.map(
-         (effort) => effort.reasoningEffort,
-@@ -132,11 +149,23 @@ export async function applyThreadExecutionOverride(
-     fallbackModel: resolveFallbackModel(deps, thread),
-   });
- 
--  setThreadExecutionOverride(deps.db, {
-+  if (
-+    existing.modelOverride === next.modelOverride &&
-+    existing.reasoningLevelOverride === next.reasoningLevelOverride
-+  ) {
-+    return;
-+  }
-+  const updated = setThreadExecutionOverride(deps.db, {
-     threadId: thread.id,
-     modelOverride: next.modelOverride,
-     reasoningLevelOverride: next.reasoningLevelOverride,
-   });
-+  if (!updated) {
-+    throw new ApiError(404, "thread_not_found", "Thread not found");
-+  }
-+  deps.hub.notifyThread(thread.id, ["execution-options-changed"], {
-+    projectId: thread.projectId,
-+  });
- }
- 
- export async function recoverThreadModelOverride(
-@@ -173,10 +202,20 @@ async function loadThreadProviderModels(
-   deps: LoggedWorkSessionDeps,
-   thread: Thread,
- ): Promise<readonly AvailableModel[]> {
--  const result = await resolveSystemExecutionOptions(deps, {
-+  const environment =
-+    thread.environmentId === null
-+      ? null
-+      : getEnvironment(deps.db, thread.environmentId);
-+  const hostId = resolveSystemLookupHostId(deps, {
-+    ...(thread.environmentId === null
-+      ? {}
-+      : { environmentId: thread.environmentId }),
-+  });
-+  const result = await resolveSystemProviderModels(deps, {
-     providerId: thread.providerId,
--    ...(thread.environmentId !== null
--      ? { environmentId: thread.environmentId }
-+    hostId,
-+    ...(environment?.path
-+      ? { cwd: environment.path }
-       : {}),
-   });
-   if (result.modelLoadError !== null) {
-@@ -200,5 +239,7 @@ function resolveFallbackModel(
-   const projectDefaults = getProjectExecutionDefaults(deps.db, {
-     projectId: thread.projectId,
-   });
--  return projectDefaults?.model ?? null;
-+  return projectDefaults?.providerId === thread.providerId
-+    ? projectDefaults.model
-+    : null;
- }
 diff --git a/apps/server/src/services/threads/thread-facet-query.ts b/apps/server/src/services/threads/thread-facet-query.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..625fa6192508641f9fd4e3651af5093960b38d05
@@ -1692,6 +1663,97 @@ index 0000000000000000000000000000000000000000..625fa6192508641f9fd4e3651af50939
 +          ),
 +  };
 +}
+diff --git a/apps/server/test/providers/provider-model-catalog-store.test.ts b/apps/server/test/providers/provider-model-catalog-store.test.ts
+index 1f5b011097165c26a208658076992ae66e583baa..e045fdb5cb8417ecf5e86b42b3867854bfb8e7b4 100644
+--- a/apps/server/test/providers/provider-model-catalog-store.test.ts
++++ b/apps/server/test/providers/provider-model-catalog-store.test.ts
+@@ -121,6 +121,13 @@ function setupCatalogHost(
+           : { environmentId, providerId },
+       );
+     },
++    forceRead(providerId: string) {
++      return resolveSystemProviderModels(harness.deps, {
++        hostId: host.id,
++        providerId,
++        forceRefresh: true,
++      });
++    },
+   };
+ }
+ 
+@@ -288,6 +295,72 @@ describe("provider model catalog store", () => {
+     });
+   });
+ 
++  it("coalesces forced validation refreshes without invalidating another route", async () => {
++    await withTestHarness(async (harness) => {
++      const host = setupCatalogHost(harness, { id: "host-catalog-forced" });
++      await host.read("claude-code");
++      await host.read("codex");
++      const held = createDeferredPromise<HostRpcHandlerResult>();
++      host.setAnswer((command) =>
++        command.providerId === "claude-code"
++          ? held.promise
++          : catalogAnswer(modelList("unexpected")),
++      );
++
++      const first = host.forceRead("claude-code");
++      const second = host.forceRead("claude-code");
++      await vi.waitFor(() => {
++        expect(host.listRequests("claude-code")).toHaveLength(2);
++      });
++      expect(host.listRequests("codex")).toHaveLength(1);
++      expect(modelIds(await host.read("codex"))).toEqual(["codex-model"]);
++      expect(host.listRequests("codex")).toHaveLength(1);
++
++      held.resolve(catalogAnswer(modelList("claude-forced")));
++      expect(modelIds(await first)).toEqual(["claude-forced"]);
++      expect(modelIds(await second)).toEqual(["claude-forced"]);
++      expect(host.listRequests("claude-code")).toHaveLength(2);
++    });
++  });
++
++  it("fails a forced validation refresh without poisoning the ordinary cached reader", async () => {
++    await withTestHarness(async (harness) => {
++      const host = setupCatalogHost(harness, { id: "host-catalog-forced-failure" });
++      await host.read("claude-code");
++      host.setAnswer(() => errorAnswer("command_failed"));
++
++      const forced = await host.forceRead("claude-code");
++      expect(forced.modelLoadError).toEqual({
++        providerId: "claude-code",
++        code: "failed",
++      });
++      expect(modelIds(forced)).toEqual(fallbackModelIds(harness, "claude-code"));
++      expect(modelIds(await host.read("claude-code"))).toEqual([
++        "claude-code-model",
++      ]);
++    });
++  });
++
++  it("fails a forced refresh cancelled by a session replacement without accepting stale input", async () => {
++    await withTestHarness(async (harness) => {
++      const host = setupCatalogHost(harness, { id: "host-catalog-forced-cancel" });
++      await host.read("claude-code");
++      const held = createDeferredPromise<HostRpcHandlerResult>();
++      host.setAnswer(() => held.promise);
++
++      const forced = host.forceRead("claude-code");
++      await vi.waitFor(() => {
++        expect(host.listRequests("claude-code")).toHaveLength(2);
++      });
++      host.connect(seedSession(harness.deps, host.hostId).id);
++      held.resolve(errorAnswer("command_failed"));
++      expect((await forced).modelLoadError?.code).toBe("failed");
++      expect(modelIds(await host.read("claude-code"))).toEqual([
++        "claude-code-model",
++      ]);
++    });
++  });
++
+   it.each([
+     {
+       label: "fails",
 diff --git a/apps/server/test/public/public-thread-facets.test.ts b/apps/server/test/public/public-thread-facets.test.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..ce83a1800dac8ec24752592a3b36b64c89b02306
@@ -1814,10 +1876,10 @@ index 0000000000000000000000000000000000000000..ce83a1800dac8ec24752592a3b36b64c
 +  });
 +});
 diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-index b46a55e3434d628a86c8cff7239964395219454b..51ead32c80f5e6f35aa5ef79777f8dc37fe9421d 100644
+index a5059d9e83ea9f76b7ab3b4d576e577a2b2d66f9..08fa3d3f59bbd44e455a025f85631446fa0c7c46 100644
 --- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
 +++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-@@ -165,6 +165,7 @@ const BB_PLUGIN_API_KEYS = [
+@@ -166,6 +166,7 @@ const BB_PLUGIN_API_KEYS = [
    "server",
    "hosts",
    "experimental_aiServices",
@@ -1827,7 +1889,7 @@ index b46a55e3434d628a86c8cff7239964395219454b..51ead32c80f5e6f35aa5ef79777f8dc3
    "experimental_machines",
 diff --git a/apps/server/test/services/threads/thread-execution-batch.test.ts b/apps/server/test/services/threads/thread-execution-batch.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..f39afb15fa33ff4eb1bf35a19ca45a5ff852f5d2
+index 0000000000000000000000000000000000000000..f2687328882add2b6ed7b1dd36fb6f907db3c97f
 --- /dev/null
 +++ b/apps/server/test/services/threads/thread-execution-batch.test.ts
 @@ -0,0 +1,118 @@
@@ -1849,7 +1911,7 @@ index 0000000000000000000000000000000000000000..f39afb15fa33ff4eb1bf35a19ca45a5f
 +import { withTestHarness } from "../../helpers/test-app.js";
 +
 +describe("thread execution override batches", () => {
-+  it("rejects a token that expires while the fresh catalog is loading", async () => {
++  it("rejects a token that expires while the apply catalog reread is loading", async () => {
 +    await withTestHarness(async (harness) => {
 +      const { host, session } = seedHostSession(harness.deps, { id: "host-execution-expiry" });
 +      const { project } = seedProjectWithSource(harness.deps, { hostId: host.id, path: "/tmp/thread-execution-expiry" });
@@ -1886,7 +1948,7 @@ index 0000000000000000000000000000000000000000..f39afb15fa33ff4eb1bf35a19ca45a5f
 +    });
 +  });
 +
-+  it("rejects a token when provider registration changes during fresh catalog loading", async () => {
++  it("rejects a token when provider registration changes during apply catalog reread", async () => {
 +    await withTestHarness(async (harness) => {
 +      const { host, session } = seedHostSession(harness.deps, { id: "host-execution-generation" });
 +      const { project } = seedProjectWithSource(harness.deps, { hostId: host.id, path: "/tmp/thread-execution-generation" });
@@ -1918,7 +1980,7 @@ index 0000000000000000000000000000000000000000..f39afb15fa33ff4eb1bf35a19ca45a5f
 +    });
 +  });
 +
-+  it("rejects a retired model from the same host session during fresh apply", async () => {
++  it("rejects a retired model from the same host session during apply catalog reread", async () => {
 +    await withTestHarness(async (harness) => {
 +      const { host, session } = seedHostSession(harness.deps, { id: "host-execution-retirement" });
 +      const { project } = seedProjectWithSource(harness.deps, { hostId: host.id, path: "/tmp/thread-execution-retirement" });
@@ -1991,315 +2053,29 @@ index f46a783271051fce3e0b4c3d712ce226a7a35fd8..a299f8929254ba9de843877773795819
    it("leaves an unspecified field unchanged", () => {
      expect(
        resolveThreadExecutionOverrideUpdate(registry, {
-diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
-index a8c687ffa370362e8d00984114ed5b7810159454..0fadaac607ed2ddf58700cb94afbeeabf1088827 100644
---- a/packages/db/src/data/events.ts
-+++ b/packages/db/src/data/events.ts
-@@ -89,7 +89,9 @@ export function queryInSqliteVariableBatches<TValue, TRow>(
-   args: QueryInSqliteVariableBatchesArgs<TValue, TRow>,
- ): TRow[] {
-   const values = [
--    ...new Map(args.values.map((value) => [args.dedupeKey(value), value])).values(),
-+    ...new Map(
-+      args.values.map((value) => [args.dedupeKey(value), value]),
-+    ).values(),
-   ];
-   if (values.length === 0) {
-     return [];
-@@ -200,10 +202,7 @@ interface ItemLifecycleLookupKey {
- }
- 
- interface LatestItemLifecycleRow extends ItemLifecycleLookupKey {
--  type:
--    | "item/started"
--    | "item/completed"
--    | "item/backgroundTask/completed";
-+  type: "item/started" | "item/completed" | "item/backgroundTask/completed";
- }
- 
- const TERMINAL_ITEM_EVENT_TYPES = [
-@@ -319,6 +318,10 @@ export interface StoredTurnRequestEventRow {
-   type: ThreadEventType;
- }
- 
-+export interface ListLastStoredTurnRequestEventsByThreadIdsArgs {
-+  threadIds: readonly string[];
-+}
-+
- export interface CompletedStoredTurnRow {
-   threadId: string;
-   turnId: string;
-@@ -558,11 +561,13 @@ function listStoredTurnStartedKeySet(
-   );
- }
- 
--const ORPHAN_DROPPABLE_TURN_EVENT_TYPES: ReadonlySet<ThreadEventType> = new Set([
--  "thread/tokenUsage/updated",
--  "thread/contextWindowUsage/updated",
--  "provider/unhandled",
--]);
-+const ORPHAN_DROPPABLE_TURN_EVENT_TYPES: ReadonlySet<ThreadEventType> = new Set(
-+  [
-+    "thread/tokenUsage/updated",
-+    "thread/contextWindowUsage/updated",
-+    "provider/unhandled",
-+  ],
-+);
- 
- type DaemonTurnStartDisposition =
-   | "append"
-@@ -599,7 +604,9 @@ function resolveDaemonTurnStartDisposition(
-   });
- }
- 
--function isStoredEventPayload(value: unknown): value is Record<string, unknown> {
-+function isStoredEventPayload(
-+  value: unknown,
-+): value is Record<string, unknown> {
-   return typeof value === "object" && value !== null && !Array.isArray(value);
- }
- 
-@@ -700,7 +707,9 @@ function listThreadSearchSegmentsForThreadEvent(args: {
-   }
- }
- 
--function parseDaemonThreadEvent(input: AppendDaemonEventInput): ThreadEvent | null {
-+function parseDaemonThreadEvent(
-+  input: AppendDaemonEventInput,
-+): ThreadEvent | null {
-   let data: unknown;
-   try {
-     data = JSON.parse(input.data);
-@@ -752,10 +761,7 @@ export function appendDaemonEventsInTransaction(
-     collectDaemonTurnStartLookupKeys(eventInputs),
-   );
-   const settledItemKeys = new Set(
--    listLatestItemLifecycleRows(
--      db,
--      collectTerminalItemLookupKeys(eventInputs),
--    )
-+    listLatestItemLifecycleRows(db, collectTerminalItemLookupKeys(eventInputs))
-       .filter((row) => isTerminalItemEventType(row.type))
-       .map(buildItemLifecycleKey),
-   );
-@@ -1451,7 +1457,8 @@ export function listLatestThreadStateEventRowsByThreadIds(
-       return db
-         .select(storedEventRowFields)
-         .from(events)
--        .where(sql`${events}.rowid IN (
-+        .where(
-+          sql`${events}.rowid IN (
-         SELECT latest_state.rowid
-         FROM ${events} AS latest_state INDEXED BY events_thread_state_thread_sequence_idx
-         WHERE latest_state.thread_id IN (${threadIdList})
-@@ -1463,7 +1470,8 @@ export function listLatestThreadStateEventRowsByThreadIds(
-               AND candidate.type ${stateTypesPredicate}
-               AND ${kindPredicate}
-           )
--      )`)
-+      )`,
-+        )
-         .all();
-     },
- 
-@@ -1655,7 +1663,9 @@ export function listStoredDelegatingItemRowsByItemIds(
-   }
- 
-   return db
--    .select(storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars))
-+    .select(
-+      storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars),
-+    )
-     .from(events)
-     .where(
-       and(
-@@ -1806,7 +1816,9 @@ export function listStoredItemLifecycleRowsByItems(
-   }
- 
-   return db
--    .select(storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars))
-+    .select(
-+      storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars),
-+    )
-     .from(events)
-     .where(
-       and(
-@@ -1860,7 +1872,9 @@ export function listStoredClientTurnRequestIdsInRange(
- ): ClientTurnRequestId[] {
-   const rows = db
-     .select({
--      requestId: sql<string | null>`json_extract(${events.data}, '$.requestId')`,
-+      requestId: sql<
-+        string | null
-+      >`json_extract(${events.data}, '$.requestId')`,
-     })
-     .from(events)
-     .where(
-@@ -1884,7 +1898,9 @@ export function getStoredTurnRequestEventForTurn(
-   const acceptedInput =
-     db
-       .select({
--        clientRequestId: sql<string | null>`json_extract(${events.data}, '$.clientRequestId')`,
-+        clientRequestId: sql<
-+          string | null
-+        >`json_extract(${events.data}, '$.clientRequestId')`,
-       })
-       .from(events)
-       .where(
-@@ -2223,8 +2239,7 @@ export function listLatestOpenBackgroundTaskStateRowsForThread(
-   args: ListLatestOpenBackgroundTaskStateRowsForThreadArgs,
- ): StoredEventRow[] {
-   const startedType = "item/started" satisfies ThreadEventType;
--  const progressType =
--    "item/backgroundTask/progress" satisfies ThreadEventType;
-+  const progressType = "item/backgroundTask/progress" satisfies ThreadEventType;
-   const completedType =
-     "item/backgroundTask/completed" satisfies ThreadEventType;
-   const completed = alias(events, "completed_background_task_state");
-@@ -2389,9 +2404,7 @@ function listStoredTurnStartedKeysChunk(
-     .all();
- 
-   return rows.flatMap((row) =>
--    row.turnId === null
--      ? []
--      : [{ threadId: row.threadId, turnId: row.turnId }],
-+    row.turnId === null ? [] : [{ threadId: row.threadId, turnId: row.turnId }],
-   );
- }
- 
-@@ -2933,8 +2946,7 @@ export function findStoredTimelineWindowByteBudgetFloor(
-   const query = db
-     .select({
-       createdAt: events.createdAt,
--      dataBytes:
--        sql<number>`length(CAST(${data} AS BLOB))`.as("data_bytes"),
-+      dataBytes: sql<number>`length(CAST(${data} AS BLOB))`.as("data_bytes"),
-       sequence: events.sequence,
-       turnId: events.turnId,
-     })
-@@ -3045,7 +3057,9 @@ export function listStoredTimelineWindowEventRows(
-   args: ListStoredTimelineWindowEventRowsArgs,
- ): StoredEventRow[] {
-   return db
--    .select(storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars))
-+    .select(
-+      storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars),
-+    )
-     .from(events)
-     .where(and(...storedTimelineWindowConditions(args)))
-     .orderBy(events.sequence)
-@@ -3153,7 +3167,10 @@ export function getLatestThreadSystemErrorEventRow(
-       .select(storedEventRowFields)
-       .from(events)
-       .where(
--        and(eq(events.threadId, args.threadId), eq(events.type, "system/error")),
-+        and(
-+          eq(events.threadId, args.threadId),
-+          eq(events.type, "system/error"),
-+        ),
-       )
-       .orderBy(desc(events.sequence))
-       .limit(1)
-@@ -3431,6 +3448,46 @@ export function listThreadIdsWithLatestHostDaemonRestartInterruption(
-     .map((row) => row.threadId);
- }
- 
-+export function listLastStoredTurnRequestEventsByThreadIds(
-+  db: DbQueryConnection,
-+  args: ListLastStoredTurnRequestEventsByThreadIdsArgs,
-+): StoredTurnRequestEventRow[] {
-+  return queryInSqliteVariableBatches({
-+    dedupeKey: (threadId) => threadId,
-+    fixedVariableCount: 3,
-+    queryBatch: (threadIds) =>
-+      db.all<StoredTurnRequestEventRow>(sql`
-+      WITH execution_request_candidates AS (
-+        SELECT ${events.threadId} AS thread_id, MAX(${events.sequence}) AS sequence
-+        FROM ${events} INDEXED BY events_thread_type_sequence_idx
-+        WHERE ${inArray(events.threadId, [...threadIds])}
-+          AND ${events.type} = 'client/turn/requested'
-+        GROUP BY ${events.threadId}
-+        UNION ALL
-+        SELECT ${events.threadId} AS thread_id, MAX(${events.sequence}) AS sequence
-+        FROM ${events} INDEXED BY events_thread_type_sequence_idx
-+        WHERE ${inArray(events.threadId, [...threadIds])}
-+          AND ${inArray(events.type, ["client/thread/start", "client/turn/start"])}
-+          AND json_valid(${events.data})
-+          AND json_type(${events.data}, '$.input') IS NOT NULL
-+        GROUP BY ${events.threadId}
-+      ), latest_execution_request AS (
-+        SELECT thread_id, MAX(sequence) AS sequence
-+        FROM execution_request_candidates
-+        GROUP BY thread_id
-+      )
-+      SELECT event.data AS data, event.sequence AS sequence,
-+        event.thread_id AS threadId, event.type AS type
-+      FROM latest_execution_request latest
-+      JOIN events event ON event.thread_id = latest.thread_id
-+        AND event.sequence = latest.sequence
-+      ORDER BY event.thread_id
-+    `),
-+    values: args.threadIds,
-+    variableCountPerValue: 2,
-+  });
-+}
-+
- export function getLastStoredTurnRequestEvent(
-   db: DbQueryConnection,
-   threadId: string,
-@@ -3678,8 +3735,7 @@ export function listOpenBackgroundTaskItemRowsForHost(
-   args: ListOpenBackgroundTaskItemRowsForHostArgs,
- ): OpenBackgroundTaskItemRow[] {
-   const startedType = "item/started" satisfies ThreadEventType;
--  const progressType =
--    "item/backgroundTask/progress" satisfies ThreadEventType;
-+  const progressType = "item/backgroundTask/progress" satisfies ThreadEventType;
-   const completedType =
-     "item/backgroundTask/completed" satisfies ThreadEventType;
-   const settled = alias(events, "settled_background_task");
-@@ -3735,8 +3791,7 @@ export function listOpenBackgroundTaskItemRowsForThread(
-   args: ListOpenBackgroundTaskItemRowsForThreadArgs,
- ): OpenBackgroundTaskItemRow[] {
-   const startedType = "item/started" satisfies ThreadEventType;
--  const progressType =
--    "item/backgroundTask/progress" satisfies ThreadEventType;
-+  const progressType = "item/backgroundTask/progress" satisfies ThreadEventType;
-   const completedType =
-     "item/backgroundTask/completed" satisfies ThreadEventType;
-   const settled = alias(events, "settled_thread_background_task");
-@@ -3790,8 +3845,7 @@ export function pruneBackgroundTaskProgressEvents(
-   db: DbConnection,
-   args: PruneBackgroundTaskProgressEventsArgs,
- ): number {
--  const progressType =
--    "item/backgroundTask/progress" satisfies ThreadEventType;
-+  const progressType = "item/backgroundTask/progress" satisfies ThreadEventType;
-   const completedType =
-     "item/backgroundTask/completed" satisfies ThreadEventType;
- 
 diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
-index 25f27d4ebb3ce9c386f76a0495c97f03dc334758..3fc4bcfc3e30364a85c2e2cac39fdd27c0da275e 100644
+index fa24286d997c7f26608cec1132c2e87b94e7e706..d8b8e1e4239140f1d02ae0d225c1265a0b3d5dcb 100644
 --- a/packages/db/src/data/index.ts
 +++ b/packages/db/src/data/index.ts
-@@ -82,6 +82,7 @@ export {
-   listUnarchivedHiddenSourceThreads,
+@@ -87,6 +87,7 @@ export {
+   listArchivedThreadsPendingTeardown,
    listRunningThreads,
    listThreadsWithPendingInteractionState,
 +  listThreadsWithPendingInteractionStateByIds,
    listThreadsWithPendingInteractionStateForProjects,
    pinThread,
    reorderPinnedThread,
-@@ -296,6 +297,7 @@ export {
-   hasStoredTurnStarted,
-   getLastStoredProviderThreadId,
+@@ -320,6 +321,7 @@ export {
+   type StoredProviderSession,
+   type StoredProviderThreadClaimClass,
    getLastStoredTurnRequestEvent,
 +  listLastStoredTurnRequestEventsByThreadIds,
    getStoredTurnRequestEventForTurn,
    getLatestThreadOutputEventRow,
    getLatestStoredConversationOutlineSequence,
-@@ -375,6 +377,7 @@ export type {
-   StoredEventRow,
+@@ -406,6 +408,7 @@ export type {
    StoredThreadEventDataRow,
+   TimelineWindowHint,
    ThreadClientTurnRequestKey,
 +  ListLastStoredTurnRequestEventsByThreadIdsArgs,
    StoredTurnRequestEventRow,
@@ -2337,10 +2113,10 @@ index 8de603736406a09b02b33f9ab729ba843fbebc00..37afa170de06f880e91fec542851730c
  ): Map<string, ProjectExecutionDefaults> {
    const byProjectId = new Map<string, ProjectExecutionDefaults>();
 diff --git a/packages/db/src/data/threads.ts b/packages/db/src/data/threads.ts
-index ab8a9fd18a1e30a78ab7b01e0e7f8960727222ef..050e9c642f87e0e5be0b7ba6662eb3571f571f8b 100644
+index d0dc90272d6744debb6a6b33e5e0325a105ac82e..11f4f03d0b51e187b8c7c8224bd147f62b5a1fcb 100644
 --- a/packages/db/src/data/threads.ts
 +++ b/packages/db/src/data/threads.ts
-@@ -1318,6 +1318,20 @@ export function listThreadsWithPendingInteractionState(
+@@ -1410,6 +1410,20 @@ export function listThreadsWithPendingInteractionState(
    return rows.map(toThreadWithPendingInteractionState);
  }
  
@@ -2362,7 +2138,7 @@ index ab8a9fd18a1e30a78ab7b01e0e7f8960727222ef..050e9c642f87e0e5be0b7ba6662eb357
    const unreadThread = or(
      isNull(threads.lastReadAt),
 diff --git a/packages/plugin-sdk/src/__tests__/public-types.test.ts b/packages/plugin-sdk/src/__tests__/public-types.test.ts
-index 0d7b209f5ea9a4890796c1e346fbc17950364f89..11069f3d5dcaf99bcbdb515ddd5600a7e51b3da4 100644
+index 35cff54ad214655c4972a1cee8be4ab4ad99ca16..0ed92f3a8fef3b3218d12b6782c86ed95395aadd 100644
 --- a/packages/plugin-sdk/src/__tests__/public-types.test.ts
 +++ b/packages/plugin-sdk/src/__tests__/public-types.test.ts
 @@ -7,6 +7,10 @@ import type {
@@ -2398,7 +2174,7 @@ index 0d7b209f5ea9a4890796c1e346fbc17950364f89..11069f3d5dcaf99bcbdb515ddd5600a7
    "PluginAgentConfiguration",
    "PluginAgentConfigurationContext",
    "PluginAgentToolContentPart",
-@@ -228,6 +240,28 @@ describe("backend plugin SDK public surface", () => {
+@@ -255,6 +267,28 @@ describe("backend plugin SDK public surface", () => {
      expectTypeOf(borrowNestedValue).toBeFunction();
    });
  
@@ -2428,10 +2204,10 @@ index 0d7b209f5ea9a4890796c1e346fbc17950364f89..11069f3d5dcaf99bcbdb515ddd5600a7
      const [backendContract, declarations] = await Promise.all([
        readFile(new URL("../backend-contract.ts", import.meta.url), "utf8"),
 diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
-index 61c944b3e4871caad4fe95942ca18e20cf6afba7..d2cfb65130b0937d63473922328e7cc660c3c910 100644
+index 0aa981b72d64e46afd9eee911ebc4930f0e3c308..5c82012f6c019205ac747525e0c75025ae717f4c 100644
 --- a/packages/plugin-sdk/src/backend-contract.ts
 +++ b/packages/plugin-sdk/src/backend-contract.ts
-@@ -1830,6 +1830,52 @@ export interface PluginHosts {
+@@ -1955,6 +1955,52 @@ export interface PluginHosts {
    declareSharedPorts(hostId: string, ports: readonly number[]): void;
  }
  
@@ -2484,7 +2260,7 @@ index 61c944b3e4871caad4fe95942ca18e20cf6afba7..d2cfb65130b0937d63473922328e7cc6
  // ---------------------------------------------------------------------------
  // Status + the API root.
  // ---------------------------------------------------------------------------
-@@ -1933,6 +1979,11 @@ export interface BbPluginApi {
+@@ -2058,6 +2104,11 @@ export interface BbPluginApi {
     * inference, voice transcription). See `@get-bb/plugin-sdk/ai-services`.
     */
    readonly experimental_aiServices: PluginAiServices;
@@ -2497,10 +2273,10 @@ index 61c944b3e4871caad4fe95942ca18e20cf6afba7..d2cfb65130b0937d63473922328e7cc6
     * The full BB SDK, bound to this server over loopback (design §4.1).
     * Bind-gated: reading this before the host binds the SDK throws. The real
 diff --git a/packages/plugin-sdk/src/testing/fake-plugin-host.ts b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
-index c3aed2f11a6e7e4df9fc2032bc46f11f614cc519..126ce4f82b4fd23039d1ee204f7121a3ce85ad3a 100644
+index 0de516ae3ce86f71dc069d452885f6b2e800e1df..0c667934f3fa3d39b2eb32991d3f0622bfa33140 100644
 --- a/packages/plugin-sdk/src/testing/fake-plugin-host.ts
 +++ b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
-@@ -54,6 +54,10 @@ import {
+@@ -55,6 +55,10 @@ import {
  } from "../internal/host-policy.js";
  import type {
    BbPluginApi,
@@ -2511,7 +2287,7 @@ index c3aed2f11a6e7e4df9fc2032bc46f11f614cc519..126ce4f82b4fd23039d1ee204f7121a3
    PluginAgentConfiguration,
    PluginAgentConfigurationContext,
    PluginAgentToolContext,
-@@ -1462,6 +1466,25 @@ function createFakePluginHostInternal(
+@@ -1476,6 +1480,25 @@ function createFakePluginHostInternal(
      },
    };
  
@@ -2537,7 +2313,7 @@ index c3aed2f11a6e7e4df9fc2032bc46f11f614cc519..126ce4f82b4fd23039d1ee204f7121a3
    const bb: BbPluginApi = {
      pluginId,
      log,
-@@ -1498,6 +1521,7 @@ function createFakePluginHostInternal(
+@@ -1512,6 +1535,7 @@ function createFakePluginHostInternal(
      server,
      hosts,
      experimental_aiServices,
@@ -2546,7 +2322,7 @@ index c3aed2f11a6e7e4df9fc2032bc46f11f614cc519..126ce4f82b4fd23039d1ee204f7121a3
        assertLive();
        return sdk;
 diff --git a/packages/sdk/src/areas/threads.ts b/packages/sdk/src/areas/threads.ts
-index 732b81cb4ec7e099f81a3f4c502c36acbd2316a2..53bfac1de831d3fc016bf713d069d3af0cf6e898 100644
+index 292420f43827a83b91b555e2381509f2282def44..f9d8f9fffb0f5d3f3854bf1af7819ad5c1b887ff 100644
 --- a/packages/sdk/src/areas/threads.ts
 +++ b/packages/sdk/src/areas/threads.ts
 @@ -34,6 +34,13 @@ import type {
@@ -2605,7 +2381,7 @@ index 732b81cb4ec7e099f81a3f4c502c36acbd2316a2..53bfac1de831d3fc016bf713d069d3af
  export type ThreadSearchResult = ThreadSearchResponse;
  export type ThreadResolveMentionsResult = ResolveThreadMentionsResponse;
  export interface ThreadOutputResponse {
-@@ -574,6 +609,16 @@ export interface ThreadsArea {
+@@ -573,6 +608,16 @@ export interface ThreadsArea {
    queue: ThreadQueueArea;
    interactions: ThreadInteractionsArea;
    list(args?: ThreadListArgs): Promise<ThreadListResult>;
@@ -2622,7 +2398,7 @@ index 732b81cb4ec7e099f81a3f4c502c36acbd2316a2..53bfac1de831d3fc016bf713d069d3af
    listRunning(args?: { signal?: AbortSignal }): Promise<ThreadRunningResult>;
    markRead(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
    markUnread(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
-@@ -1185,6 +1230,60 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
+@@ -1193,6 +1238,60 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
          ),
        );
      },
@@ -2682,12 +2458,12 @@ index 732b81cb4ec7e099f81a3f4c502c36acbd2316a2..53bfac1de831d3fc016bf713d069d3af
 +    },
      async markRead(input) {
        return transport.readJson(
-         transport.api.v1.threads[":id"].read.$post({
+         transport.api.v1.threads[":id"].read.$post(
 diff --git a/packages/sdk/test/public-types.test.ts b/packages/sdk/test/public-types.test.ts
-index 47b5ec96121bc5b1a5bddff6353351cb0e9a00dc..b4998a2e540b52344eacdbbc5118fc5f8b4d4aba 100644
+index 32ffc833bba8b3813cd13a61f6f1e46d4794a3b6..13e7630c8d6057b27b3665e1277098da7abf0722 100644
 --- a/packages/sdk/test/public-types.test.ts
 +++ b/packages/sdk/test/public-types.test.ts
-@@ -379,7 +379,10 @@ type ExpectedThreadsKey =
+@@ -389,7 +389,10 @@ type ExpectedThreadsKey =
    | "defaultExecutionOptions"
    | "delete"
    | "editMessage"
@@ -2698,7 +2474,7 @@ index 47b5ec96121bc5b1a5bddff6353351cb0e9a00dc..b4998a2e540b52344eacdbbc5118fc5f
    | "fork"
    | "get"
    | "interactions"
-@@ -393,6 +396,7 @@ type ExpectedThreadsKey =
+@@ -403,6 +406,7 @@ type ExpectedThreadsKey =
    | "pin"
    | "promptHistory"
    | "queue"
@@ -2707,10 +2483,10 @@ index 47b5ec96121bc5b1a5bddff6353351cb0e9a00dc..b4998a2e540b52344eacdbbc5118fc5f
    | "reorderPinned"
    | "resolveMentions"
 diff --git a/packages/server-contract/src/api/threads.ts b/packages/server-contract/src/api/threads.ts
-index fb9b3106b3e4483223e82e28893342a51bec4276..0a2456743f810c7605090ad17b4208e05f7f602b 100644
+index 6e3b33f2dd425f070f07eb1628ae8aa3d5457222..76c729f4d92f62b239aa8a5b502c5e3ed4a40117 100644
 --- a/packages/server-contract/src/api/threads.ts
 +++ b/packages/server-contract/src/api/threads.ts
-@@ -28,6 +28,9 @@ import {
+@@ -31,6 +31,9 @@ import {
    threadTimelineModelFallbackSchema,
    threadTimelinePendingTodosSchema,
    threadEventTypeValues,
@@ -3051,10 +2827,10 @@ index fb9b3106b3e4483223e82e28893342a51bec4276..0a2456743f810c7605090ad17b4208e0
  
  export const resolveThreadMentionsRequestSchema = z
 diff --git a/packages/server-contract/src/public-api.ts b/packages/server-contract/src/public-api.ts
-index 2c074d47026a58148cdd6424a0ed4d054ca75bb8..b52089edf3f39692b48900dcd56cffdab4346884 100644
+index b13596d1736ac7d5b2b3c63950ba60de81206791..1bd49b480ba409c1ae4f251899b999cfcd52f603 100644
 --- a/packages/server-contract/src/public-api.ts
 +++ b/packages/server-contract/src/public-api.ts
-@@ -219,6 +219,14 @@ import type {
+@@ -226,6 +226,14 @@ import type {
    ThreadCountResponse,
    ThreadListQuery,
    ThreadListResponse,
@@ -3069,7 +2845,7 @@ index 2c074d47026a58148cdd6424a0ed4d054ca75bb8..b52089edf3f39692b48900dcd56cffda
    ThreadConversationOutlineResponse,
    ThreadOpenRequest,
    ThreadOpenResponse,
-@@ -349,6 +357,10 @@ import {
+@@ -356,6 +364,10 @@ import {
    threadHostFileContentQuerySchema,
    threadCountQuerySchema,
    threadListQuerySchema,
@@ -3080,7 +2856,7 @@ index 2c074d47026a58148cdd6424a0ed4d054ca75bb8..b52089edf3f39692b48900dcd56cffda
    threadOpenRequestSchema,
    threadPaneActionRequestSchema,
    threadSearchQuerySchema,
-@@ -1119,6 +1131,39 @@ export const publicApiRoutes = {
+@@ -1215,6 +1227,39 @@ export const publicApiRoutes = {
        ),
        response: jsonResponse<ThreadListResponse>(),
      }),

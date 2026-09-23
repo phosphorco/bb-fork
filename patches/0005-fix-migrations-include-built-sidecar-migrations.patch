@@ -1,27 +1,26 @@
-From ec1ac87ab99caa7ede1ef8f2421ca659fea08286 Mon Sep 17 00:00:00 2001
+From f5062c4f6219f691197fbad40d5dda1cf542379f Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
-Subject: [PATCH 05/21] fix(migrations): include built sidecar migrations
+Subject: [PATCH 05/31] fix(migrations): include built sidecar migrations
 
 ---
  apps/server/package.json                      |  2 +-
  .../p6r/sidecar-built-artifact.test.ts        | 91 +++++++++++++++++++
- packages/db/drizzle/meta/_journal.json        |  9 +-
  packages/db/src/migration-history.ts          |  1 +
  packages/db/test/migration-journal.test.ts    | 35 ++++---
- 5 files changed, 123 insertions(+), 15 deletions(-)
+ 4 files changed, 115 insertions(+), 14 deletions(-)
  create mode 100644 apps/server/test/services/p6r/sidecar-built-artifact.test.ts
 
 diff --git a/apps/server/package.json b/apps/server/package.json
-index 4cb0727d3899681fd37bb8204dd8984b064708f9..eaa8a8afe9f5a0e90f5bdb019dbc9c6084041542 100644
+index 4f59c5d76a56dca5afb087c798180c605daad0c8..db4ae9e9b57ad6f25a5b86393eb90253d6aa0125 100644
 --- a/apps/server/package.json
 +++ b/apps/server/package.json
 @@ -4,7 +4,7 @@
    "type": "module",
    "private": true,
    "scripts": {
--    "build": "node ../../scripts/build-node-entry.mjs src/index.ts dist/index.js --clean-dist --external ./start-server.js --copy-dir ../../packages/db/drizzle dist/drizzle --copy-dir src/assets dist/assets && node --import tsx scripts/copy-builtin-skills.ts && node ../../scripts/build-node-entry.mjs src/start-server.ts dist/start-server.js && node ../../scripts/build-node-entry.mjs ../../packages/plugin-sdk/src/index.ts dist/plugin-sdk-runtime.js",
-+    "build": "node ../../scripts/build-node-entry.mjs src/index.ts dist/index.js --clean-dist --external ./start-server.js --copy-dir ../../packages/db/drizzle dist/drizzle --copy-dir src/assets dist/assets && node --import tsx scripts/copy-builtin-skills.ts && node ../../scripts/build-node-entry.mjs src/services/p6r/sidecar-migrate.ts dist/services/p6r/sidecar-migrate.js --copy-dir src/services/p6r/drizzle dist/services/p6r/drizzle && node ../../scripts/build-node-entry.mjs src/start-server.ts dist/start-server.js --external ./services/p6r/sidecar-migrate.js && node ../../scripts/build-node-entry.mjs ../../packages/plugin-sdk/src/index.ts dist/plugin-sdk-runtime.js",
+-    "build": "node ../../scripts/build-node-entry.mjs src/index.ts dist/index.js --clean-dist --external ./start-server.js --copy-dir ../../packages/db/drizzle dist/drizzle --copy-dir src/assets dist/assets && node --import tsx scripts/copy-builtin-skills.ts && node ../../scripts/build-node-entry.mjs src/start-server.ts dist/start-server.js && node ../../scripts/build-node-entry.mjs ../../packages/plugin-sdk/src/index.ts dist/plugin-sdk-runtime.js && node ../../scripts/build-node-entry.mjs src/services/plugins/zod-runtime.ts dist/zod-runtime.js",
++    "build": "node ../../scripts/build-node-entry.mjs src/index.ts dist/index.js --clean-dist --external ./start-server.js --copy-dir ../../packages/db/drizzle dist/drizzle --copy-dir src/assets dist/assets && node --import tsx scripts/copy-builtin-skills.ts && node ../../scripts/build-node-entry.mjs src/services/p6r/sidecar-migrate.ts dist/services/p6r/sidecar-migrate.js --copy-dir src/services/p6r/drizzle dist/services/p6r/drizzle && node ../../scripts/build-node-entry.mjs src/start-server.ts dist/start-server.js --external ./services/p6r/sidecar-migrate.js && node ../../scripts/build-node-entry.mjs ../../packages/plugin-sdk/src/index.ts dist/plugin-sdk-runtime.js && node ../../scripts/build-node-entry.mjs src/services/plugins/zod-runtime.ts dist/zod-runtime.js",
      "start": "node dist/index.js",
      "start:prod": "cross-env NODE_ENV=production node dist/index.js",
      "dev": "node --conditions=source --import tsx scripts/dev-supervisor.mjs",
@@ -122,26 +121,6 @@ index 0000000000000000000000000000000000000000..4b7fa3ef6de18944dc4da0a59caf6217
 +  },
 +  60_000,
 +);
-diff --git a/packages/db/drizzle/meta/_journal.json b/packages/db/drizzle/meta/_journal.json
-index dc22a4ebe619e7a82ac88a1cbb971cb0e384801d..2f8c341f6f2970033db18a778414122b25e497ef 100644
---- a/packages/db/drizzle/meta/_journal.json
-+++ b/packages/db/drizzle/meta/_journal.json
-@@ -834,6 +834,13 @@
-       "when": 1789175706080,
-       "tag": "0118_brave_marvel_zombies",
-       "breakpoints": true
-+    },
-+    {
-+      "idx": 119,
-+      "version": "6",
-+      "when": 1789068314079,
-+      "tag": "0119_soft_pandemic",
-+      "breakpoints": true
-     }
-   ]
--}
-\ No newline at end of file
-+}
 diff --git a/packages/db/src/migration-history.ts b/packages/db/src/migration-history.ts
 index dbd4e5896b567ea4031e43e26f8224832b32a326..1bab29a971c473ce027a47ab3b95b6f63e936387 100644
 --- a/packages/db/src/migration-history.ts
