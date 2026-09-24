@@ -1,7 +1,7 @@
-From 1927eb74e4ad67d6f006c91c7a25360ba16bcf51 Mon Sep 17 00:00:00 2001
+From 64cf4d20d28b11e181ed96ab4f9f556d4318eef6 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
-Subject: [PATCH 04/31] feat(mentions): add verified mention targets
+Subject: [PATCH 04/32] feat(mentions): add verified mention targets
 
 ---
  apps/server/src/internal/events.ts            |   3 +
@@ -28,8 +28,8 @@ Subject: [PATCH 04/31] feat(mentions): add verified mention targets
  packages/db/src/data/events.ts                |   3 +
  packages/domain/src/change-kinds.ts           |   1 +
  packages/domain/src/thread-events.ts          |  28 +++
- packages/plugin-api-map/src/surfaces.ts       |  15 ++
  packages/plugin-sdk/src/backend-contract.ts   |   8 +-
+ plugins/plugin-api-docs/src/surfaces.ts       |  15 ++
  26 files changed, 1093 insertions(+), 124 deletions(-)
  create mode 100644 apps/server/src/services/p6r/participant-projection.ts
  create mode 100644 apps/server/test/internal/daemon-forged-mention-http.test.ts
@@ -536,7 +536,7 @@ index 1d6340f3af3a68f135cbbf575640c5d916fe9521..3730f01754c1c0f32cffd756bd7b7347
 +  return (await resolvePluginMentionInputs(input)).contextInputs;
  }
 diff --git a/apps/server/src/services/plugins/plugin-service-internal.ts b/apps/server/src/services/plugins/plugin-service-internal.ts
-index 45fe5c4a7f7ca17a36b077ba7d1a7489516f489c..923891c5c96a555c90fc769feae349281221e76b 100644
+index 560b91ba8e46d258849d91e12f68708ef0fbd551..9d964b645d273b10fd506f0b768cf27adc3e96c8 100644
 --- a/apps/server/src/services/plugins/plugin-service-internal.ts
 +++ b/apps/server/src/services/plugins/plugin-service-internal.ts
 @@ -1,4 +1,5 @@
@@ -545,7 +545,7 @@ index 45fe5c4a7f7ca17a36b077ba7d1a7489516f489c..923891c5c96a555c90fc769feae34928
  import type { AiServiceRegistry } from "../ai/ai-service-registry.js";
  import type { DbConnection } from "@bb/db";
  import type {
-@@ -219,6 +220,7 @@ export type PluginMentionResolveResult =
+@@ -221,6 +222,7 @@ export type PluginMentionResolveResult =
          | { type: "image"; url: string; context?: string }
          | { type: "localImage"; path: string; context?: string }
        >;
@@ -554,10 +554,10 @@ index 45fe5c4a7f7ca17a36b077ba7d1a7489516f489c..923891c5c96a555c90fc769feae34928
    | { ok: false; error: string };
  
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index 56247c610957768e1ad3d1d618195d2b4115b5e9..5757e84f80877e82e89631d0ea36f354e2724e9f 100644
+index 99cbd3dd79591de977df4b1892942972abcc2dac..1fd5213cbb1ab8763a88c84a4db2c3d0bbd61d2f 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
-@@ -2456,8 +2456,23 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2479,8 +2479,23 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
            const record = result as {
              context?: unknown;
              experimental_images?: unknown;
@@ -581,7 +581,7 @@ index 56247c610957768e1ad3d1d618195d2b4115b5e9..5757e84f80877e82e89631d0ea36f354
            if (typeof context !== "string" || context.trim().length === 0) {
              throw new Error(
                `mention provider "${providerId}" resolve() must return { context: string }`,
-@@ -2505,10 +2520,45 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2528,10 +2543,45 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
                      : { context: candidate.context as string }),
                  };
            });
@@ -1680,10 +1680,10 @@ index 88dc269d9bc6a238bfc807500530724ecb1c2a22..6bd657717b50cabe2a49c51e490638ed
 +  });
 +});
 diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
-index 956f11a415eb6148a93330753464d4d65f8acac3..2c4a6b0c62f81b70dd13814499589f3d607e1950 100644
+index 27c99190d912b3791a023d0a4ca4ae3ab70558f6..7e3873a05809cd3bb92d07529e7d84a342018adb 100644
 --- a/docs/api_to_audit.md
 +++ b/docs/api_to_audit.md
-@@ -3229,3 +3229,15 @@ remain forbidden. New-machine selections continue through creation.
+@@ -3368,3 +3368,15 @@ remain forbidden. New-machine selections continue through creation.
  
  Stabilization requires lifecycle coverage for reuse, missing paths, cleanup in
  progress, cross-project ownership, and concurrent creation before binding.
@@ -1714,7 +1714,7 @@ index c53cbed1c51962aee9ff1b19913ea0da03058732..a579c9453b0ed0f972f0b07d425cfdbd
      return {
        acceptedEvents: [],
 diff --git a/packages/domain/src/change-kinds.ts b/packages/domain/src/change-kinds.ts
-index 79602457f73ec323b11a3a9bb70e11e057743093..3ed1a24896caf0009ff2b3ee312b6765083f2c99 100644
+index f6e050d7597ff456b3b86e64fc24c451dc0f0f19..711b498d6023fc4873e9281dedf3069efb422b2d 100644
 --- a/packages/domain/src/change-kinds.ts
 +++ b/packages/domain/src/change-kinds.ts
 @@ -14,6 +14,7 @@ export const THREAD_CHANGE_KINDS = [
@@ -1771,51 +1771,8 @@ index 299f912a2da0efa1020bcf50780c8542ebbeab0a..b4733adfafaf556879b773b7e22b0f04
    target: turnRequestTargetSchema,
    request: z.object({
      method: z.enum(["thread/start", "turn/start"]),
-diff --git a/packages/plugin-api-map/src/surfaces.ts b/packages/plugin-api-map/src/surfaces.ts
-index 330f3124899a02a2696a4292ff75439045803438..7a32350dd4d8839450c416ec7103b859539aacf1 100644
---- a/packages/plugin-api-map/src/surfaces.ts
-+++ b/packages/plugin-api-map/src/surfaces.ts
-@@ -443,9 +443,11 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
-           "Answer each keystroke after the trigger with a list of items to show",
-           "Claim one or more of the trigger characters @, #, $, !, and ~. Omit them to answer the default @",
-           "Turn a picked item into a chip in the draft prompt, and resolve its content once per unique mention when the message is sent; a resolution failure blocks sending",
-+          "Select a person from the same plugin's active identity provider with experimental_target; bb freezes the verified mentioned target separately from authorship",
-         ],
-         apiSymbols: [
-           "PluginMentionProviderRegistration",
-+          "ExperimentalPluginMentionTargetSelector",
-           "PluginMentionSearchContext",
-           "PluginMentionItem",
-         ],
-@@ -679,6 +681,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
-       {
-         title: "Data & platform",
-         surfaceIds: [
-+          "identity-provider",
-           "storage",
-           "bb-sdk",
-           "thread-plugin-metadata",
-@@ -1058,6 +1061,18 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
-         ],
-         experimental: true,
-       },
-+      {
-+        id: "identity-provider",
-+        title: "Verified identity",
-+        summary: "Connects an operator-selected identity provider and exposes scoped identity through the public bb-identity binding. With this, a plugin can:",
-+        bullets: [
-+          "Resolve credentials supplied by the host's trusted ingress boundary",
-+          "Retain immutable external-operation receipts and exact request/turn/tool history",
-+          "Retire provider generations and invalidate issued sessions without assigning a fallback actor",
-+        ],
-+        apiSymbols: ["ExperimentalP6rIdentityProtocol"],
-+        experimental: true,
-+      },
-       {
-         id: "storage",
-         tagline: "Namespaced KV plus your own SQLite",
 diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
-index 5c82012f6c019205ac747525e0c75025ae717f4c..fc2f45f08fa89a9b361f99d3310f7a734a10eb64 100644
+index 5a1b15af02bed318f06ca6785797b748350a2ebd..a0a162a2c3e092eac2342037f14f2433d6f61795 100644
 --- a/packages/plugin-sdk/src/backend-contract.ts
 +++ b/packages/plugin-sdk/src/backend-contract.ts
 @@ -1769,6 +1769,8 @@ export type ExperimentalPluginMentionImage =
@@ -1849,6 +1806,49 @@ index 5c82012f6c019205ac747525e0c75025ae717f4c..fc2f45f08fa89a9b361f99d3310f7a73
        }>;
  }
  
+diff --git a/plugins/plugin-api-docs/src/surfaces.ts b/plugins/plugin-api-docs/src/surfaces.ts
+index f0680fe1f4f21952d24e39b06db83a79a9de8ef1..f968d1ede961e493b4ef9ee58b4ce3a4c3da8288 100644
+--- a/plugins/plugin-api-docs/src/surfaces.ts
++++ b/plugins/plugin-api-docs/src/surfaces.ts
+@@ -461,9 +461,11 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+           "Answer each keystroke after the trigger with a list of items to show",
+           "Claim one or more of the trigger characters @, #, $, !, and ~. Omit them to answer the default @",
+           "Turn a picked item into a chip in the draft prompt, and resolve its content once per unique mention when the message is sent; a resolution failure blocks sending",
++          "Select a person from the same plugin's active identity provider with experimental_target; bb freezes the verified mentioned target separately from authorship",
+         ],
+         apiSymbols: [
+           "PluginMentionProviderRegistration",
++          "ExperimentalPluginMentionTargetSelector",
+           "PluginMentionSearchContext",
+           "PluginMentionItem",
+         ],
+@@ -697,6 +699,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+       {
+         title: "Data & platform",
+         surfaceIds: [
++          "identity-provider",
+           "storage",
+           "bb-sdk",
+           "thread-plugin-metadata",
+@@ -1077,6 +1080,18 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+         ],
+         experimental: true,
+       },
++      {
++        id: "identity-provider",
++        title: "Verified identity",
++        summary: "Connects an operator-selected identity provider and exposes scoped identity through the public bb-identity binding. With this, a plugin can:",
++        bullets: [
++          "Resolve credentials supplied by the host's trusted ingress boundary",
++          "Retain immutable external-operation receipts and exact request/turn/tool history",
++          "Retire provider generations and invalidate issued sessions without assigning a fallback actor",
++        ],
++        apiSymbols: ["ExperimentalP6rIdentityProtocol"],
++        experimental: true,
++      },
+       {
+         id: "storage",
+         tagline: "Namespaced KV plus your own SQLite",
 -- 
 2.53.0
 

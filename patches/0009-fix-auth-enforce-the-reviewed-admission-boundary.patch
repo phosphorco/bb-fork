@@ -1,7 +1,7 @@
-From 295c2f0c2190db0c4d828f4f615340ac87a7dcd8 Mon Sep 17 00:00:00 2001
+From e5fe50556c40d020885ac9053110a0773f99191f Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
-Subject: [PATCH 09/31] fix(auth): enforce the reviewed admission boundary
+Subject: [PATCH 09/32] fix(auth): enforce the reviewed admission boundary
 
 ---
  apps/server/src/routes/plugins.ts             |  13 +-
@@ -39,10 +39,10 @@ index 7afa1d1f922dd2f38789036e34e3653ff08579ba..f419bf64f04535f84d4a473c627d5e29
      return context.json({ ok: true, result: outcome.result });
    });
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
-index 1270c89e82b5af0422c85fbe8b71dfab75ede20e..226d7268325f2ecd1f219d0a96db6acc4546f4f7 100644
+index b9a8b9fcbd7309294d9e2c601169d5439dad3968..cfda42c69a658f01ab1e4e8288fb82c79060f007 100644
 --- a/apps/server/src/server.ts
 +++ b/apps/server/src/server.ts
-@@ -722,6 +722,9 @@ export function createApp(
+@@ -770,6 +770,9 @@ export function createApp(
        forwardRpc: (input) => pluginService.forwardP6rRpc(input),
      },
      now: Date.now,
@@ -105,11 +105,11 @@ index e12c37017be619900f53676753b9ea30d1d4758e..8ba2bcaff79b8eef666531fbe76bb391
        if (captured.ok) { const session = snapshotSession(trusted.session); requests.set(input.request, { scope: captured.scope, session }); scopeSessions.set(captured.scope, session); scopeRequests.set(captured.scope, input.request); }
        return captured;
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index 6f951bbd741378eae1b602985d3a5892a5b5f04d..b617e7af6bf0a9697268563ddc259d705f073fe3 100644
+index 1b7bbdc10f47b08b5cbd83c33455743fef30f774..15fbcfd261e0a51eeafc0a698436bec7cd5ac61e 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
-@@ -151,7 +151,10 @@ import {
- import { nextCronRunAt, raceTimeout } from "./plugin-time-box.js";
+@@ -155,7 +155,10 @@ import {
+ } from "./plugin-time-box.js";
  import { createPluginUpdates } from "./plugin-updates.js";
  import { retainP6rHttpResponse } from "./plugin-p6r-http.js";
 -import type { P6rJson } from "../p6r/identity-protocol.js";
@@ -120,7 +120,7 @@ index 6f951bbd741378eae1b602985d3a5892a5b5f04d..b617e7af6bf0a9697268563ddc259d70
  import type { P6rInvocationScope } from "../p6r/invocation-registry.js";
  
  import type {
-@@ -458,6 +461,26 @@ function throwRpcBoundaryError(error: PluginRpcError): never {
+@@ -462,6 +465,26 @@ function throwRpcBoundaryError(error: PluginRpcError): never {
    throw new PluginRpcBoundaryError(error);
  }
  
@@ -147,7 +147,7 @@ index 6f951bbd741378eae1b602985d3a5892a5b5f04d..b617e7af6bf0a9697268563ddc259d70
  function normalizeAgentToolResult(
    name: string,
    result: unknown,
-@@ -1879,7 +1902,14 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1902,7 +1925,14 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
              routeClass: binding.routeClass,
            });
            if (!capture.ok) {
@@ -163,7 +163,7 @@ index 6f951bbd741378eae1b602985d3a5892a5b5f04d..b617e7af6bf0a9697268563ddc259d70
            }
            const abort = () => capture.scope.release();
            context.req.raw.signal.addEventListener("abort", abort, {
-@@ -1971,8 +2001,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1994,8 +2024,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
              handler.outputSchema,
              result,
              "output",
@@ -174,7 +174,7 @@ index 6f951bbd741378eae1b602985d3a5892a5b5f04d..b617e7af6bf0a9697268563ddc259d70
          }
          if (
            binding.pluginId !== id ||
-@@ -1993,9 +2024,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2016,9 +2047,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
            routeClass: binding.routeClass,
          });
          if (!capture.ok) {
@@ -188,7 +188,7 @@ index 6f951bbd741378eae1b602985d3a5892a5b5f04d..b617e7af6bf0a9697268563ddc259d70
            });
          }
          let result: unknown;
-@@ -2048,6 +2080,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2071,6 +2103,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
          handler.inputSchema,
          args.input,
          "input",
@@ -196,7 +196,7 @@ index 6f951bbd741378eae1b602985d3a5892a5b5f04d..b617e7af6bf0a9697268563ddc259d70
        );
        const derived = args.deriveScope(binding.generation);
        if (derived === null) {
-@@ -2073,8 +2106,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2096,8 +2129,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
          handler.outputSchema,
          outcome.value,
          "output",

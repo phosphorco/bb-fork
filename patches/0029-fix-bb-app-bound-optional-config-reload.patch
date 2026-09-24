@@ -1,18 +1,18 @@
-From a186d5892335aa04a9559f7840589551c85debd3 Mon Sep 17 00:00:00 2001
+From 985477ee25a748171cab07599e3c301c9c3fd95e Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Tue, 22 Sep 2026 23:01:58 +0200
-Subject: [PATCH 27/31] fix(bb-app): bound optional config reload
+Subject: [PATCH 27/32] fix(bb-app): bound optional config reload
 
 ---
  packages/bb-app/src/launcher.ts    |  30 +++--
- packages/bb-app/test/index.test.ts | 190 +++++++++++++++++++++--------
- 2 files changed, 157 insertions(+), 63 deletions(-)
+ packages/bb-app/test/index.test.ts | 186 +++++++++++++++++++++--------
+ 2 files changed, 156 insertions(+), 60 deletions(-)
 
 diff --git a/packages/bb-app/src/launcher.ts b/packages/bb-app/src/launcher.ts
-index 9e08308f52e90696ece7605aa42aea2f5124da27..10cf82db8c822f3d914cc478f589bc2eb31e9ce5 100644
+index a6ad9c82aba47075bf1a1bedfa1dabe4628cb002..b12adb9eceb0a29bf89a6eba24fac3d979bb8ceb 100644
 --- a/packages/bb-app/src/launcher.ts
 +++ b/packages/bb-app/src/launcher.ts
-@@ -99,6 +99,7 @@ const HOST_ID_FILE_NAME = "host-id";
+@@ -123,6 +123,7 @@ const HOST_ID_FILE_NAME = "host-id";
  const HEALTH_CHECK_TIMEOUT_MS = 60_000;
  const HEALTH_CHECK_INTERVAL_MS = 100;
  const HEALTH_CHECK_REQUEST_TIMEOUT_MS = 1_000;
@@ -20,7 +20,7 @@ index 9e08308f52e90696ece7605aa42aea2f5124da27..10cf82db8c822f3d914cc478f589bc2e
  const MANAGED_PROCESS_TERMINATION_TIMEOUT_MS = 5_000;
  const MANAGED_PROCESS_KILL_TIMEOUT_MS = 1_000;
  const MANAGED_PROCESS_RESTART_RETRY_DELAY_MS = 1_000;
-@@ -1745,7 +1746,10 @@ async function refreshRunningServerConfig(
+@@ -1778,7 +1779,10 @@ async function refreshRunningServerConfig(
    const reloadUrl = new URL("/api/v1/system/config/reload", args.serverUrl);
    let response: Response;
    try {
@@ -32,7 +32,7 @@ index 9e08308f52e90696ece7605aa42aea2f5124da27..10cf82db8c822f3d914cc478f589bc2e
    } catch {
      if (args.required) {
        throw new Error(`Could not reach bb server at ${args.serverUrl}`);
-@@ -1753,17 +1757,25 @@ async function refreshRunningServerConfig(
+@@ -1786,17 +1790,25 @@ async function refreshRunningServerConfig(
      return false;
    }
  
@@ -67,18 +67,18 @@ index 9e08308f52e90696ece7605aa42aea2f5124da27..10cf82db8c822f3d914cc478f589bc2e
  }
  
 diff --git a/packages/bb-app/test/index.test.ts b/packages/bb-app/test/index.test.ts
-index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1988391ff 100644
+index 5b39fa049812baa47fc01abada85c9e732557c51..3f0676f776a483391d7efcc8f0788b654a756005 100644
 --- a/packages/bb-app/test/index.test.ts
 +++ b/packages/bb-app/test/index.test.ts
-@@ -181,6 +181,7 @@ const startupOnlyManagedEnvCases: StartupOnlyManagedEnvCase[] = [
+@@ -168,6 +168,7 @@ const startupOnlyManagedEnvCases: StartupOnlyManagedEnvCase[] = [
+   { key: "BB_SERVER_PORT", value: "48886" },
    { key: "BB_TELEMETRY", value: "false" },
-   { key: "BB_TRANSCRIPTION", value: "codex/test-transcription" },
  ];
 +const unavailableTestServerUrl = "http://127.0.0.1:1";
  
  const packageMetadataSchema = z.object({
    engines: z.object({
-@@ -415,6 +416,60 @@ async function startConfigReloadTestServer(): Promise<ConfigReloadTestServer> {
+@@ -402,6 +403,60 @@ async function startConfigReloadTestServer(): Promise<ConfigReloadTestServer> {
    };
  }
  
@@ -139,7 +139,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
  async function startHostListTestServer(
    hosts: unknown[],
  ): Promise<HostListTestServer> {
-@@ -497,6 +552,19 @@ async function captureStdout(run: () => Promise<void>): Promise<string> {
+@@ -484,6 +539,19 @@ async function captureStdout(run: () => Promise<void>): Promise<string> {
    return chunks.join("");
  }
  
@@ -159,7 +159,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
  describe("bb-app launcher", () => {
    it("waits for the expected host daemon identity and connection", async () => {
      let statusRequests = 0;
-@@ -1095,33 +1163,25 @@ describe("bb-app launcher", () => {
+@@ -1113,25 +1181,19 @@ describe("bb-app launcher", () => {
    it("stores managed config values from the config command", async () => {
      const dataDir = mkdtempSync(join(tmpdir(), "bb-app-config-command-"));
  
@@ -178,17 +178,8 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
 +    await runBbAppWithoutRunningServer(dataDir, [
        "config",
        "set",
-       "BB_INFERENCE",
-       "anthropic/claude-sonnet-4-5",
-     ]);
--    await runBbApp([
--      "--data-dir",
--      dataDir,
-+    await runBbAppWithoutRunningServer(dataDir, [
-       "config",
-       "set",
-       "BB_INFERENCE_FALLBACK",
-       "codex/gpt-5.4-mini",
+       "BB_LOG_LEVEL",
+       "debug",
      ]);
 -    await runBbApp([
 -      "--data-dir",
@@ -197,7 +188,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
        "env",
        "set",
        "OPENAI_API_KEY",
-@@ -1268,9 +1328,7 @@ describe("bb-app launcher", () => {
+@@ -1277,9 +1339,7 @@ describe("bb-app launcher", () => {
        "utf8",
      );
  
@@ -208,7 +199,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
        "config",
        "set",
        "BB_APP_URL",
-@@ -1301,9 +1359,7 @@ describe("bb-app launcher", () => {
+@@ -1310,9 +1370,7 @@ describe("bb-app launcher", () => {
        "utf8",
      );
  
@@ -219,7 +210,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
        "config",
        "set",
        "BB_APP_URL",
-@@ -1337,9 +1393,7 @@ describe("bb-app launcher", () => {
+@@ -1346,9 +1404,7 @@ describe("bb-app launcher", () => {
        "utf8",
      );
  
@@ -230,7 +221,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
        "config",
        "set",
        "BB_APP_URL",
-@@ -1373,9 +1427,7 @@ describe("bb-app launcher", () => {
+@@ -1382,9 +1438,7 @@ describe("bb-app launcher", () => {
        "utf8",
      );
  
@@ -241,7 +232,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
        "config",
        "set",
        "BB_APP_URL",
-@@ -1412,7 +1464,11 @@ describe("bb-app launcher", () => {
+@@ -1421,7 +1475,11 @@ describe("bb-app launcher", () => {
        "utf8",
      );
  
@@ -254,7 +245,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
  
      expect(
        JSON.parse(readFileSync(join(dataDir, "config.json"), "utf8")),
-@@ -1439,9 +1495,7 @@ describe("bb-app launcher", () => {
+@@ -1448,9 +1506,7 @@ describe("bb-app launcher", () => {
    it("stores managed env values from the env command", async () => {
      const dataDir = mkdtempSync(join(tmpdir(), "bb-app-env-command-"));
  
@@ -265,7 +256,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
        "env",
        "set",
        "ANTHROPIC_API_KEY",
-@@ -1489,9 +1543,7 @@ describe("bb-app launcher", () => {
+@@ -1498,9 +1554,7 @@ describe("bb-app launcher", () => {
        "utf8",
      );
  
@@ -276,7 +267,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
        "env",
        "unset",
        "BB_SERVER_BIND_HOST",
-@@ -1573,7 +1625,11 @@ describe("bb-app launcher", () => {
+@@ -1582,7 +1636,11 @@ describe("bb-app launcher", () => {
        "utf8",
      );
  
@@ -289,7 +280,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
  
      expect(JSON.parse(readFileSync(join(dataDir, "env.json"), "utf8"))).toEqual(
        {},
-@@ -1630,8 +1686,8 @@ describe("bb-app launcher", () => {
+@@ -1639,8 +1697,8 @@ describe("bb-app launcher", () => {
          runBbApp([
            "--data-dir",
            dataDir,
@@ -300,7 +291,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
            "config",
            "set",
            "BB_LOG_LEVEL",
-@@ -1661,8 +1717,8 @@ describe("bb-app launcher", () => {
+@@ -1670,8 +1728,8 @@ describe("bb-app launcher", () => {
            runBbApp([
              "--data-dir",
              dataDir,
@@ -311,7 +302,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
              "env",
              "set",
              testCase.key,
-@@ -1695,8 +1751,8 @@ describe("bb-app launcher", () => {
+@@ -1704,8 +1762,8 @@ describe("bb-app launcher", () => {
          runBbApp([
            "--data-dir",
            dataDir,
@@ -322,7 +313,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
            "env",
            "unset",
            "BB_SERVER_BIND_HOST",
-@@ -1745,16 +1801,12 @@ describe("bb-app launcher", () => {
+@@ -1754,16 +1812,12 @@ describe("bb-app launcher", () => {
  
    it("reports that startup-only config will apply on next start without a running server", async () => {
      const dataDir = mkdtempSync(join(tmpdir(), "bb-app-startup-next-start-"));
@@ -341,7 +332,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
          "env",
          "set",
          "BB_SERVER_BIND_HOST",
-@@ -1816,8 +1868,8 @@ describe("bb-app launcher", () => {
+@@ -1825,8 +1879,8 @@ describe("bb-app launcher", () => {
        await runBbApp([
          "--data-dir",
          dataDir,
@@ -352,7 +343,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
          "config",
          "set",
          "BB_APP_URL",
-@@ -1832,6 +1884,40 @@ describe("bb-app launcher", () => {
+@@ -1841,6 +1895,40 @@ describe("bb-app launcher", () => {
      }
    });
  
@@ -393,7 +384,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
    it("supports explicitly refreshing running server config", async () => {
      const dataDir = mkdtempSync(join(tmpdir(), "bb-app-config-refresh-"));
      const server = await startConfigReloadTestServer();
-@@ -1840,8 +1926,8 @@ describe("bb-app launcher", () => {
+@@ -1849,8 +1937,8 @@ describe("bb-app launcher", () => {
        await runBbApp([
          "--data-dir",
          dataDir,
@@ -404,7 +395,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
          "config",
          "refresh",
        ]);
-@@ -1882,9 +1968,7 @@ describe("bb-app launcher", () => {
+@@ -1891,9 +1979,7 @@ describe("bb-app launcher", () => {
      const server = await startConfigReloadTestServer();
  
      try {
@@ -415,7 +406,7 @@ index 6558d0153a9c216d08a09b8eb20743731d1d9f18..02b370548ab4b67a5b32f0d6e73fa3d1
          "config",
          "set",
          "BB_SERVER_URL",
-@@ -1916,9 +2000,7 @@ describe("bb-app launcher", () => {
+@@ -1925,9 +2011,7 @@ describe("bb-app launcher", () => {
      const previousServerUrl = process.env.BB_SERVER_URL;
  
      try {

@@ -1,7 +1,7 @@
-From 510692e66c8b2ef5b68bd1df6835d4956ec74383 Mon Sep 17 00:00:00 2001
+From 8aaa31c6fed3b81067372580c9c14130144654b4 Mon Sep 17 00:00:00 2001
 From: bb-fork materializer <bb-fork@invalid.local>
 Date: Sun, 20 Sep 2026 17:41:34 +0200
-Subject: [PATCH 24/31] feat(context-magnet): add contribution trace API
+Subject: [PATCH 24/32] feat(context-magnet): add contribution trace API
 
 ---
  apps/server/src/internal/tool-calls.ts        |   2 +
@@ -22,7 +22,6 @@ Subject: [PATCH 24/31] feat(context-magnet): add contribution trace API
  .../src/context-magnet-contribution-trace.ts  | 232 ++++++++++
  packages/domain/src/index.ts                  |   1 +
  .../context-magnet-contribution-trace.test.ts |  43 ++
- packages/plugin-api-map/src/surfaces.ts       |   4 +-
  .../context-magnet-host-policy.test.ts        |  71 +++
  packages/plugin-sdk/src/backend-contract.ts   |   4 +
  .../plugin-sdk/src/internal/host-policy.ts    |  52 ++-
@@ -31,6 +30,7 @@ Subject: [PATCH 24/31] feat(context-magnet): add contribution trace API
  packages/sdk/test/public-types.test.ts        |   1 +
  packages/server-contract/src/api/threads.ts   |  14 +
  packages/server-contract/src/public-api.ts    |  11 +
+ plugins/plugin-api-docs/src/surfaces.ts       |   4 +-
  27 files changed, 1653 insertions(+), 4 deletions(-)
  create mode 100644 packages/db/drizzle/0120_early_virginia_dare.sql
  create mode 100644 packages/db/drizzle/0121_sticky_king_bedlam.sql
@@ -89,7 +89,7 @@ index a91f9ceb45262919ee87af872e385e08876fa485..4e2d6376b95ae128bef675c1948f4dda
      const threadId = context.req.param("id");
      requirePublicThread(deps.db, threadId);
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index 981db05bddbc8c59438390afae5d2d5edfc05a61..847419dcd89c5cb3198245456e5252029970dbfa 100644
+index cbe3d78588d5c69ff1ef519685a99ce663b6ebf2..da45c3c52c93fcdbfe1d09e92715a281ef44b011 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
 @@ -62,6 +62,8 @@ import {
@@ -101,7 +101,7 @@ index 981db05bddbc8c59438390afae5d2d5edfc05a61..847419dcd89c5cb3198245456e525202
    deleteAllPluginSettings,
    deleteInstalledPlugin,
    deletePluginSchedules,
-@@ -2258,6 +2260,20 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2281,6 +2283,20 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
              ),
          );
          selectedSkillIdsByPlugin.set(pluginId, new Set(outcome.value.skillIds));
@@ -122,7 +122,7 @@ index 981db05bddbc8c59438390afae5d2d5edfc05a61..847419dcd89c5cb3198245456e525202
          if (outcome.value.instructions !== null) {
            dynamicInstructions.push({
              pluginId,
-@@ -2376,6 +2392,21 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2399,6 +2415,21 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
            return normalizeAgentToolResult(record.name, result);
          },
        );
@@ -145,7 +145,7 @@ index 981db05bddbc8c59438390afae5d2d5edfc05a61..847419dcd89c5cb3198245456e525202
        return {
          success: false,
 diff --git a/apps/server/test/public/public-thread-data.test.ts b/apps/server/test/public/public-thread-data.test.ts
-index 6d50c5e7ebf00800363c663e60be5b0b6f648e4f..0e02358af0f2eac8718872e5890efbf7b85d4179 100644
+index b7aa9106d5276475d023b7c16c93aa21f9c26a31..4307d211e3a94fc2592e4a2192c1b0c01b7c9206 100644
 --- a/apps/server/test/public/public-thread-data.test.ts
 +++ b/apps/server/test/public/public-thread-data.test.ts
 @@ -4,6 +4,7 @@ import {
@@ -410,10 +410,10 @@ index 6fea5e9775cda714d1fbfce905aca72128b8b303..a7214d47351610779a2caeff5fd7e172
      const server = await startTestServer();
      const workDir = await mkdtemp(join(tmpdir(), "bb-plugin-host-transform-"));
 diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
-index 11585f24665ee87d3ad79487f43b9f92cc875cae..e061fdd2536864d6d073ed1c61e3d814fa6c32dd 100644
+index 8ac2f4fd38a413884827cb7af7ae49579fa9ee96..5abdf0186af292520e1e1307ab262167b9206603 100644
 --- a/docs/api_to_audit.md
 +++ b/docs/api_to_audit.md
-@@ -3266,6 +3266,27 @@ Ordinary native UI attribution and presence are separate capabilities.
+@@ -3405,6 +3405,27 @@ Ordinary native UI attribution and presence are separate capabilities.
  
  ## Plugin presentation compatibility
  
@@ -1620,7 +1620,7 @@ index 0000000000000000000000000000000000000000..937b270402426ccfc272945fe2c8cd70
 +  typeof contextMagnetContributionTracePageSchema
 +>;
 diff --git a/packages/domain/src/index.ts b/packages/domain/src/index.ts
-index a6158bc1005a93b606340bcd69efe7eb78309555..4eb29df80a511222f83ee2235fe7d8ff04d24c21 100644
+index aaae63ba7efda636d33bcb9f4fb52a0596335440..df05b79423dee26abe7e932185a62806453eb86c 100644
 --- a/packages/domain/src/index.ts
 +++ b/packages/domain/src/index.ts
 @@ -1,4 +1,5 @@
@@ -1678,25 +1678,6 @@ index 0000000000000000000000000000000000000000..3f6bd7aeb0e241cb9e3a7ce54198deb7
 +    ).toThrow();
 +  });
 +});
-diff --git a/packages/plugin-api-map/src/surfaces.ts b/packages/plugin-api-map/src/surfaces.ts
-index 4a68ce8b00c0347b1071864debef1da10f020198..1eb732f3417b44017814f7c6f0fe8de0fc360f58 100644
---- a/packages/plugin-api-map/src/surfaces.ts
-+++ b/packages/plugin-api-map/src/surfaces.ts
-@@ -1118,11 +1118,13 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
-           "Spawn or fork with lifecycleOwnerThreadId to archive/delete a dependent with a live owner across projects; ownership is immutable, independent of sidebar parents and supports different hosts/environments. Thread responses return the owner or null. Unarchive owner first; Stop does not cascade",
-           "List machines and suspend, resume, or remove provider-managed machines",
-           "Read recorded context usage with sdk.threads.context({ threadId }); usage is null when unavailable, and its snapshot is present only when the latest measurement includes a breakdown",
-+          "Read explicitly retained Context Magnet contribution traces through snapshot-bound pages without reconstructing provider or session joins",
-           "Reach the same operations the [bb CLI](cli) and the bb UI use",
-           "Have the threads it creates attributed back to the plugin",
-           "Read the server's loopback URL, public app URL, and data directory when it needs server facts",
-         ],
--        apiSymbols: ["BbPluginApi", "PluginServerApi"],
-+        apiSymbols: ["BbPluginApi", "PluginServerApi", "ThreadsArea.experimental_contextMagnetContributions"],
-+        experimental: true,
-         firstParty: [
-           "Automations",
-           "Docs",
 diff --git a/packages/plugin-sdk/src/__tests__/context-magnet-host-policy.test.ts b/packages/plugin-sdk/src/__tests__/context-magnet-host-policy.test.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..59f4e6d71ba5e16aa1147d92fb74b02d1838b7c1
@@ -1775,7 +1756,7 @@ index 0000000000000000000000000000000000000000..59f4e6d71ba5e16aa1147d92fb74b02d
 +  });
 +});
 diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
-index 602c36e0b0b47e3256304a871331575f973eeed1..33e339a0491919637ecdf41ef36f31a4946fcf11 100644
+index cbdb47bdfd567b309acf748dcca475e2b29df38e..eef877d2a3c6745a1cb46fd19bd9335c5cfe6bbf 100644
 --- a/packages/plugin-sdk/src/backend-contract.ts
 +++ b/packages/plugin-sdk/src/backend-contract.ts
 @@ -19,6 +19,7 @@ import type {
@@ -1804,7 +1785,7 @@ index 602c36e0b0b47e3256304a871331575f973eeed1..33e339a0491919637ecdf41ef36f31a4
  
  // ---------------------------------------------------------------------------
 diff --git a/packages/plugin-sdk/src/internal/host-policy.ts b/packages/plugin-sdk/src/internal/host-policy.ts
-index b949cf6690056ac79d52bd83c30cbe7c3d997517..12b2943b2f9721ab2cbaf88373fe77c15519e685 100644
+index 1081da7c463d97f43799330b6bd3ab1c48257e91..1afffcce3d5149ab87a1c91faf3c6d88c0c675f4 100644
 --- a/packages/plugin-sdk/src/internal/host-policy.ts
 +++ b/packages/plugin-sdk/src/internal/host-policy.ts
 @@ -18,6 +18,7 @@ import {
@@ -1815,7 +1796,7 @@ index b949cf6690056ac79d52bd83c30cbe7c3d997517..12b2943b2f9721ab2cbaf88373fe77c1
    normalizeProviderNativeRoots,
    providerNativeRootsInputSchema,
    providerNativeRootsSchema,
-@@ -3550,6 +3551,17 @@ function normalizePluginAgentSelectionIds(args: {
+@@ -3478,6 +3479,17 @@ function normalizePluginAgentSelectionIds(args: {
    return selected;
  }
  
@@ -1833,7 +1814,7 @@ index b949cf6690056ac79d52bd83c30cbe7c3d997517..12b2943b2f9721ab2cbaf88373fe77c1
  export function normalizePluginAgentConfiguration(args: {
    knownSkillIds: ReadonlySet<string>;
    knownToolIds: ReadonlySet<string>;
-@@ -3560,6 +3572,7 @@ export function normalizePluginAgentConfiguration(args: {
+@@ -3488,6 +3500,7 @@ export function normalizePluginAgentConfiguration(args: {
    toolParameterOverrides: Map<string, Record<string, unknown>>;
    skillIds: string[];
    instructions: string | null;
@@ -1841,7 +1822,7 @@ index b949cf6690056ac79d52bd83c30cbe7c3d997517..12b2943b2f9721ab2cbaf88373fe77c1
  } {
    if (
      typeof args.value !== "object" ||
-@@ -3567,12 +3580,12 @@ export function normalizePluginAgentConfiguration(args: {
+@@ -3495,12 +3508,12 @@ export function normalizePluginAgentConfiguration(args: {
      Array.isArray(args.value)
    ) {
      throw new Error(
@@ -1856,7 +1837,7 @@ index b949cf6690056ac79d52bd83c30cbe7c3d997517..12b2943b2f9721ab2cbaf88373fe77c1
      .sort();
    if (unknownKeys.length > 0) {
      throw new Error(
-@@ -3598,6 +3611,40 @@ export function normalizePluginAgentConfiguration(args: {
+@@ -3526,6 +3539,40 @@ export function normalizePluginAgentConfiguration(args: {
      pluginId: args.pluginId,
      value: output.tools,
    });
@@ -1897,7 +1878,7 @@ index b949cf6690056ac79d52bd83c30cbe7c3d997517..12b2943b2f9721ab2cbaf88373fe77c1
    return {
      toolIds: toolSelections.toolIds,
      toolParameterOverrides: toolSelections.parameterOverrides,
-@@ -3607,6 +3654,7 @@ export function normalizePluginAgentConfiguration(args: {
+@@ -3535,6 +3582,7 @@ export function normalizePluginAgentConfiguration(args: {
        value: output.skills,
      }),
      instructions,
@@ -2051,10 +2032,10 @@ index 39ff2e11c581695a2a537395d5cdc8b3c7bdc0c0..aeadf1d4c58e55ae73fec8d9e0c26738
 +  });
  });
 diff --git a/packages/sdk/test/public-types.test.ts b/packages/sdk/test/public-types.test.ts
-index 072852bfdcd31821d26c95f0b7535945fe73f7a0..73a3ab61c7471919d10241289de06f75e3e815be 100644
+index 36228e0c6f6c7945277a9a946b234cbf2cf92f7f..b2e4982bcfdf57a1786d691231a46cebc2bd5368 100644
 --- a/packages/sdk/test/public-types.test.ts
 +++ b/packages/sdk/test/public-types.test.ts
-@@ -391,6 +391,7 @@ type ExpectedThreadsKey =
+@@ -398,6 +398,7 @@ type ExpectedThreadsKey =
    | "delete"
    | "editMessage"
    | "experimental_applyExecutionOverrides"
@@ -2088,10 +2069,10 @@ index b99e51b89be6e79c87ce7b0776d0f1fb19e660c0..929d9df87abe2249de48987bd082bb92
    type: z.string().min(1),
    afterSeq: z.string().regex(/^\d+$/).optional(),
 diff --git a/packages/server-contract/src/public-api.ts b/packages/server-contract/src/public-api.ts
-index 39ba2665f71ea5d7afe76c43a30dea005ebd75b2..04ab02082aaef7ab08ac74b32f058c19c7262d95 100644
+index ee8fc44cb691656d21ae1da6d78d4b0ea73f6343..0700c8f72afa1ac0da4544f3ef562d7cb66145e3 100644
 --- a/packages/server-contract/src/public-api.ts
 +++ b/packages/server-contract/src/public-api.ts
-@@ -52,6 +52,7 @@ import type {
+@@ -58,6 +58,7 @@ import type {
    ProjectSource,
    ResolvedThreadExecutionOptions,
    ThreadEventRow,
@@ -2099,7 +2080,7 @@ index 39ba2665f71ea5d7afe76c43a30dea005ebd75b2..04ab02082aaef7ab08ac74b32f058c19
    ThreadQueuedMessage,
  } from "@bb/domain";
  import {
-@@ -218,6 +219,7 @@ import type {
+@@ -229,6 +230,7 @@ import type {
    ThreadChildSummaryResponse,
    ThreadEventWaitQuery,
    ThreadEventsQuery,
@@ -2107,15 +2088,15 @@ index 39ba2665f71ea5d7afe76c43a30dea005ebd75b2..04ab02082aaef7ab08ac74b32f058c19
    ThreadSectionMutationResponse,
    ThreadSectionResponse,
    ThreadFilesRawQuery,
-@@ -360,6 +362,7 @@ import {
-   systemVersionQuerySchema,
+@@ -374,6 +376,7 @@ import {
+   systemAppUpdateQuerySchema,
    threadEventWaitQuerySchema,
    threadEventsQuerySchema,
 +  contextMagnetContributionTraceQuerySchema,
    threadFilesRawQuerySchema,
    threadGetQuerySchema,
    threadHostFileContentQuerySchema,
-@@ -1643,6 +1646,14 @@ export const publicApiRoutes = {
+@@ -1663,6 +1666,14 @@ export const publicApiRoutes = {
        ),
        response: jsonResponse<ThreadEventRow[]>(),
      }),
@@ -2130,6 +2111,25 @@ index 39ba2665f71ea5d7afe76c43a30dea005ebd75b2..04ab02082aaef7ab08ac74b32f058c19
      eventWait: defineRoute({
        path: "/threads/:id/events/wait",
        method: "get",
+diff --git a/plugins/plugin-api-docs/src/surfaces.ts b/plugins/plugin-api-docs/src/surfaces.ts
+index 58c46e115f875e05520401c70888833af1d59015..cd5c000dea8c5de524afcc8c3e2f956d0d2fb689 100644
+--- a/plugins/plugin-api-docs/src/surfaces.ts
++++ b/plugins/plugin-api-docs/src/surfaces.ts
+@@ -1137,11 +1137,13 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+           "Spawn or fork with lifecycleOwnerThreadId to archive/delete a dependent with a live owner across projects; ownership is immutable, independent of sidebar parents and supports different hosts/environments. Thread responses return the owner or null. Unarchive owner first; Stop does not cascade",
+           "List machines and suspend, resume, or remove provider-managed machines",
+           "Read recorded context usage with sdk.threads.context({ threadId }); usage is null when unavailable, and its snapshot is present only when the latest measurement includes a breakdown",
++          "Read explicitly retained Context Magnet contribution traces through snapshot-bound pages without reconstructing provider or session joins",
+           "Reach the same operations the [bb CLI](cli) and the bb UI use",
+           "Have the threads it creates attributed back to the plugin",
+           "Read the server's loopback URL, public app URL, and data directory when it needs server facts",
+         ],
+-        apiSymbols: ["BbPluginApi", "PluginServerApi"],
++        apiSymbols: ["BbPluginApi", "PluginServerApi", "ThreadsArea.experimental_contextMagnetContributions"],
++        experimental: true,
+         firstParty: [
+           "Automations",
+           "Docs",
 -- 
 2.53.0
 

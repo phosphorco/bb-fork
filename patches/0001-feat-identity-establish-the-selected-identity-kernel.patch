@@ -1,7 +1,7 @@
-From 11374279a8338aecd690dce29ebbb6102acc6329 Mon Sep 17 00:00:00 2001
+From bfd79eb8b4cbb82f82c5ac466d7e510dad56fce8 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:55 +0200
-Subject: [PATCH 01/31] feat(identity): establish the selected identity kernel
+Subject: [PATCH 01/32] feat(identity): establish the selected identity kernel
 
 ---
  apps/server/src/db.ts                         |   2 +
@@ -408,10 +408,10 @@ index e979231f0ec7a4bc9d484f721a41a71508432d2c..692642f2eb48306907c68122f996ba0c
      if (!deleted) {
        throw new ApiError(404, "invalid_request", "Queued message not found");
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
-index b752d129b3793e270062dc23639eefb33a74262f..1270c89e82b5af0422c85fbe8b71dfab75ede20e 100644
+index 97e45268f990f39e899524da1bb2137bcb9a3899..b9a8b9fcbd7309294d9e2c601169d5439dad3968 100644
 --- a/apps/server/src/server.ts
 +++ b/apps/server/src/server.ts
-@@ -9,7 +9,9 @@ import { createHash } from "node:crypto";
+@@ -10,7 +10,9 @@ import { createHash, randomUUID } from "node:crypto";
  import { readFile, stat } from "node:fs/promises";
  import { performance } from "node:perf_hooks";
  import { extname, join, resolve } from "node:path";
@@ -422,7 +422,7 @@ index b752d129b3793e270062dc23639eefb33a74262f..1270c89e82b5af0422c85fbe8b71dfab
  import { terminalWebSocketQuerySchema } from "@bb/server-contract";
  import { compress } from "hono/compress";
  import { cors } from "hono/cors";
-@@ -61,8 +63,18 @@ import {
+@@ -62,8 +64,18 @@ import {
  } from "./internal/auth.js";
  import {
    captureTrustedRemoteAddress,
@@ -441,7 +441,7 @@ index b752d129b3793e270062dc23639eefb33a74262f..1270c89e82b5af0422c85fbe8b71dfab
  import { runEventLoopWork } from "./services/system/event-loop-work.js";
  import { runWithTelemetryAppSurface } from "./services/system/telemetry.js";
  import {
-@@ -132,6 +144,21 @@ type CloseWebSockets = () => Promise<void>;
+@@ -134,6 +146,21 @@ type CloseWebSockets = () => Promise<void>;
  type NodeWebSocketServer = ReturnType<typeof createNodeWebSocket>["wss"];
  type WebSocketCloseError = Error | undefined;
  
@@ -463,7 +463,7 @@ index b752d129b3793e270062dc23639eefb33a74262f..1270c89e82b5af0422c85fbe8b71dfab
  interface ServerApp {
    app: Hono;
    closeWebSockets: CloseWebSockets;
-@@ -474,6 +501,12 @@ export function createApp(
+@@ -478,6 +505,12 @@ export function createApp(
      captureTrustedRemoteAddress(context);
      return runWithTelemetryAppSurface(resolveRequestAppSurface(context), next);
    });
@@ -476,7 +476,7 @@ index b752d129b3793e270062dc23639eefb33a74262f..1270c89e82b5af0422c85fbe8b71dfab
    app.use("*", async (context, next) => {
      const path = context.req.path;
      if (!path.startsWith("/api/v1/") && !path.startsWith("/internal/")) {
-@@ -629,7 +662,70 @@ export function createApp(
+@@ -677,7 +710,70 @@ export function createApp(
      }
      return next();
    });
@@ -548,7 +548,7 @@ index b752d129b3793e270062dc23639eefb33a74262f..1270c89e82b5af0422c85fbe8b71dfab
      machineEnrollments: getMachineEnrollmentService(deps),
      db: deps.db,
      hub: deps.hub,
-@@ -641,6 +737,9 @@ export function createApp(
+@@ -689,6 +785,9 @@ export function createApp(
      getAppUrl: () => deps.config.appUrl ?? null,
      sharedPorts: deps.sharedPorts,
      providerRegistry: deps.providerRegistry,
@@ -4579,12 +4579,12 @@ index 0000000000000000000000000000000000000000..27054cfe96a64936dae912ccf5baa966
 +  return serverToolCorrelationRegistry;
 +}
 diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
-index 995b49289b3370415c8541b899a9598d70650820..79a6dd2fd8a5571e22edbbea5b57c7c7897d50ac 100644
+index b5da236d95c6ac4cc1b036a139ddc0aa3406c5a6..26153d01a73b1eacf2eb06d1d0dada79cc94957e 100644
 --- a/apps/server/src/services/plugins/plugin-api.ts
 +++ b/apps/server/src/services/plugins/plugin-api.ts
-@@ -54,6 +54,7 @@ import type {
+@@ -53,6 +53,7 @@ import type {
+   PluginMentionTrigger,
    PluginMachines,
-   PluginAiServiceDeclaration,
    PluginAiServices,
 +  ExperimentalP6rIdentityProtocol,
    PluginProviderDeclaration,
@@ -4600,9 +4600,9 @@ index 995b49289b3370415c8541b899a9598d70650820..79a6dd2fd8a5571e22edbbea5b57c7c7
    closeWebSockets(): void;
    invalidate(): void;
  }
-@@ -519,6 +522,11 @@ export function createPluginApi(options: {
-     serviceId: string,
-   ) => AiServiceHostBinding<PluginHostArtifactSnapshot>;
+@@ -512,6 +515,11 @@ export function createPluginApi(options: {
+   };
+   isProviderIdTaken: (providerId: string) => boolean;
    assertProviderRegistrable: (providerId: string) => void;
 +  p6rIdentity?: {
 +    readonly protocol: ExperimentalP6rIdentityProtocol;
@@ -4612,15 +4612,15 @@ index 995b49289b3370415c8541b899a9598d70650820..79a6dd2fd8a5571e22edbbea5b57c7c7
  }): PluginApiHandle {
    const {
      pluginId,
-@@ -546,6 +554,7 @@ export function createPluginApi(options: {
+@@ -539,6 +547,7 @@ export function createPluginApi(options: {
      registerAiService,
      isProviderIdTaken,
      assertProviderRegistrable,
 +    p6rIdentity,
-     isAiServiceIdTaken,
-     assertAiServiceRegistrable,
    } = options;
-@@ -1323,6 +1332,9 @@ export function createPluginApi(options: {
+   let invalidated = false;
+   let activated = false;
+@@ -1314,6 +1323,9 @@ export function createPluginApi(options: {
      server,
      hosts,
      experimental_aiServices,
@@ -4630,7 +4630,7 @@ index 995b49289b3370415c8541b899a9598d70650820..79a6dd2fd8a5571e22edbbea5b57c7c7
      get sdk(): PluginBbSdk {
        assertLive();
        const sdk = getSdk();
-@@ -1371,6 +1383,10 @@ export function createPluginApi(options: {
+@@ -1370,6 +1382,10 @@ export function createPluginApi(options: {
        return instructionProvider;
      },
      mentionProviders,
@@ -4641,7 +4641,7 @@ index 995b49289b3370415c8541b899a9598d70650820..79a6dd2fd8a5571e22edbbea5b57c7c7
      activate() {
        if (activated) return;
        assertLive();
-@@ -1394,6 +1410,9 @@ export function createPluginApi(options: {
+@@ -1393,6 +1409,9 @@ export function createPluginApi(options: {
          pendingNeedsConfiguration = null;
        }
      },
@@ -4911,10 +4911,10 @@ index 0000000000000000000000000000000000000000..a4ebfa171abf578ab8699a197431bb42
 +  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 +}
 diff --git a/apps/server/src/services/plugins/plugin-runtime.ts b/apps/server/src/services/plugins/plugin-runtime.ts
-index 31c1f44b4e8da26c9ebb7892a95b4b7138be5e52..abdccf594694385a567090f8fba0ebabc2d2897e 100644
+index dd30814cd6751a44a445af060ee54ad95ae694ab..7b516dcbe8288ef6dd12ba226ae6c8e488fd880f 100644
 --- a/apps/server/src/services/plugins/plugin-runtime.ts
 +++ b/apps/server/src/services/plugins/plugin-runtime.ts
-@@ -101,6 +101,7 @@ import type {
+@@ -99,6 +99,7 @@ import type {
  import { createKeyedLock } from "../lib/async-deduper.js";
  import { runEventLoopWork } from "../system/event-loop-work.js";
  import { abortPluginToolCallsForPlugin } from "./plugin-tool-calls.js";
@@ -4922,7 +4922,7 @@ index 31c1f44b4e8da26c9ebb7892a95b4b7138be5e52..abdccf594694385a567090f8fba0ebab
  
  const serverRuntimeDir = dirname(fileURLToPath(import.meta.url));
  const pluginSdkRuntimePath = join(serverRuntimeDir, "plugin-sdk-runtime.js");
-@@ -1438,6 +1439,12 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+@@ -1436,6 +1437,12 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
      const settingsDescriptorsRef: { current: PluginSettingDescriptors } = {
        current: {},
      };
@@ -4935,15 +4935,15 @@ index 31c1f44b4e8da26c9ebb7892a95b4b7138be5e52..abdccf594694385a567090f8fba0ebab
      const handle = createPluginApi({
        pluginId: row.id,
        logger: deps.logger,
-@@ -1613,6 +1620,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
-           hostArtifact: hostArtifactCandidate,
-           hostArtifactProblem,
-         }),
+@@ -1568,6 +1575,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+         }
+         throw new Error(providerWithoutBridgeMessage(providerId));
+       },
 +      ...(p6rCandidate === undefined ? {} : { p6rIdentity: p6rCandidate }),
        isProviderIdTaken: (providerId) => {
          if (!deps.providerRegistry) {
            throw new Error("the provider registry is unavailable in this host");
-@@ -1692,6 +1700,32 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+@@ -1647,6 +1655,32 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
        logger.warn(`plugin ${row.id} failed to load: ${hostArtifactProblem}`);
        return hostArtifactProblem;
      }
@@ -4976,7 +4976,7 @@ index 31c1f44b4e8da26c9ebb7892a95b4b7138be5e52..abdccf594694385a567090f8fba0ebab
      const plugin: LoadedPlugin = {
        manifest,
        handle,
-@@ -1725,6 +1759,13 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+@@ -1680,6 +1714,13 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
      needsConfiguration.delete(row.id);
      agentToolProblems.delete(row.id);
      handle.activate();
@@ -4990,7 +4990,7 @@ index 31c1f44b4e8da26c9ebb7892a95b4b7138be5e52..abdccf594694385a567090f8fba0ebab
      const now = Date.now();
      prunePluginSchedules(
        deps.db,
-@@ -1763,6 +1804,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+@@ -1718,6 +1759,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
    ): Promise<void> {
      disposingPluginIds.add(id);
      try {
@@ -4999,7 +4999,7 @@ index 31c1f44b4e8da26c9ebb7892a95b4b7138be5e52..abdccf594694385a567090f8fba0ebab
        const hostArtifact = hostArtifacts.get(id);
        if (hostArtifact !== undefined && deps.disposePluginHost) {
 diff --git a/apps/server/src/services/plugins/plugin-service-internal.ts b/apps/server/src/services/plugins/plugin-service-internal.ts
-index 0916c507443f4ae7bc4784894a46c6190fe99cb2..45fe5c4a7f7ca17a36b077ba7d1a7489516f489c 100644
+index e618658ea713c238403f4ef99bc73c27c9a14143..560b91ba8e46d258849d91e12f68708ef0fbd551 100644
 --- a/apps/server/src/services/plugins/plugin-service-internal.ts
 +++ b/apps/server/src/services/plugins/plugin-service-internal.ts
 @@ -28,6 +28,15 @@ import type {
@@ -5028,7 +5028,7 @@ index 0916c507443f4ae7bc4784894a46c6190fe99cb2..45fe5c4a7f7ca17a36b077ba7d1a7489
    pluginHostArtifacts?: PluginHostArtifactRegistry;
    aiServices: AiServiceRegistry;
    onSettingsChanged?: (pluginId: string) => void;
-@@ -153,6 +165,11 @@ export interface PluginAgentToolContribution {
+@@ -155,6 +167,11 @@ export interface PluginAgentToolContribution {
    instructions: string | null;
  }
  
@@ -5041,7 +5041,7 @@ index 0916c507443f4ae7bc4784894a46c6190fe99cb2..45fe5c4a7f7ca17a36b077ba7d1a7489
    pluginId: string;
    provider: (ctx: { threadId: string; projectId: string }) => string | null;
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index a280166b282903913966326b3ff25f3e3cb04dab..56247c610957768e1ad3d1d618195d2b4115b5e9 100644
+index e07e036e9423fb7c9e078a82bd932b40bee88f24..99cbd3dd79591de977df4b1892942972abcc2dac 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
 @@ -3,6 +3,7 @@ import type {
@@ -5052,9 +5052,9 @@ index a280166b282903913966326b3ff25f3e3cb04dab..56247c610957768e1ad3d1d618195d2b
  import { readFile, rm } from "node:fs/promises";
  import { join } from "node:path";
  import { homedir } from "node:os";
-@@ -149,12 +150,17 @@ import {
- } from "./plugin-runtime.js";
- import { nextCronRunAt, raceTimeout } from "./plugin-time-box.js";
+@@ -153,12 +154,17 @@ import {
+   settledWithin,
+ } from "./plugin-time-box.js";
  import { createPluginUpdates } from "./plugin-updates.js";
 +import { retainP6rHttpResponse } from "./plugin-p6r-http.js";
 +import type { P6rJson } from "../p6r/identity-protocol.js";
@@ -5070,7 +5070,7 @@ index a280166b282903913966326b3ff25f3e3cb04dab..56247c610957768e1ad3d1d618195d2b
    PluginMentionProviderContribution,
    PluginMentionResolveResult,
    PluginMentionSearchGroup,
-@@ -365,9 +371,21 @@ export interface PluginService {
+@@ -369,9 +375,21 @@ export interface PluginService {
      method: string,
      handler: PluginRpcHandler,
      input: unknown,
@@ -5092,7 +5092,7 @@ index a280166b282903913966326b3ff25f3e3cb04dab..56247c610957768e1ad3d1d618195d2b
    httpToken(
      id: string,
      options?: { rotate?: boolean },
-@@ -1821,8 +1839,55 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1844,8 +1862,55 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
          id,
          `http ${route.method} ${route.path}`,
          async () => {
@@ -5150,7 +5150,7 @@ index a280166b282903913966326b3ff25f3e3cb04dab..56247c610957768e1ad3d1d618195d2b
          },
        );
        if (outcome.ok) return outcome.value;
-@@ -1870,7 +1935,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1893,7 +1958,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
        await invokeWrapped(id, `websocket ${route.path} ${event}`, run);
      },
  
@@ -5159,7 +5159,7 @@ index a280166b282903913966326b3ff25f3e3cb04dab..56247c610957768e1ad3d1d618195d2b
        const outcome = await invokeWrapped(id, `rpc ${method}`, async () => {
          const parsedInput = await validateRpcValue(
            handler.inputSchema,
-@@ -1878,7 +1943,51 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1901,7 +1966,51 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
            "input",
            throwRpcBoundaryError,
          );
@@ -5212,7 +5212,7 @@ index a280166b282903913966326b3ff25f3e3cb04dab..56247c610957768e1ad3d1d618195d2b
          const parsedOutput = await validateRpcValue(
            handler.outputSchema,
            result,
-@@ -1897,6 +2006,57 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1920,6 +2029,57 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
        };
      },
  
@@ -5946,19 +5946,19 @@ index 53b0170ce431fdbc272f99780dee0ce33ed125f3..b7c12a513d336c7c830ea982bb744838
      beforeAppendInTransaction,
      db: deps.db,
 diff --git a/apps/server/src/start-server.ts b/apps/server/src/start-server.ts
-index e5a32cc420a46768508b6c5dddd9a0299cd15967..c70c52652327fa309f2cefe110114dbcca564d1d 100644
+index 9a6ea581520959ca629a11dd2fea5026735d8df5..f4766bec64643ea278a2b34635efc922fd827291 100644
 --- a/apps/server/src/start-server.ts
 +++ b/apps/server/src/start-server.ts
-@@ -152,6 +152,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
-     inferenceModel: serverConfig.BB_INFERENCE,
+@@ -151,6 +151,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+     hostDaemonPort: serverConfig.BB_HOST_DAEMON_PORT,
+     inheritedSkillsRootPaths: serverConfig.BB_INHERITED_SKILLS_ROOTS,
      isDevelopment: !isProduction,
-     openAiApiKey: serverConfig.OPENAI_API_KEY,
 +    p6rIdentityBoundary: serverConfig.BB_P6R_IDENTITY_BOUNDARY,
      serverPort: serverConfig.BB_SERVER_PORT,
      sharedSkillRoots: { user: [], project: [] },
-     transcriptionModel: serverConfig.BB_TRANSCRIPTION,
+   };
 diff --git a/apps/server/src/types.ts b/apps/server/src/types.ts
-index 1fb061481f4c6b5a7d72a49874b1a55f541149cd..1612ea733b994dff7b232533729e99d57bfc9863 100644
+index 26ccb4d4df9e963b1645c1f1a267ce8848ba476a..4c3305b7bd3cebc922a0999fcf3c697839378082 100644
 --- a/apps/server/src/types.ts
 +++ b/apps/server/src/types.ts
 @@ -1,4 +1,5 @@
@@ -5967,7 +5967,7 @@ index 1fb061481f4c6b5a7d72a49874b1a55f541149cd..1612ea733b994dff7b232533729e99d5
  import type { DbConnection } from "@bb/db";
  import type { FeatureFlags, ProviderNativeSkillRoots } from "@bb/domain";
  import type { Logger } from "@bb/logger";
-@@ -22,6 +23,7 @@ import type { ProviderNativeRootsCache } from "./services/providers/native-roots
+@@ -23,6 +24,7 @@ import type { ProviderNativeRootsCache } from "./services/providers/native-roots
  export type ServerLogger = Pick<Logger, "debug" | "error" | "info" | "warn">;
  
  export interface ServerRuntimeConfig {
@@ -8268,7 +8268,7 @@ index 0000000000000000000000000000000000000000..b0a62a4324c163fe05b2c0ef466b6a12
 +  });
 +});
 diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-index fea77c08eb8e26db22be0c673b41327734078cc6..a5059d9e83ea9f76b7ab3b4d576e577a2b2d66f9 100644
+index 7da8908437fc8039cb5c3f2a2ca92d52bffd00f4..c1460285bf886fb687b1f54758ae2feb0dd4ed56 100644
 --- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
 +++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
 @@ -170,6 +170,7 @@ const BB_PLUGIN_API_KEYS = [
@@ -8278,7 +8278,7 @@ index fea77c08eb8e26db22be0c673b41327734078cc6..a5059d9e83ea9f76b7ab3b4d576e577a
 +  "experimental_p6rIdentity",
    "sdk",
    "onDispose",
- ] as const satisfies readonly (keyof BbPluginApi)[];
+   "onInstall",
 diff --git a/apps/server/test/services/threads/thread-runtime-display.test.ts b/apps/server/test/services/threads/thread-runtime-display.test.ts
 index 6d70a3b39f715d98c2a843ab7b1c34d3214ae55d..80488565430ddad9ab262ac339d0116368b222e5 100644
 --- a/apps/server/test/services/threads/thread-runtime-display.test.ts
@@ -8292,11 +8292,11 @@ index 6d70a3b39f715d98c2a843ab7b1c34d3214ae55d..80488565430ddad9ab262ac339d01163
      environmentPath: null,
      environmentProviderId: null,
 diff --git a/packages/config/src/env-vars.ts b/packages/config/src/env-vars.ts
-index 2e73c8c0706fba0eb312d918dda830d97a0c9e60..7b7ce575e9d653a746eb7e047c5af14cd3e1f52f 100644
+index 72bc9e31f3703c0e59ffb6c2feae8189f7094807..688b74669236e01085b0175118ee283e7f731856 100644
 --- a/packages/config/src/env-vars.ts
 +++ b/packages/config/src/env-vars.ts
-@@ -140,6 +140,151 @@ function parseTranscriptionModelValue(args: EnvVarParseArgs): string {
-   return validateTranscriptionModel(args.value);
+@@ -138,6 +138,151 @@ function parseLogLevelValue(args: EnvVarParseArgs): string {
+   return validateLogLevel(args.value);
  }
  
 +function p6rRecord(value: unknown, name: string): Record<string, unknown> {
@@ -8447,8 +8447,8 @@ index 2e73c8c0706fba0eb312d918dda830d97a0c9e60..7b7ce575e9d653a746eb7e047c5af14c
  export const BB_LOG_LEVEL_ENV = defineEnvVar<string>({
    description: "Log level: trace, debug, info, warn, error, fatal",
    name: "BB_LOG_LEVEL",
-@@ -184,6 +329,13 @@ export const BB_SERVER_LAUNCH_ID_ENV = defineEnvVar<string>({
-   parse: parseNonEmptyStringEnvValue,
+@@ -189,6 +334,13 @@ export const BB_APP_UPDATE_MODE_ENV = defineEnvVar<AppUpdateMode>({
+   parse: parseAppUpdateModeEnvValue,
  });
  
 +export const BB_P6R_IDENTITY_BOUNDARY_ENV = defineEnvVar<ReturnType<typeof parseP6rIdentityBoundaryEnvValue>>({
@@ -8462,26 +8462,26 @@ index 2e73c8c0706fba0eb312d918dda830d97a0c9e60..7b7ce575e9d653a746eb7e047c5af14c
    description:
      "Internal launcher marker for telemetry attribution. Set by bb-app and desktop launchers.",
 diff --git a/packages/config/src/server.ts b/packages/config/src/server.ts
-index 21acceb4bdedf2fc28eaaddb8e19233c1338753d..764e87e0a99a3196f15442c4e6dc13e9be9d01a6 100644
+index f8d0b4511eafa8da04e6c04bee2defce852431af..594c37604ac6d5fb127ecc9ab423f2d94e705216 100644
 --- a/packages/config/src/server.ts
 +++ b/packages/config/src/server.ts
-@@ -21,6 +21,7 @@ import {
-   BB_INFERENCE_FALLBACK_ENV,
-   BB_INFERENCE_ENV,
+@@ -20,6 +20,7 @@ import {
+   BB_EXTERNAL_URL_ENV,
+   BB_INHERITED_SKILLS_ROOTS_ENV,
    BB_MARKETPLACE_URL_ENV,
 +  BB_P6R_IDENTITY_BOUNDARY_ENV,
    BB_POSTHOG_API_KEY_ENV,
    BB_SERVER_BIND_HOST_ENV,
    BB_SERVER_LAUNCH_ID_ENV,
-@@ -60,6 +61,7 @@ export interface ServerConfig
-   BB_INFERENCE_FALLBACK: string;
+@@ -52,6 +53,7 @@ export interface ServerConfig
+   BB_INHERITED_SKILLS_ROOTS: string[];
    BB_POSTHOG_API_KEY: string;
    BB_MARKETPLACE_URL: string;
 +  BB_P6R_IDENTITY_BOUNDARY: P6rIdentityBoundaryConfig | null;
    BB_SERVER_BIND_HOST: ServerBindHost;
    BB_SERVER_LAUNCH_ID?: string;
-   BB_TELEMETRY: boolean;
-@@ -68,6 +70,30 @@ export interface ServerConfig
+   BB_APP_UPDATE_MODE?: AppUpdateMode;
+@@ -59,6 +61,30 @@ export interface ServerConfig
    featureFlags: FeatureFlags;
  }
  
@@ -8512,7 +8512,7 @@ index 21acceb4bdedf2fc28eaaddb8e19233c1338753d..764e87e0a99a3196f15442c4e6dc13e9
  type LoadServerConfigArgs = LoadCommonConfigArgs;
  
  export { parseServerBindHost };
-@@ -159,6 +185,12 @@ export function loadServerConfig(
+@@ -138,6 +164,12 @@ export function loadServerConfig(
        definition: BB_MARKETPLACE_URL_ENV,
        env: loader.env,
      }),
@@ -8526,7 +8526,7 @@ index 21acceb4bdedf2fc28eaaddb8e19233c1338753d..764e87e0a99a3196f15442c4e6dc13e9
        context: loader.context,
        defaultValue: DEFAULT_BB_POSTHOG_API_KEY,
 diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
-index 51d1675462fbdfc2edf66aa4afdbeda28120ea27..fa24286d997c7f26608cec1132c2e87b94e7e706 100644
+index 25c5155d888af92ba4400b885dadd7919cd95a4d..dd37d3b484ecf9624c6187213be42baea68a701c 100644
 --- a/packages/db/src/data/index.ts
 +++ b/packages/db/src/data/index.ts
 @@ -65,10 +65,13 @@ export {
@@ -8590,10 +8590,10 @@ index 51d1675462fbdfc2edf66aa4afdbeda28120ea27..fa24286d997c7f26608cec1132c2e87b
  } from "./threads.js";
  
 diff --git a/packages/db/src/data/queued-thread-messages.ts b/packages/db/src/data/queued-thread-messages.ts
-index 05147f2d1c966a22cc726d5fdbf7d1f521e42e2c..80b8670ca26dcc9b0295417e89596c7e30feaa38 100644
+index f91b2e431fa087ea896407435fe390c1bcd00942..2e1104fe43387b70497b770e1d3887a5f881b9f2 100644
 --- a/packages/db/src/data/queued-thread-messages.ts
 +++ b/packages/db/src/data/queued-thread-messages.ts
-@@ -2081,11 +2081,18 @@ export function deleteQueuedThreadMessage(
+@@ -2141,11 +2141,18 @@ export function deleteQueuedThreadMessage(
    db: DbConnection,
    notifier: DbNotifier,
    id: string,
@@ -9532,10 +9532,10 @@ index da3193bc21f00774d81c2e594c7a87410ac5cb36..4daecc83e30858f669a1b99af91bdbc1
      vi.useFakeTimers();
      try {
 diff --git a/packages/domain/src/index.ts b/packages/domain/src/index.ts
-index de57ed68e7269fc015c7d5205f7a5a229da827e9..c7d7ccb4b71562637efb329fd61ff11ea66ed1d3 100644
+index 6c2b6f09f2decff3c9a78d29f5ff214c9281159e..6594972f006e43380d478b6016904fd52c3557de 100644
 --- a/packages/domain/src/index.ts
 +++ b/packages/domain/src/index.ts
-@@ -56,6 +56,7 @@ export * from "./terminal.js";
+@@ -57,6 +57,7 @@ export * from "./terminal.js";
  export * from "./thread-dynamic-context.js";
  export * from "./thread-event-scope.js";
  export * from "./thread-events.js";
@@ -9697,19 +9697,19 @@ index 0000000000000000000000000000000000000000..4a97680fd16bce8a0d1e83186cb564d1
 +  typeof threadFacetParticipantPageRequestSchema
 +>;
 diff --git a/packages/plugin-sdk/src/__tests__/public-types.test.ts b/packages/plugin-sdk/src/__tests__/public-types.test.ts
-index 307f63413b23e6c0d8041c9b4d099f2f7a04e4d3..35cff54ad214655c4972a1cee8be4ab4ad99ca16 100644
+index 9459a3d31c17bef01b889863b350822884de0538..e7f538702d78a24372a24791d48870989daca01f 100644
 --- a/packages/plugin-sdk/src/__tests__/public-types.test.ts
 +++ b/packages/plugin-sdk/src/__tests__/public-types.test.ts
-@@ -20,6 +20,7 @@ type ExpectedBbPluginApiKey =
-   | "experimental_hooks"
+@@ -21,6 +21,7 @@ type ExpectedBbPluginApiKey =
    | "experimental_machines"
+   | "onInstall"
    | "experimental_serverAccess"
 +  | "experimental_p6rIdentity"
    | "hosts"
    | "http"
    | "log"
 diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
-index f2c9c45172ff368662ed39bf0eef5921c12ef1eb..0aa981b72d64e46afd9eee911ebc4930f0e3c308 100644
+index 53c305cc6d9f6771a2d816f44a982d66f8a254e7..10a01a62625071aa1340ddae21c25ad27b778098 100644
 --- a/packages/plugin-sdk/src/backend-contract.ts
 +++ b/packages/plugin-sdk/src/backend-contract.ts
 @@ -33,6 +33,7 @@ import type {
@@ -9720,7 +9720,7 @@ index f2c9c45172ff368662ed39bf0eef5921c12ef1eb..0aa981b72d64e46afd9eee911ebc4930
  import type {
    PluginRpcContract,
    PluginRpcHandlers,
-@@ -2000,6 +2001,7 @@ export type PluginBbSdk = Omit<BbSdk, "threads"> & {
+@@ -2047,6 +2048,7 @@ export type PluginBbSdk = Omit<BbSdk, "threads"> & {
   * against.
   */
  export interface BbPluginApi {
@@ -9940,10 +9940,10 @@ index d994de5f17d124e3817e0b07662ed0254e8afbe7..735a422ab92847535e8a6489aa5618d8
  export type * from "./json-value.js";
  export * from "./rpc-contract.js";
 diff --git a/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md b/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
-index c2a2e5ea72c670cafaae583e311ac613878074d3..ebd252496ddfe9d08d502cd671ad36b0b49a86cd 100644
+index 8c29542f670f76b788c6a11a88453a3f240f3c73..dbce014373526dc902e7c48da44087dd42a96c77 100644
 --- a/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
 +++ b/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
-@@ -432,3 +432,13 @@ Read the installed declarations for exact current signatures.
+@@ -421,3 +421,13 @@ Read the installed declarations for exact current signatures.
  - `ExperimentalCreateHostEntryHarnessOptions`
  - `ExperimentalHostEntryHarness`
  - `ExperimentalHostHarnessSignal`

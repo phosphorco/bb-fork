@@ -1,0 +1,251 @@
+From c1436f39040fa1d1494b6cd8f9e7bccc4b331c2e Mon Sep 17 00:00:00 2001
+From: bb-fork <bb-fork@invalid.local>
+Date: Wed, 23 Sep 2026 15:57:33 +0200
+Subject: [PATCH 32/32] feat(p6r): serve owned Tailnet ingress with machine
+ fallback
+
+Route the host's Tailnet Serve ingress through its own loopback listener while
+keeping identity resolution best-effort. Verified people retain their identity;
+requests without usable person evidence continue with a stable machine actor.
+---
+ .../server/src/services/p6r/native-request.ts | 12 +++--
+ apps/server/src/start-server.ts               | 46 ++++++++++++++++---
+ .../p6r/native-message-authorship.test.ts     | 28 ++++++++++-
+ .../src/templates/bb-guide-customization.md   | 12 +++--
+ plugins/bb-guide/skills/bb-cli/SKILL.md       |  6 ++-
+ 5 files changed, 84 insertions(+), 20 deletions(-)
+
+diff --git a/apps/server/src/services/p6r/native-request.ts b/apps/server/src/services/p6r/native-request.ts
+index e49ad91253e3677f15be9e6c442c1db1021c4447..5b61e1b1177119bbbe2082f66fc8af09b143d901 100644
+--- a/apps/server/src/services/p6r/native-request.ts
++++ b/apps/server/src/services/p6r/native-request.ts
+@@ -54,10 +54,11 @@ function isProducerMessageRequest(context: Context): boolean {
+ 
+ function installNativeContextResolver(admission: P6rProviderAdmission) {
+   return async (context: Context, next: Next): Promise<void> => {
+-    nativeContexts.set(context, {
++    const state: NativeContextState = {
+       producerMessageRendering: isProducerMessageRequest(context),
+       resolve: () => admission.resolveNativeAuthor(context),
+-    });
++    };
++    nativeContexts.set(context, state);
+     try {
+       await next();
+     } finally {
+@@ -72,8 +73,7 @@ export function installP6rNativeRequestRoutes(
+   providerId: string | null,
+ ): void {
+   const attach = installNativeContextResolver(admission);
+-  app.use("/threads", attach);
+-  app.use("/threads/*", attach);
++  app.use("*", attach);
+ 
+   const { get } = typedRoutes<PublicApiSchema>(app, {
+     onValidationError: (message) =>
+@@ -83,7 +83,9 @@ export function installP6rNativeRequestRoutes(
+     context.header("Cache-Control", "no-store");
+     const result: P6rIdentityResponse = {
+       status: "ready",
+-      actor: await admission.resolveNativeAuthor(context),
++      actor:
++        nativeContexts.get(context)?.authorship?.author ??
++        (await admission.resolveNativeAuthor(context)),
+       providerId: providerId ?? "",
+     };
+     return context.json(result);
+diff --git a/apps/server/src/start-server.ts b/apps/server/src/start-server.ts
+index f4766bec64643ea278a2b34635efc922fd827291..18a88a14b40a55f7f509aa9c1f219d249062a4b6 100644
+--- a/apps/server/src/start-server.ts
++++ b/apps/server/src/start-server.ts
+@@ -319,11 +319,6 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+     pendingServerMove === null
+       ? installProviderModelCatalogPrewarm(sweepDeps)
+       : null;
+-  if (pendingServerMove === null) {
+-    await runStartupRecoverySweep(sweepDeps).catch((error) => {
+-      logger.error({ err: error }, "Startup recovery sweep failed");
+-    });
+-  }
+ 
+   if (!isLoopbackHostname(serverConfig.BB_SERVER_BIND_HOST)) {
+     logger.warn(
+@@ -338,6 +333,31 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+   });
+   injectWebSocket(server);
+ 
++  const tailnetPortText = process.env.BB_TAILNET_INGRESS_PORT;
++  const tailnetPort = tailnetPortText === undefined ? null : Number(tailnetPortText);
++  if (
++    tailnetPort !== null &&
++    (!Number.isInteger(tailnetPort) ||
++      tailnetPort < 1 ||
++      tailnetPort > 65535 ||
++      tailnetPort === serverConfig.BB_SERVER_PORT ||
++      tailnetPort === serverConfig.BB_HOST_DAEMON_PORT ||
++      !isLoopbackHostname(serverConfig.BB_SERVER_BIND_HOST))
++  ) {
++    throw new Error("BB_TAILNET_INGRESS_PORT must be a distinct loopback TCP port");
++  }
++  const tailnetServer =
++    tailnetPort === null
++      ? null
++      : startHttpListener({
++          fetch: app.fetch,
++          serverConfig: {
++            BB_SERVER_BIND_HOST: "127.0.0.1",
++            BB_SERVER_PORT: tailnetPort,
++          },
++        });
++  if (tailnetServer !== null) injectWebSocket(tailnetServer);
++
+   logger.info(
+     {
+       bindHost: serverConfig.BB_SERVER_BIND_HOST,
+@@ -369,6 +389,11 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+       });
+     }
+     pluginCatalogService.startPeriodicRefresh();
++    // Recovery is independent of listener binding. Keep startup responsive
++    // while preserving the sweep on every ordinary server start.
++    void runStartupRecoverySweep(sweepDeps).catch((error) => {
++      logger.error({ err: error }, "Startup recovery sweep failed");
++    });
+     sweepInterval = setInterval(() => {
+       if (!isServerMoveFrozen(db)) {
+         void runPeriodicSweeps(sweepDeps);
+@@ -411,8 +436,17 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+           resolve();
+         });
+       });
++      const closeTailnetServer =
++        tailnetServer === null
++          ? Promise.resolve()
++          : new Promise<void>((resolve, reject) => {
++              tailnetServer.close((error) => {
++                if (error) reject(error);
++                else resolve();
++              });
++            });
+       await closeWebSockets();
+-      await closeServer;
++      await Promise.all([closeServer, closeTailnetServer]);
+     })();
+     return shutdownPromise;
+   };
+diff --git a/apps/server/test/services/p6r/native-message-authorship.test.ts b/apps/server/test/services/p6r/native-message-authorship.test.ts
+index ff77545f38f539916374d5214b9c7e4512ab6ab5..5268fb8b27682cb714f91d8dc538be76b8152bad 100644
+--- a/apps/server/test/services/p6r/native-message-authorship.test.ts
++++ b/apps/server/test/services/p6r/native-message-authorship.test.ts
+@@ -99,6 +99,7 @@ async function fixture() {
+   expect(registry.publish(prepared.value).ok).toBe(true);
+   const requestFacts = new WeakMap<object, P6rAdmissionRequestFacts>();
+   const admission = createP6rProviderAdmission({
++    configured: () => configured,
+     now: Date.now,
+     instanceId: "native-proof",
+     machineName: "test-server",
+@@ -136,6 +137,8 @@ async function fixture() {
+       : context.json({ error: String(error) }, 500),
+   );
+   installP6rNativeRequestRoutes(api, admission, "people");
++  api.get("/plugins/producer/http/check", (context) => context.text("ok"));
++  api.post("/plugins/producer/rpc/check", (context) => context.text("ok"));
+   api.use("*", async (_context, next) => {
+     if (retireAfterAdmission) prepared.value.registration.dispose();
+     await next();
+@@ -573,14 +576,17 @@ it("uses machine attribution when provider enrichment is unavailable, untrusted,
+       ...execution,
+     });
+     expect(outage.status, await outage.clone().text()).toBe(200);
+-    const outageRequest = f.requestAfter(thread.id, before);
+-    expect(outageRequest.p6rAuthors?.[0]).toMatchObject({
++    expect(f.requestAfter(thread.id, before).p6rAuthors?.[0]).toMatchObject({
+       evidence: "machine",
+       identity: {
+         kind: "machine",
+         key: "p6r-machine:v1:native-proof:server",
+       },
+     });
++    expect((await f.app.request("/api/v1/system/p6rIdentity")).status).toBe(200);
++    expect((await f.post("/threads", {})).status).toBe(400);
++    expect((await f.app.request("/api/v1/plugins/producer/http/check")).status).toBe(200);
++    expect((await f.post("/plugins/producer/rpc/check", {})).status).toBe(200);
+     expect(
+       listCoreParticipantProfilePage(f.harness.db, {
+         threadId: thread.id,
+@@ -633,6 +639,24 @@ it("uses machine attribution when provider enrichment is unavailable, untrusted,
+   }
+ });
+ 
++it("retains machine attribution with an owned Host header when the provider is unavailable", async () => {
++  const f = await fixture();
++  try {
++    f.setPerson("outage");
++    const identity = await f.app.request("/api/v1/system/p6rIdentity", {
++      headers: { host: "bb-next.banjo-tint.ts.net" },
++    });
++    expect(identity.status).toBe(200);
++    expect(await identity.json()).toMatchObject({
++      status: "ready",
++      actor: { evidence: "machine", identity: { kind: "machine" } },
++    });
++    expect((await f.post("/threads", {})).status).toBe(400);
++  } finally {
++    await f.harness.cleanup();
++  }
++});
++
+ it("preserves native compact input while attributing its request", async () => {
+   const f = await fixture();
+   try {
+diff --git a/packages/templates/src/templates/bb-guide-customization.md b/packages/templates/src/templates/bb-guide-customization.md
+index 823062c9fe1f35e633c84cf7f5b8863bc0f7438c..a0408a843f61fa1b9890b97f761c5b84d434c317 100644
+--- a/packages/templates/src/templates/bb-guide-customization.md
++++ b/packages/templates/src/templates/bb-guide-customization.md
+@@ -154,18 +154,20 @@ when they do. `test` runs a sample title or commit message through the current
+ choice. Settings → AI services has the same controls. Each plugin chooses its
+ own model.
+ 
+-Settings → Identity (`/settings/p6rIdentity`) shows the provider-verified identity
++Settings → Identity (`/settings/p6rIdentity`) shows the resolved identity
+ for your current connection. `bb settings p6r-identity --json` and
+ `sdk.system.p6rIdentity()` expose the same check for their own request; a local CLI
+ connection need not resolve to the same person as a browser behind a trusted
+-proxy. An unconfigured instance retains native local behavior. An unavailable
+-configured provider does not fall back to a claimed name.
++proxy. An unconfigured instance retains native local behavior. Requests through
++the owned Tailnet listener use a stable machine actor when verified person
++evidence is unavailable. Local CLI requests use the separate loopback listener.
+ 
+ For Tailscale Serve deployments, `BB_TAILNET_IDENTITY_OWNED_HOST` automatically
+ selects the installed Identity Boundaries provider and standard loopback ingress.
+ No separate `BB_P6R_IDENTITY_BOUNDARY` opt-in is needed; an explicit custom boundary
+-still takes precedence. Requests without verified person evidence use machine
+-attribution. Validate your own identity through your browser connection.
++still takes precedence. Set `BB_TAILNET_INGRESS_PORT` to the distinct loopback
++port served by Tailscale Serve. Validate your own identity through your browser
++connection; the local CLI connection can retain machine attribution.
+ 
+ New browser sends retain their verified author separately from message text,
+ including queued sends and retries. Older unattributed messages remain unknown.
+diff --git a/plugins/bb-guide/skills/bb-cli/SKILL.md b/plugins/bb-guide/skills/bb-cli/SKILL.md
+index 8ce5120fbc4a2fd74c88a3778911bfc3d27d308e..867565850436a0b64a725f3ffd5934099034c127 100644
+--- a/plugins/bb-guide/skills/bb-cli/SKILL.md
++++ b/plugins/bb-guide/skills/bb-cli/SKILL.md
+@@ -143,8 +143,10 @@ list`, `get`, `set`, and `reset`.
+ On Tailscale Serve deployments, an existing `BB_TAILNET_IDENTITY_OWNED_HOST`
+ automatically selects the installed Identity Boundaries provider. Do not add a
+ second boundary opt-in unless custom ingress or another provider requires it.
+-`bb settings p6r-identity --json` reports this CLI connection's identity; a local
+-machine result does not prove that a person's browser resolves the same way.
++`BB_TAILNET_INGRESS_PORT` selects the distinct loopback listener for Serve.
++`bb settings p6r-identity --json` reports this CLI connection's identity.
++A local CLI connection can retain machine attribution; use the admitted Tailnet
++connection to inspect your browser actor.
+ 
+ ```sh
+ bb project list --json
+-- 
+2.53.0
+

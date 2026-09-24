@@ -3,8 +3,8 @@
 > Policy update — 2026-09-09: the approved [Identities and multiplayer ADR](../docs/adrs/2026-09-identities-and-multiplayer.md)
 > governs attribution in this trusted shared deployment. Use verified people when
 > available, applicable carried attribution next, and a stable machine actor
-> otherwise. A configured owned Tailnet listener requires verified identity for
-> native public API admission; the separate local listener retains machine attribution.
+> otherwise. The owned Tailnet listener also retains machine attribution when
+> person evidence is missing or unusable.
 > Never relabel fallback as a verified person or redirect pending personal-state
 > writes to another owner. Independent access checks and data validation remain.
 > Earlier rejection requirements below are superseded; versioned API descriptions
@@ -13,7 +13,7 @@
 
 This is a thin, auditable deployment overlay for [get-bb/bb](https://github.com/get-bb/bb). It does not carry a second copy of upstream source and it does not treat a long-lived Git branch as the release definition.
 
-The current base is exact upstream commit `78804e79d280998a3b4c3c965ec1b5845703bc0e`. The lock records a reviewed source receipt rather than a moving branch or inferred release tag.
+The current base is exact upstream commit `fdd3de3b19b97e6cd1ef7300cbb54711431249d3`. The lock records a reviewed source receipt rather than a moving branch or inferred release tag.
 
 The deployable source is exactly:
 
@@ -94,19 +94,18 @@ plugin layout contract, native behavior, and generic Plugins/Skills resource
 helper. Patch 19 preserves the additive Codex agent-message
 phase. Patch 20 keeps workflow-shell tests independent of ambient loaded state,
 and patch 21 settles virtualized path-browser cleanup.
-Patch 34 requires a verified provider actor before native public API routes run
-through the configured owned Tailnet listener. Plugin HTTP and RPC routes retain
-their own admission rules; local CLI and unconfigured instances retain machine
-attribution.
+Patch 34 adds the configured owned Tailnet listener and preserves the approved
+machine fallback when person evidence is absent or unusable. Plugin HTTP and
+RPC routes retain their own checks; local CLI and unconfigured instances also
+retain machine attribution.
 
 ## Verification boundary for this source receipt
 
-The source receipt is server-scoped, not a claim that every workspace package is
-green. It includes the migration/database suite, server/daemon/CLI typechecks,
-P6R queue and attribution behavior, artifact-v2 CLI behavior, and capped provider
-conformance. The desktop SQLite suite remains host-ineligible without GTK; the
-templates package has a separately diagnosed pack-infrastructure failure; and
-Context Magnet's full direct-plugin suite retains an external Codex router
-launcher-generation digest mismatch. These are explicit release-qualification
-limits, not waived checks, and this selection does not materialize, restart, or
-activate a deployment.
+This latest-upstream source receipt is not a live deployment. Its candidate tree
+passed the complete workspace typecheck and build, both server test projects,
+and focused plugin-build, provider, P6R, and artifact-v2 checks. Organization
+plugin typechecks and builds and community-plugin typechecks, tests, and builds
+also pass with the selected SDK. Context Magnet Inspector's full test suite
+still reports an external Codex router-launcher digest mismatch; it is not
+resolved by changing the expected hash alone. Live materialization, host-side
+policy checks, migration, restart, and browser acceptance remain separate gates.

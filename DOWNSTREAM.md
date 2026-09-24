@@ -92,10 +92,11 @@
     supported historical ledger/schema prefixes, validates the complete target
     structural contract, and commits bridge schema plus completion state
     atomically before normal service use.
-34. **Owned Tailnet identity admission** rejects unauthenticated native public
-    API requests on the dedicated listener before route validation and reuses
-    the verified actor for thread authorship. Local CLI stays on a separate
-    loopback listener; plugin HTTP and RPC routes keep their own admission.
+34. **Owned Tailnet listener with machine fallback** provides a dedicated
+    loopback listener for the host's Serve route. Verified people retain their
+    identities; requests without usable person evidence keep a stable machine
+    actor, as required by the approved identity ADR. Local CLI remains on its
+    loopback listener, and independent network and plugin checks still apply.
 
 Number 22 is intentionally absent: it was a historical queue gap. Number 27 is
 intentionally absent because upstream commit `283e6d7` already supplies the
@@ -103,7 +104,7 @@ former Monaco routing change; it is not replayed downstream.
 
 ## Exact source receipt
 
-- Upstream: `78804e79d280998a3b4c3c965ec1b5845703bc0e`.
+- Upstream: `fdd3de3b19b97e6cd1ef7300cbb54711431249d3`.
 - Patch queue: thirty-two logical patches in `patches/series`; numbers 22 and
   27 are intentionally absent as described above. This queue is the current
   implementation candidate, while

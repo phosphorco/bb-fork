@@ -1,16 +1,17 @@
-From b3f1a04239a5cd61520657fefe6144b765776556 Mon Sep 17 00:00:00 2001
+From 8b708a53a132a61407b2dd332564df7f4c1b6cdb Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
-Subject: [PATCH 02/31] feat(identity): retain facets and execution behavior
+Subject: [PATCH 02/32] feat(identity): retain facets and execution behavior
 
 ---
  apps/server/src/routes/threads/base.ts        |  34 +
  .../server/src/services/plugins/plugin-api.ts | 212 +++++-
- .../providers/provider-model-catalog-store.ts |  51 +-
+ .../providers/provider-model-catalog-store.ts |  55 +-
  .../src/services/system/execution-options.ts  |   7 +-
  .../threads/thread-execution-batch.ts         | 479 +++++++++++++
+ .../threads/thread-execution-override.ts      |  21 +-
  .../services/threads/thread-facet-query.ts    | 627 ++++++++++++++++++
- .../provider-model-catalog-store.test.ts      |  73 ++
+ .../provider-model-catalog-store.test.ts      |  78 +++
  .../test/public/public-thread-facets.test.ts  | 115 ++++
  .../plugins/plugin-authoring-docs.test.ts     |   1 +
  .../threads/thread-execution-batch.test.ts    | 118 ++++
@@ -25,7 +26,7 @@ Subject: [PATCH 02/31] feat(identity): retain facets and execution behavior
  packages/sdk/test/public-types.test.ts        |   4 +
  packages/server-contract/src/api/threads.ts   | 326 +++++++++
  packages/server-contract/src/public-api.ts    |  45 ++
- 21 files changed, 2332 insertions(+), 15 deletions(-)
+ 22 files changed, 2358 insertions(+), 19 deletions(-)
  create mode 100644 apps/server/src/services/threads/thread-execution-batch.ts
  create mode 100644 apps/server/src/services/threads/thread-facet-query.ts
  create mode 100644 apps/server/test/public/public-thread-facets.test.ts
@@ -85,7 +86,7 @@ index e26770630a79d38b4bbc09890f882f200642c181..63142b207ee8f8f57c5e5d9d68a1386c
      const searchQuery = query.query.trim();
      if (countNonWhitespaceChars(searchQuery) < 2) {
 diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
-index 79a6dd2fd8a5571e22edbbea5b57c7c7897d50ac..a8cdd88b43d5dcbca554e948d8f3e824d7e098a5 100644
+index 26153d01a73b1eacf2eb06d1d0dada79cc94957e..8fd37623afe72478c074348270359d9916cf5fc8 100644
 --- a/apps/server/src/services/plugins/plugin-api.ts
 +++ b/apps/server/src/services/plugins/plugin-api.ts
 @@ -9,14 +9,21 @@ import type { MachineEnrollments } from "../machines/enrollments.js";
@@ -110,8 +111,8 @@ index 79a6dd2fd8a5571e22edbbea5b57c7c7897d50ac..a8cdd88b43d5dcbca554e948d8f3e824
    listPluginKvKeys,
    setPluginKvValue,
    type DbConnection,
-@@ -55,6 +62,11 @@ import type {
-   PluginAiServiceDeclaration,
+@@ -54,6 +61,11 @@ import type {
+   PluginMachines,
    PluginAiServices,
    ExperimentalP6rIdentityProtocol,
 +  ExperimentalThreadFacetCardinality,
@@ -171,7 +172,7 @@ index 79a6dd2fd8a5571e22edbbea5b57c7c7897d50ac..a8cdd88b43d5dcbca554e948d8f3e824
      },
    };
  }
-@@ -560,10 +605,15 @@ export function createPluginApi(options: {
+@@ -551,10 +596,15 @@ export function createPluginApi(options: {
    } = options;
    let invalidated = false;
    let activated = false;
@@ -185,9 +186,9 @@ index 79a6dd2fd8a5571e22edbbea5b57c7c7897d50ac..a8cdd88b43d5dcbca554e948d8f3e824
 +  const threadFacetGrants = new WeakMap<object, ThreadFacetGrantRecord>();
 +  const threadFacetTargets = new WeakMap<object, ThreadFacetTargetRecord>();
    const disposeHooks: Array<() => void | Promise<void>> = [];
+   const installHandlers: Array<() => void | Promise<void>> = [];
    const settingsRecord: PluginApiHandle["settings"] = {
-     descriptors: {},
-@@ -614,6 +664,149 @@ export function createPluginApi(options: {
+@@ -606,6 +656,149 @@ export function createPluginApi(options: {
      if (invalidated) throw new PluginContextStaleError(pluginId);
    }
  
@@ -337,7 +338,7 @@ index 79a6dd2fd8a5571e22edbbea5b57c7c7897d50ac..a8cdd88b43d5dcbca554e948d8f3e824
    const prefix = `[plugin:${pluginId}]`;
    function emitLog(
      level: "debug" | "info" | "warn" | "error",
-@@ -1332,6 +1525,7 @@ export function createPluginApi(options: {
+@@ -1323,6 +1516,7 @@ export function createPluginApi(options: {
      server,
      hosts,
      experimental_aiServices,
@@ -345,7 +346,7 @@ index 79a6dd2fd8a5571e22edbbea5b57c7c7897d50ac..a8cdd88b43d5dcbca554e948d8f3e824
      ...(p6rIdentity === undefined
        ? {}
        : { experimental_p6rIdentity: p6rIdentity.protocol }),
-@@ -1344,7 +1538,7 @@ export function createPluginApi(options: {
+@@ -1335,7 +1529,7 @@ export function createPluginApi(options: {
              "use it inside handlers, services, or timers, not at factory load time",
          );
        }
@@ -354,7 +355,7 @@ index 79a6dd2fd8a5571e22edbbea5b57c7c7897d50ac..a8cdd88b43d5dcbca554e948d8f3e824
        return wrappedSdk;
      },
      onDispose(hook) {
-@@ -1395,6 +1589,19 @@ export function createPluginApi(options: {
+@@ -1394,6 +1588,19 @@ export function createPluginApi(options: {
        );
        providerRegistrations.flush();
        aiServiceRegistrations.flush();
@@ -374,7 +375,7 @@ index 79a6dd2fd8a5571e22edbbea5b57c7c7897d50ac..a8cdd88b43d5dcbca554e948d8f3e824
        activated = true;
        const cliWarning = cliRecord.registration
          ? pluginCliCollisionWarning(pluginId, cliRecord.registration.name)
-@@ -1429,6 +1636,7 @@ export function createPluginApi(options: {
+@@ -1428,6 +1635,7 @@ export function createPluginApi(options: {
        }
      },
      invalidate() {
@@ -383,10 +384,10 @@ index 79a6dd2fd8a5571e22edbbea5b57c7c7897d50ac..a8cdd88b43d5dcbca554e948d8f3e824
      },
    };
 diff --git a/apps/server/src/services/providers/provider-model-catalog-store.ts b/apps/server/src/services/providers/provider-model-catalog-store.ts
-index 4d9dc521b05253760330278e451b7135fd08b280..80908f6b40e9a4f99f67f4606a007da5d580f1db 100644
+index 6599c5378104cb5ac586d621052c93c4fe16ad66..89097c885c1bec11604bf06137f90ae0c12013dd 100644
 --- a/apps/server/src/services/providers/provider-model-catalog-store.ts
 +++ b/apps/server/src/services/providers/provider-model-catalog-store.ts
-@@ -47,7 +47,11 @@ type ProviderModelCatalogFailureCode = Exclude<
+@@ -48,7 +48,11 @@ type ProviderModelCatalogFailureCode = Exclude<
  
  export type ProviderModelCatalogAccess =
    | { kind: "picker" }
@@ -399,7 +400,7 @@ index 4d9dc521b05253760330278e451b7135fd08b280..80908f6b40e9a4f99f67f4606a007da5
  
  type ProviderModelCatalogReadResult =
    | {
-@@ -96,7 +100,7 @@ interface CatalogRefresh {
+@@ -102,7 +106,7 @@ interface CatalogRefresh {
    sessionId: string | null;
    startedAt: number;
    markedStale: boolean;
@@ -408,18 +409,18 @@ index 4d9dc521b05253760330278e451b7135fd08b280..80908f6b40e9a4f99f67f4606a007da5
  }
  
  interface CatalogEntry {
-@@ -110,6 +114,10 @@ type RefreshSettlement =
+@@ -117,6 +121,10 @@ type RefreshSettlement =
    | { ok: true; models: AvailableModel[]; selectedOnlyModels: AvailableModel[] }
    | { ok: false; error: unknown };
  
 +type RefreshResult =
 +  | { ok: true }
-+  | { ok: false; code: ProviderModelCatalogFailureCode };
++  | { ok: false; code: ProviderModelCatalogFailureCode; detail: string | null };
 +
  type CatalogDecision =
    | {
        kind: "serve";
-@@ -203,6 +211,16 @@ function evaluate(
+@@ -227,6 +235,16 @@ function evaluate(
    const active = failure !== null && now - failure.failedAt < FAILURE_TTL_MS;
    if (servable !== null) {
      const age = now - servable.fetchedAt;
@@ -427,7 +428,7 @@ index 4d9dc521b05253760330278e451b7135fd08b280..80908f6b40e9a4f99f67f4606a007da5
 +      if (refreshed && failure !== null) {
 +        return {
 +          kind: "serve",
-+          result: { kind: "error", code: failure.code },
++          result: { kind: "error", code: failure.code, detail: failure.detail },
 +          backgroundRefresh: false,
 +        };
 +      }
@@ -436,7 +437,7 @@ index 4d9dc521b05253760330278e451b7135fd08b280..80908f6b40e9a4f99f67f4606a007da5
      if (
        access.kind === "validation" &&
        !refreshed &&
-@@ -361,7 +379,7 @@ export function createProviderModelCatalogStore(options: {
+@@ -389,7 +407,7 @@ export function createProviderModelCatalogStore(options: {
      entry: CatalogEntry,
      refresh: CatalogRefresh,
      settlement: RefreshSettlement,
@@ -445,35 +446,39 @@ index 4d9dc521b05253760330278e451b7135fd08b280..80908f6b40e9a4f99f67f4606a007da5
      const { hostId, providerId, scopeKey } = entry.key;
      const now = options.now();
      const log = (
-@@ -381,7 +399,7 @@ export function createProviderModelCatalogStore(options: {
+@@ -409,7 +427,7 @@ export function createProviderModelCatalogStore(options: {
      };
      if (entry.refresh !== refresh) {
        log("info", { outcome: "superseded", changed: false });
 -      return;
-+      return { ok: false, code: "failed" };
++      return { ok: false, code: "failed", detail: null };
      }
      entry.refresh = null;
      const before = pickerView(entry, refresh.fingerprint);
-@@ -418,7 +436,7 @@ export function createProviderModelCatalogStore(options: {
+@@ -448,7 +466,7 @@ export function createProviderModelCatalogStore(options: {
            changed: false,
            ...errorFields,
          });
 -        return;
-+        return { ok: false, code: "failed" };
++        return { ok: false, code: "failed", detail: entry.unavailableDetail };
        }
        const code =
          error instanceof ApiError &&
-@@ -438,6 +456,9 @@ export function createProviderModelCatalogStore(options: {
+@@ -470,6 +488,13 @@ export function createProviderModelCatalogStore(options: {
        schedulePush(deps, hostId);
      }
      log(level, { ...fields, changed });
 +    return settlement.ok
 +      ? { ok: true }
-+      : { ok: false, code: entry.failure?.code ?? "failed" };
++      : {
++          ok: false,
++          code: entry.failure?.code ?? "failed",
++          detail: entry.failure?.detail ?? null,
++        };
    }
  
    function startRefresh(
-@@ -445,14 +466,14 @@ export function createProviderModelCatalogStore(options: {
+@@ -477,14 +502,14 @@ export function createProviderModelCatalogStore(options: {
      entry: CatalogEntry,
      fingerprint: string,
      bridgeLaunch: HostDaemonBridgeLaunch,
@@ -486,11 +491,11 @@ index 4d9dc521b05253760330278e451b7135fd08b280..80908f6b40e9a4f99f67f4606a007da5
        startedAt: options.now(),
        markedStale: false,
 -      promise: Promise.resolve(),
-+      promise: Promise.resolve({ ok: false, code: "failed" }),
++      promise: Promise.resolve({ ok: false, code: "failed", detail: null }),
      };
      entry.refresh = refresh;
      refresh.promise = callHostOnlineRpc(deps, {
-@@ -481,7 +502,7 @@ export function createProviderModelCatalogStore(options: {
+@@ -513,7 +538,7 @@ export function createProviderModelCatalogStore(options: {
      entry: CatalogEntry,
      fingerprint: string,
      bridgeLaunch: HostDaemonBridgeLaunch,
@@ -499,7 +504,7 @@ index 4d9dc521b05253760330278e451b7135fd08b280..80908f6b40e9a4f99f67f4606a007da5
      return entry.refresh?.fingerprint === fingerprint
        ? entry.refresh.promise
        : startRefresh(deps, entry, fingerprint, bridgeLaunch);
-@@ -519,7 +540,19 @@ export function createProviderModelCatalogStore(options: {
+@@ -551,7 +576,19 @@ export function createProviderModelCatalogStore(options: {
            }
            return decision.result;
          }
@@ -515,16 +520,16 @@ index 4d9dc521b05253760330278e451b7135fd08b280..80908f6b40e9a4f99f67f4606a007da5
 +          args.access.forceRefresh === true &&
 +          !refresh.ok
 +        ) {
-+          return { kind: "error", code: refresh.code };
++          return { kind: "error", code: refresh.code, detail: refresh.detail };
 +        }
        }
      },
  
 diff --git a/apps/server/src/services/system/execution-options.ts b/apps/server/src/services/system/execution-options.ts
-index 8e61b9daf4d7d21c80d3b84b7e46e680278ba1df..b217c069afe7020f50f5b7e06c5af311e02e34e5 100644
+index 98e371e74024840e8b267dd05889b26561e89b85..ee65037c42257177cedb1607613a39a0022ef7fd 100644
 --- a/apps/server/src/services/system/execution-options.ts
 +++ b/apps/server/src/services/system/execution-options.ts
-@@ -48,6 +48,7 @@ interface BuildModelLoadErrorArgs {
+@@ -49,6 +49,7 @@ interface BuildModelLoadErrorArgs {
  
  interface ResolveSystemProviderModelsArgs {
    cwd?: string;
@@ -532,7 +537,7 @@ index 8e61b9daf4d7d21c80d3b84b7e46e680278ba1df..b217c069afe7020f50f5b7e06c5af311
    hostId: string;
    providerId: string;
  }
-@@ -301,7 +302,11 @@ export async function resolveSystemProviderModels(
+@@ -311,7 +312,11 @@ export async function resolveSystemProviderModels(
      cwd: args.cwd ?? null,
      hostId: args.hostId,
      provider,
@@ -1030,6 +1035,52 @@ index 0000000000000000000000000000000000000000..dc4998cdf997834a11b0cce06e1b9712
 +    ),
 +  };
 +}
+diff --git a/apps/server/src/services/threads/thread-execution-override.ts b/apps/server/src/services/threads/thread-execution-override.ts
+index 915f945bd76d1f977b1b1a98e00fb503f7f40508..864fd2da2895aa7ba20e629d95ce0fbcc87a5cc1 100644
+--- a/apps/server/src/services/threads/thread-execution-override.ts
++++ b/apps/server/src/services/threads/thread-execution-override.ts
+@@ -44,6 +44,21 @@ interface RecoverThreadModelOverrideArgs {
+   thread: Thread;
+ }
+ 
++function findUniqueModel(
++  models: readonly AvailableModel[],
++  model: string,
++): AvailableModel | undefined {
++  const matches = models.filter((candidate) => candidate.model === model);
++  if (matches.length > 1) {
++    throw new ApiError(
++      400,
++      "invalid_request",
++      `Model "${model}" has an ambiguous catalog entry. Try again after the model catalog refreshes.`,
++    );
++  }
++  return matches[0];
++}
++
+ export function resolveThreadExecutionOverrideUpdate(
+   registry: ProviderRegistryService,
+   args: ResolveThreadExecutionOverrideUpdateArgs,
+@@ -56,9 +71,7 @@ export function resolveThreadExecutionOverrideUpdate(
+     if (patch.model === null || patch.model === undefined) {
+       nextModel = null;
+     } else {
+-      const target = models.find(
+-        (candidate) => candidate.model === patch.model,
+-      );
++      const target = findUniqueModel(models, patch.model);
+       if (!target) {
+         throw new ApiError(
+           400,
+@@ -72,7 +85,7 @@ export function resolveThreadExecutionOverrideUpdate(
+ 
+   const effectiveModel = nextModel ?? fallbackModel;
+   const effectiveModelEntry = effectiveModel
+-    ? models.find((candidate) => candidate.model === effectiveModel)
++    ? findUniqueModel(models, effectiveModel)
+     : undefined;
+   const supportedReasoning: readonly ReasoningLevel[] = effectiveModelEntry
+     ? effectiveModelEntry.supportedReasoningEfforts.map(
 diff --git a/apps/server/src/services/threads/thread-facet-query.ts b/apps/server/src/services/threads/thread-facet-query.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..625fa6192508641f9fd4e3651af5093960b38d05
@@ -1664,7 +1715,7 @@ index 0000000000000000000000000000000000000000..625fa6192508641f9fd4e3651af50939
 +  };
 +}
 diff --git a/apps/server/test/providers/provider-model-catalog-store.test.ts b/apps/server/test/providers/provider-model-catalog-store.test.ts
-index 1f5b011097165c26a208658076992ae66e583baa..e045fdb5cb8417ecf5e86b42b3867854bfb8e7b4 100644
+index e8e42c69c10f4c59d612f04e8bade7509620bc1c..3afe7ec9aa56e0ceba854deb3eb3991bfeeb1d34 100644
 --- a/apps/server/test/providers/provider-model-catalog-store.test.ts
 +++ b/apps/server/test/providers/provider-model-catalog-store.test.ts
 @@ -121,6 +121,13 @@ function setupCatalogHost(
@@ -1681,7 +1732,7 @@ index 1f5b011097165c26a208658076992ae66e583baa..e045fdb5cb8417ecf5e86b42b3867854
    };
  }
  
-@@ -288,6 +295,72 @@ describe("provider model catalog store", () => {
+@@ -279,6 +286,77 @@ describe("provider model catalog store", () => {
      });
    });
  
@@ -1723,8 +1774,13 @@ index 1f5b011097165c26a208658076992ae66e583baa..e045fdb5cb8417ecf5e86b42b3867854
 +      expect(forced.modelLoadError).toEqual({
 +        providerId: "claude-code",
 +        code: "failed",
++        detail: "model list command_failed",
 +      });
-+      expect(modelIds(forced)).toEqual(fallbackModelIds(harness, "claude-code"));
++      expect(modelIds(forced)).toEqual(
++        (harness.deps.providerRegistry.get("claude-code")?.fallbackModels ?? []).map(
++          (model) => model.model,
++        ),
++      );
 +      expect(modelIds(await host.read("claude-code"))).toEqual([
 +        "claude-code-model",
 +      ]);
@@ -1876,7 +1932,7 @@ index 0000000000000000000000000000000000000000..ce83a1800dac8ec24752592a3b36b64c
 +  });
 +});
 diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-index a5059d9e83ea9f76b7ab3b4d576e577a2b2d66f9..08fa3d3f59bbd44e455a025f85631446fa0c7c46 100644
+index c1460285bf886fb687b1f54758ae2feb0dd4ed56..8dbd8cb2e4a83704b57c7d516f49923f519723a5 100644
 --- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
 +++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
 @@ -166,6 +166,7 @@ const BB_PLUGIN_API_KEYS = [
@@ -2054,7 +2110,7 @@ index f46a783271051fce3e0b4c3d712ce226a7a35fd8..a299f8929254ba9de843877773795819
      expect(
        resolveThreadExecutionOverrideUpdate(registry, {
 diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
-index fa24286d997c7f26608cec1132c2e87b94e7e706..d8b8e1e4239140f1d02ae0d225c1265a0b3d5dcb 100644
+index dd37d3b484ecf9624c6187213be42baea68a701c..28430f29ccccae457eda40e43cb77c2212886861 100644
 --- a/packages/db/src/data/index.ts
 +++ b/packages/db/src/data/index.ts
 @@ -87,6 +87,7 @@ export {
@@ -2065,7 +2121,7 @@ index fa24286d997c7f26608cec1132c2e87b94e7e706..d8b8e1e4239140f1d02ae0d225c1265a
    listThreadsWithPendingInteractionStateForProjects,
    pinThread,
    reorderPinnedThread,
-@@ -320,6 +321,7 @@ export {
+@@ -322,6 +323,7 @@ export {
    type StoredProviderSession,
    type StoredProviderThreadClaimClass,
    getLastStoredTurnRequestEvent,
@@ -2073,7 +2129,7 @@ index fa24286d997c7f26608cec1132c2e87b94e7e706..d8b8e1e4239140f1d02ae0d225c1265a
    getStoredTurnRequestEventForTurn,
    getLatestThreadOutputEventRow,
    getLatestStoredConversationOutlineSequence,
-@@ -406,6 +408,7 @@ export type {
+@@ -408,6 +410,7 @@ export type {
    StoredThreadEventDataRow,
    TimelineWindowHint,
    ThreadClientTurnRequestKey,
@@ -2138,7 +2194,7 @@ index d0dc90272d6744debb6a6b33e5e0325a105ac82e..11f4f03d0b51e187b8c7c8224bd147f6
    const unreadThread = or(
      isNull(threads.lastReadAt),
 diff --git a/packages/plugin-sdk/src/__tests__/public-types.test.ts b/packages/plugin-sdk/src/__tests__/public-types.test.ts
-index 35cff54ad214655c4972a1cee8be4ab4ad99ca16..0ed92f3a8fef3b3218d12b6782c86ed95395aadd 100644
+index e7f538702d78a24372a24791d48870989daca01f..71293a0d0e11fa25b8585faf1449a7f087627f89 100644
 --- a/packages/plugin-sdk/src/__tests__/public-types.test.ts
 +++ b/packages/plugin-sdk/src/__tests__/public-types.test.ts
 @@ -7,6 +7,10 @@ import type {
@@ -2159,11 +2215,11 @@ index 35cff54ad214655c4972a1cee8be4ab4ad99ca16..0ed92f3a8fef3b3218d12b6782c86ed9
 +  | "experimental_facets"
    | "experimental_hooks"
    | "experimental_machines"
-   | "experimental_serverAccess"
-@@ -44,6 +49,13 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
-   "PluginAiServiceDeclaration",
-   "PluginAiServiceKind",
+   | "onInstall"
+@@ -47,6 +52,13 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
+   "PluginAiServiceStatus",
    "PluginAiServices",
+   "PluginAiTranscribeOptions",
 +  "ExperimentalThreadFacetCardinality",
 +  "ExperimentalThreadFacetHandle",
 +  "ExperimentalThreadFacetReplacement",
@@ -2174,7 +2230,7 @@ index 35cff54ad214655c4972a1cee8be4ab4ad99ca16..0ed92f3a8fef3b3218d12b6782c86ed9
    "PluginAgentConfiguration",
    "PluginAgentConfigurationContext",
    "PluginAgentToolContentPart",
-@@ -255,6 +267,28 @@ describe("backend plugin SDK public surface", () => {
+@@ -258,6 +270,28 @@ describe("backend plugin SDK public surface", () => {
      expectTypeOf(borrowNestedValue).toBeFunction();
    });
  
@@ -2204,10 +2260,10 @@ index 35cff54ad214655c4972a1cee8be4ab4ad99ca16..0ed92f3a8fef3b3218d12b6782c86ed9
      const [backendContract, declarations] = await Promise.all([
        readFile(new URL("../backend-contract.ts", import.meta.url), "utf8"),
 diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
-index 0aa981b72d64e46afd9eee911ebc4930f0e3c308..5c82012f6c019205ac747525e0c75025ae717f4c 100644
+index 10a01a62625071aa1340ddae21c25ad27b778098..5a1b15af02bed318f06ca6785797b748350a2ebd 100644
 --- a/packages/plugin-sdk/src/backend-contract.ts
 +++ b/packages/plugin-sdk/src/backend-contract.ts
-@@ -1955,6 +1955,52 @@ export interface PluginHosts {
+@@ -2002,6 +2002,52 @@ export interface PluginHosts {
    declareSharedPorts(hostId: string, ports: readonly number[]): void;
  }
  
@@ -2260,8 +2316,8 @@ index 0aa981b72d64e46afd9eee911ebc4930f0e3c308..5c82012f6c019205ac747525e0c75025
  // ---------------------------------------------------------------------------
  // Status + the API root.
  // ---------------------------------------------------------------------------
-@@ -2058,6 +2104,11 @@ export interface BbPluginApi {
-    * inference, voice transcription). See `@get-bb/plugin-sdk/ai-services`.
+@@ -2105,6 +2151,11 @@ export interface BbPluginApi {
+    * commit messages, and voice input.
     */
    readonly experimental_aiServices: PluginAiServices;
 +  readonly experimental_facets: ExperimentalThreadFacets;
@@ -2273,10 +2329,10 @@ index 0aa981b72d64e46afd9eee911ebc4930f0e3c308..5c82012f6c019205ac747525e0c75025
     * The full BB SDK, bound to this server over loopback (design §4.1).
     * Bind-gated: reading this before the host binds the SDK throws. The real
 diff --git a/packages/plugin-sdk/src/testing/fake-plugin-host.ts b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
-index 0de516ae3ce86f71dc069d452885f6b2e800e1df..0c667934f3fa3d39b2eb32991d3f0622bfa33140 100644
+index 73fdbef1be432d3839046086c81fedc743318848..20a19ee193bf887c3671e6d9f3afb9cd2674b43d 100644
 --- a/packages/plugin-sdk/src/testing/fake-plugin-host.ts
 +++ b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
-@@ -55,6 +55,10 @@ import {
+@@ -54,6 +54,10 @@ import {
  } from "../internal/host-policy.js";
  import type {
    BbPluginApi,
@@ -2287,7 +2343,7 @@ index 0de516ae3ce86f71dc069d452885f6b2e800e1df..0c667934f3fa3d39b2eb32991d3f0622
    PluginAgentConfiguration,
    PluginAgentConfigurationContext,
    PluginAgentToolContext,
-@@ -1476,6 +1480,25 @@ function createFakePluginHostInternal(
+@@ -1483,6 +1487,25 @@ function createFakePluginHostInternal(
      },
    };
  
@@ -2313,7 +2369,7 @@ index 0de516ae3ce86f71dc069d452885f6b2e800e1df..0c667934f3fa3d39b2eb32991d3f0622
    const bb: BbPluginApi = {
      pluginId,
      log,
-@@ -1512,6 +1535,7 @@ function createFakePluginHostInternal(
+@@ -1519,6 +1542,7 @@ function createFakePluginHostInternal(
      server,
      hosts,
      experimental_aiServices,
@@ -2460,10 +2516,10 @@ index 292420f43827a83b91b555e2381509f2282def44..f9d8f9fffb0f5d3f3854bf1af7819ad5
        return transport.readJson(
          transport.api.v1.threads[":id"].read.$post(
 diff --git a/packages/sdk/test/public-types.test.ts b/packages/sdk/test/public-types.test.ts
-index 32ffc833bba8b3813cd13a61f6f1e46d4794a3b6..13e7630c8d6057b27b3665e1277098da7abf0722 100644
+index 70c0d08725d59fd3d8a49120da31476490b206aa..978efd7001f0da0f1b7f4e774a85bd8ba76faac2 100644
 --- a/packages/sdk/test/public-types.test.ts
 +++ b/packages/sdk/test/public-types.test.ts
-@@ -389,7 +389,10 @@ type ExpectedThreadsKey =
+@@ -396,7 +396,10 @@ type ExpectedThreadsKey =
    | "defaultExecutionOptions"
    | "delete"
    | "editMessage"
@@ -2474,7 +2530,7 @@ index 32ffc833bba8b3813cd13a61f6f1e46d4794a3b6..13e7630c8d6057b27b3665e1277098da
    | "fork"
    | "get"
    | "interactions"
-@@ -403,6 +406,7 @@ type ExpectedThreadsKey =
+@@ -410,6 +413,7 @@ type ExpectedThreadsKey =
    | "pin"
    | "promptHistory"
    | "queue"
@@ -2827,10 +2883,10 @@ index 6e3b33f2dd425f070f07eb1628ae8aa3d5457222..76c729f4d92f62b239aa8a5b502c5e3e
  
  export const resolveThreadMentionsRequestSchema = z
 diff --git a/packages/server-contract/src/public-api.ts b/packages/server-contract/src/public-api.ts
-index b13596d1736ac7d5b2b3c63950ba60de81206791..1bd49b480ba409c1ae4f251899b999cfcd52f603 100644
+index 2215f73fa0941d504ea22c07f2f54cf1ac129f63..80c9530b83e3cc849c5515261405c04b580061a3 100644
 --- a/packages/server-contract/src/public-api.ts
 +++ b/packages/server-contract/src/public-api.ts
-@@ -226,6 +226,14 @@ import type {
+@@ -237,6 +237,14 @@ import type {
    ThreadCountResponse,
    ThreadListQuery,
    ThreadListResponse,
@@ -2845,7 +2901,7 @@ index b13596d1736ac7d5b2b3c63950ba60de81206791..1bd49b480ba409c1ae4f251899b999cf
    ThreadConversationOutlineResponse,
    ThreadOpenRequest,
    ThreadOpenResponse,
-@@ -356,6 +364,10 @@ import {
+@@ -370,6 +378,10 @@ import {
    threadHostFileContentQuerySchema,
    threadCountQuerySchema,
    threadListQuerySchema,
@@ -2856,7 +2912,7 @@ index b13596d1736ac7d5b2b3c63950ba60de81206791..1bd49b480ba409c1ae4f251899b999cf
    threadOpenRequestSchema,
    threadPaneActionRequestSchema,
    threadSearchQuerySchema,
-@@ -1215,6 +1227,39 @@ export const publicApiRoutes = {
+@@ -1235,6 +1247,39 @@ export const publicApiRoutes = {
        ),
        response: jsonResponse<ThreadListResponse>(),
      }),

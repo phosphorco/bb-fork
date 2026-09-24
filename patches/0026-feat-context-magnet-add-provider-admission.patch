@@ -1,7 +1,7 @@
-From dd35c3dc2d52dc6a9a728b351ebbea0c73150768 Mon Sep 17 00:00:00 2001
+From 36ce8125a2e2451bebc4de8aa21e893fc8f42451 Mon Sep 17 00:00:00 2001
 From: bb-fork materializer <bb-fork@invalid.local>
 Date: Sun, 20 Sep 2026 20:00:00 +0200
-Subject: [PATCH 25/31] feat(context-magnet): add provider admission
+Subject: [PATCH 25/32] feat(context-magnet): add provider admission
 
 ---
  apps/host-daemon/src/command-dispatch.test.ts |  69 +++++-
@@ -10,8 +10,10 @@ Subject: [PATCH 25/31] feat(context-magnet): add provider admission
  .../plugins/plugin-service-internal.ts        |   1 +
  .../src/services/plugins/plugin-service.ts    |  18 +-
  .../src/services/threads/thread-commands.ts   |   1 +
+ .../services/threads/thread-edit-message.ts   |   5 +-
  .../src/services/threads/thread-lifecycle.ts  |  45 ++++
  .../services/threads/thread-runtime-config.ts |   2 +
+ apps/server/test/helpers/commands.ts          |  12 +-
  .../thread-lifecycle-admission.test.ts        |  62 +++++
  .../src/bridge-protocol-adapter.ts            |   1 +
  packages/agent-runtime/src/index.ts           |   1 +
@@ -38,7 +40,7 @@ Subject: [PATCH 25/31] feat(context-magnet): add provider admission
  .../src/bridge/bridge.writer-lock.test.ts     |   4 +-
  .../src/bridge/bridge.zero-work-turn.test.ts  |   8 +-
  .../src/bridge/fake-codex-app-server.mjs      |  24 +-
- 34 files changed, 1250 insertions(+), 226 deletions(-)
+ 36 files changed, 1265 insertions(+), 228 deletions(-)
  create mode 100644 apps/server/test/threads/thread-lifecycle-admission.test.ts
  create mode 100644 packages/db/drizzle/0122_living_quasimodo.sql
  create mode 100644 plugins/provider-codex/src/bridge/bridge.admission.test.ts
@@ -211,10 +213,10 @@ index 8f404d386b106b8230b08ea81189d1b49548b269..d51d0c4a190f9926791a49a215ccbd74
        dynamicInstructions: [] as Array<{ pluginId: string; text: string }>,
      };
 diff --git a/apps/server/src/services/plugins/plugin-service-internal.ts b/apps/server/src/services/plugins/plugin-service-internal.ts
-index 923891c5c96a555c90fc769feae349281221e76b..f0c4ecc538cd9e88f9fcd513de2796d6005ef14d 100644
+index 9d964b645d273b10fd506f0b768cf27adc3e96c8..58333fffa150d2a9b7365e673e80b729c1d23fc1 100644
 --- a/apps/server/src/services/plugins/plugin-service-internal.ts
 +++ b/apps/server/src/services/plugins/plugin-service-internal.ts
-@@ -177,6 +177,7 @@ export interface PluginInstructionContribution {
+@@ -179,6 +179,7 @@ export interface PluginInstructionContribution {
  }
  
  export interface PluginResolvedAgentConfiguration {
@@ -223,7 +225,7 @@ index 923891c5c96a555c90fc769feae349281221e76b..f0c4ecc538cd9e88f9fcd513de2796d6
    selectedSkillIdsByPlugin: ReadonlyMap<string, ReadonlySet<string>>;
    dynamicInstructions: Array<{ pluginId: string; text: string }>;
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index 847419dcd89c5cb3198245456e5252029970dbfa..89221eb77b1670786162657a39607a9cd6d0cea1 100644
+index da45c3c52c93fcdbfe1d09e92715a281ef44b011..6bf407e83db886e95e9bdd03f78eea9f1de20882 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
 @@ -63,6 +63,7 @@ import {
@@ -234,7 +236,7 @@ index 847419dcd89c5cb3198245456e5252029970dbfa..89221eb77b1670786162657a39607a9c
    recordContextMagnetContributionReceipt,
    deleteAllPluginSettings,
    deleteInstalledPlugin,
-@@ -2187,6 +2188,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2210,6 +2211,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
        const tools: PluginAgentToolContribution[] = [];
        const selectedSkillIdsByPlugin = new Map<string, ReadonlySet<string>>();
        const dynamicInstructions: Array<{ pluginId: string; text: string }> = [];
@@ -242,7 +244,7 @@ index 847419dcd89c5cb3198245456e5252029970dbfa..89221eb77b1670786162657a39607a9c
        const plugins = [...loaded.entries()]
          .sort(([a], [b]) => a.localeCompare(b))
          .map(([pluginId, plugin]) => ({
-@@ -2262,12 +2264,24 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2285,12 +2287,24 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
          selectedSkillIdsByPlugin.set(pluginId, new Set(outcome.value.skillIds));
          if (outcome.value.contextMagnetTrace !== null) {
            try {
@@ -268,7 +270,7 @@ index 847419dcd89c5cb3198245456e5252029970dbfa..89221eb77b1670786162657a39607a9c
            } catch (error) {
              logger.warn(
                `Rejected Context Magnet trace from plugin ${pluginId}: ${error instanceof Error ? error.message : String(error)}`,
-@@ -2282,7 +2296,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2305,7 +2319,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
          }
        }
  
@@ -289,6 +291,29 @@ index 06eb43fe448c4ade5b5e9287dee0cf1539bf69db..a13cdd72d1bb6faa3a7d958ac6d3fe4f
      injectedSkillSources: runtimeContext.injectedSkillSources,
      instructionMode: runtimeContext.instructionMode,
      threadStoragePath: runtimeContext.threadStoragePath,
+diff --git a/apps/server/src/services/threads/thread-edit-message.ts b/apps/server/src/services/threads/thread-edit-message.ts
+index 115894054b933aea1319f73f3accfa7e7cd118a9..972c88ea5aaf2a162477a3c961d0285222a61f1c 100644
+--- a/apps/server/src/services/threads/thread-edit-message.ts
++++ b/apps/server/src/services/threads/thread-edit-message.ts
+@@ -323,7 +323,9 @@ function resolveEditableTurnCandidate(
+   }
+   return {
+     leadingAgentOnlyInput: getLeadingAgentOnlyInput(request.input),
+-    ...(request.p6rAuthors === undefined ? {} : { p6rAuthors: request.p6rAuthors }),
++    ...(request.p6rAuthors === undefined
++      ? {}
++      : { p6rAuthors: request.p6rAuthors }),
+     currentTurnId: accepted.turnId,
+     oldMaxSequence,
+     precedingProviderCheckpoint,
+@@ -419,6 +421,7 @@ function rewindPrepareCommandFromStart(
+     inputGroups: _inputGroups,
+     threadStoragePath: _threadStoragePath,
+     fork: _fork,
++    contextMagnetAdmissionAttempts: _contextMagnetAdmissionAttempts,
+     ...context
+   } = start;
+   return { type: "thread.rewind.prepare", ...context, ...args };
 diff --git a/apps/server/src/services/threads/thread-lifecycle.ts b/apps/server/src/services/threads/thread-lifecycle.ts
 index 392cb4432405886d5221bd43d6e45738366c2dce..ed305ad682e2cdcfaaa098bd2f01826f9947d16d 100644
 --- a/apps/server/src/services/threads/thread-lifecycle.ts
@@ -386,6 +411,31 @@ index 7756c7138e6c228f441c89076b00781904d9fa99..1b3d95fe99f8eb13dda9e597e21991bc
      dynamicTools,
      injectedSkillSources,
      instructionMode: "append",
+diff --git a/apps/server/test/helpers/commands.ts b/apps/server/test/helpers/commands.ts
+index 881dfb7b907ee03a6925192914c76a45b22dc682..a4e0c4d49141727b8ca1618a333e8bc680e00cb7 100644
+--- a/apps/server/test/helpers/commands.ts
++++ b/apps/server/test/helpers/commands.ts
+@@ -584,9 +584,19 @@ export async function reportQueuedCommandSuccess<
+   if (!queued.rpcRequest) {
+     throw new Error("Queued command is missing RPC request metadata");
+   }
++  // This helper reports a *successful* queued command. Older thread.start
++  // fixtures supply only the provider thread ID; add the current success
++  // envelope here so the contract parser still checks every resulting field.
++  const successResult =
++    queued.rpcRequest.command.type === "thread.start" &&
++    typeof result === "object" &&
++    result !== null &&
++    !("outcome" in result)
++      ? { outcome: "started", observations: [], ...result }
++      : result;
+   const parsedResult = parseHostDaemonRpcResultForCommand(
+     queued.rpcRequest.command,
+-    result,
++    successResult,
+   );
+   harness.hub.recordHostOnlineRpcResponse({
+     message: hostDaemonOnlineRpcResponseMessageSchema.parse({
 diff --git a/apps/server/test/threads/thread-lifecycle-admission.test.ts b/apps/server/test/threads/thread-lifecycle-admission.test.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..5b0974daff774375f879e1028ff6012b03d09f06
@@ -1253,7 +1303,7 @@ index 6102aabbb69337f6864847ba8554a85d41871862..456290e0c02d322776f255e04aa863dd
      retryable: false,
      flushEventsBeforeResult: true,
 diff --git a/packages/host-daemon-contract/test/contract.test.ts b/packages/host-daemon-contract/test/contract.test.ts
-index 6ab30310b20cbd55fdee8bbc4c4c691a62e28357..3757a952e813e5006ccfaeaf96d367bd9f8d139b 100644
+index a9618b4cd6869fd8478c6c907a066819dfec2c0b..9d5522d8fb9307c45af51ba754fa52858fcf904f 100644
 --- a/packages/host-daemon-contract/test/contract.test.ts
 +++ b/packages/host-daemon-contract/test/contract.test.ts
 @@ -528,6 +528,8 @@ const SETTLED_RESPONSE_RESULT_FIXTURES: SettledResponseResultFixtures = {
@@ -2019,7 +2069,7 @@ index aeb40bddc4ef10bd178cf6f092de9117bb25eb88..386df736cb4c7aa0475cf7e893c57805
 +  expect(response.error?.message).toBe("codex app-server rejected the request");
  }, 30_000);
 diff --git a/plugins/provider-codex/src/bridge/bridge.recovery.test.ts b/plugins/provider-codex/src/bridge/bridge.recovery.test.ts
-index e742626a39eb2e448b7bac9499adfe71256ac5a6..6c145f315c0665f0f4871fdbd9c50758cb6c8c4d 100644
+index 413cf0dad44adf994c931a2213521cada74f6618..f3cdd4306bb6b535841f31105721313cc2575707 100644
 --- a/plugins/provider-codex/src/bridge/bridge.recovery.test.ts
 +++ b/plugins/provider-codex/src/bridge/bridge.recovery.test.ts
 @@ -229,6 +229,6 @@ it("fails a rename with a plain error once the ladder is exhausted", async () =>
@@ -2031,7 +2081,7 @@ index e742626a39eb2e448b7bac9499adfe71256ac5a6..6c145f315c0665f0f4871fdbd9c50758
    expect(response.error?.data).toBeUndefined();
  }, 30_000);
 diff --git a/plugins/provider-codex/src/bridge/bridge.ts b/plugins/provider-codex/src/bridge/bridge.ts
-index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b2a74df33 100644
+index b91b911c27613cbe02ad1c3cd4564a4418f8f409..71ee63d5b8707eaddc510446ce0c5bdd6b0815f3 100644
 --- a/plugins/provider-codex/src/bridge/bridge.ts
 +++ b/plugins/provider-codex/src/bridge/bridge.ts
 @@ -79,8 +79,9 @@ import {
@@ -2078,7 +2128,7 @@ index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b
  async function delay(ms: number): Promise<void> {
    await new Promise<void>((resolve) => {
      setTimeout(resolve, ms);
-@@ -983,8 +988,7 @@ async function requestThreadConstructionWithWriterRetry(
+@@ -987,8 +992,7 @@ async function requestThreadConstructionWithWriterRetry(
      try {
        return await sendOnce();
      } catch (error) {
@@ -2088,7 +2138,7 @@ index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b
          throw error;
        }
        process.stderr.write(
-@@ -1012,6 +1016,8 @@ interface ConstructThreadSessionArgs {
+@@ -1016,6 +1020,8 @@ interface ConstructThreadSessionArgs {
    instructionMode: "append" | "replace";
    dynamicTools?: DynamicTool[];
    request: CodexSessionConstructionRequest;
@@ -2097,7 +2147,7 @@ index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b
  }
  
  interface ConstructedCodexSession {
-@@ -1165,12 +1171,16 @@ async function constructThreadSession(
+@@ -1169,12 +1175,16 @@ async function constructThreadSession(
        }
      }
  
@@ -2114,7 +2164,7 @@ index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b
      session.codexThreadId = codexThreadId;
      translator.activateThreadGitWritableRoots({
        providerThreadId: codexThreadId,
-@@ -1189,6 +1199,18 @@ async function constructThreadSession(
+@@ -1193,6 +1203,18 @@ async function constructThreadSession(
    }
  }
  
@@ -2133,7 +2183,7 @@ index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b
  class CodexSessionReleasedError extends Error {
    constructor(cause: unknown) {
      super(cause instanceof Error ? cause.message : String(cause));
-@@ -1196,6 +1218,13 @@ class CodexSessionReleasedError extends Error {
+@@ -1200,6 +1222,13 @@ class CodexSessionReleasedError extends Error {
    }
  }
  
@@ -2147,7 +2197,7 @@ index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b
  function registerResumableSession(session: CodexBridgeSession): void {
    if (
      session.codexThreadId === null ||
-@@ -1253,6 +1282,9 @@ async function rebuildThreadSession(
+@@ -1257,6 +1286,9 @@ async function rebuildThreadSession(
      if (!(error instanceof CodexSessionReleasedError)) {
        registerResumableSession(session);
      }
@@ -2157,7 +2207,7 @@ index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b
      throw error;
    }
    sendNotification(BRIDGE_NOTIFICATION_METHODS.sessionReplaced, {
-@@ -1410,13 +1442,39 @@ async function handleModelList(id: string | number): Promise<void> {
+@@ -1416,13 +1448,39 @@ async function handleModelList(id: string | number): Promise<void> {
  function sendConstructionError(
    id: string | number,
    error: unknown,
@@ -2199,7 +2249,7 @@ index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b
        ? BRIDGE_JSON_RPC_ERRORS.SESSION_NOT_RESTORABLE
        : BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
      message,
-@@ -1429,8 +1487,12 @@ async function handleThreadConstruction(
+@@ -1435,8 +1493,12 @@ async function handleThreadConstruction(
    params: ThreadStartParamsShape,
    request: CodexSessionConstructionRequest,
  ): Promise<void> {
@@ -2213,7 +2263,7 @@ index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b
        threadId: params.threadId,
        cwd: params.cwd,
        options: params.options,
-@@ -1439,13 +1501,35 @@ async function handleThreadConstruction(
+@@ -1445,13 +1507,35 @@ async function handleThreadConstruction(
          ? { dynamicTools: params.dynamicTools }
          : {}),
        request,
@@ -2252,7 +2302,7 @@ index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b
    }
  }
  
-@@ -1956,9 +2040,7 @@ async function interruptCodexTurn(
+@@ -1962,9 +2046,7 @@ async function interruptCodexTurn(
    if (
      failure === null ||
      !awaitingNativeStart ||
@@ -2263,7 +2313,7 @@ index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b
    ) {
      return failure;
    }
-@@ -2020,7 +2102,7 @@ async function handleThreadMaintenance(
+@@ -2026,7 +2108,7 @@ async function handleThreadMaintenance(
    request: { method: string; params: Record<string, unknown> },
    options?: {
      releaseAfter?: boolean;
@@ -2272,7 +2322,7 @@ index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b
    },
  ): Promise<void> {
    const settle = async (): Promise<void> => {
-@@ -2039,8 +2121,8 @@ async function handleThreadMaintenance(
+@@ -2045,8 +2127,8 @@ async function handleThreadMaintenance(
      await settle();
    } catch (error) {
      if (
@@ -2283,7 +2333,7 @@ index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b
      ) {
        await settle();
        return;
-@@ -2049,7 +2131,17 @@ async function handleThreadMaintenance(
+@@ -2055,7 +2137,17 @@ async function handleThreadMaintenance(
    }
  }
  
@@ -2302,7 +2352,7 @@ index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b
    const message = describeCodexLaunchError(error);
    const recovery = archivedSessionHint(message);
    if (recovery !== null) {
-@@ -2080,8 +2172,7 @@ async function sendMaintenanceRequestWithRetries(
+@@ -2086,8 +2178,7 @@ async function sendMaintenanceRequestWithRetries(
        return;
      } catch (error) {
        if (
@@ -2312,7 +2362,7 @@ index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b
        ) {
          throw error;
        }
-@@ -2215,7 +2306,7 @@ async function handleRequest(
+@@ -2221,7 +2312,7 @@ async function handleRequest(
          },
          {
            releaseAfter: true,
@@ -2321,7 +2371,7 @@ index 4fd877e8570935d6632c6b6f741edcc6813204ea..8018587a1100751a8af7acf752b5f36b
          },
        );
        break;
-@@ -2227,7 +2318,7 @@ async function handleRequest(
+@@ -2233,7 +2324,7 @@ async function handleRequest(
            method: "thread/unarchive",
            params: { threadId: request.params.providerThreadId },
          },
@@ -2346,10 +2396,10 @@ index 81966c612e92845d4e6f661c408002e9fd25e03f..2b9e90b6ab0a96e763610c0d1f356ba5
  }, 30_000);
  
 diff --git a/plugins/provider-codex/src/bridge/bridge.zero-work-turn.test.ts b/plugins/provider-codex/src/bridge/bridge.zero-work-turn.test.ts
-index ce256a5ac6908661011fbda681af74b374a007f9..b44dfec747e1097ba65afa3381e16ba8a9925397 100644
+index 4b856d71b3d8811de5245f65f7c2fb39aff502a6..e9da2c83136e5f92d709bd596545d84e122f2c3d 100644
 --- a/plugins/provider-codex/src/bridge/bridge.zero-work-turn.test.ts
 +++ b/plugins/provider-codex/src/bridge/bridge.zero-work-turn.test.ts
-@@ -512,7 +512,9 @@ it.each([
+@@ -536,7 +536,9 @@ it.each([
        activeTurnId: "turn-fx-1",
      });
      const stopped = await harness.waitForResponse(3);
@@ -2360,7 +2410,7 @@ index ce256a5ac6908661011fbda681af74b374a007f9..b44dfec747e1097ba65afa3381e16ba8
      expect(
        readFileSync(requestLogPath, "utf8")
          .split("\n")
-@@ -629,7 +631,7 @@ it.each([
+@@ -653,7 +655,7 @@ it.each([
        expect(stopped.error).toBeUndefined();
      } else {
        expect(stopped.error).toMatchObject({
@@ -2369,7 +2419,7 @@ index ce256a5ac6908661011fbda681af74b374a007f9..b44dfec747e1097ba65afa3381e16ba8
        });
        expect(
          threadEvents().filter((event) => event.type === "turn/completed"),
-@@ -698,7 +700,7 @@ it("does not acknowledge a rejected compaction after an early idle status", asyn
+@@ -722,7 +724,7 @@ it("does not acknowledge a rejected compaction after an early idle status", asyn
      options: { ...FULL_ACCESS_SESSION_OPTIONS },
    });
    expect((await harness.waitForResponse(2)).error).toMatchObject({
@@ -2379,10 +2429,10 @@ index ce256a5ac6908661011fbda681af74b374a007f9..b44dfec747e1097ba65afa3381e16ba8
    expect(
      threadEvents().filter(
 diff --git a/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs b/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
-index b6d90b9fafb8ba197e827bfec888b9b5e65c65e0..c7d9e2f062b023c5f6286f0d9ba8382add884db6 100644
+index 2013cefcebf786c5d67eccbceeef467ee2d3e09d..2a29765f01366b1784a9cb78fb2050c0008b1b15 100644
 --- a/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
 +++ b/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
-@@ -266,6 +266,11 @@ const archivedThreadIds = new Set();
+@@ -215,6 +215,11 @@ const archivedThreadIds = new Set();
  const processLogPath = script?.processLogPath ?? null;
  const stallThreadStart = script?.stallThreadStart ?? false;
  const writerLockPath = script?.writerLockPath ?? null;
@@ -2394,7 +2444,7 @@ index b6d90b9fafb8ba197e827bfec888b9b5e65c65e0..c7d9e2f062b023c5f6286f0d9ba8382a
  const sigtermDelayMs = script?.sigtermDelayMs ?? 0;
  const stdinCloseDelayMs = script?.stdinCloseDelayMs ?? 0;
  let ownsWriterLock = false;
-@@ -506,9 +511,26 @@ async function handleRequest(message) {
+@@ -442,9 +447,26 @@ async function handleRequest(message) {
        if (stallThreadStart) {
          await new Promise(() => undefined);
        }

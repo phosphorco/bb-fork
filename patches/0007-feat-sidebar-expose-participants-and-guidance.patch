@@ -1,7 +1,7 @@
-From 3bd4c9b4eb32606ef287ac237f4a91736dbe51ec Mon Sep 17 00:00:00 2001
+From b7bebaaeee6e0455bc69829ae34c6f60d1b79b8f Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
-Subject: [PATCH 07/31] feat(sidebar): expose participants and guidance
+Subject: [PATCH 07/32] feat(sidebar): expose participants and guidance
 
 ---
  .../src/lib/plugin-sidebar-threads.test.ts    | 22 +++++++
@@ -12,11 +12,11 @@ Subject: [PATCH 07/31] feat(sidebar): expose participants and guidance
  docs/api_to_audit.md                          | 16 +++++
  packages/db/src/data/thread-facets.ts         | 13 ++--
  packages/domain/src/thread.ts                 |  7 ++
- packages/plugin-api-map/src/surfaces.ts       |  3 +
  .../src/__tests__/frontend-exports.test.ts    |  9 ++-
  packages/plugin-sdk/src/app-contract.ts       |  9 +++
  .../skills/bb-plugin-authoring/SKILL.md       |  3 +
  .../identity-and-native-projections.md        | 64 +++++++++++++++++++
+ plugins/plugin-api-docs/src/surfaces.ts       |  3 +
  13 files changed, 263 insertions(+), 6 deletions(-)
  create mode 100644 apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/identity-and-native-projections.md
  create mode 100644 plugins/bb-guide/skills/bb-plugin-authoring/references/identity-and-native-projections.md
@@ -252,10 +252,10 @@ index 80488565430ddad9ab262ac339d0116368b222e5..998382f0d7f5976170bf50a3c0dbbb9f
      const { db, hostId, hub } = setup();
      const empty = createThreadWithEnvironment({ db, hostId, status: "idle" });
 diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
-index 2c4a6b0c62f81b70dd13814499589f3d607e1950..6bf084e9926c02c5c14a719accbcce758fe7461d 100644
+index 7e3873a05809cd3bb92d07529e7d84a342018adb..9a3859c1837c848d227924f74403002a3c669fd4 100644
 --- a/docs/api_to_audit.md
 +++ b/docs/api_to_audit.md
-@@ -3241,3 +3241,19 @@ retired provider evidence blocks the send.
+@@ -3380,3 +3380,19 @@ retired provider evidence blocks the send.
  Audit provider prepare/publish/retire, ingress ownership, credential selection,
  revocation/deadlines, durable operation finality, and exact request/tool linkage.
  Ordinary native UI attribution and presence are separate capabilities.
@@ -323,27 +323,6 @@ index 405edfee51a12f3f6f76560faec7ab23405f677a..4ec925107cc6a95bfc397a790840710c
 +  p6rParticipants: z.array(threadListP6rParticipantSchema).optional(),
  });
  export type ThreadListEntry = z.infer<typeof threadListEntrySchema>;
-diff --git a/packages/plugin-api-map/src/surfaces.ts b/packages/plugin-api-map/src/surfaces.ts
-index 7a32350dd4d8839450c416ec7103b859539aacf1..d84507ca66ca6c44fecef27369b6d4015ed769d4 100644
---- a/packages/plugin-api-map/src/surfaces.ts
-+++ b/packages/plugin-api-map/src/surfaces.ts
-@@ -156,6 +156,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
-           "PluginEnvironmentProvidersState",
-           "useSdk",
-           "PluginBrowserBbSdk",
-+          "P6rParticipantProfile",
-         ],
-         experimental: true,
-       },
-@@ -799,6 +800,8 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
-           "PluginRpcMethodContract",
-           "PluginsArea.experimental_discoverRpc",
-           "PluginHttp",
-+          "P6rPluginRequestContext",
-+          "P6rExperimentalPluginRoutes",
-           "PluginRealtime",
-           "useRpc",
-           "PluginRpcClient",
 diff --git a/packages/plugin-sdk/src/__tests__/frontend-exports.test.ts b/packages/plugin-sdk/src/__tests__/frontend-exports.test.ts
 index b025fb20b762a9dba43de87c2a62a5ae34d7c08c..7bf0635c8098981a7896da3461e10bc2aa5eb3d5 100644
 --- a/packages/plugin-sdk/src/__tests__/frontend-exports.test.ts
@@ -370,10 +349,10 @@ index b025fb20b762a9dba43de87c2a62a5ae34d7c08c..7bf0635c8098981a7896da3461e10bc2
      const declarations = await readFile(
        new URL("../../bundled-types/bb-plugin-sdk-app.d.ts", import.meta.url),
 diff --git a/packages/plugin-sdk/src/app-contract.ts b/packages/plugin-sdk/src/app-contract.ts
-index 3e22d9388bbf5e9c1f2a732effc797a108d6e865..f16addb3989447041cbae240840ca54a294c4548 100644
+index f8df911b54343c2faacb53d6bb17bc51199825c4..3371da65bee53c4da8c47ce36e010dc2da1a25af 100644
 --- a/packages/plugin-sdk/src/app-contract.ts
 +++ b/packages/plugin-sdk/src/app-contract.ts
-@@ -949,6 +949,8 @@ export interface PluginSidebarThread {
+@@ -1120,6 +1120,8 @@ export interface PluginSidebarThread {
     */
    indicatorLabel: string | null;
  
@@ -382,7 +361,7 @@ index 3e22d9388bbf5e9c1f2a732effc797a108d6e865..f16addb3989447041cbae240840ca54a
    isUnread: boolean;
    isPinned: boolean;
    /** When the thread was pinned (epoch ms); null when unpinned. */
-@@ -1011,6 +1013,13 @@ export interface PluginSidebarThread {
+@@ -1182,6 +1184,13 @@ export interface PluginSidebarThread {
    latestAttentionAt: number;
  }
  
@@ -477,6 +456,27 @@ index 0000000000000000000000000000000000000000..73aeabc7d61ece16d96543d7c7511891
 +- `P6rExperimentalPluginRoutes`
 +- `P6rParticipantProfile`
 +- `P6rPluginRequestContext`
+diff --git a/plugins/plugin-api-docs/src/surfaces.ts b/plugins/plugin-api-docs/src/surfaces.ts
+index f968d1ede961e493b4ef9ee58b4ce3a4c3da8288..84308d6965c456c36b533a46e81e6896036a007e 100644
+--- a/plugins/plugin-api-docs/src/surfaces.ts
++++ b/plugins/plugin-api-docs/src/surfaces.ts
+@@ -172,6 +172,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+           "useSdk",
+           "PluginBrowserBbSdk",
+           "experimental_usePluginId",
++          "P6rParticipantProfile",
+         ],
+         experimental: true,
+       },
+@@ -818,6 +819,8 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+           "PluginRpcMethodContract",
+           "PluginsArea.experimental_discoverRpc",
+           "PluginHttp",
++          "P6rPluginRequestContext",
++          "P6rExperimentalPluginRoutes",
+           "PluginRealtime",
+           "useRpc",
+           "PluginRpcClient",
 -- 
 2.53.0
 
