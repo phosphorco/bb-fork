@@ -97,6 +97,9 @@
     identities; requests without usable person evidence keep a stable machine
     actor, as required by the approved identity ADR. Local CLI remains on its
     loopback listener, and independent network and plugin checks still apply.
+35. **Transactional ingress startup** validates the optional Tailnet port before
+    binding, closes the primary listener after a secondary bind failure, and
+    gates detached recovery on both configured listeners being ready.
 
 Number 22 is intentionally absent: it was a historical queue gap. Number 27 is
 intentionally absent because upstream commit `283e6d7` already supplies the
@@ -105,7 +108,7 @@ former Monaco routing change; it is not replayed downstream.
 ## Exact source receipt
 
 - Upstream: `fdd3de3b19b97e6cd1ef7300cbb54711431249d3`.
-- Patch queue: thirty-two logical patches in `patches/series`; numbers 22 and
+- Patch queue: thirty-three logical patches in `patches/series`; numbers 22 and
   27 are intentionally absent as described above. This queue is the current
   implementation candidate, while
   running deployments may remain on earlier historical compositions until root-owned
@@ -169,3 +172,6 @@ pack-infrastructure failure, and Context Magnet's direct-plugin full suite has
 an external Codex router launcher-generation digest mismatch. Those limitations
 remain release-qualification work; none was skipped, regenerated, or treated as
 evidence that a running deployment has changed.
+The patch-35 successor additionally passed focused real-socket startup tests
+and server typecheck; the prior broad receipt must be rebound to its new tree
+before normal deployment qualification.

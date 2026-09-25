@@ -48,7 +48,7 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The thirty-two patches listed in `patches/series` form the current implementation
+The thirty-three patches listed in `patches/series` form the current implementation
 candidate. Queue numbers 0022 and 0027 are intentionally absent: 0022 is a
 historical gap, and the former 0027 Monaco routing backport is supplied by
 upstream commit `283e6d7`. Obsolete
@@ -98,14 +98,19 @@ Patch 34 adds the configured owned Tailnet listener and preserves the approved
 machine fallback when person evidence is absent or unusable. Plugin HTTP and
 RPC routes retain their own checks; local CLI and unconfigured instances also
 retain machine attribution.
+Patch 35 validates the Tailnet port before binding either listener, closes the
+primary listener if the second bind fails, and starts detached recovery only
+after the configured listeners are ready.
 
 ## Verification boundary for this source receipt
 
-This latest-upstream source receipt is not a live deployment. Its candidate tree
-passed the complete workspace typecheck and build, both server test projects,
+This latest-upstream source receipt is not a live deployment. The preceding
+tree passed the complete workspace typecheck and build, both server test projects,
 and focused plugin-build, provider, P6R, and artifact-v2 checks. Organization
 plugin typechecks and builds and community-plugin typechecks, tests, and builds
 also pass with the selected SDK. Context Magnet Inspector's full test suite
 still reports an external Codex router-launcher digest mismatch; it is not
-resolved by changing the expected hash alone. Live materialization, host-side
+resolved by changing the expected hash alone. The patch-35 successor has a
+focused seven-test real-socket startup witness and server typecheck; broader
+checks must be rebound to its exact result tree. Live materialization, host-side
 policy checks, migration, restart, and browser acceptance remain separate gates.
