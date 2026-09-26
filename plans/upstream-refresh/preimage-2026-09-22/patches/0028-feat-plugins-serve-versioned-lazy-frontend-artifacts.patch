@@ -1,0 +1,893 @@
+From e27fa39783b983900cb5083d3f202fde5fbb6dbb Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Tue, 22 Sep 2026 15:29:53 +0200
+Subject: [PATCH] feat(plugins): serve versioned lazy frontend artifacts
+
+---
+ apps/server/src/routes/plugins.ts             |  47 ++++--
+ .../server/src/services/plugins/app-bundle.ts | 157 +++++++++++++++---
+ .../src/services/plugins/plugin-runtime.ts    |  10 ++
+ .../src/services/plugins/plugin-service.ts    |  26 +--
+ .../plugins/plugin-app-bundle.test.ts         |  94 ++++++++---
+ .../plugin-build/src/build-plugin-app.test.ts |  57 +++++++
+ packages/plugin-build/src/build-plugin-app.ts |  98 +++++++++--
+ .../plugin-build/src/plugin-artifact-meta.ts  |  18 +-
+ 8 files changed, 423 insertions(+), 84 deletions(-)
+
+diff --git a/apps/server/src/routes/plugins.ts b/apps/server/src/routes/plugins.ts
+index 7a7e586bc2e3cedc1a6a382a74ac046d00dcf076..8fdd742810a84c5655c95a010b816c99a1cc7fad 100644
+--- a/apps/server/src/routes/plugins.ts
++++ b/apps/server/src/routes/plugins.ts
+@@ -1,5 +1,4 @@
+ import { randomUUID, timingSafeEqual } from "node:crypto";
+-import { readFile } from "node:fs/promises";
+ import { promisify } from "node:util";
+ import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
+ import type { Context, Hono } from "hono";
+@@ -463,6 +462,33 @@ export function registerPluginRoutes(
+     "app.css": { kind: "css", contentType: "text/css; charset=utf-8" },
+   } as const;
+ 
++  app.get("/plugins/:id/assets/g/:generation/*", async (context) => {
++    const generation = context.req.param("generation");
++    const marker = `/assets/g/${generation}/`;
++    const rawFile = new URL(context.req.url).pathname.split(marker)[1] ?? "";
++    let file: string;
++    try {
++      file = decodeURIComponent(rawFile);
++    } catch {
++      return context.json({ ok: false, error: "plugin artifact path is invalid" }, 410);
++    }
++    const asset = plugins.getAppAsset(
++      context.req.param("id"),
++      file,
++      generation,
++    );
++    if (!asset) {
++      return context.json({ ok: false, error: "plugin artifact generation expired or asset is not declared" }, 410);
++    }
++    return appAssetResponse(context, asset.bytes, {
++      assetKey: `${context.req.param("id")}:${generation}:${file}`,
++      cache: appAssetCompressionCache,
++      contentType: asset.contentType,
++      cacheControl: hashedAssetCacheControl(asset.hash, asset.hash),
++      contentHash: asset.hash,
++    });
++  });
++
+   app.get("/plugins/:id/assets/icons/:file", (context) => {
+     const file = context.req.param("file");
+     const name = file.endsWith(".svg") ? file.slice(0, -".svg".length) : null;
+@@ -496,34 +522,25 @@ export function registerPluginRoutes(
+         hashedAssetCacheControl(context.req.query("h"), asset.hash),
+       );
+     }
+-    const spec =
+-      file === "app.js" || file === "app.css"
+-        ? APP_ASSET_CONTENT_TYPES[file]
+-        : undefined;
++    const spec = file === "app.js" || file === "app.css" ? APP_ASSET_CONTENT_TYPES[file] : undefined;
+     if (!spec) {
+       return context.json({ ok: false, error: "unknown plugin asset" }, 404);
+     }
+-    const asset = plugins.getAppAsset(context.req.param("id"), spec.kind);
++    const asset = plugins.getAppAsset(context.req.param("id"), file);
+     if (!asset) {
+       return context.json(
+         { ok: false, error: "plugin has no loadable frontend bundle" },
+         404,
+       );
+     }
+-    let bytes: Buffer;
+-    try {
+-      bytes = await readFile(asset.path);
+-    } catch {
+-      return context.json({ ok: false, error: "bundle file missing" }, 404);
+-    }
+     const cacheControl = hashedAssetCacheControl(
+       context.req.query("h"),
+       asset.hash,
+     );
+-    return appAssetResponse(context, bytes, {
+-      assetKey: `${context.req.param("id")}:${spec.kind}`,
++    return appAssetResponse(context, asset.bytes, {
++      assetKey: `${context.req.param("id")}:${file}`,
+       cache: appAssetCompressionCache,
+-      contentType: spec.contentType,
++      contentType: asset.contentType,
+       cacheControl,
+       contentHash: asset.hash,
+     });
+diff --git a/apps/server/src/services/plugins/app-bundle.ts b/apps/server/src/services/plugins/app-bundle.ts
+index bb08994135a4259309441e8f7fd38b684df2e0e0..87706e87b735253d3bf9f56335bb527573697744 100644
+--- a/apps/server/src/services/plugins/app-bundle.ts
++++ b/apps/server/src/services/plugins/app-bundle.ts
+@@ -1,6 +1,6 @@
+ import { createHash } from "node:crypto";
+-import { readFile } from "node:fs/promises";
+-import { join } from "node:path";
++import { lstat, open, readFile, realpath } from "node:fs/promises";
++import { join, resolve, sep } from "node:path";
+ import semver from "semver";
+ import { PLUGIN_SDK_MAJOR } from "@bb/domain";
+ import {
+@@ -11,13 +11,22 @@ import {
+ interface PluginArtifactMeta {
+   sdkMajor: number;
+   sdkVersion: string;
+-  artifactFormatVersion?: 1;
++  artifactFormatVersion?: 1 | 2;
+   pluginId?: string;
+   pluginVersion?: string;
+   builtWith?: {
+     bbVersion: string;
+     pluginSdkVersion: string;
+   };
++  appArtifact?: {
++    generation: string;
++    files: Array<{
++      path: string;
++      bytes: number;
++      sha256: string;
++      contentType: "text/javascript; charset=utf-8" | "text/css; charset=utf-8";
++    }>;
++  };
+ }
+ 
+ interface PluginArtifactMetaParseResult {
+@@ -25,6 +34,13 @@ interface PluginArtifactMetaParseResult {
+   error: string | null;
+ }
+ 
++type ParsedAppArtifactFile = {
++  path: string;
++  bytes: number;
++  sha256: string;
++  contentType: "text/javascript; charset=utf-8" | "text/css; charset=utf-8";
++};
++
+ interface PluginAppBundleInfo {
+   jsUrl: string;
+   cssUrl: string | null;
+@@ -41,9 +57,9 @@ interface PluginAppState {
+ }
+ 
+ interface PluginAppAssets {
+-  jsPath: string;
+-  cssPath: string | null;
+   hash: string;
++  generation: string | null;
++  files: ReadonlyMap<string, { bytes: Buffer; hash: string; contentType: string }>;
+ }
+ 
+ export interface PluginAppBundleSnapshot {
+@@ -57,6 +73,37 @@ const BRANDING_ASSET_CONTENT_TYPES: Record<string, string> = {
+   webp: "image/webp",
+ };
+ 
++const MAX_APP_ARTIFACT_META_BYTES = 256 * 1024;
++const MAX_APP_ARTIFACT_FILES = 128;
++const MAX_APP_ARTIFACT_FILE_BYTES = 8 * 1024 * 1024;
++const MAX_APP_ARTIFACT_TOTAL_BYTES = 16 * 1024 * 1024;
++
++async function readBoundedRegularFile(path: string, maximumBytes: number): Promise<Buffer> {
++  const before = await lstat(path);
++  if (!before.isFile() || before.isSymbolicLink() || before.size > maximumBytes) {
++    throw new Error("artifact file is not a bounded regular file");
++  }
++  const handle = await open(path, "r");
++  try {
++    const opened = await handle.stat();
++    if (!opened.isFile() || opened.size !== before.size || opened.size > maximumBytes) {
++      throw new Error("artifact file changed before opening");
++    }
++    const bytes = Buffer.allocUnsafe(opened.size);
++    let offset = 0;
++    while (offset < bytes.length) {
++      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
++      if (bytesRead === 0) throw new Error("artifact file ended before its declared size");
++      offset += bytesRead;
++    }
++    const after = await handle.stat();
++    if (after.size !== opened.size) throw new Error("artifact file changed while reading");
++    return bytes;
++  } finally {
++    await handle.close();
++  }
++}
++
+ export type PluginBrandingAssetVariant = "icon" | "logo" | "logo-dark";
+ 
+ export interface PluginBrandingAssetSnapshot {
+@@ -189,10 +236,10 @@ function parsePluginArtifactMeta(raw: string): PluginArtifactMetaParseResult {
+       error: null,
+     };
+   }
+-  if (meta.artifactFormatVersion !== 1) {
++  if (meta.artifactFormatVersion !== 1 && meta.artifactFormatVersion !== 2) {
+     return {
+       meta: null,
+-      error: `unknown artifactFormatVersion ${JSON.stringify(meta.artifactFormatVersion)}; supported value is 1`,
++      error: `unknown artifactFormatVersion ${JSON.stringify(meta.artifactFormatVersion)}; supported values are 1 and 2`,
+     };
+   }
+   if (typeof meta.pluginId !== "string" || meta.pluginId.length === 0) {
+@@ -230,17 +277,38 @@ function parsePluginArtifactMeta(raw: string): PluginArtifactMetaParseResult {
+       error: `builtWith.pluginSdkVersion ${builtWith.pluginSdkVersion} does not match sdkVersion ${meta.sdkVersion}`,
+     };
+   }
++  if (meta.artifactFormatVersion === 2) {
++    const artifact = meta.appArtifact as { generation?: unknown; files?: unknown } | undefined;
++    const validGeneration = typeof artifact?.generation === "string" && /^[a-f0-9]{32}$/.test(artifact.generation);
++    const paths = new Set<string>();
++    let declaredBytes = 0;
++    const validFiles = Array.isArray(artifact?.files) && artifact.files.length > 0 && artifact.files.length <= MAX_APP_ARTIFACT_FILES && artifact.files.every((file: unknown) => {
++      if (typeof file !== "object" || file === null) return false;
++      const candidate = file as Record<string, unknown>;
++      if (typeof candidate.path !== "string" || !isSafeArtifactPath(candidate.path) || paths.has(candidate.path)) return false;
++      paths.add(candidate.path);
++      if (typeof candidate.bytes !== "number" || !Number.isSafeInteger(candidate.bytes) || candidate.bytes < 0 || candidate.bytes > MAX_APP_ARTIFACT_FILE_BYTES) return false;
++      declaredBytes += candidate.bytes;
++      return declaredBytes <= MAX_APP_ARTIFACT_TOTAL_BYTES
++        && typeof candidate.sha256 === "string" && /^[a-f0-9]{64}$/.test(candidate.sha256)
++        && (candidate.contentType === "text/javascript; charset=utf-8" || candidate.contentType === "text/css; charset=utf-8");
++    });
++    if (!validGeneration || !validFiles || !(artifact.files as ParsedAppArtifactFile[]).some((file) => file.path === "app.js")) {
++      return { meta: null, error: "v2 appArtifact must contain a generation and a safe hashed app.js file manifest" };
++    }
++  }
+   return {
+     meta: {
+       sdkMajor: meta.sdkMajor,
+       sdkVersion: meta.sdkVersion,
+-      artifactFormatVersion: 1,
++      artifactFormatVersion: meta.artifactFormatVersion,
+       pluginId: meta.pluginId,
+       pluginVersion: meta.pluginVersion,
+       builtWith: {
+         bbVersion: builtWith.bbVersion,
+         pluginSdkVersion: builtWith.pluginSdkVersion,
+       },
++      ...(meta.artifactFormatVersion === 2 ? { appArtifact: meta.appArtifact as PluginArtifactMeta["appArtifact"] } : {}),
+     },
+     error: null,
+   };
+@@ -266,7 +334,7 @@ export function validatePluginArtifactMeta(args: {
+   if (meta.sdkMajor !== PLUGIN_SDK_MAJOR) {
+     return `${args.artifact} artifact for plugin "${args.pluginId}" was built for SDK major ${meta.sdkMajor}, running SDK major is ${PLUGIN_SDK_MAJOR}; rebuild the ${args.artifact} artifact with this bb version`;
+   }
+-  if (meta.artifactFormatVersion !== 1) return null;
++  if (meta.artifactFormatVersion !== 1 && meta.artifactFormatVersion !== 2) return null;
+   if (meta.pluginId !== args.pluginId) {
+     return `${args.artifact} artifact pluginId "${meta.pluginId}" does not match manifest pluginId "${args.pluginId}"`;
+   }
+@@ -276,12 +344,20 @@ export function validatePluginArtifactMeta(args: {
+   return null;
+ }
+ 
++function isSafeArtifactPath(path: string): boolean {
++  return path.length > 0
++    && !path.startsWith("/")
++    && !path.includes("\\")
++    && !path.includes("%")
++    && path.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
++}
++
+ export async function readPluginAppBundleMeta(
+   rootDir: string,
+ ): Promise<PluginArtifactMeta | null> {
+   let raw: string;
+   try {
+-    raw = await readFile(join(rootDir, "dist", "app.meta.json"), "utf8");
++    raw = (await readBoundedRegularFile(join(rootDir, "dist", "app.meta.json"), MAX_APP_ARTIFACT_META_BYTES)).toString("utf8");
+   } catch {
+     return null;
+   }
+@@ -293,24 +369,58 @@ export async function loadPluginAppBundle(
+   rootDir: string,
+ ): Promise<PluginAppBundleSnapshot> {
+   const distDir = join(rootDir, "dist");
+-  const jsPath = join(distDir, "app.js");
+-  const cssPath = join(distDir, "app.css");
+   let metaRaw: string;
+   try {
+-    metaRaw = await readFile(join(distDir, "app.meta.json"), "utf8");
++    metaRaw = (await readBoundedRegularFile(join(distDir, "app.meta.json"), MAX_APP_ARTIFACT_META_BYTES)).toString("utf8");
+   } catch {
+     return { state: { hasApp: true, bundle: null }, assets: null };
+   }
+   const meta = parsePluginAppBundleMeta(metaRaw);
+-  let js: Buffer;
+-  try {
+-    js = await readFile(jsPath);
+-  } catch {
+-    return { state: { hasApp: true, bundle: null }, assets: null };
+-  }
+   if (meta === null) {
+     return { state: { hasApp: true, bundle: null }, assets: null };
+   }
++  if (meta.artifactFormatVersion === 2) {
++    const artifact = meta.appArtifact!;
++    const artifactsRoot = join(distDir, ".bb-artifacts");
++    const generationDir = join(distDir, ".bb-artifacts", artifact.generation);
++    const rootInfo = await lstat(artifactsRoot).catch(() => null);
++    if (rootInfo === null || !rootInfo.isDirectory() || rootInfo.isSymbolicLink()) return { state: { hasApp: true, bundle: null }, assets: null };
++    const realArtifactsRoot = await realpath(artifactsRoot).catch(() => null);
++    const generationInfo = await lstat(generationDir).catch(() => null);
++    if (realArtifactsRoot === null || generationInfo === null || !generationInfo.isDirectory() || generationInfo.isSymbolicLink()) return { state: { hasApp: true, bundle: null }, assets: null };
++    const realGenerationDir = await realpath(generationDir).catch(() => null);
++    if (realGenerationDir === null || !realGenerationDir.startsWith(`${realArtifactsRoot}${sep}`)) return { state: { hasApp: true, bundle: null }, assets: null };
++    const files = new Map<string, { bytes: Buffer; hash: string; contentType: string }>();
++    const hasher = createHash("sha256").update(metaRaw);
++    let totalBytes = 0;
++    for (const file of artifact.files) {
++      const path = resolve(generationDir, file.path);
++      if (!path.startsWith(`${generationDir}${sep}`)) return { state: { hasApp: true, bundle: null }, assets: null };
++      const info = await lstat(path).catch(() => null);
++      if (info === null || !info.isFile() || info.isSymbolicLink() || (await realpath(path)).startsWith(`${realGenerationDir}${sep}`) === false) {
++        return { state: { hasApp: true, bundle: null }, assets: null };
++      }
++      if (info.size !== file.bytes || totalBytes + info.size > MAX_APP_ARTIFACT_TOTAL_BYTES) return { state: { hasApp: true, bundle: null }, assets: null };
++      const bytes = await readBoundedRegularFile(path, MAX_APP_ARTIFACT_FILE_BYTES).catch(() => null);
++      if (bytes === null) return { state: { hasApp: true, bundle: null }, assets: null };
++      const hash = createHash("sha256").update(bytes).digest("hex");
++      if (bytes.byteLength !== file.bytes || hash !== file.sha256) return { state: { hasApp: true, bundle: null }, assets: null };
++      totalBytes += bytes.byteLength;
++      hasher.update(file.path).update(bytes);
++      files.set(file.path, { bytes, hash, contentType: file.contentType });
++    }
++    const css = files.get("app.css") ?? null;
++    const hash = hasher.digest("hex").slice(0, 16);
++    const assetUrl = (file: string) => `/api/v1/plugins/${encodeURIComponent(pluginId)}/assets/g/${artifact.generation}/${file}?h=${hash}`;
++    return {
++      state: { hasApp: true, bundle: { jsUrl: assetUrl("app.js"), cssUrl: css === null ? null : assetUrl("app.css"), jsBytes: artifact.files.find((file) => file.path === "app.js")!.bytes, hash, sdkMajor: meta.sdkMajor, sdkVersion: meta.sdkVersion, compatible: meta.sdkMajor === PLUGIN_SDK_MAJOR } },
++      assets: { hash, generation: artifact.generation, files },
++    };
++  }
++  const jsPath = join(distDir, "app.js");
++  const cssPath = join(distDir, "app.css");
++  let js: Buffer;
++  try { js = await readFile(jsPath); } catch { return { state: { hasApp: true, bundle: null }, assets: null }; }
+   let css: Buffer | null;
+   try {
+     css = await readFile(cssPath);
+@@ -323,6 +433,9 @@ export async function loadPluginAppBundle(
+   const hash = hasher.digest("hex").slice(0, 16);
+   const assetUrl = (file: string) =>
+     `/api/v1/plugins/${encodeURIComponent(pluginId)}/assets/${file}?h=${hash}`;
++  const legacyFiles = new Map<string, { bytes: Buffer; hash: string; contentType: string }>();
++  legacyFiles.set("app.js", { bytes: js, hash, contentType: "text/javascript; charset=utf-8" });
++  if (css !== null) legacyFiles.set("app.css", { bytes: css, hash, contentType: "text/css; charset=utf-8" });
+   return {
+     state: {
+       hasApp: true,
+@@ -336,6 +449,10 @@ export async function loadPluginAppBundle(
+         compatible: meta.sdkMajor === PLUGIN_SDK_MAJOR,
+       },
+     },
+-    assets: { jsPath, cssPath: css !== null ? cssPath : null, hash },
++    assets: {
++      hash,
++      generation: null,
++      files: legacyFiles,
++    },
+   };
+ }
+diff --git a/apps/server/src/services/plugins/plugin-runtime.ts b/apps/server/src/services/plugins/plugin-runtime.ts
+index c67cc01e11b7a6d88b4b682151e4d690f7984a77..d63db9285f0a5513175b201535d5b7e6ea9138e6 100644
+--- a/apps/server/src/services/plugins/plugin-runtime.ts
++++ b/apps/server/src/services/plugins/plugin-runtime.ts
+@@ -400,6 +400,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+   >();
+   const stabilizingPluginIds = new Set<string>();
+   const appBundles = new Map<string, PluginAppBundleSnapshot>();
++  const appArtifactGenerations = new Map<string, Map<string, NonNullable<PluginAppBundleSnapshot["assets"]>>>();
+   const hostArtifacts =
+     deps.pluginHostArtifacts ?? new PluginHostArtifactRegistry();
+   const brandingAssets = new Map<string, PluginBrandingAssetSet>();
+@@ -1776,6 +1777,14 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+     disposeUnavailableProviderRegistrations(row.id);
+     loaded.set(row.id, plugin);
+     appBundles.set(row.id, appBundleCandidate.snapshot);
++    const currentAssets = appBundleCandidate.snapshot.assets;
++    if (currentAssets?.generation !== null && currentAssets?.generation !== undefined) {
++      const generations = appArtifactGenerations.get(row.id) ?? new Map();
++      generations.delete(currentAssets.generation);
++      generations.set(currentAssets.generation, currentAssets);
++      while (generations.size > 3) generations.delete(generations.keys().next().value!);
++      appArtifactGenerations.set(row.id, generations);
++    }
+     if (hostArtifactCandidate === null) hostArtifacts.delete(row.id);
+     else hostArtifacts.set(row.id, hostArtifactCandidate);
+     brandingAssets.set(row.id, brandingAssetCandidate);
+@@ -1934,6 +1943,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+     REGISTRATION_MUTATION_KEY,
+     agentToolProblems,
+     appBundles,
++    appArtifactGenerations,
+     hostArtifacts,
+     bindSdk,
+     buildThreadDto,
+diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
+index ac9ec5ec7e66cac39454d74bcc5ac833c6aacfb1..7eb67449c36a923c4aa9a0678149e68aec5bd63f 100644
+--- a/apps/server/src/services/plugins/plugin-service.ts
++++ b/apps/server/src/services/plugins/plugin-service.ts
+@@ -258,16 +258,12 @@ export interface PluginService {
+    * gone is cleared as `orphaned` rather than stranding the user's turn.
+    */
+   isPluginLoaded(id: string): boolean;
+-  /**
+-   * On-disk asset backing GET /plugins/:id/assets/app.{js,css}: file path
+-   * plus the current content hash (the route compares ?h against it for
+-   * cache policy). Undefined when the plugin has no loadable bundle, or no
+-   * CSS for kind "css".
+-   */
++  /** Returns only a manifest-listed app artifact file for a live generation. */
+   getAppAsset(
+     id: string,
+-    kind: "js" | "css",
+-  ): { path: string; hash: string } | undefined;
++    file: string,
++    generation?: string,
++  ): { bytes: Buffer; hash: string; contentType: string } | undefined;
+   getBrandingAsset(
+     id: string,
+     variant: PluginBrandingAssetVariant,
+@@ -550,6 +546,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+     REGISTRATION_MUTATION_KEY,
+     agentToolProblems,
+     appBundles,
++    appArtifactGenerations,
+     bindSdk: bindRuntimeSdk,
+     buildThreadDto,
+     builtinSourceWatchers,
+@@ -1593,13 +1590,16 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+       return loaded.has(id);
+     },
+ 
+-    getAppAsset(id, kind) {
++    getAppAsset(id, file, generation) {
+       if (!loaded.has(id)) return undefined;
+-      const assets = appBundles.get(id)?.assets;
++      const current = appBundles.get(id)?.assets;
++      const assets = generation === undefined
++        ? current
++        : appArtifactGenerations.get(id)?.get(generation);
+       if (!assets) return undefined;
+-      const path = kind === "js" ? assets.jsPath : assets.cssPath;
+-      if (path === null) return undefined;
+-      return { path, hash: assets.hash };
++      if (generation !== undefined && assets.generation !== generation) return undefined;
++      const artifact = assets.files.get(file);
++      return artifact === undefined ? undefined : artifact;
+     },
+ 
+     getBrandingAsset(id, variant) {
+diff --git a/apps/server/test/services/plugins/plugin-app-bundle.test.ts b/apps/server/test/services/plugins/plugin-app-bundle.test.ts
+index 73f8335a6ca764ad6567bef3dda6798420b32696..3e281187cf8443167ff4f76171d83ac2659c7b8f 100644
+--- a/apps/server/test/services/plugins/plugin-app-bundle.test.ts
++++ b/apps/server/test/services/plugins/plugin-app-bundle.test.ts
+@@ -1,7 +1,7 @@
+ import { execFile } from "node:child_process";
+ import { createHash } from "node:crypto";
+ import { createServer, type Server } from "node:http";
+-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
++import { mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+ import type { AddressInfo } from "node:net";
+ import { join } from "node:path";
+ import { promisify } from "node:util";
+@@ -121,15 +121,20 @@ describe("plugin app bundles (build policy, inventory, asset routes)", () => {
+     expect(bundle.compatible).toBe(true);
+     expect(bundle.sdkMajor).toBe(PLUGIN_SDK_MAJOR);
+     expect(bundle.sdkVersion).toBe(PLUGIN_SDK_VERSION);
+-    expect(bundle.jsUrl).toBe(
+-      `/api/v1/plugins/appy/assets/app.js?h=${bundle.hash}`,
++    expect(bundle.jsUrl).toMatch(
++      /^\/api\/v1\/plugins\/appy\/assets\/g\/[a-f0-9]{32}\/app\.js\?h=[a-f0-9]{16}$/,
+     );
+-    expect(bundle.cssUrl).toBe(
+-      `/api/v1/plugins/appy/assets/app.css?h=${bundle.hash}`,
++    expect(bundle.cssUrl).toMatch(
++      /^\/api\/v1\/plugins\/appy\/assets\/g\/[a-f0-9]{32}\/app\.css\?h=[a-f0-9]{16}$/,
+     );
+-    const jsStat = await stat(join(rootDir, "dist", "app.js"));
+     await stat(join(rootDir, "dist", "app.meta.json"));
+-    expect(bundle.jsBytes).toBe(jsStat.size);
++    await expect(stat(join(rootDir, "dist", "app.js"))).rejects.toMatchObject({
++      code: "ENOENT",
++    });
++    expect(bundle.jsBytes).toBeGreaterThan(0);
++    const generation = bundle.jsUrl.match(/\/assets\/g\/([a-f0-9]{32})\//)?.[1];
++    expect(generation).toBeDefined();
++    expect(harness.pluginService.getAppAsset("appy", "app.js", generation)).toBeDefined();
+ 
+     const js = await harness.app.request(`${BASE}${bundle.jsUrl}`);
+     expect(js.status).toBe(200);
+@@ -163,7 +168,7 @@ describe("plugin app bundles (build policy, inventory, asset routes)", () => {
+ 
+     const rejectedCompression = await harness.app.request(
+       `${BASE}${bundle.jsUrl}`,
+-      { headers: { "accept-encoding": "br;q=0, gzip;q=0" } },
++      { headers: { "accept-encoding": "identity" } },
+     );
+     expect(rejectedCompression.headers.get("content-encoding")).toBeNull();
+     expect(await rejectedCompression.text()).toBe(jsText);
+@@ -197,25 +202,31 @@ describe("plugin app bundles (build policy, inventory, asset routes)", () => {
+     expect(gzipCssBytes.length).toBeLessThan(Buffer.byteLength(cssText));
+     expect(gunzipSync(gzipCssBytes).toString()).toBe(cssText);
+ 
+-    const staleHash = await harness.app.request(
+-      `${BASE}/api/v1/plugins/appy/assets/app.js?h=deadbeefdeadbeef`,
++    const staleGeneration = await harness.app.request(
++      `${BASE}/api/v1/plugins/appy/assets/g/00000000000000000000000000000000/app.js`,
+     );
+-    expect(staleHash.status).toBe(200);
+-    expect(staleHash.headers.get("cache-control")).toBe("no-store");
+-    const noHash = await harness.app.request(
+-      `${BASE}/api/v1/plugins/appy/assets/app.js`,
++    expect(staleGeneration.status).toBe(410);
++    const encodedTraversal = await harness.app.request(
++      `${BASE}${bundle.jsUrl.replace(/app\.js\?/, "%2e%2e%2fapp.js?")}`,
+     );
+-    expect(noHash.status).toBe(200);
+-    expect(noHash.headers.get("cache-control")).toBe("no-store");
++    expect(encodedTraversal.status).toBeGreaterThanOrEqual(400);
++    const entryPath = join(rootDir, "dist", ".bb-artifacts", generation!, "app.js");
++    const outsidePath = join(rootDir, "outside.js");
++    await writeFile(entryPath, "export default 'mutated';\n");
++    expect(await (await harness.app.request(`${BASE}${bundle.jsUrl}`)).text()).toBe(jsText);
++    await writeFile(outsidePath, "export default 'outside';\n");
++    await rm(entryPath);
++    await symlink(outsidePath, entryPath);
++    expect(await (await harness.app.request(`${BASE}${bundle.jsUrl}`)).text()).toBe(jsText);
+ 
+     const unknownPlugin = await harness.app.request(
+       `${BASE}/api/v1/plugins/nope/assets/app.js`,
+     );
+     expect(unknownPlugin.status).toBe(404);
+     const unknownFile = await harness.app.request(
+-      `${BASE}/api/v1/plugins/appy/assets/evil.js`,
++      `${BASE}${bundle.jsUrl.replace(/app\.js\?/, "evil.js?")}`,
+     );
+-    expect(unknownFile.status).toBe(404);
++    expect(unknownFile.status).toBe(410);
+   }, 60_000);
+ 
+   it("reports hasApp:false for headless plugins and 404s their assets", async () => {
+@@ -277,7 +288,9 @@ describe("plugin app bundles (build policy, inventory, asset routes)", () => {
+ 
+     const entry = await harness.pluginService.installPath(rootDir);
+     expect(entry.status).toBe("running");
+-    const bundled = await readFile(join(rootDir, "dist", "app.js"), "utf8");
++    const bundle = entry.app.bundle;
++    if (bundle === null) throw new Error("unreachable");
++    const bundled = await (await harness.app.request(`${BASE}${bundle.jsUrl}`)).text();
+     expect(bundled).not.toContain("backend-contract-must-not-bundle");
+     expect(bundled).not.toContain("defineRpcContract");
+     expect(bundled).toContain("typed rpc");
+@@ -498,6 +511,49 @@ describe("plugin app bundles (build policy, inventory, asset routes)", () => {
+       { sdkMajor: 0.5, sdkVersion: "0.5.0" },
+       { sdkMajor: PLUGIN_SDK_MAJOR, sdkVersion: "banana" },
+       { sdkMajor: PLUGIN_SDK_MAJOR, sdkVersion: `${PLUGIN_SDK_MAJOR + 1}.0.0` },
++      {
++        sdkMajor: PLUGIN_SDK_MAJOR,
++        sdkVersion: PLUGIN_SDK_VERSION,
++        artifactFormatVersion: 2,
++        pluginId: "malformed",
++        pluginVersion: "0.1.0",
++        builtWith: { bbVersion: "0.0.0-test", pluginSdkVersion: PLUGIN_SDK_VERSION },
++        appArtifact: {
++          generation: "00000000000000000000000000000000",
++          files: [
++            { path: "app.js", bytes: 0, sha256: "0".repeat(64), contentType: "text/javascript; charset=utf-8" },
++            { path: "app.js", bytes: 0, sha256: "1".repeat(64), contentType: "text/javascript; charset=utf-8" },
++          ],
++        },
++      },
++      {
++        sdkMajor: PLUGIN_SDK_MAJOR,
++        sdkVersion: PLUGIN_SDK_VERSION,
++        artifactFormatVersion: 2,
++        pluginId: "malformed",
++        pluginVersion: "0.1.0",
++        builtWith: { bbVersion: "0.0.0-test", pluginSdkVersion: PLUGIN_SDK_VERSION },
++        appArtifact: {
++          generation: "00000000000000000000000000000000",
++          files: [{ path: "app.js", bytes: 8 * 1024 * 1024 + 1, sha256: "0".repeat(64), contentType: "text/javascript; charset=utf-8" }],
++        },
++      },
++      {
++        sdkMajor: PLUGIN_SDK_MAJOR,
++        sdkVersion: PLUGIN_SDK_VERSION,
++        artifactFormatVersion: 2,
++        pluginId: "malformed",
++        pluginVersion: "0.1.0",
++        builtWith: { bbVersion: "0.0.0-test", pluginSdkVersion: PLUGIN_SDK_VERSION },
++        appArtifact: {
++          generation: "00000000000000000000000000000000",
++          files: [
++            { path: "app.js", bytes: 8 * 1024 * 1024, sha256: "0".repeat(64), contentType: "text/javascript; charset=utf-8" },
++            { path: "chunks/a.js", bytes: 8 * 1024 * 1024, sha256: "1".repeat(64), contentType: "text/javascript; charset=utf-8" },
++            { path: "chunks/b.js", bytes: 1, sha256: "2".repeat(64), contentType: "text/javascript; charset=utf-8" },
++          ],
++        },
++      },
+     ];
+     for (const badMeta of badMetas) {
+       await writeFile(
+diff --git a/packages/plugin-build/src/build-plugin-app.test.ts b/packages/plugin-build/src/build-plugin-app.test.ts
+index f56612e08ff330dfca89f104b09770c40d805a81..7cb6282b77ac5e05304b2530c8f8268b789761a7 100644
+--- a/packages/plugin-build/src/build-plugin-app.test.ts
++++ b/packages/plugin-build/src/build-plugin-app.test.ts
+@@ -1,6 +1,7 @@
+ import {
+   mkdir,
+   mkdtemp,
++  readdir,
+   readFile,
+   rm,
+   symlink,
+@@ -412,6 +413,62 @@ describe("plugin app runtime shim", () => {
+     expect(css).not.toContain("--color-background:");
+   });
+ 
++  it("emits generation-pinned chunks without a legacy root entry", async () => {
++    const dir = await mkdtemp(join(tmpdir(), "bb-plugin-v2-artifact-"));
++    tempDirs.push(dir);
++    await writeFile(
++      join(dir, "package.json"),
++      JSON.stringify({
++        name: "bb-plugin-v2-artifact-fixture",
++        version: "0.0.0",
++        bb: {
++          name: "Artifact fixture",
++          description: "Verifies v2 lazy artifacts.",
++          branding: { icon: "Zap" },
++          server: "./server.ts",
++          app: "./app.ts",
++        },
++      }),
++    );
++    await writeFile(join(dir, "server.ts"), "export default function plugin() {}\n");
++    await writeFile(
++      join(dir, "app.ts"),
++      'export const loadHeavy = () => import("./heavy.ts");\n',
++    );
++    await writeFile(join(dir, "heavy.ts"), 'export const heavy = "heavy-artifact-marker";\n');
++
++    const first = await buildPluginApp(dir, "0.9.0-test", await testToolchain());
++    const firstMeta = JSON.parse(await readFile(first.metaPath, "utf8")) as {
++      artifactFormatVersion: number;
++      appArtifact: { generation: string; files: Array<{ path: string; sha256: string }> };
++    };
++    expect(firstMeta.artifactFormatVersion).toBe(2);
++    expect(firstMeta.appArtifact.generation).toMatch(/^[a-f0-9]{32}$/);
++    expect(firstMeta.appArtifact.files.map((file) => file.path)).toEqual(
++      expect.arrayContaining(["app.js", "app.css"]),
++    );
++    const heavyFile = firstMeta.appArtifact.files.find((file) => file.path.startsWith("chunks/"));
++    expect(heavyFile).toBeDefined();
++    await expect(readFile(join(dir, "dist", "app.js"))).rejects.toMatchObject({ code: "ENOENT" });
++    const entry = await readFile(first.jsPath, "utf8");
++    expect(entry).not.toContain("heavy-artifact-marker");
++    expect(await readFile(join(dir, "dist", ".bb-artifacts", firstMeta.appArtifact.generation, heavyFile!.path), "utf8")).toContain("heavy-artifact-marker");
++
++    await writeFile(join(dir, "heavy.ts"), 'export const heavy = "changed-heavy-artifact-marker";\n');
++    const second = await buildPluginApp(dir, "0.9.0-test", await testToolchain());
++    const secondMeta = JSON.parse(await readFile(second.metaPath, "utf8")) as typeof firstMeta;
++    expect(secondMeta.appArtifact.generation).not.toBe(firstMeta.appArtifact.generation);
++    const secondHeavy = secondMeta.appArtifact.files.find((file) => file.path.startsWith("chunks/"));
++    expect(secondHeavy?.sha256).not.toBe(heavyFile?.sha256);
++
++    await writeFile(join(dir, "heavy.ts"), 'export const heavy = "third-heavy-artifact-marker";\n');
++    await buildPluginApp(dir, "0.9.0-test", await testToolchain());
++    await writeFile(join(dir, "heavy.ts"), 'export const heavy = "fourth-heavy-artifact-marker";\n');
++    await buildPluginApp(dir, "0.9.0-test", await testToolchain());
++    const generations = (await readdir(join(dir, "dist", ".bb-artifacts"))).filter((name) => /^[a-f0-9]{32}$/.test(name));
++    expect(generations).toHaveLength(3);
++  });
++
+   it.each([
+     ["non-SVG XML", "<html/>", /<svg> root element/],
+     ["malformed XML", "<svg><path></svg>", /not valid SVG XML/],
+diff --git a/packages/plugin-build/src/build-plugin-app.ts b/packages/plugin-build/src/build-plugin-app.ts
+index e16d6367d07b7ca991841cfe5c5e1c13d54914db..4b8535f889490aeda06a3ca81fff5276bce875ac 100644
+--- a/packages/plugin-build/src/build-plugin-app.ts
++++ b/packages/plugin-build/src/build-plugin-app.ts
+@@ -1,6 +1,10 @@
++import { createHash, randomUUID } from "node:crypto";
+ import {
++  cp,
++  lstat,
+   mkdir,
+   mkdtemp,
++  readdir,
+   readFile,
+   realpath,
+   rename,
+@@ -382,6 +386,55 @@ interface PluginAppBuildOptions {
+   minify: boolean;
+ }
+ 
++type AppArtifactFile = Readonly<{
++  path: string;
++  bytes: number;
++  sha256: string;
++  contentType: "text/javascript; charset=utf-8" | "text/css; charset=utf-8";
++}>;
++
++const MAX_RETAINED_APP_ARTIFACT_GENERATIONS = 3;
++
++async function pruneAppArtifactGenerations(root: string, current: string): Promise<void> {
++  const generations = (await Promise.all((await readdir(root)).map(async (name) => {
++    if (!/^[a-f0-9]{32}$/.test(name)) return null;
++    const path = join(root, name);
++    const info = await lstat(path).catch(() => null);
++    if (info === null || !info.isDirectory() || info.isSymbolicLink()) return null;
++    return { name, path, modifiedAt: info.mtimeMs };
++  }))).filter((generation): generation is { name: string; path: string; modifiedAt: number } => generation !== null)
++    .sort((left, right) => right.modifiedAt - left.modifiedAt || right.name.localeCompare(left.name));
++  const retained = new Set(generations.slice(0, MAX_RETAINED_APP_ARTIFACT_GENERATIONS).map((generation) => generation.name));
++  retained.add(current);
++  await Promise.all(generations.filter((generation) => !retained.has(generation.name)).map((generation) => rm(generation.path, { recursive: true, force: true })));
++}
++
++async function appArtifactFiles(root: string, relative = ""): Promise<AppArtifactFile[]> {
++  const files: AppArtifactFile[] = [];
++  for (const entry of await readdir(join(root, relative), { withFileTypes: true })) {
++    const path = relative === "" ? entry.name : `${relative}/${entry.name}`;
++    if (entry.isDirectory()) {
++      files.push(...await appArtifactFiles(root, path));
++      continue;
++    }
++    if (!entry.isFile()) continue;
++    const contentType = path.endsWith(".js")
++      ? "text/javascript; charset=utf-8"
++      : path.endsWith(".css")
++        ? "text/css; charset=utf-8"
++        : null;
++    if (contentType === null) continue;
++    const bytes = await readFile(join(root, path));
++    files.push({
++      path,
++      bytes: bytes.byteLength,
++      sha256: createHash("sha256").update(bytes).digest("hex"),
++      contentType,
++    });
++  }
++  return files.sort((left, right) => left.path.localeCompare(right.path));
++}
++
+ export async function buildPluginApp(
+   rootDir: string,
+   bbVersion: string,
+@@ -394,26 +447,29 @@ export async function buildPluginApp(
+   const dependencySources = await readDependencyTailwindSources(rootDir);
+   const distDir = join(rootDir, "dist");
+   await mkdir(distDir, { recursive: true });
+-  const jsPath = join(distDir, "app.js");
+-  const cssPath = join(distDir, "app.css");
+   const metaPath = join(distDir, "app.meta.json");
+ 
+   const stageDir = await mkdtemp(join(distDir, ".stage-"));
+   try {
+-    const stagedJsPath = join(stageDir, "app.js");
+     const stagedCssPath = join(stageDir, "app.css");
+     const stagedMetaPath = join(stageDir, "app.meta.json");
+ 
+     const esbuild = (await import(
+       toolchain.esbuild
+     )) as typeof import("esbuild");
++    const generation = randomUUID().replaceAll("-", "");
++    const assetRoot = `/api/v1/plugins/${encodeURIComponent(pluginId)}/assets/g/${generation}`;
+     const bundle = await esbuild.build({
+       entryPoints: [appEntry],
+-      outfile: stagedJsPath,
++      outdir: stageDir,
++      entryNames: "app",
++      chunkNames: "chunks/[name]-[hash]",
+       absWorkingDir: rootDir,
+       bundle: true,
+-      metafile: dependencySources.length > 0,
++      metafile: true,
+       format: "esm",
++      splitting: true,
++      publicPath: assetRoot,
+       platform: "browser",
+       target: "es2022",
+       minify: options.minify,
+@@ -436,11 +492,6 @@ export async function buildPluginApp(
+     }
+     let bundledInputs: ReadonlySet<string> = new Set();
+     if (dependencySources.length > 0) {
+-      if (bundle.metafile === undefined) {
+-        throw new Error(
+-          "esbuild did not return the metafile required for dependency Tailwind scanning",
+-        );
+-      }
+       bundledInputs = await bundledInputPaths(bundle.metafile, rootDir);
+     }
+     const tailwindCss = (
+@@ -459,20 +510,35 @@ export async function buildPluginApp(
+       minify: options.minify,
+     }).code;
+     await writeFile(stagedCssPath, css);
++    const files = await appArtifactFiles(stageDir);
++    if (!files.some((file) => file.path === "app.js")) {
++      throw new Error("plugin app build did not emit app.js");
++    }
+     await writeFile(
+       stagedMetaPath,
+       JSON.stringify(
+-        createPluginArtifactMeta({ packageName, pluginVersion, bbVersion }),
++        createPluginArtifactMeta({
++          packageName,
++          pluginVersion,
++          bbVersion,
++          appArtifact: { generation, files },
++        }),
+         null,
+         2,
+       ) + "\n",
+     );
+-
+-    await rename(stagedJsPath, jsPath);
+-    await rename(stagedCssPath, cssPath);
+-    await rename(stagedMetaPath, metaPath);
++    const generationsDir = join(distDir, ".bb-artifacts");
++    const generationDir = join(generationsDir, generation);
++    await mkdir(generationsDir, { recursive: true });
++    await rename(stageDir, generationDir);
++    await pruneAppArtifactGenerations(generationsDir, generation);
++    await cp(join(generationDir, "app.meta.json"), metaPath);
++    return {
++      jsPath: join(generationDir, "app.js"),
++      cssPath: join(generationDir, "app.css"),
++      metaPath,
++    };
+   } finally {
+     await rm(stageDir, { recursive: true, force: true });
+   }
+-  return { jsPath, cssPath, metaPath };
+ }
+diff --git a/packages/plugin-build/src/plugin-artifact-meta.ts b/packages/plugin-build/src/plugin-artifact-meta.ts
+index ac27e38fb3bc58cab3262ba60a475b5f8923f310..d3c7816a04810f13e7e4eb9dd613314e7ba3dcdc 100644
+--- a/packages/plugin-build/src/plugin-artifact-meta.ts
++++ b/packages/plugin-build/src/plugin-artifact-meta.ts
+@@ -8,16 +8,32 @@ export function createPluginArtifactMeta(args: {
+   packageName: string;
+   pluginVersion: string;
+   bbVersion: string;
++  appArtifact?: {
++    generation: string;
++    files: readonly {
++      path: string;
++      bytes: number;
++      sha256: string;
++      contentType: "text/javascript; charset=utf-8" | "text/css; charset=utf-8";
++    }[];
++  };
+ }) {
++  const appArtifact = args.appArtifact === undefined
++    ? {}
++    : {
++        artifactFormatVersion: 2 as const,
++        appArtifact: args.appArtifact,
++      };
+   return {
+     sdkMajor: PLUGIN_SDK_MAJOR,
+     sdkVersion: PLUGIN_SDK_VERSION,
+-    artifactFormatVersion: 1,
++    artifactFormatVersion: args.appArtifact === undefined ? 1 : 2,
+     pluginId: derivePluginId(args.packageName),
+     pluginVersion: args.pluginVersion,
+     builtWith: {
+       bbVersion: args.bbVersion,
+       pluginSdkVersion: PLUGIN_SDK_VERSION,
+     },
++    ...appArtifact,
+   } as const;
+ }
+-- 
+2.53.0
+

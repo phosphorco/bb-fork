@@ -1,0 +1,3125 @@
+From 3a214d48bd1553dfec80402127773f0a187aac55 Mon Sep 17 00:00:00 2001
+From: Phosphor <engineering@phosphor.co>
+Date: Tue, 8 Sep 2026 17:35:56 +0200
+Subject: [PATCH 02/21] feat(identity): retain facets and execution behavior
+
+---
+ apps/server/src/routes/threads/base.ts        |  34 +
+ .../server/src/services/plugins/plugin-api.ts | 212 +++++-
+ .../src/services/system/execution-options.ts  |  18 +-
+ .../threads/thread-execution-batch.ts         | 479 +++++++++++++
+ .../threads/thread-execution-override.ts      |  63 +-
+ .../services/threads/thread-facet-query.ts    | 627 ++++++++++++++++++
+ .../test/public/public-thread-facets.test.ts  | 115 ++++
+ .../plugins/plugin-authoring-docs.test.ts     |   1 +
+ .../threads/thread-execution-batch.test.ts    | 118 ++++
+ .../threads/thread-execution-override.test.ts |  24 +
+ packages/db/src/data/events.ts                | 128 ++--
+ packages/db/src/data/index.ts                 |   3 +
+ .../db/src/data/project-execution-defaults.ts |   6 +-
+ packages/db/src/data/threads.ts               |  14 +
+ .../src/__tests__/public-types.test.ts        |  34 +
+ packages/plugin-sdk/src/backend-contract.ts   |  51 ++
+ .../src/testing/fake-plugin-host.ts           |  24 +
+ packages/sdk/src/areas/threads.ts             |  99 +++
+ packages/sdk/test/public-types.test.ts        |   4 +
+ packages/server-contract/src/api/threads.ts   | 326 +++++++++
+ packages/server-contract/src/public-api.ts    |  45 ++
+ 21 files changed, 2369 insertions(+), 56 deletions(-)
+ create mode 100644 apps/server/src/services/threads/thread-execution-batch.ts
+ create mode 100644 apps/server/src/services/threads/thread-facet-query.ts
+ create mode 100644 apps/server/test/public/public-thread-facets.test.ts
+ create mode 100644 apps/server/test/services/threads/thread-execution-batch.test.ts
+
+diff --git a/apps/server/src/routes/threads/base.ts b/apps/server/src/routes/threads/base.ts
+index 633e75c4719bb2935180e7f8f8733a4e40823920..a819ce1bad46c3fc0ac7020540ab82c2693a6bdc 100644
+--- a/apps/server/src/routes/threads/base.ts
++++ b/apps/server/src/routes/threads/base.ts
+@@ -61,7 +61,15 @@ import {
+ import { assertValidParentThread } from "../../services/threads/thread-parent.js";
+ import { handleThreadOwnershipChange } from "../../services/threads/thread-ownership.js";
+ import { applyThreadExecutionOverride } from "../../services/threads/thread-execution-override.js";
++import {
++  applyPreflightedThreadExecutionOverrides,
++  preflightThreadExecutionOverrides,
++} from "../../services/threads/thread-execution-batch.js";
+ import { emitPluginThreadDeleted } from "../../services/plugins/plugin-thread-events.js";
++import {
++  executeThreadFacetParticipantPage,
++  executeThreadFacetQuery,
++} from "../../services/threads/thread-facet-query.js";
+ 
+ function parseThreadIncludes(query: ThreadGetQuery): Set<ThreadIncludeOption> {
+   const includes = new Set<ThreadIncludeOption>();
+@@ -295,6 +303,32 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
+     );
+   });
+ 
++  post(routes.facetQuery, (context, payload) => {
++    return context.json(executeThreadFacetQuery(deps, { request: payload }));
++  });
++
++  post(routes.experimentalExecutionPreflight, async (context, payload) => {
++    return context.json(await preflightThreadExecutionOverrides(deps, payload));
++  });
++
++  post(routes.experimentalExecutionApply, async (context, payload) => {
++    return context.json(
++      await applyPreflightedThreadExecutionOverrides(deps, payload),
++    );
++  });
++
++  get(routes.facetParticipants, (context, query) => {
++    const pageSize = parseOptionalInteger(query.pageSize, "pageSize") ?? 50;
++    if (pageSize < 1 || pageSize > 100) {
++      throw new ApiError(400, "invalid_request", "pageSize must be between 1 and 100");
++    }
++    return context.json(executeThreadFacetParticipantPage(deps, {
++      threadId: context.req.param("id"),
++      pageSize,
++      ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
++    }));
++  });
++
+   get(routes.search, (context, query) => {
+     const searchQuery = query.query.trim();
+     if (countNonWhitespaceChars(searchQuery) < 2) {
+diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
+index b7a4c640c8674d173a667b2a55b8925959dfd867..4ec776fa219960a294eba62dd12b31c35dd737de 100644
+--- a/apps/server/src/services/plugins/plugin-api.ts
++++ b/apps/server/src/services/plugins/plugin-api.ts
+@@ -6,14 +6,21 @@ import {
+ import { createMachineBootstrapApi } from "../machines/bootstrap.js";
+ import type { MachineEnrollments } from "../machines/enrollments.js";
+ import { listServerAccessProviders } from "./plugin-server-access-registry.js";
++import { createHash, randomUUID } from "node:crypto";
+ import { mkdirSync } from "node:fs";
+ import { join } from "node:path";
+ import Database from "better-sqlite3";
+ import { CronExpressionParser } from "cron-parser";
+ import {
+   deletePluginKvValue,
++  activatePluginThreadFacetDeclarations,
+   getPluginKvValue,
+   getHost,
++  listPriorThreadFacetSnapshotTargets,
++  markThreadFacetOwnerGenerationReady,
++  markThreadFacetOwnerGenerationUnavailable,
++  recordThreadFacetCensusExhausted,
++  replaceThreadFacetRelationsInGeneration,
+   listPluginKvKeys,
+   setPluginKvValue,
+   type DbConnection,
+@@ -51,6 +58,11 @@ import type {
+   PluginAiServiceDeclaration,
+   PluginAiServices,
+   ExperimentalP6rIdentityProtocol,
++  ExperimentalThreadFacetCardinality,
++  ExperimentalThreadFacetHandle,
++  ExperimentalThreadFacetTarget,
++  ExperimentalThreadFacetTargetGrant,
++  ExperimentalThreadFacets,
+   PluginProviderDeclaration,
+   ExperimentalPluginProviderEnvContext,
+   ExperimentalPluginProviderEnvEntry,
+@@ -332,7 +344,34 @@ function withPluginThreadAttribution<
+   return { ...args, ...attribution };
+ }
+ 
+-function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): PluginBbSdk {
++interface ThreadFacetTargetRecord {
++  thread: ExperimentalThreadFacetTarget;
++  threadId: string;
++}
++
++interface StagedThreadFacet {
++  active: { generation: number; typeId: import("@bb/domain").ThreadFacetTypeId } | null;
++  censusInFlight: boolean;
++  cursorPositions: Map<string, string>;
++  declaration: {
++    assignmentScope: "shared-thread";
++    cardinality: ExperimentalThreadFacetCardinality;
++    localName: string;
++    memberKind: "enum";
++    members: readonly string[];
++  };
++  expectedCursor: string | null | undefined;
++}
++
++interface ThreadFacetGrantRecord extends ThreadFacetTargetRecord {}
++
++function wrapSdkForPlugin(
++  sdk: BbSdk,
++  pluginId: string,
++  registerThreadFacetTarget: <T extends ExperimentalThreadFacetTarget>(
++    thread: T,
++  ) => T,
++): PluginBbSdk {
+   return {
+     ...sdk,
+     threads: {
+@@ -363,6 +402,12 @@ function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): PluginBbSdk {
+       spawn(args: ThreadSpawnArgs) {
+         return sdk.threads.spawn(withPluginThreadAttribution(args, pluginId));
+       },
++      async get(args) {
++        return registerThreadFacetTarget(await sdk.threads.get(args));
++      },
++      async list(args) {
++        return (await sdk.threads.list(args)).map(registerThreadFacetTarget);
++      },
+     },
+   };
+ }
+@@ -555,10 +600,15 @@ export function createPluginApi(options: {
+   } = options;
+   let invalidated = false;
+   let activated = false;
++  let facetAuthorityRevoked = false;
++  let facetsCommitted = false;
+   let wrappedSdk: PluginBbSdk | undefined;
+   let pendingNeedsConfiguration: string | null = null;
+   const pendingAgentToolProblems: string[] = [];
+   const pendingSharedPorts = new Map<string, readonly number[]>();
++  const stagedThreadFacets: StagedThreadFacet[] = [];
++  const threadFacetGrants = new WeakMap<object, ThreadFacetGrantRecord>();
++  const threadFacetTargets = new WeakMap<object, ThreadFacetTargetRecord>();
+   const disposeHooks: Array<() => void | Promise<void>> = [];
+   const settingsRecord: PluginApiHandle["settings"] = {
+     descriptors: {},
+@@ -609,6 +659,149 @@ export function createPluginApi(options: {
+     if (invalidated) throw new PluginContextStaleError(pluginId);
+   }
+ 
++  function refuseThreadFacetCapability(): never {
++    throw new Error("Native thread facet capability is unavailable");
++  }
++
++  function assertFacetAuthorityLive(): void {
++    assertLive();
++    if (facetAuthorityRevoked) refuseThreadFacetCapability();
++  }
++
++  function registerThreadFacetTarget<T extends ExperimentalThreadFacetTarget>(
++    thread: T,
++  ): T {
++    threadFacetTargets.set(thread, { thread, threadId: thread.id });
++    return thread;
++  }
++
++  function activeFacet(staged: StagedThreadFacet): {
++    generation: number;
++    typeId: import("@bb/domain").ThreadFacetTypeId;
++  } {
++    assertFacetAuthorityLive();
++    if (staged.active === null) refuseThreadFacetCapability();
++    return staged.active;
++  }
++
++  function grantRecord(target: ExperimentalThreadFacetTargetGrant): ThreadFacetGrantRecord {
++    assertFacetAuthorityLive();
++    const grant = threadFacetGrants.get(target);
++    if (grant === undefined) refuseThreadFacetCapability();
++    const current = threadFacetTargets.get(grant.thread);
++    if (current !== grant || grant.thread.id !== grant.threadId) refuseThreadFacetCapability();
++    return grant;
++  }
++
++  async function facetOperation<T>(operation: () => T | Promise<T>): Promise<T> {
++    try {
++      return await operation();
++    } catch {
++      return refuseThreadFacetCapability();
++    }
++  }
++
++  function facetHandle<
++    Cardinality extends ExperimentalThreadFacetCardinality,
++    Member extends string,
++  >(staged: StagedThreadFacet): ExperimentalThreadFacetHandle<Cardinality, Member> {
++    return {
++      replace(target, members) {
++        return facetOperation(() => {
++          const active = activeFacet(staged);
++          const grant = grantRecord(target);
++          replaceThreadFacetRelationsInGeneration(db, { ...active, threadId: grant.threadId, members });
++        });
++      },
++      clear(target) {
++        return facetOperation(() => {
++          const active = activeFacet(staged);
++          const grant = grantRecord(target);
++          replaceThreadFacetRelationsInGeneration(db, { ...active, threadId: grant.threadId, members: [] });
++        });
++      },
++      listPriorTargets(args) {
++        return facetOperation(async () => {
++          if (staged.censusInFlight) refuseThreadFacetCapability();
++          staged.censusInFlight = true;
++          try {
++            const active = activeFacet(staged);
++            const supplied = args?.cursor;
++            if (staged.expectedCursor === null || supplied !== staged.expectedCursor) refuseThreadFacetCapability();
++            const pageSize = args?.pageSize ?? 50;
++            if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) refuseThreadFacetCapability();
++            const afterThreadId = supplied === undefined ? undefined : staged.cursorPositions.get(supplied);
++            if (supplied !== undefined && afterThreadId === undefined) refuseThreadFacetCapability();
++            const page = listPriorThreadFacetSnapshotTargets(db, { ...active, limit: pageSize, ...(afterThreadId === undefined ? {} : { afterThreadId }) });
++            const sdk = getSdk();
++            if (sdk === undefined) refuseThreadFacetCapability();
++            const targets: ExperimentalThreadFacetTarget[] = [];
++            for (const threadId of page.threadIds) targets.push(registerThreadFacetTarget(await sdk.threads.get({ threadId })));
++            if (page.nextAfterThreadId === null) {
++              recordThreadFacetCensusExhausted(db, active);
++              staged.expectedCursor = null;
++              if (supplied !== undefined) staged.cursorPositions.delete(supplied);
++              return { targets, nextCursor: null };
++            }
++            const nextCursor = randomUUID();
++            staged.cursorPositions.set(nextCursor, page.nextAfterThreadId);
++            staged.expectedCursor = nextCursor;
++            if (supplied !== undefined) staged.cursorPositions.delete(supplied);
++            return { targets, nextCursor };
++          } finally {
++            staged.censusInFlight = false;
++          }
++        });
++      },
++      markReady() {
++        return facetOperation(() => markThreadFacetOwnerGenerationReady(db, activeFacet(staged)));
++      },
++    };
++  }
++
++  const experimental_facets: ExperimentalThreadFacets = {
++    target(thread) {
++      assertFacetAuthorityLive();
++      const target = threadFacetTargets.get(thread);
++      if (target === undefined || target.thread.id !== target.threadId) refuseThreadFacetCapability();
++      const grant = Object.freeze({}) as ExperimentalThreadFacetTargetGrant;
++      threadFacetGrants.set(grant, target);
++      return grant;
++    },
++    declare(declaration) {
++      assertFacetAuthorityLive();
++      if (facetsCommitted) refuseThreadFacetCapability();
++      const staged: StagedThreadFacet = {
++        declaration: {
++          assignmentScope: declaration.assignmentScope,
++          cardinality: declaration.cardinality,
++          localName: declaration.localName,
++          memberKind: declaration.memberKind,
++          members: [...declaration.members],
++        },
++        active: null,
++        censusInFlight: false,
++        cursorPositions: new Map(),
++        expectedCursor: undefined,
++      };
++      stagedThreadFacets.push(staged);
++      return facetHandle(staged);
++    },
++  };
++
++  function revokeThreadFacetAuthority(): void {
++    if (facetAuthorityRevoked) return;
++    facetAuthorityRevoked = true;
++    for (const staged of stagedThreadFacets) {
++      if (staged.active === null) continue;
++      try {
++        markThreadFacetOwnerGenerationUnavailable(db, staged.active);
++      } catch (error) {
++        logger.warn(`plugin ${pluginId} thread facet revocation failed: ${error instanceof Error ? error.message : String(error)}`);
++      }
++    }
++  }
++
+   const prefix = `[plugin:${pluginId}]`;
+   function emitLog(
+     level: "debug" | "info" | "warn" | "error",
+@@ -1305,6 +1498,7 @@ export function createPluginApi(options: {
+     server,
+     hosts,
+     experimental_aiServices,
++    experimental_facets,
+     ...(p6rIdentity === undefined
+       ? {}
+       : { experimental_p6rIdentity: p6rIdentity.protocol }),
+@@ -1317,7 +1511,7 @@ export function createPluginApi(options: {
+             "use it inside handlers, services, or timers, not at factory load time",
+         );
+       }
+-      wrappedSdk ??= wrapSdkForPlugin(sdk, pluginId);
++      wrappedSdk ??= wrapSdkForPlugin(sdk, pluginId, registerThreadFacetTarget);
+       return wrappedSdk;
+     },
+     onDispose(hook) {
+@@ -1368,6 +1562,19 @@ export function createPluginApi(options: {
+       );
+       providerRegistrations.flush();
+       aiServiceRegistrations.flush();
++      const activatedFacets = activatePluginThreadFacetDeclarations(db, {
++        ownerPluginId: pluginId,
++        declarations: stagedThreadFacets.map(({ declaration }) => declaration),
++      });
++      if (activatedFacets.length !== stagedThreadFacets.length) {
++        throw new Error("Thread facet declarations did not activate completely");
++      }
++      for (const [index, active] of activatedFacets.entries()) {
++        const staged = stagedThreadFacets[index];
++        if (staged === undefined) throw new Error("Missing staged thread facet");
++        staged.active = { generation: active.generation, typeId: active.declaration.typeId };
++      }
++      facetsCommitted = true;
+       activated = true;
+       const cliWarning = cliRecord.registration
+         ? pluginCliCollisionWarning(pluginId, cliRecord.registration.name)
+@@ -1402,6 +1609,7 @@ export function createPluginApi(options: {
+       }
+     },
+     invalidate() {
++      revokeThreadFacetAuthority();
+       invalidated = true;
+     },
+   };
+diff --git a/apps/server/src/services/system/execution-options.ts b/apps/server/src/services/system/execution-options.ts
+index ea82c76ccc039f9b0662c2f25f6a632ccf334055..96bd207321b80743b62fd42923a39165b06b4f45 100644
+--- a/apps/server/src/services/system/execution-options.ts
++++ b/apps/server/src/services/system/execution-options.ts
+@@ -47,6 +47,7 @@ interface BuildModelLoadErrorArgs {
+ 
+ interface ResolveSystemProviderModelsArgs {
+   cwd?: string;
++  fresh?: boolean;
+   hostId: string;
+   providerId: string;
+ }
+@@ -320,6 +321,7 @@ export async function resolveSystemProviderModels(
+ 
+   const result = await loadSystemProviderModels(deps, {
+     ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
++    ...(args.fresh === undefined ? {} : { fresh: args.fresh }),
+     hostId: args.hostId,
+     provider,
+   });
+@@ -539,10 +541,12 @@ async function loadSystemProviderModels(
+   deps: LoggedWorkSessionDeps,
+   {
+     cwd,
++    fresh,
+     hostId,
+     provider,
+   }: {
+     cwd?: string;
++    fresh?: boolean;
+     hostId: string;
+     provider: ProviderInfo;
+   },
+@@ -565,7 +569,7 @@ async function loadSystemProviderModels(
+   try {
+     const { models, selectedOnlyModels } = await listProviderModelsMemoized(
+       deps,
+-      { command, hostId },
++      { command, fresh, hostId },
+     );
+     return {
+       models,
+@@ -609,7 +613,15 @@ type ProviderListModelsCommand = Extract<
+ 
+ async function listProviderModelsMemoized(
+   deps: LoggedWorkSessionDeps,
+-  { command, hostId }: { command: ProviderListModelsCommand; hostId: string },
++  {
++    command,
++    fresh,
++    hostId,
++  }: {
++    command: ProviderListModelsCommand;
++    fresh?: boolean;
++    hostId: string;
++  },
+ ): Promise<ProviderModelListMemoValue> {
+   const probe = (): Promise<ProviderModelListMemoValue> =>
+     callHostRetryableOnlineRpc(deps, {
+@@ -618,7 +630,7 @@ async function listProviderModelsMemoized(
+       command,
+     });
+   const daemonSessionId = deps.hub.getDaemonSessionIdForHost(hostId);
+-  if (daemonSessionId === null) {
++  if (fresh === true || daemonSessionId === null) {
+     return probe();
+   }
+   const memoKey = JSON.stringify([
+diff --git a/apps/server/src/services/threads/thread-execution-batch.ts b/apps/server/src/services/threads/thread-execution-batch.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..4ee408534e076eb0a908c2d7b7f1869f2319eaf6
+--- /dev/null
++++ b/apps/server/src/services/threads/thread-execution-batch.ts
+@@ -0,0 +1,479 @@
++import { createHash, createHmac, timingSafeEqual } from "node:crypto";
++import {
++  getOrCreateThreadFacetCursorSigningKey,
++  listThreadExecutionProjectionRowsByIds,
++  setThreadExecutionOverridesBatch,
++  type SetThreadExecutionOverrideBatchInput,
++  type ThreadExecutionProjectionRow,
++} from "@bb/db";
++import type {
++  ExperimentalThreadExecutionApplyRequest,
++  ExperimentalThreadExecutionApplyResponse,
++  ExperimentalThreadExecutionPreflightRequest,
++  ExperimentalThreadExecutionPreflightResponse,
++} from "@bb/server-contract";
++import { reasoningLevelSchema, type AvailableModel } from "@bb/domain";
++import { z } from "zod";
++import type { LoggedWorkSessionDeps } from "../../types.js";
++import { resolveSystemProviderModels } from "../system/execution-options.js";
++import { resolveSystemLookupHostId } from "../system/host-lookup.js";
++import {
++  buildThreadExecutionProjection,
++  buildThreadExecutionProjectionDetails,
++} from "./thread-facet-query.js";
++import { resolveThreadExecutionOverrideUpdate } from "./thread-execution-override.js";
++
++const TOKEN_TTL_MS = 5 * 60 * 1_000;
++const MAX_ROUTES = 100;
++
++const tokenSchema = z
++  .object({
++    version: z.literal(1),
++    expiresAt: z.number().int().positive(),
++    threadId: z.string().min(1),
++    witness: z.string().regex(/^[a-f0-9]{64}$/u),
++    providerId: z.string().min(1),
++    environmentId: z.string().min(1).nullable(),
++    hostId: z.string().min(1),
++    workspacePath: z.string().min(1).nullable(),
++    registrationRevision: z.number().int().nonnegative(),
++    catalogFingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
++    modelOverride: z.string().min(1).nullable(),
++    reasoningLevelOverride: reasoningLevelSchema.nullable(),
++  })
++  .strict();
++type Token = z.infer<typeof tokenSchema>;
++interface Route {
++  environmentId: string | null;
++  hostId: string;
++  key: string;
++  providerId: string;
++  registrationRevision: number;
++  workspacePath: string | null;
++}
++interface Catalog {
++  error: boolean;
++  fingerprint: string | null;
++  models: readonly AvailableModel[];
++  route: Route;
++}
++
++function digest(value: unknown) {
++  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
++}
++function inputs(rows: readonly ThreadExecutionProjectionRow[]) {
++  return rows.map((row) => ({ ...row, id: row.threadId }));
++}
++function route(
++  deps: LoggedWorkSessionDeps,
++  row: ThreadExecutionProjectionRow,
++): Route {
++  const hostId = row.hostId ?? resolveSystemLookupHostId(deps, {});
++  const workspacePath = row.path;
++  const registrationRevision = deps.providerRegistry.getRegistrationRevision();
++  return {
++    environmentId: row.environmentId,
++    hostId,
++    providerId: row.providerId,
++    workspacePath,
++    registrationRevision,
++    key: JSON.stringify([
++      row.providerId,
++      hostId,
++      workspacePath,
++      registrationRevision,
++    ]),
++  };
++}
++function sameRoute(left: Route, right: Token) {
++  return (
++    left.providerId === right.providerId &&
++    left.environmentId === right.environmentId &&
++    left.hostId === right.hostId &&
++    left.workspacePath === right.workspacePath &&
++    left.registrationRevision === right.registrationRevision
++  );
++}
++function encode(token: Token, key: string) {
++  const body = Buffer.from(JSON.stringify(token)).toString("base64url");
++  return `${body}.${createHmac("sha256", Buffer.from(key, "hex")).update(body).digest("base64url")}`;
++}
++function decode(value: string, key: string): Token | null {
++  try {
++    const [body, signature, extra] = value.split(".");
++    if (!body || !signature || extra !== undefined) return null;
++    const expected = createHmac("sha256", Buffer.from(key, "hex"))
++      .update(body)
++      .digest();
++    const supplied = Buffer.from(signature, "base64url");
++    if (
++      supplied.byteLength !== expected.byteLength ||
++      !timingSafeEqual(supplied, expected)
++    )
++      return null;
++    const parsed = tokenSchema.safeParse(
++      JSON.parse(Buffer.from(body, "base64url").toString("utf8")),
++    );
++    return parsed.success && parsed.data.expiresAt > Date.now()
++      ? parsed.data
++      : null;
++  } catch {
++    return null;
++  }
++}
++async function catalogs(
++  deps: LoggedWorkSessionDeps,
++  rows: readonly ThreadExecutionProjectionRow[],
++  fresh = false,
++) {
++  const routes = new Map<string, Route>();
++  const byThread = new Map<string, Route>();
++  for (const row of rows) {
++    try {
++      const value = route(deps, row);
++      routes.set(value.key, value);
++      byThread.set(row.threadId, value);
++    } catch {}
++  }
++  const result = new Map<string, Catalog>();
++  if (routes.size > MAX_ROUTES) {
++    for (const value of routes.values())
++      result.set(value.key, {
++        error: true,
++        fingerprint: null,
++        models: [],
++        route: value,
++      });
++    return { byThread, result };
++  }
++  await Promise.all(
++    [...routes.values()].map(async (value) => {
++      try {
++        const response = await resolveSystemProviderModels(deps, {
++          providerId: value.providerId,
++          hostId: value.hostId,
++          fresh,
++          ...(value.workspacePath === null ? {} : { cwd: value.workspacePath }),
++        });
++        const models = [...response.models, ...response.selectedOnlyModels];
++        result.set(value.key, {
++          error: response.modelLoadError !== null,
++          fingerprint:
++            response.modelLoadError === null
++              ? digest({ route: value, models })
++              : null,
++          models,
++          route: value,
++        });
++      } catch {
++        result.set(value.key, {
++          error: true,
++          fingerprint: null,
++          models: [],
++          route: value,
++        });
++      }
++    }),
++  );
++  return { byThread, result };
++}
++export async function preflightThreadExecutionOverrides(
++  deps: LoggedWorkSessionDeps,
++  request: ExperimentalThreadExecutionPreflightRequest,
++): Promise<ExperimentalThreadExecutionPreflightResponse> {
++  const rows = listThreadExecutionProjectionRowsByIds(
++    deps.db,
++    request.items.map((item) => item.threadId),
++  );
++  const byId = new Map(rows.map((row) => [row.threadId, row]));
++  const details = buildThreadExecutionProjectionDetails(deps, inputs(rows));
++  const loaded = await catalogs(deps, rows);
++  const key = getOrCreateThreadFacetCursorSigningKey(deps.db);
++  const expiresAt = Date.now() + TOKEN_TTL_MS;
++  return {
++    results: request.items.map((item) => {
++      const row = byId.get(item.threadId);
++      const detail = details.get(item.threadId);
++      if (!row || !detail)
++        return {
++          status: "unavailable" as const,
++          threadId: item.threadId,
++          reason: "thread-not-found" as const,
++          message: "Thread is no longer available",
++        };
++      if (detail.summary.witness !== item.witness)
++        return {
++          status: "stale" as const,
++          threadId: item.threadId,
++          current: detail.summary,
++        };
++      const selected = loaded.byThread.get(item.threadId);
++      const catalog = selected ? loaded.result.get(selected.key) : undefined;
++      if (!selected || !catalog || catalog.error || !catalog.fingerprint)
++        return {
++          status: "unavailable" as const,
++          threadId: item.threadId,
++          reason: "catalog-unavailable" as const,
++          message: `Unable to load ${row.providerId}'s model catalog`,
++          current: detail.summary,
++        };
++      if (item.patch.model === null && detail.fallbackModel === null)
++        return {
++          status: "unavailable" as const,
++          threadId: item.threadId,
++          reason: "invalid-target" as const,
++          message:
++            "This thread has no next-turn fallback model; choose an explicit model instead",
++          current: detail.summary,
++        };
++      if (
++        detail.summary.state === "unresolved" &&
++        item.patch.model === undefined
++      )
++        return {
++          status: "unavailable" as const,
++          threadId: item.threadId,
++          reason: "unresolved-execution" as const,
++          message:
++            "A model must be selected before this thread can be reassigned",
++          current: detail.summary,
++        };
++      try {
++        const next = resolveThreadExecutionOverrideUpdate(
++          deps.providerRegistry,
++          {
++            existing: {
++              modelOverride: row.modelOverride,
++              reasoningLevelOverride: row.reasoningLevelOverride,
++            },
++            patch: item.patch,
++            models: catalog.models,
++            providerId: row.providerId,
++            fallbackModel: detail.fallbackModel,
++          },
++        );
++        return {
++          status: "ready" as const,
++          threadId: item.threadId,
++          current: detail.summary,
++          nextModelOverride: next.modelOverride,
++          nextReasoningLevelOverride: next.reasoningLevelOverride,
++          nextEffectiveModel: next.modelOverride ?? detail.fallbackModel,
++          nextEffectiveReasoningLevel:
++            next.reasoningLevelOverride ?? detail.fallbackReasoningLevel,
++          unchanged:
++            row.modelOverride === next.modelOverride &&
++            row.reasoningLevelOverride === next.reasoningLevelOverride,
++          applyToken: encode(
++            {
++              version: 1,
++              expiresAt,
++              threadId: item.threadId,
++              witness: detail.summary.witness,
++              providerId: selected.providerId,
++              environmentId: selected.environmentId,
++              hostId: selected.hostId,
++              workspacePath: selected.workspacePath,
++              registrationRevision: selected.registrationRevision,
++              catalogFingerprint: catalog.fingerprint,
++              modelOverride: next.modelOverride,
++              reasoningLevelOverride: next.reasoningLevelOverride,
++            },
++            key,
++          ),
++        };
++      } catch {
++        return {
++          status: "unavailable" as const,
++          threadId: item.threadId,
++          reason: "invalid-target" as const,
++          message: "The requested model or reasoning level is unavailable",
++          current: detail.summary,
++        };
++      }
++    }),
++  };
++}
++export async function applyPreflightedThreadExecutionOverrides(
++  deps: LoggedWorkSessionDeps,
++  request: ExperimentalThreadExecutionApplyRequest,
++): Promise<ExperimentalThreadExecutionApplyResponse> {
++  const key = getOrCreateThreadFacetCursorSigningKey(deps.db);
++  const decoded = request.items.map((item) => ({
++    item,
++    token: decode(item.applyToken, key),
++  }));
++  const valid = decoded.filter(
++    (entry): entry is typeof entry & { token: Token } =>
++      entry.token !== null && entry.token.threadId === entry.item.threadId,
++  );
++  const initial = listThreadExecutionProjectionRowsByIds(
++    deps.db,
++    valid.map(({ item }) => item.threadId),
++  );
++  const initialById = new Map(initial.map((row) => [row.threadId, row]));
++  const loaded = await catalogs(deps, initial, true);
++  const rejected = new Map<
++    string,
++    ExperimentalThreadExecutionApplyResponse["results"][number]
++  >();
++  for (const entry of decoded) {
++    if (!entry.token || entry.token.threadId !== entry.item.threadId) {
++      rejected.set(entry.item.threadId, {
++        status: "rejected",
++        threadId: entry.item.threadId,
++        reason: "invalid-token",
++        retryable: false,
++      });
++      continue;
++    }
++    const row = initialById.get(entry.item.threadId);
++    const current = row && loaded.byThread.get(row.threadId);
++    const catalog = current && loaded.result.get(current.key);
++    if (!row)
++      rejected.set(entry.item.threadId, {
++        status: "rejected",
++        threadId: entry.item.threadId,
++        reason: "thread-not-found",
++        retryable: false,
++      });
++    else if (
++      !current ||
++      !catalog ||
++      catalog.error ||
++      catalog.fingerprint !== entry.token.catalogFingerprint ||
++      !sameRoute(current, entry.token)
++    )
++      rejected.set(entry.item.threadId, {
++        status: "rejected",
++        threadId: entry.item.threadId,
++        reason: "catalog-changed",
++        retryable: true,
++      });
++  }
++  const candidates = valid.filter(({ item }) => !rejected.has(item.threadId));
++  const changedByProject = new Map<string, string[]>();
++  let transactional: ExperimentalThreadExecutionApplyResponse["results"] = [];
++  try {
++    transactional = deps.db.transaction(
++      (tx) => {
++        const rows = listThreadExecutionProjectionRowsByIds(
++          tx,
++          candidates.map(({ item }) => item.threadId),
++        );
++        const byId = new Map(rows.map((row) => [row.threadId, row]));
++        const summaries = buildThreadExecutionProjection(
++          { db: tx, providerRegistry: deps.providerRegistry },
++          inputs(rows),
++        );
++        const writes: SetThreadExecutionOverrideBatchInput[] = [];
++        const results = new Map<
++          string,
++          ExperimentalThreadExecutionApplyResponse["results"][number]
++        >();
++        for (const { item, token } of candidates) {
++          if (token.expiresAt <= Date.now()) {
++            results.set(item.threadId, {
++              status: "rejected",
++              threadId: item.threadId,
++              reason: "invalid-token",
++              retryable: false,
++            });
++            continue;
++          }
++          if (
++            token.registrationRevision !==
++            deps.providerRegistry.getRegistrationRevision()
++          ) {
++            results.set(item.threadId, {
++              status: "rejected",
++              threadId: item.threadId,
++              reason: "catalog-changed",
++              retryable: true,
++            });
++            continue;
++          }
++          const row = byId.get(item.threadId);
++          const summary = summaries.get(item.threadId);
++          if (!row || !summary) {
++            results.set(item.threadId, {
++              status: "rejected",
++              threadId: item.threadId,
++              reason: "thread-not-found",
++              retryable: false,
++            });
++            continue;
++          }
++          if (summary.witness !== token.witness) {
++            results.set(item.threadId, {
++              status: "stale",
++              threadId: item.threadId,
++              current: summary,
++            });
++            continue;
++          }
++          if (
++            row.modelOverride === token.modelOverride &&
++            row.reasoningLevelOverride === token.reasoningLevelOverride
++          ) {
++            results.set(item.threadId, {
++              status: "unchanged",
++              threadId: item.threadId,
++              finalModelOverride: row.modelOverride,
++              finalReasoningLevelOverride: row.reasoningLevelOverride,
++            });
++            continue;
++          }
++          writes.push({
++            threadId: row.threadId,
++            expectedExecutionRevision: row.executionRevision,
++            expectedModelOverride: row.modelOverride,
++            expectedReasoningLevelOverride: row.reasoningLevelOverride,
++            modelOverride: token.modelOverride,
++            reasoningLevelOverride: token.reasoningLevelOverride,
++          });
++        }
++        const changed = setThreadExecutionOverridesBatch(tx, writes);
++        if (changed.size !== writes.length)
++          throw new Error("execution-write-conflict");
++        for (const write of writes) {
++          results.set(write.threadId, {
++            status: "applied",
++            threadId: write.threadId,
++            finalModelOverride: write.modelOverride,
++            finalReasoningLevelOverride: write.reasoningLevelOverride,
++          });
++          const project = byId.get(write.threadId)!.projectId;
++          changedByProject.set(project, [
++            ...(changedByProject.get(project) ?? []),
++            write.threadId,
++          ]);
++        }
++        return candidates.map(({ item }) => results.get(item.threadId)!);
++      },
++      { behavior: "immediate" },
++    );
++  } catch (error) {
++    changedByProject.clear();
++    deps.logger.error({ error }, "Failed to apply thread execution overrides");
++    transactional = candidates.map(({ item }) => ({
++      status: "failed" as const,
++      threadId: item.threadId,
++      reason: "transaction-failed" as const,
++      retryable: true,
++    }));
++  }
++  for (const [projectId, threadIds] of changedByProject)
++    for (const threadId of threadIds)
++      deps.hub.notifyThread(threadId, ["execution-options-changed"], {
++        projectId,
++      });
++  const byId = new Map(
++    transactional.map((result) => [result.threadId, result]),
++  );
++  return {
++    results: request.items.map(
++      ({ threadId }) => rejected.get(threadId) ?? byId.get(threadId)!,
++    ),
++  };
++}
+diff --git a/apps/server/src/services/threads/thread-execution-override.ts b/apps/server/src/services/threads/thread-execution-override.ts
+index bdff65d00336fe819e11bd90ba8c3076f162b37e..2fb5d6cb40df82b4ad4707fcee21d21a2bdd56cc 100644
+--- a/apps/server/src/services/threads/thread-execution-override.ts
++++ b/apps/server/src/services/threads/thread-execution-override.ts
+@@ -1,5 +1,6 @@
+ import {
+   getProjectExecutionDefaults,
++  getEnvironment,
+   getThreadExecutionOverride,
+   setThreadExecutionOverride,
+   type ThreadExecutionOverride,
+@@ -14,7 +15,8 @@ import {
+ import { ApiError } from "../../errors.js";
+ import type { LoggedWorkSessionDeps } from "../../types.js";
+ import type { ProviderRegistryService } from "../providers/provider-registry.js";
+-import { resolveSystemExecutionOptions } from "../system/execution-options.js";
++import { resolveSystemProviderModels } from "../system/execution-options.js";
++import { resolveSystemLookupHostId } from "../system/host-lookup.js";
+ import { getLastExecutionOptions } from "./thread-events.js";
+ import { getSupportedReasoningLevelsForProvider } from "./thread-reasoning-policy.js";
+ 
+@@ -56,24 +58,39 @@ export function resolveThreadExecutionOverrideUpdate(
+     if (patch.model === null || patch.model === undefined) {
+       nextModel = null;
+     } else {
+-      const target = models.find(
++      const targets = models.filter(
+         (candidate) => candidate.model === patch.model,
+       );
+-      if (!target) {
++      if (targets.length === 0) {
+         throw new ApiError(
+           400,
+           "invalid_request",
+           `Model "${patch.model}" is not available in this thread's ${providerId} model catalog. Choose a model offered by ${providerId}; changing providers requires starting a new thread.`,
+         );
+       }
++      if (targets.length > 1) {
++        throw new ApiError(
++          400,
++          "invalid_request",
++          `Model "${patch.model}" is ambiguous in this thread's ${providerId} model catalog. Refresh the catalog or choose a uniquely identified model.`,
++        );
++      }
+       nextModel = patch.model;
+     }
+   }
+ 
+   const effectiveModel = nextModel ?? fallbackModel;
+-  const effectiveModelEntry = effectiveModel
+-    ? models.find((candidate) => candidate.model === effectiveModel)
+-    : undefined;
++  const effectiveModelEntries = effectiveModel
++    ? models.filter((candidate) => candidate.model === effectiveModel)
++    : [];
++  if (effectiveModelEntries.length > 1) {
++    throw new ApiError(
++      400,
++      "invalid_request",
++      `Model "${effectiveModel}" is ambiguous in this thread's ${providerId} model catalog. Refresh the catalog or choose a uniquely identified model.`,
++    );
++  }
++  const effectiveModelEntry = effectiveModelEntries[0];
+   const supportedReasoning: readonly ReasoningLevel[] = effectiveModelEntry
+     ? effectiveModelEntry.supportedReasoningEfforts.map(
+         (effort) => effort.reasoningEffort,
+@@ -132,11 +149,23 @@ export async function applyThreadExecutionOverride(
+     fallbackModel: resolveFallbackModel(deps, thread),
+   });
+ 
+-  setThreadExecutionOverride(deps.db, {
++  if (
++    existing.modelOverride === next.modelOverride &&
++    existing.reasoningLevelOverride === next.reasoningLevelOverride
++  ) {
++    return;
++  }
++  const updated = setThreadExecutionOverride(deps.db, {
+     threadId: thread.id,
+     modelOverride: next.modelOverride,
+     reasoningLevelOverride: next.reasoningLevelOverride,
+   });
++  if (!updated) {
++    throw new ApiError(404, "thread_not_found", "Thread not found");
++  }
++  deps.hub.notifyThread(thread.id, ["execution-options-changed"], {
++    projectId: thread.projectId,
++  });
+ }
+ 
+ export async function recoverThreadModelOverride(
+@@ -173,10 +202,20 @@ async function loadThreadProviderModels(
+   deps: LoggedWorkSessionDeps,
+   thread: Thread,
+ ): Promise<readonly AvailableModel[]> {
+-  const result = await resolveSystemExecutionOptions(deps, {
++  const environment =
++    thread.environmentId === null
++      ? null
++      : getEnvironment(deps.db, thread.environmentId);
++  const hostId = resolveSystemLookupHostId(deps, {
++    ...(thread.environmentId === null
++      ? {}
++      : { environmentId: thread.environmentId }),
++  });
++  const result = await resolveSystemProviderModels(deps, {
+     providerId: thread.providerId,
+-    ...(thread.environmentId !== null
+-      ? { environmentId: thread.environmentId }
++    hostId,
++    ...(environment?.path
++      ? { cwd: environment.path }
+       : {}),
+   });
+   if (result.modelLoadError !== null) {
+@@ -200,5 +239,7 @@ function resolveFallbackModel(
+   const projectDefaults = getProjectExecutionDefaults(deps.db, {
+     projectId: thread.projectId,
+   });
+-  return projectDefaults?.model ?? null;
++  return projectDefaults?.providerId === thread.providerId
++    ? projectDefaults.model
++    : null;
+ }
+diff --git a/apps/server/src/services/threads/thread-facet-query.ts b/apps/server/src/services/threads/thread-facet-query.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..625fa6192508641f9fd4e3651af5093960b38d05
+--- /dev/null
++++ b/apps/server/src/services/threads/thread-facet-query.ts
+@@ -0,0 +1,627 @@
++import { createHash, createHmac, timingSafeEqual } from "node:crypto";
++import { inArray } from "drizzle-orm";
++import {
++  getOrCreateThreadFacetCursorSigningKey,
++  listLastStoredTurnRequestEventsByThreadIds,
++  listProjectExecutionDefaultsByProjectIds,
++  listThreadExecutionOverridesByThreadIds,
++  listThreadExecutionProjectionRowsByIds,
++  listThreadIdsMissingCoreParticipantProjection,
++  listThreadsWithPendingInteractionStateByIds,
++  listCoreParticipantProfilePage,
++  listCoreParticipantSummariesByThreadIds,
++  listThreadFacetOwnerProjections,
++  queryThreadFacetThreadIds,
++  replaceCoreParticipantProfilesBatch,
++  ThreadFacetInvariantError,
++} from "@bb/db";
++import type {
++  ResolvedThreadFacetFilter,
++  ReasoningLevel,
++  ThreadFacetFilter,
++  ThreadFacetQueryRequest,
++} from "@bb/domain";
++import { providerModelCatalogDependsOnWorkspace } from "@bb/domain";
++import type {
++  ExperimentalThreadExecutionSummary,
++  ThreadFacetParticipantsResponse,
++  ThreadFacetQueryResponse,
++} from "@bb/server-contract";
++import { z } from "zod";
++import type { AppDeps } from "../../types.js";
++import type { DbQueryConnection } from "@bb/db";
++import { ApiError } from "../../errors.js";
++import {
++  requirePublicProject,
++  requirePublicThread,
++} from "../lib/entity-lookup.js";
++import { toThreadListEntryResponses } from "./thread-runtime-display.js";
++import { DEFAULT_REASONING_LEVEL } from "./thread-default-policy.js";
++import { parseStoredTurnRequestEvent } from "./thread-events.js";
++import type { ProviderRegistryService } from "../providers/provider-registry.js";
++import { p6rContributions } from "../p6r/sidecar-schema.js";
++
++const MAX_REQUEST_BYTES = 16 * 1024;
++const MAX_CURSOR_BYTES = 4 * 1024;
++
++const queryCursorSchema = z
++  .object({
++    version: z.literal(1),
++    digest: z.string().length(64),
++    position: z
++      .object({
++        threadId: z.string().min(1),
++        updatedAt: z.number().int().nonnegative().nullable(),
++        state: z.number().int().nonnegative().nullable(),
++        rank: z.number().int().nonnegative().nullable(),
++      })
++      .strict(),
++  })
++  .strict();
++const participantCursorSchema = z
++  .object({
++    version: z.literal(1),
++    digest: z.string().length(64),
++    position: z.number().int().nonnegative(),
++  })
++  .strict();
++const storedActorSchema = z
++  .object({
++    identity: z.discriminatedUnion("kind", [
++      z
++        .object({
++          key: z.string().min(1),
++          kind: z.literal("person"),
++          issuer: z.string().min(1),
++          subject: z.string().min(1),
++        })
++        .passthrough(),
++      z
++        .object({
++          key: z.string().min(1),
++          kind: z.literal("external"),
++          pluginId: z.string().min(1),
++          subject: z.string().min(1),
++        })
++        .passthrough(),
++    ]),
++    presentation: z
++      .object({
++        displayName: z.string().min(1),
++        avatarUrl: z.string().min(1).nullable(),
++      })
++      .passthrough(),
++  })
++  .passthrough();
++
++function digest(value: object): string {
++  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
++}
++
++function encodeCursor(value: object, key: string): string {
++  const payload = Buffer.from(JSON.stringify(value), "utf8").toString(
++    "base64url",
++  );
++  const signature = createHmac("sha256", Buffer.from(key, "hex"))
++    .update(payload)
++    .digest("base64url");
++  return `${payload}.${signature}`;
++}
++
++function decodeCursor(cursor: string, key: string): unknown {
++  if (Buffer.byteLength(cursor, "utf8") > MAX_CURSOR_BYTES)
++    throw new ApiError(400, "invalid_cursor", "Cursor is too large");
++  try {
++    const [payload, supplied, extra] = cursor.split(".");
++    if (payload === undefined || supplied === undefined || extra !== undefined)
++      throw new Error("Invalid cursor envelope");
++    const expected = createHmac("sha256", Buffer.from(key, "hex"))
++      .update(payload)
++      .digest();
++    const signature = Buffer.from(supplied, "base64url");
++    if (
++      signature.byteLength !== expected.byteLength ||
++      !timingSafeEqual(signature, expected)
++    )
++      throw new Error("Invalid cursor signature");
++    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
++  } catch {
++    throw new ApiError(400, "invalid_cursor", "Cursor is malformed");
++  }
++}
++
++function resolveFilters(
++  filters: readonly ThreadFacetFilter[],
++  actorKey: string | null,
++): ResolvedThreadFacetFilter[] {
++  return filters.map((filter) => {
++    if (filter.operator === "present" || filter.operator === "absent")
++      return filter;
++    if (typeof filter.member === "string") {
++      return {
++        typeId: filter.typeId,
++        operator: filter.operator,
++        member: filter.member,
++      };
++    }
++    if (actorKey === null)
++      throw new ApiError(
++        401,
++        "authentication_required",
++        "The request-principal perspective requires an admitted native identity",
++      );
++    return {
++      typeId: filter.typeId,
++      operator: filter.operator,
++      member: actorKey,
++    };
++  });
++}
++
++function mapInvariant(error: unknown): never {
++  if (!(error instanceof ThreadFacetInvariantError)) throw error;
++  throw new ApiError(
++    400,
++    error.code === "facet_unavailable"
++      ? "facet_unavailable"
++      : "invalid_request",
++    error.code === "facet_unavailable"
++      ? "The requested facet is unavailable"
++      : "The facet query is invalid",
++  );
++}
++
++function ensureNativeParticipantProjection(
++  deps: AppDeps,
++  threadIds: readonly string[],
++): void {
++  if (threadIds.length === 0) return;
++  const rowsByThreadId = new Map<
++    string,
++    Array<{
++      acceptedAt: number;
++      acceptedAuthorship: string;
++      latestEditor: string;
++    }>
++  >(threadIds.map((threadId) => [threadId, []]));
++  const rows = deps.db
++    .select({
++      threadId: p6rContributions.threadId,
++      acceptedAt: p6rContributions.acceptedAt,
++      acceptedAuthorship: p6rContributions.acceptedAuthorship,
++      latestEditor: p6rContributions.latestEditor,
++    })
++    .from(p6rContributions)
++    .where(inArray(p6rContributions.threadId, [...new Set(threadIds)]))
++    .all();
++  for (const row of rows) rowsByThreadId.get(row.threadId)?.push(row);
++  const replacements: Array<{
++    profiles: Array<{
++      p6rPrincipalKey: string;
++      identityKind: "external" | "person";
++      p6rDisplayName: string;
++      imageUrl: string | null;
++    }>;
++    sourceVersion: number;
++    threadId: string;
++  }> = [];
++  for (const threadId of threadIds) {
++    const contributionRows = rowsByThreadId.get(threadId) ?? [];
++    const byKey = new Map<
++      string,
++      {
++        p6rPrincipalKey: string;
++        identityKind: "external" | "person";
++        p6rDisplayName: string;
++        imageUrl: string | null;
++      }
++    >();
++    let sourceVersion = 0;
++    for (const row of contributionRows) {
++      sourceVersion = Math.max(sourceVersion, row.acceptedAt);
++      for (const value of [row.acceptedAuthorship, row.latestEditor]) {
++        try {
++          const parsed = storedActorSchema.safeParse(JSON.parse(value));
++          if (!parsed.success) continue;
++          byKey.set(parsed.data.identity.key, {
++            p6rPrincipalKey: parsed.data.identity.key,
++            identityKind: parsed.data.identity.kind,
++            p6rDisplayName: parsed.data.presentation.displayName,
++            imageUrl: parsed.data.presentation.avatarUrl,
++          });
++        } catch {}
++      }
++    }
++    replacements.push({
++      threadId,
++      sourceVersion,
++      profiles: [...byKey.values()].sort((left, right) =>
++        left.p6rPrincipalKey.localeCompare(right.p6rPrincipalKey),
++      ),
++    });
++  }
++  replaceCoreParticipantProfilesBatch(deps.db, replacements);
++}
++
++interface ThreadExecutionProjectionInput {
++  environmentId: string | null;
++  environmentUpdatedAt: number | null;
++  executionRevision: number;
++  hostId: string | null;
++  id: string;
++  path: string | null;
++  projectId: string;
++  providerId: string;
++}
++
++export interface ThreadExecutionProjectionDetails {
++  fallbackModel: string | null;
++  fallbackReasoningLevel: ReasoningLevel | null;
++  summary: ExperimentalThreadExecutionSummary;
++}
++
++function executionCatalogDependsOnWorkspace(
++  registry: ProviderRegistryService,
++  providerId: string,
++): boolean {
++  return providerModelCatalogDependsOnWorkspace(
++    registry.get(providerId)?.info.capabilities.modelCatalogScope,
++  );
++}
++
++export function buildThreadExecutionProjectionDetails(
++  deps: { db: DbQueryConnection; providerRegistry: ProviderRegistryService },
++  threads: readonly ThreadExecutionProjectionInput[],
++): Map<string, ThreadExecutionProjectionDetails> {
++  const details = new Map<string, ThreadExecutionProjectionDetails>();
++  const threadIds = threads.map(({ id }) => id);
++  const overrides = listThreadExecutionOverridesByThreadIds(deps.db, threadIds);
++  const projectDefaults = listProjectExecutionDefaultsByProjectIds(deps.db, {
++    projectIds: threads.map(({ projectId }) => projectId),
++  });
++  const lastRows = new Map(
++    listLastStoredTurnRequestEventsByThreadIds(deps.db, { threadIds }).map(
++      (row) => [row.threadId, row],
++    ),
++  );
++
++  for (const thread of threads) {
++    const override = overrides.get(thread.id) ?? {
++      executionRevision: thread.executionRevision,
++      modelOverride: null,
++      reasoningLevelOverride: null,
++    };
++    const projectDefault = projectDefaults.get(thread.projectId);
++    const matchingProjectDefault =
++      projectDefault?.providerId === thread.providerId ? projectDefault : null;
++    const lastRow = lastRows.get(thread.id);
++    let malformedHistory = false;
++    let lastExecution:
++      | ReturnType<typeof parseStoredTurnRequestEvent>["execution"]
++      | null = null;
++    if (lastRow !== undefined) {
++      try {
++        lastExecution = parseStoredTurnRequestEvent(lastRow).execution;
++      } catch {
++        malformedHistory = true;
++      }
++    }
++    const modelResolution = override.modelOverride
++      ? { model: override.modelOverride, source: "thread-override" as const }
++      : lastExecution?.model
++        ? { model: lastExecution.model, source: "last-turn" as const }
++        : matchingProjectDefault?.model
++          ? {
++              model: matchingProjectDefault.model,
++              source: "project-default" as const,
++            }
++          : null;
++    const effectiveReasoningLevel =
++      override.reasoningLevelOverride ??
++      lastExecution?.reasoningLevel ??
++      matchingProjectDefault?.reasoningLevel ??
++      DEFAULT_REASONING_LEVEL;
++    const reasoningSource =
++      override.reasoningLevelOverride !== null
++        ? "thread-override"
++        : lastExecution?.reasoningLevel
++          ? "last-turn"
++          : matchingProjectDefault?.reasoningLevel
++            ? "project-default"
++            : "builtin-default";
++    const witness = digest({
++      executionRevision: override.executionRevision,
++      environmentId: thread.environmentId,
++      environmentUpdatedAt: thread.environmentUpdatedAt,
++      hostId: thread.hostId,
++      workspacePath: thread.path,
++      providerId: thread.providerId,
++      modelOverride: override.modelOverride,
++      reasoningLevelOverride: override.reasoningLevelOverride,
++      latestRequestSequence: lastRow?.sequence ?? null,
++      lastExecution: malformedHistory ? "malformed" : lastExecution,
++      projectDefault: matchingProjectDefault,
++    });
++    const base = {
++      providerId: thread.providerId,
++      catalogDependsOnWorkspace: executionCatalogDependsOnWorkspace(
++        deps.providerRegistry,
++        thread.providerId,
++      ),
++      projectId: thread.projectId,
++      environmentId: thread.environmentId,
++      hostId: thread.hostId,
++      workspacePath: thread.path,
++      effectiveReasoningLevel,
++      modelOverride: override.modelOverride,
++      reasoningLevelOverride: override.reasoningLevelOverride,
++      reasoningSource,
++      latestRequestSequence: lastRow?.sequence ?? null,
++      witness,
++    } as const;
++    const summary: ExperimentalThreadExecutionSummary = malformedHistory
++      ? {
++          ...base,
++          state: "unresolved",
++          effectiveModel: null,
++          modelSource: "unresolved",
++          issue: "malformed-history",
++        }
++      : modelResolution === null
++        ? {
++            ...base,
++            state: "unresolved",
++            effectiveModel: null,
++            modelSource: "unresolved",
++            issue: "missing-model",
++          }
++        : {
++            ...base,
++            state: "resolved",
++            effectiveModel: modelResolution.model,
++            modelSource: modelResolution.source,
++          };
++    details.set(thread.id, {
++      fallbackModel: malformedHistory
++        ? null
++        : (lastExecution?.model ?? matchingProjectDefault?.model ?? null),
++      fallbackReasoningLevel: malformedHistory
++        ? null
++        : (lastExecution?.reasoningLevel ??
++          matchingProjectDefault?.reasoningLevel ??
++          DEFAULT_REASONING_LEVEL),
++      summary,
++    });
++  }
++  return details;
++}
++
++export function buildThreadExecutionProjection(
++  deps: { db: DbQueryConnection; providerRegistry: ProviderRegistryService },
++  threads: readonly ThreadExecutionProjectionInput[],
++): Map<string, ExperimentalThreadExecutionSummary> {
++  return new Map(
++    [...buildThreadExecutionProjectionDetails(deps, threads)].map(
++      ([threadId, details]) => [threadId, details.summary],
++    ),
++  );
++}
++
++export function executeThreadFacetQuery(
++  deps: AppDeps,
++  args: { actorKey?: string | null; request: ThreadFacetQueryRequest },
++): ThreadFacetQueryResponse {
++  if (
++    Buffer.byteLength(JSON.stringify(args.request), "utf8") > MAX_REQUEST_BYTES
++  )
++    throw new ApiError(400, "invalid_request", "Facet query is too large");
++  if (args.request.scope.projectId !== undefined)
++    requirePublicProject(deps.db, args.request.scope.projectId);
++  if (
++    args.request.scope.sectionId !== undefined &&
++    args.request.scope.unsectioned === true
++  )
++    throw new ApiError(
++      400,
++      "invalid_request",
++      "sectionId and unsectioned cannot be used together",
++    );
++  const filters = resolveFilters(args.request.filters, args.actorKey ?? null);
++  if (filters.some((filter) => filter.typeId === "core/participants")) {
++    const missing = listThreadIdsMissingCoreParticipantProjection(deps.db, {
++      ...args.request.scope,
++      includeHidden: args.request.scope.includeHidden ?? false,
++      limit: 200,
++    });
++    ensureNativeParticipantProjection(deps, missing.threadIds);
++    if (missing.hasMore) {
++      throw new ApiError(
++        409,
++        "facet_reconciling",
++        "Native participant projection is rebuilding; retry this exact query",
++      );
++    }
++  }
++  const key = getOrCreateThreadFacetCursorSigningKey(deps.db);
++  const queryDigest = digest({
++    actorKey: args.actorKey ?? "anonymous",
++    filters: [...filters].sort((left, right) =>
++      JSON.stringify(left).localeCompare(JSON.stringify(right)),
++    ),
++    order: args.request.order ?? null,
++    pageSize: args.request.pageSize,
++    scope: args.request.scope,
++    includeExecution: args.request.experimental_includeExecution ?? false,
++  });
++  const decoded =
++    args.request.cursor === undefined
++      ? undefined
++      : queryCursorSchema.safeParse(decodeCursor(args.request.cursor, key));
++  if (
++    decoded !== undefined &&
++    (!decoded.success || decoded.data.digest !== queryDigest)
++  )
++    throw new ApiError(
++      400,
++      "invalid_cursor",
++      "Cursor does not match this facet query",
++    );
++  try {
++    const page = queryThreadFacetThreadIds(deps.db, {
++      ...args.request.scope,
++      includeHidden: args.request.scope.includeHidden ?? false,
++      filters,
++      pageSize: args.request.pageSize,
++      ...(decoded?.success ? { after: decoded.data.position } : {}),
++    });
++    ensureNativeParticipantProjection(deps, page.threadIds);
++    const threadRows = new Map(
++      listThreadsWithPendingInteractionStateByIds(deps.db, page.threadIds).map(
++        (thread) => [thread.id, thread] as const,
++      ),
++    );
++    const rowsById = new Map(
++      toThreadListEntryResponses(deps, {
++        threads: [...threadRows.values()],
++      }).map((thread) => [thread.id, thread] as const),
++    );
++    const rows = page.threadIds.flatMap((threadId) => {
++      const row = rowsById.get(threadId);
++      return row === undefined ? [] : [row];
++    });
++    const participantSummaries = listCoreParticipantSummariesByThreadIds(
++      deps.db,
++      rows.map((thread) => thread.id),
++      3,
++    );
++    const executionByThreadId = args.request.experimental_includeExecution
++      ? buildThreadExecutionProjection(
++          deps,
++          listThreadExecutionProjectionRowsByIds(
++            deps.db,
++            rows.map((row) => row.id),
++          ).map((row) => ({ ...row, id: row.threadId })),
++        )
++      : new Map<string, ExperimentalThreadExecutionSummary>();
++    return {
++      threads: rows.map((thread) => {
++        const participants = participantSummaries.get(thread.id) ?? {
++          totalCount: 0,
++          profiles: [],
++          nextPosition: null,
++        };
++        const participantDigest = digest({
++          actorKey: args.actorKey ?? "anonymous",
++          threadId: thread.id,
++        });
++        return {
++          ...thread,
++          participantSummary: {
++            totalCount: participants.totalCount,
++            profiles: participants.profiles.map(
++              ({
++                p6rPrincipalKey,
++                identityKind,
++                p6rDisplayName,
++                imageUrl,
++              }) => ({
++                p6rPrincipalKey,
++                p6rIdentityKind: identityKind,
++                p6rDisplayName,
++                p6rImageUrl: imageUrl,
++              }),
++            ),
++            nextCursor:
++              participants.nextPosition === null
++                ? null
++                : encodeCursor(
++                    {
++                      version: 1,
++                      digest: participantDigest,
++                      position: participants.nextPosition,
++                    },
++                    key,
++                  ),
++          },
++          ...(args.request.experimental_includeExecution
++            ? { experimental_execution: executionByThreadId.get(thread.id) }
++            : {}),
++        };
++      }),
++      nextCursor: page.hasMore
++        ? encodeCursor(
++            {
++              version: 1,
++              digest: queryDigest,
++              position: page.positions.at(-1),
++            },
++            key,
++          )
++        : null,
++      facetStates: listThreadFacetOwnerProjections(deps.db, [
++        ...new Set([
++          ...filters.map((filter) => filter.typeId),
++          ...(args.request.order === undefined
++            ? []
++            : [args.request.order.typeId]),
++        ]),
++      ]).map(({ typeId, ownerState }) => ({ typeId, ownerState })),
++    };
++  } catch (error) {
++    return mapInvariant(error);
++  }
++}
++
++export function executeThreadFacetParticipantPage(
++  deps: AppDeps,
++  args: {
++    actorKey?: string | null;
++    cursor?: string;
++    pageSize: number;
++    threadId: string;
++  },
++): ThreadFacetParticipantsResponse {
++  requirePublicThread(deps.db, args.threadId);
++  ensureNativeParticipantProjection(deps, [args.threadId]);
++  const key = getOrCreateThreadFacetCursorSigningKey(deps.db);
++  const expectedDigest = digest({
++    actorKey: args.actorKey ?? "anonymous",
++    threadId: args.threadId,
++  });
++  const decoded =
++    args.cursor === undefined
++      ? undefined
++      : participantCursorSchema.safeParse(decodeCursor(args.cursor, key));
++  if (
++    decoded !== undefined &&
++    (!decoded.success || decoded.data.digest !== expectedDigest)
++  )
++    throw new ApiError(
++      400,
++      "invalid_cursor",
++      "Cursor does not match this participant list",
++    );
++  const page = listCoreParticipantProfilePage(deps.db, {
++    threadId: args.threadId,
++    pageSize: args.pageSize,
++    ...(decoded?.success ? { afterPosition: decoded.data.position } : {}),
++  });
++  return {
++    totalCount: page.totalCount,
++    profiles: page.profiles.map(
++      ({ p6rPrincipalKey, identityKind, p6rDisplayName, imageUrl }) => ({
++        p6rPrincipalKey,
++        p6rIdentityKind: identityKind,
++        p6rDisplayName,
++        p6rImageUrl: imageUrl,
++      }),
++    ),
++    nextCursor:
++      page.nextPosition === null
++        ? null
++        : encodeCursor(
++            { version: 1, digest: expectedDigest, position: page.nextPosition },
++            key,
++          ),
++  };
++}
+diff --git a/apps/server/test/public/public-thread-facets.test.ts b/apps/server/test/public/public-thread-facets.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ce83a1800dac8ec24752592a3b36b64c89b02306
+--- /dev/null
++++ b/apps/server/test/public/public-thread-facets.test.ts
+@@ -0,0 +1,115 @@
++import { p6rContributions } from "../../src/services/p6r/sidecar-schema.js";
++import { threadFacetQueryResponseSchema } from "@bb/server-contract";
++import { describe, expect, it } from "vitest";
++import { readJson } from "../helpers/json.js";
++import {
++  seedHostSession,
++  seedProjectWithSource,
++  seedThread,
++} from "../helpers/seed.js";
++import { withTestHarness } from "../helpers/test-app.js";
++
++const aliceKey = "p6r:identity-boundaries%2Ftailnet/alice";
++const bobKey = "p6r:identity-boundaries%2Ftailnet/bob";
++
++function actor(args: {
++  displayName: string;
++  key: string;
++  kind: "external" | "person";
++}) {
++  return {
++    evidence: "provider-verified",
++    identity: args.kind === "person"
++      ? {
++          key: args.key,
++          kind: "person",
++          issuer: "identity-boundaries/tailnet",
++          subject: args.key.slice(args.key.lastIndexOf("/") + 1),
++        }
++      : {
++          key: args.key,
++          kind: "external",
++          pluginId: "rosetta-slack",
++          subject: args.key.slice(args.key.lastIndexOf("/") + 1),
++        },
++    presentation: {
++      displayName: args.displayName,
++      avatarUrl: `/avatars/${args.displayName.toLowerCase()}.png`,
++    },
++  };
++}
++
++describe("public thread participant facets", () => {
++  it("rebuilds accepted native authors before the first contains/notContains filter and retains relative avatars", async () => {
++    await withTestHarness(async (harness) => {
++      const { host } = seedHostSession(harness.deps);
++      const { project } = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/public-thread-participant-facets",
++      });
++      const aliceThread = seedThread(harness.deps, { projectId: project.id });
++      const bobThread = seedThread(harness.deps, { projectId: project.id });
++      const alice = actor({ displayName: "Alice", key: aliceKey, kind: "person" });
++      const bob = actor({ displayName: "Bob", key: bobKey, kind: "external" });
++      harness.db.insert(p6rContributions).values([
++        {
++          id: "participant-alice",
++          threadId: aliceThread.id,
++          acceptedAt: 1,
++          acceptedAuthorship: JSON.stringify(alice),
++          initialInput: "[]",
++          currentProjection: "[]",
++          latestEditor: JSON.stringify(alice),
++          nativeRequestId: null,
++          copiedFromContributionId: null,
++          replacesContributionId: null,
++        },
++        {
++          id: "participant-bob",
++          threadId: bobThread.id,
++          acceptedAt: 2,
++          acceptedAuthorship: JSON.stringify(bob),
++          initialInput: "[]",
++          currentProjection: "[]",
++          latestEditor: JSON.stringify(bob),
++          nativeRequestId: null,
++          copiedFromContributionId: null,
++          replacesContributionId: null,
++        },
++      ]).run();
++
++      const contains = await harness.app.request("/api/v1/threads/facet-query", {
++        method: "POST",
++        headers: { "content-type": "application/json" },
++        body: JSON.stringify({
++          scope: { projectId: project.id },
++          filters: [{ typeId: "core/participants", operator: "contains", member: aliceKey }],
++          pageSize: 10,
++        }),
++      });
++      expect(contains.status, await contains.clone().text()).toBe(200);
++      const page = threadFacetQueryResponseSchema.parse(await readJson(contains));
++      expect(page.threads.map((thread) => thread.id)).toEqual([aliceThread.id]);
++      expect(page.threads[0]?.participantSummary.profiles).toContainEqual({
++        p6rPrincipalKey: aliceKey,
++        p6rIdentityKind: "person",
++        p6rDisplayName: "Alice",
++        p6rImageUrl: "/avatars/alice.png",
++      });
++
++      const notContains = await harness.app.request("/api/v1/threads/facet-query", {
++        method: "POST",
++        headers: { "content-type": "application/json" },
++        body: JSON.stringify({
++          scope: { projectId: project.id },
++          filters: [{ typeId: "core/participants", operator: "notContains", member: aliceKey }],
++          pageSize: 10,
++        }),
++      });
++      expect(notContains.status, await notContains.clone().text()).toBe(200);
++      expect(
++        threadFacetQueryResponseSchema.parse(await readJson(notContains)).threads.map((thread) => thread.id),
++      ).toEqual([bobThread.id]);
++    });
++  });
++});
+diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
+index b46a55e3434d628a86c8cff7239964395219454b..51ead32c80f5e6f35aa5ef79777f8dc37fe9421d 100644
+--- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
++++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
+@@ -165,6 +165,7 @@ const BB_PLUGIN_API_KEYS = [
+   "server",
+   "hosts",
+   "experimental_aiServices",
++  "experimental_facets",
+   "experimental_hooks",
+   "experimental_environments",
+   "experimental_machines",
+diff --git a/apps/server/test/services/threads/thread-execution-batch.test.ts b/apps/server/test/services/threads/thread-execution-batch.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f39afb15fa33ff4eb1bf35a19ca45a5ff852f5d2
+--- /dev/null
++++ b/apps/server/test/services/threads/thread-execution-batch.test.ts
+@@ -0,0 +1,118 @@
++import { getThreadExecutionOverride, setThreadExecutionOverride } from "@bb/db";
++import { describe, expect, it, vi } from "vitest";
++import {
++  applyPreflightedThreadExecutionOverrides,
++  preflightThreadExecutionOverrides,
++} from "../../../src/services/threads/thread-execution-batch.js";
++import { executeThreadFacetQuery } from "../../../src/services/threads/thread-facet-query.js";
++import { availableModelFixture } from "../../helpers/available-models.js";
++import { registerHostRpcResponder } from "../../helpers/host-rpc.js";
++import {
++  seedEnvironment,
++  seedHostSession,
++  seedProjectWithSource,
++  seedThread,
++} from "../../helpers/seed.js";
++import { withTestHarness } from "../../helpers/test-app.js";
++
++describe("thread execution override batches", () => {
++  it("rejects a token that expires while the fresh catalog is loading", async () => {
++    await withTestHarness(async (harness) => {
++      const { host, session } = seedHostSession(harness.deps, { id: "host-execution-expiry" });
++      const { project } = seedProjectWithSource(harness.deps, { hostId: host.id, path: "/tmp/thread-execution-expiry" });
++      const environment = seedEnvironment(harness.deps, { hostId: host.id, projectId: project.id, path: "/tmp/thread-execution-expiry" });
++      const thread = seedThread(harness.deps, { environmentId: environment.id, projectId: project.id, providerId: "claude-code" });
++      setThreadExecutionOverride(harness.db, { threadId: thread.id, modelOverride: "claude-fable-5" });
++      const now = 1_800_000_000_000;
++      vi.useFakeTimers();
++      vi.setSystemTime(now);
++      let catalogLoads = 0;
++      registerHostRpcResponder(harness, {
++        hostId: host.id,
++        sessionId: session.id,
++        handle: (request) => {
++          if (request.command.type !== "provider.list_models") throw new Error("unexpected RPC");
++          catalogLoads += 1;
++          if (catalogLoads === 2) vi.setSystemTime(now + 5 * 60 * 1_000);
++          return { ok: true, result: { models: [availableModelFixture({ model: "claude-fable-5" }), availableModelFixture({ model: "claude-opus-5" })], selectedOnlyModels: [] } };
++        },
++      });
++      try {
++        const current = executeThreadFacetQuery(harness.deps, { request: { scope: { projectId: project.id }, filters: [], pageSize: 10, experimental_includeExecution: true } }).threads[0]?.experimental_execution;
++        if (!current) throw new Error("Expected execution projection");
++        const preflight = await preflightThreadExecutionOverrides(harness.deps, { items: [{ threadId: thread.id, witness: current.witness, patch: { model: "claude-opus-5" } }] });
++        const ready = preflight.results[0];
++        if (ready?.status !== "ready") throw new Error("Expected ready result");
++        const applied = await applyPreflightedThreadExecutionOverrides(harness.deps, { items: [{ threadId: thread.id, applyToken: ready.applyToken }] });
++        expect(applied.results).toEqual([{ status: "rejected", threadId: thread.id, reason: "invalid-token", retryable: false }]);
++        expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({ modelOverride: "claude-fable-5", reasoningLevelOverride: null });
++        expect(catalogLoads).toBe(2);
++      } finally {
++        vi.useRealTimers();
++      }
++    });
++  });
++
++  it("rejects a token when provider registration changes during fresh catalog loading", async () => {
++    await withTestHarness(async (harness) => {
++      const { host, session } = seedHostSession(harness.deps, { id: "host-execution-generation" });
++      const { project } = seedProjectWithSource(harness.deps, { hostId: host.id, path: "/tmp/thread-execution-generation" });
++      const environment = seedEnvironment(harness.deps, { hostId: host.id, projectId: project.id, path: "/tmp/thread-execution-generation" });
++      const thread = seedThread(harness.deps, { environmentId: environment.id, projectId: project.id, providerId: "claude-code" });
++      setThreadExecutionOverride(harness.db, { threadId: thread.id, modelOverride: "claude-fable-5" });
++      let revision = harness.deps.providerRegistry.getRegistrationRevision();
++      vi.spyOn(harness.deps.providerRegistry, "getRegistrationRevision").mockImplementation(() => revision);
++      let catalogLoads = 0;
++      registerHostRpcResponder(harness, {
++        hostId: host.id,
++        sessionId: session.id,
++        handle: (request) => {
++          if (request.command.type !== "provider.list_models") throw new Error("unexpected RPC");
++          catalogLoads += 1;
++          if (catalogLoads === 2) revision += 1;
++          return { ok: true, result: { models: [availableModelFixture({ model: "claude-fable-5" }), availableModelFixture({ model: "claude-opus-5" })], selectedOnlyModels: [] } };
++        },
++      });
++      const current = executeThreadFacetQuery(harness.deps, { request: { scope: { projectId: project.id }, filters: [], pageSize: 10, experimental_includeExecution: true } }).threads[0]?.experimental_execution;
++      if (!current) throw new Error("Expected execution projection");
++      const preflight = await preflightThreadExecutionOverrides(harness.deps, { items: [{ threadId: thread.id, witness: current.witness, patch: { model: "claude-opus-5" } }] });
++      const ready = preflight.results[0];
++      if (ready?.status !== "ready") throw new Error("Expected ready result");
++      const applied = await applyPreflightedThreadExecutionOverrides(harness.deps, { items: [{ threadId: thread.id, applyToken: ready.applyToken }] });
++      expect(applied.results).toEqual([{ status: "rejected", threadId: thread.id, reason: "catalog-changed", retryable: true }]);
++      expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({ modelOverride: "claude-fable-5", reasoningLevelOverride: null });
++      expect(catalogLoads).toBe(2);
++    });
++  });
++
++  it("rejects a retired model from the same host session during fresh apply", async () => {
++    await withTestHarness(async (harness) => {
++      const { host, session } = seedHostSession(harness.deps, { id: "host-execution-retirement" });
++      const { project } = seedProjectWithSource(harness.deps, { hostId: host.id, path: "/tmp/thread-execution-retirement" });
++      const environment = seedEnvironment(harness.deps, { hostId: host.id, projectId: project.id, path: "/tmp/thread-execution-retirement" });
++      const thread = seedThread(harness.deps, { environmentId: environment.id, projectId: project.id, providerId: "claude-code" });
++      setThreadExecutionOverride(harness.db, { threadId: thread.id, modelOverride: "claude-fable-5" });
++      let models = [availableModelFixture({ model: "claude-fable-5" }), availableModelFixture({ model: "claude-opus-5" })];
++      let catalogLoads = 0;
++      registerHostRpcResponder(harness, {
++        hostId: host.id,
++        sessionId: session.id,
++        handle: (request) => {
++          if (request.command.type !== "provider.list_models") throw new Error("unexpected RPC");
++          catalogLoads += 1;
++          return { ok: true, result: { models, selectedOnlyModels: [] } };
++        },
++      });
++      const current = executeThreadFacetQuery(harness.deps, { request: { scope: { projectId: project.id }, filters: [], pageSize: 10, experimental_includeExecution: true } }).threads[0]?.experimental_execution;
++      if (!current) throw new Error("Expected execution projection");
++      const preflight = await preflightThreadExecutionOverrides(harness.deps, { items: [{ threadId: thread.id, witness: current.witness, patch: { model: "claude-opus-5" } }] });
++      const ready = preflight.results[0];
++      if (ready?.status !== "ready") throw new Error("Expected ready result");
++      models = [availableModelFixture({ model: "claude-fable-5" })];
++      const applied = await applyPreflightedThreadExecutionOverrides(harness.deps, { items: [{ threadId: thread.id, applyToken: ready.applyToken }] });
++      expect(applied.results).toEqual([{ status: "rejected", threadId: thread.id, reason: "catalog-changed", retryable: true }]);
++      expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({ modelOverride: "claude-fable-5", reasoningLevelOverride: null });
++      expect(catalogLoads).toBe(2);
++    });
++  });
++});
+diff --git a/apps/server/test/services/threads/thread-execution-override.test.ts b/apps/server/test/services/threads/thread-execution-override.test.ts
+index f46a783271051fce3e0b4c3d712ce226a7a35fd8..a299f8929254ba9de843877773795819e2b60e2e 100644
+--- a/apps/server/test/services/threads/thread-execution-override.test.ts
++++ b/apps/server/test/services/threads/thread-execution-override.test.ts
+@@ -42,6 +42,18 @@ describe("resolveThreadExecutionOverrideUpdate", () => {
+     ).toThrow(/not available in this thread's claude-code model catalog/);
+   });
+ 
++  it("rejects an ambiguous model catalog entry", () => {
++    expect(() =>
++      resolveThreadExecutionOverrideUpdate(registry, {
++        existing: EMPTY,
++        patch: { model: "claude-opus-4-8" },
++        models: [OPUS, OPUS],
++        providerId: "claude-code",
++        fallbackModel: null,
++      }),
++    ).toThrow(/ambiguous/);
++  });
++
+   it("accepts an explicit reasoning level supported by the target model", () => {
+     expect(
+       resolveThreadExecutionOverrideUpdate(registry, {
+@@ -144,6 +156,18 @@ describe("resolveThreadExecutionOverrideUpdate", () => {
+     ).toEqual({ modelOverride: null, reasoningLevelOverride: "xhigh" });
+   });
+ 
++  it("rejects an ambiguous fallback model catalog entry", () => {
++    expect(() =>
++      resolveThreadExecutionOverrideUpdate(registry, {
++        existing: EMPTY,
++        patch: { reasoningLevel: "high" },
++        models: [OPUS, OPUS],
++        providerId: "claude-code",
++        fallbackModel: "claude-opus-4-8",
++      }),
++    ).toThrow(/ambiguous/);
++  });
++
+   it("leaves an unspecified field unchanged", () => {
+     expect(
+       resolveThreadExecutionOverrideUpdate(registry, {
+diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
+index a8c687ffa370362e8d00984114ed5b7810159454..0fadaac607ed2ddf58700cb94afbeeabf1088827 100644
+--- a/packages/db/src/data/events.ts
++++ b/packages/db/src/data/events.ts
+@@ -89,7 +89,9 @@ export function queryInSqliteVariableBatches<TValue, TRow>(
+   args: QueryInSqliteVariableBatchesArgs<TValue, TRow>,
+ ): TRow[] {
+   const values = [
+-    ...new Map(args.values.map((value) => [args.dedupeKey(value), value])).values(),
++    ...new Map(
++      args.values.map((value) => [args.dedupeKey(value), value]),
++    ).values(),
+   ];
+   if (values.length === 0) {
+     return [];
+@@ -200,10 +202,7 @@ interface ItemLifecycleLookupKey {
+ }
+ 
+ interface LatestItemLifecycleRow extends ItemLifecycleLookupKey {
+-  type:
+-    | "item/started"
+-    | "item/completed"
+-    | "item/backgroundTask/completed";
++  type: "item/started" | "item/completed" | "item/backgroundTask/completed";
+ }
+ 
+ const TERMINAL_ITEM_EVENT_TYPES = [
+@@ -319,6 +318,10 @@ export interface StoredTurnRequestEventRow {
+   type: ThreadEventType;
+ }
+ 
++export interface ListLastStoredTurnRequestEventsByThreadIdsArgs {
++  threadIds: readonly string[];
++}
++
+ export interface CompletedStoredTurnRow {
+   threadId: string;
+   turnId: string;
+@@ -558,11 +561,13 @@ function listStoredTurnStartedKeySet(
+   );
+ }
+ 
+-const ORPHAN_DROPPABLE_TURN_EVENT_TYPES: ReadonlySet<ThreadEventType> = new Set([
+-  "thread/tokenUsage/updated",
+-  "thread/contextWindowUsage/updated",
+-  "provider/unhandled",
+-]);
++const ORPHAN_DROPPABLE_TURN_EVENT_TYPES: ReadonlySet<ThreadEventType> = new Set(
++  [
++    "thread/tokenUsage/updated",
++    "thread/contextWindowUsage/updated",
++    "provider/unhandled",
++  ],
++);
+ 
+ type DaemonTurnStartDisposition =
+   | "append"
+@@ -599,7 +604,9 @@ function resolveDaemonTurnStartDisposition(
+   });
+ }
+ 
+-function isStoredEventPayload(value: unknown): value is Record<string, unknown> {
++function isStoredEventPayload(
++  value: unknown,
++): value is Record<string, unknown> {
+   return typeof value === "object" && value !== null && !Array.isArray(value);
+ }
+ 
+@@ -700,7 +707,9 @@ function listThreadSearchSegmentsForThreadEvent(args: {
+   }
+ }
+ 
+-function parseDaemonThreadEvent(input: AppendDaemonEventInput): ThreadEvent | null {
++function parseDaemonThreadEvent(
++  input: AppendDaemonEventInput,
++): ThreadEvent | null {
+   let data: unknown;
+   try {
+     data = JSON.parse(input.data);
+@@ -752,10 +761,7 @@ export function appendDaemonEventsInTransaction(
+     collectDaemonTurnStartLookupKeys(eventInputs),
+   );
+   const settledItemKeys = new Set(
+-    listLatestItemLifecycleRows(
+-      db,
+-      collectTerminalItemLookupKeys(eventInputs),
+-    )
++    listLatestItemLifecycleRows(db, collectTerminalItemLookupKeys(eventInputs))
+       .filter((row) => isTerminalItemEventType(row.type))
+       .map(buildItemLifecycleKey),
+   );
+@@ -1451,7 +1457,8 @@ export function listLatestThreadStateEventRowsByThreadIds(
+       return db
+         .select(storedEventRowFields)
+         .from(events)
+-        .where(sql`${events}.rowid IN (
++        .where(
++          sql`${events}.rowid IN (
+         SELECT latest_state.rowid
+         FROM ${events} AS latest_state INDEXED BY events_thread_state_thread_sequence_idx
+         WHERE latest_state.thread_id IN (${threadIdList})
+@@ -1463,7 +1470,8 @@ export function listLatestThreadStateEventRowsByThreadIds(
+               AND candidate.type ${stateTypesPredicate}
+               AND ${kindPredicate}
+           )
+-      )`)
++      )`,
++        )
+         .all();
+     },
+ 
+@@ -1655,7 +1663,9 @@ export function listStoredDelegatingItemRowsByItemIds(
+   }
+ 
+   return db
+-    .select(storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars))
++    .select(
++      storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars),
++    )
+     .from(events)
+     .where(
+       and(
+@@ -1806,7 +1816,9 @@ export function listStoredItemLifecycleRowsByItems(
+   }
+ 
+   return db
+-    .select(storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars))
++    .select(
++      storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars),
++    )
+     .from(events)
+     .where(
+       and(
+@@ -1860,7 +1872,9 @@ export function listStoredClientTurnRequestIdsInRange(
+ ): ClientTurnRequestId[] {
+   const rows = db
+     .select({
+-      requestId: sql<string | null>`json_extract(${events.data}, '$.requestId')`,
++      requestId: sql<
++        string | null
++      >`json_extract(${events.data}, '$.requestId')`,
+     })
+     .from(events)
+     .where(
+@@ -1884,7 +1898,9 @@ export function getStoredTurnRequestEventForTurn(
+   const acceptedInput =
+     db
+       .select({
+-        clientRequestId: sql<string | null>`json_extract(${events.data}, '$.clientRequestId')`,
++        clientRequestId: sql<
++          string | null
++        >`json_extract(${events.data}, '$.clientRequestId')`,
+       })
+       .from(events)
+       .where(
+@@ -2223,8 +2239,7 @@ export function listLatestOpenBackgroundTaskStateRowsForThread(
+   args: ListLatestOpenBackgroundTaskStateRowsForThreadArgs,
+ ): StoredEventRow[] {
+   const startedType = "item/started" satisfies ThreadEventType;
+-  const progressType =
+-    "item/backgroundTask/progress" satisfies ThreadEventType;
++  const progressType = "item/backgroundTask/progress" satisfies ThreadEventType;
+   const completedType =
+     "item/backgroundTask/completed" satisfies ThreadEventType;
+   const completed = alias(events, "completed_background_task_state");
+@@ -2389,9 +2404,7 @@ function listStoredTurnStartedKeysChunk(
+     .all();
+ 
+   return rows.flatMap((row) =>
+-    row.turnId === null
+-      ? []
+-      : [{ threadId: row.threadId, turnId: row.turnId }],
++    row.turnId === null ? [] : [{ threadId: row.threadId, turnId: row.turnId }],
+   );
+ }
+ 
+@@ -2933,8 +2946,7 @@ export function findStoredTimelineWindowByteBudgetFloor(
+   const query = db
+     .select({
+       createdAt: events.createdAt,
+-      dataBytes:
+-        sql<number>`length(CAST(${data} AS BLOB))`.as("data_bytes"),
++      dataBytes: sql<number>`length(CAST(${data} AS BLOB))`.as("data_bytes"),
+       sequence: events.sequence,
+       turnId: events.turnId,
+     })
+@@ -3045,7 +3057,9 @@ export function listStoredTimelineWindowEventRows(
+   args: ListStoredTimelineWindowEventRowsArgs,
+ ): StoredEventRow[] {
+   return db
+-    .select(storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars))
++    .select(
++      storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars),
++    )
+     .from(events)
+     .where(and(...storedTimelineWindowConditions(args)))
+     .orderBy(events.sequence)
+@@ -3153,7 +3167,10 @@ export function getLatestThreadSystemErrorEventRow(
+       .select(storedEventRowFields)
+       .from(events)
+       .where(
+-        and(eq(events.threadId, args.threadId), eq(events.type, "system/error")),
++        and(
++          eq(events.threadId, args.threadId),
++          eq(events.type, "system/error"),
++        ),
+       )
+       .orderBy(desc(events.sequence))
+       .limit(1)
+@@ -3431,6 +3448,46 @@ export function listThreadIdsWithLatestHostDaemonRestartInterruption(
+     .map((row) => row.threadId);
+ }
+ 
++export function listLastStoredTurnRequestEventsByThreadIds(
++  db: DbQueryConnection,
++  args: ListLastStoredTurnRequestEventsByThreadIdsArgs,
++): StoredTurnRequestEventRow[] {
++  return queryInSqliteVariableBatches({
++    dedupeKey: (threadId) => threadId,
++    fixedVariableCount: 3,
++    queryBatch: (threadIds) =>
++      db.all<StoredTurnRequestEventRow>(sql`
++      WITH execution_request_candidates AS (
++        SELECT ${events.threadId} AS thread_id, MAX(${events.sequence}) AS sequence
++        FROM ${events} INDEXED BY events_thread_type_sequence_idx
++        WHERE ${inArray(events.threadId, [...threadIds])}
++          AND ${events.type} = 'client/turn/requested'
++        GROUP BY ${events.threadId}
++        UNION ALL
++        SELECT ${events.threadId} AS thread_id, MAX(${events.sequence}) AS sequence
++        FROM ${events} INDEXED BY events_thread_type_sequence_idx
++        WHERE ${inArray(events.threadId, [...threadIds])}
++          AND ${inArray(events.type, ["client/thread/start", "client/turn/start"])}
++          AND json_valid(${events.data})
++          AND json_type(${events.data}, '$.input') IS NOT NULL
++        GROUP BY ${events.threadId}
++      ), latest_execution_request AS (
++        SELECT thread_id, MAX(sequence) AS sequence
++        FROM execution_request_candidates
++        GROUP BY thread_id
++      )
++      SELECT event.data AS data, event.sequence AS sequence,
++        event.thread_id AS threadId, event.type AS type
++      FROM latest_execution_request latest
++      JOIN events event ON event.thread_id = latest.thread_id
++        AND event.sequence = latest.sequence
++      ORDER BY event.thread_id
++    `),
++    values: args.threadIds,
++    variableCountPerValue: 2,
++  });
++}
++
+ export function getLastStoredTurnRequestEvent(
+   db: DbQueryConnection,
+   threadId: string,
+@@ -3678,8 +3735,7 @@ export function listOpenBackgroundTaskItemRowsForHost(
+   args: ListOpenBackgroundTaskItemRowsForHostArgs,
+ ): OpenBackgroundTaskItemRow[] {
+   const startedType = "item/started" satisfies ThreadEventType;
+-  const progressType =
+-    "item/backgroundTask/progress" satisfies ThreadEventType;
++  const progressType = "item/backgroundTask/progress" satisfies ThreadEventType;
+   const completedType =
+     "item/backgroundTask/completed" satisfies ThreadEventType;
+   const settled = alias(events, "settled_background_task");
+@@ -3735,8 +3791,7 @@ export function listOpenBackgroundTaskItemRowsForThread(
+   args: ListOpenBackgroundTaskItemRowsForThreadArgs,
+ ): OpenBackgroundTaskItemRow[] {
+   const startedType = "item/started" satisfies ThreadEventType;
+-  const progressType =
+-    "item/backgroundTask/progress" satisfies ThreadEventType;
++  const progressType = "item/backgroundTask/progress" satisfies ThreadEventType;
+   const completedType =
+     "item/backgroundTask/completed" satisfies ThreadEventType;
+   const settled = alias(events, "settled_thread_background_task");
+@@ -3790,8 +3845,7 @@ export function pruneBackgroundTaskProgressEvents(
+   db: DbConnection,
+   args: PruneBackgroundTaskProgressEventsArgs,
+ ): number {
+-  const progressType =
+-    "item/backgroundTask/progress" satisfies ThreadEventType;
++  const progressType = "item/backgroundTask/progress" satisfies ThreadEventType;
+   const completedType =
+     "item/backgroundTask/completed" satisfies ThreadEventType;
+ 
+diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
+index 25f27d4ebb3ce9c386f76a0495c97f03dc334758..3fc4bcfc3e30364a85c2e2cac39fdd27c0da275e 100644
+--- a/packages/db/src/data/index.ts
++++ b/packages/db/src/data/index.ts
+@@ -82,6 +82,7 @@ export {
+   listUnarchivedHiddenSourceThreads,
+   listRunningThreads,
+   listThreadsWithPendingInteractionState,
++  listThreadsWithPendingInteractionStateByIds,
+   listThreadsWithPendingInteractionStateForProjects,
+   pinThread,
+   reorderPinnedThread,
+@@ -296,6 +297,7 @@ export {
+   hasStoredTurnStarted,
+   getLastStoredProviderThreadId,
+   getLastStoredTurnRequestEvent,
++  listLastStoredTurnRequestEventsByThreadIds,
+   getStoredTurnRequestEventForTurn,
+   getLatestThreadOutputEventRow,
+   getLatestStoredConversationOutlineSequence,
+@@ -375,6 +377,7 @@ export type {
+   StoredEventRow,
+   StoredThreadEventDataRow,
+   ThreadClientTurnRequestKey,
++  ListLastStoredTurnRequestEventsByThreadIdsArgs,
+   StoredTurnRequestEventRow,
+ } from "./events.js";
+ 
+diff --git a/packages/db/src/data/project-execution-defaults.ts b/packages/db/src/data/project-execution-defaults.ts
+index 8de603736406a09b02b33f9ab729ba843fbebc00..37afa170de06f880e91fec542851730c82f23dc1 100644
+--- a/packages/db/src/data/project-execution-defaults.ts
++++ b/packages/db/src/data/project-execution-defaults.ts
+@@ -5,7 +5,7 @@ import type {
+   ReasoningLevel,
+   ServiceTier,
+ } from "@bb/domain";
+-import type { DbConnection } from "../connection.js";
++import type { DbConnection, DbQueryConnection } from "../connection.js";
+ import { projectExecutionDefaults } from "../schema.js";
+ 
+ export interface GetProjectExecutionDefaultsArgs {
+@@ -26,7 +26,7 @@ export interface UpsertProjectExecutionDefaultsArgs extends GetProjectExecutionD
+ }
+ 
+ export function getProjectExecutionDefaults(
+-  db: DbConnection,
++  db: DbQueryConnection,
+   args: GetProjectExecutionDefaultsArgs,
+ ): ProjectExecutionDefaults | null {
+   const row = db
+@@ -45,7 +45,7 @@ export function getProjectExecutionDefaults(
+ }
+ 
+ export function listProjectExecutionDefaultsByProjectIds(
+-  db: DbConnection,
++  db: DbQueryConnection,
+   args: ListProjectExecutionDefaultsByProjectIdsArgs,
+ ): Map<string, ProjectExecutionDefaults> {
+   const byProjectId = new Map<string, ProjectExecutionDefaults>();
+diff --git a/packages/db/src/data/threads.ts b/packages/db/src/data/threads.ts
+index ab8a9fd18a1e30a78ab7b01e0e7f8960727222ef..050e9c642f87e0e5be0b7ba6662eb3571f571f8b 100644
+--- a/packages/db/src/data/threads.ts
++++ b/packages/db/src/data/threads.ts
+@@ -1318,6 +1318,20 @@ export function listThreadsWithPendingInteractionState(
+   return rows.map(toThreadWithPendingInteractionState);
+ }
+ 
++export function listThreadsWithPendingInteractionStateByIds(
++  db: DbConnection,
++  threadIds: readonly string[],
++): ThreadWithPendingInteractionState[] {
++  if (threadIds.length === 0) return [];
++  return threadWithPendingInteractionBaseQuery(db)
++    .where(and(
++      inArray(threads.id, [...new Set(threadIds)]),
++      isNull(threads.deletedAt),
++    ))
++    .all()
++    .map(toThreadWithPendingInteractionState);
++}
++
+ export function hasActiveThreadAttention(db: DbConnection): boolean {
+   const unreadThread = or(
+     isNull(threads.lastReadAt),
+diff --git a/packages/plugin-sdk/src/__tests__/public-types.test.ts b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+index 0d7b209f5ea9a4890796c1e346fbc17950364f89..11069f3d5dcaf99bcbdb515ddd5600a7e51b3da4 100644
+--- a/packages/plugin-sdk/src/__tests__/public-types.test.ts
++++ b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+@@ -7,6 +7,10 @@ import type {
+   PluginEnvironmentProviderDeclaration,
+   PluginEnvironments,
+   ReadonlyJsonValue,
++  ExperimentalP6rAcceptanceRequest,
++  ExperimentalP6rIdentityProtocol,
++  ExperimentalP6rInvocationContext,
++  ExperimentalP6rInvocationScope,
+ } from "../index.js";
+ import type { PluginProviderIconRegistration } from "../app-contract.js";
+ 
+@@ -17,6 +21,7 @@ type ExpectedBbPluginApiKey =
+   | "events"
+   | "experimental_aiServices"
+   | "experimental_environments"
++  | "experimental_facets"
+   | "experimental_hooks"
+   | "experimental_machines"
+   | "experimental_serverAccess"
+@@ -44,6 +49,13 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
+   "PluginAiServiceDeclaration",
+   "PluginAiServiceKind",
+   "PluginAiServices",
++  "ExperimentalThreadFacetCardinality",
++  "ExperimentalThreadFacetHandle",
++  "ExperimentalThreadFacetReplacement",
++  "ExperimentalThreadFacets",
++  "ExperimentalThreadFacetTarget",
++  "ExperimentalThreadFacetTargetGrant",
++  "ExperimentalThreadFacetTargetPage",
+   "PluginAgentConfiguration",
+   "PluginAgentConfigurationContext",
+   "PluginAgentToolContentPart",
+@@ -228,6 +240,28 @@ describe("backend plugin SDK public surface", () => {
+     expectTypeOf(borrowNestedValue).toBeFunction();
+   });
+ 
++  it("exposes the optional enhanced identity protocol without product models", () => {
++    expectTypeOf<
++      BbPluginApi["experimental_p6rIdentity"]
++    >().toEqualTypeOf<ExperimentalP6rIdentityProtocol | undefined>();
++    expectTypeOf<ExperimentalP6rIdentityProtocol["instanceId"]>().toEqualTypeOf<string>();
++    expectTypeOf<
++      ExperimentalP6rInvocationContext<{ readonly requestId: string }>["scope"]
++    >().toEqualTypeOf<ExperimentalP6rInvocationScope>();
++    expectTypeOf<
++      ExperimentalP6rAcceptanceRequest<
++        { readonly body: string },
++        { readonly subject: string }
++      >["source"]
++    >().toEqualTypeOf<
++      | { readonly kind: "scope"; readonly scope: ExperimentalP6rInvocationScope }
++      | {
++          readonly kind: "external";
++          readonly author: { readonly subject: string };
++        }
++    >();
++  });
++
+   it("keeps every backend contract export in the root declaration bundle", async () => {
+     const [backendContract, declarations] = await Promise.all([
+       readFile(new URL("../backend-contract.ts", import.meta.url), "utf8"),
+diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
+index 61c944b3e4871caad4fe95942ca18e20cf6afba7..d2cfb65130b0937d63473922328e7cc660c3c910 100644
+--- a/packages/plugin-sdk/src/backend-contract.ts
++++ b/packages/plugin-sdk/src/backend-contract.ts
+@@ -1830,6 +1830,52 @@ export interface PluginHosts {
+   declareSharedPorts(hostId: string, ports: readonly number[]): void;
+ }
+ 
++export type ExperimentalThreadFacetCardinality = "one" | "many";
++
++declare const experimentalThreadFacetTargetGrantBrand: unique symbol;
++
++export interface ExperimentalThreadFacetTargetGrant {
++  readonly [experimentalThreadFacetTargetGrantBrand]: true;
++}
++
++export type ExperimentalThreadFacetTarget =
++  | Awaited<ReturnType<BbSdk["threads"]["get"]>>
++  | Awaited<ReturnType<BbSdk["threads"]["list"]>>[number];
++
++export type ExperimentalThreadFacetReplacement<
++  Cardinality extends ExperimentalThreadFacetCardinality,
++  Member extends string,
++> = Cardinality extends "one" ? readonly [] | readonly [Member] : readonly Member[];
++
++export interface ExperimentalThreadFacetTargetPage {
++  targets: readonly ExperimentalThreadFacetTarget[];
++  nextCursor: string | null;
++}
++
++export interface ExperimentalThreadFacetHandle<
++  Cardinality extends ExperimentalThreadFacetCardinality,
++  Member extends string,
++> {
++  replace(target: ExperimentalThreadFacetTargetGrant, members: ExperimentalThreadFacetReplacement<Cardinality, Member>): Promise<void>;
++  clear(target: ExperimentalThreadFacetTargetGrant): Promise<void>;
++  listPriorTargets(args?: { cursor?: string; pageSize?: number }): Promise<ExperimentalThreadFacetTargetPage>;
++  markReady(): Promise<void>;
++}
++
++export interface ExperimentalThreadFacets {
++  target(thread: ExperimentalThreadFacetTarget): ExperimentalThreadFacetTargetGrant;
++  declare<
++    const Cardinality extends ExperimentalThreadFacetCardinality,
++    const Members extends readonly string[],
++  >(declaration: {
++    assignmentScope: "shared-thread";
++    cardinality: Cardinality;
++    localName: string;
++    memberKind: "enum";
++    members: Members;
++  }): ExperimentalThreadFacetHandle<Cardinality, Members[number]>;
++}
++
+ // ---------------------------------------------------------------------------
+ // Status + the API root.
+ // ---------------------------------------------------------------------------
+@@ -1933,6 +1979,11 @@ export interface BbPluginApi {
+    * inference, voice transcription). See `@get-bb/plugin-sdk/ai-services`.
+    */
+   readonly experimental_aiServices: PluginAiServices;
++  readonly experimental_facets: ExperimentalThreadFacets;
++  /**
++   * Optional enhanced identity host capability. It is absent on ordinary
++   * hosts; product adapters validate the structural protocol before use.
++   */
+   /**
+    * The full BB SDK, bound to this server over loopback (design §4.1).
+    * Bind-gated: reading this before the host binds the SDK throws. The real
+diff --git a/packages/plugin-sdk/src/testing/fake-plugin-host.ts b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+index c3aed2f11a6e7e4df9fc2032bc46f11f614cc519..126ce4f82b4fd23039d1ee204f7121a3ce85ad3a 100644
+--- a/packages/plugin-sdk/src/testing/fake-plugin-host.ts
++++ b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+@@ -54,6 +54,10 @@ import {
+ } from "../internal/host-policy.js";
+ import type {
+   BbPluginApi,
++  ExperimentalThreadFacetCardinality,
++  ExperimentalThreadFacetHandle,
++  ExperimentalThreadFacetTargetGrant,
++  ExperimentalThreadFacets,
+   PluginAgentConfiguration,
+   PluginAgentConfigurationContext,
+   PluginAgentToolContext,
+@@ -1462,6 +1466,25 @@ function createFakePluginHostInternal(
+     },
+   };
+ 
++  const experimental_facets: ExperimentalThreadFacets = {
++    target() {
++      return Object.freeze({}) as ExperimentalThreadFacetTargetGrant;
++    },
++    declare<
++      const Cardinality extends ExperimentalThreadFacetCardinality,
++      const Members extends readonly string[],
++    >(): ExperimentalThreadFacetHandle<Cardinality, Members[number]> {
++      return {
++        async replace() {},
++        async clear() {},
++        async listPriorTargets() {
++          return { targets: [], nextCursor: null };
++        },
++        async markReady() {},
++      };
++    },
++  };
++
+   const bb: BbPluginApi = {
+     pluginId,
+     log,
+@@ -1498,6 +1521,7 @@ function createFakePluginHostInternal(
+     server,
+     hosts,
+     experimental_aiServices,
++    experimental_facets,
+     get sdk() {
+       assertLive();
+       return sdk;
+diff --git a/packages/sdk/src/areas/threads.ts b/packages/sdk/src/areas/threads.ts
+index 732b81cb4ec7e099f81a3f4c502c36acbd2316a2..53bfac1de831d3fc016bf713d069d3af0cf6e898 100644
+--- a/packages/sdk/src/areas/threads.ts
++++ b/packages/sdk/src/areas/threads.ts
+@@ -34,6 +34,13 @@ import type {
+   ThreadCountQuery,
+   ThreadCountResponse,
+   ThreadListResponse,
++  ThreadFacetParticipantsResponse,
++  ThreadFacetQueryRequest,
++  ThreadFacetQueryResponse,
++  ExperimentalThreadExecutionPreflightRequest,
++  ExperimentalThreadExecutionPreflightResponse as ExperimentalThreadExecutionPreflightWireResponse,
++  ExperimentalThreadExecutionApplyRequest,
++  ExperimentalThreadExecutionApplyResponse as ExperimentalThreadExecutionApplyWireResponse,
+   ThreadRunningResponse,
+   ThreadOpenResponse,
+   ThreadPaneAction,
+@@ -99,6 +106,32 @@ export interface ThreadListArgs {
+   unsectioned?: boolean;
+ }
+ 
++export interface ThreadFacetQueryArgs {
++  cursor?: string;
++  filters?: ThreadFacetQueryRequest["filters"];
++  order?: ThreadFacetQueryRequest["order"];
++  pageSize?: number;
++  scope?: ThreadFacetQueryRequest["scope"];
++  experimental_includeExecution?: boolean;
++  signal?: AbortSignal;
++}
++
++export interface ThreadFacetParticipantsArgs {
++  cursor?: string;
++  pageSize?: number;
++  signal?: AbortSignal;
++  threadId: string;
++}
++
++export type ExperimentalThreadExecutionPreflightArgs =
++  ExperimentalThreadExecutionPreflightRequest & { signal?: AbortSignal };
++export type ExperimentalThreadExecutionApplyArgs =
++  ExperimentalThreadExecutionApplyRequest & { signal?: AbortSignal };
++export type ExperimentalThreadExecutionPreflightResponse =
++  ExperimentalThreadExecutionPreflightWireResponse;
++export type ExperimentalThreadExecutionApplyResponse =
++  ExperimentalThreadExecutionApplyWireResponse;
++
+ export interface ThreadSearchArgs extends ThreadSearchQuery {
+   signal?: AbortSignal;
+ }
+@@ -160,6 +193,8 @@ export type ThreadCountResult = ThreadCountResponse;
+  */
+ export type ThreadRunningResult = ThreadRunningResponse;
+ export type ThreadListResult = ThreadListResponse;
++export type ThreadFacetQueryResult = ThreadFacetQueryResponse;
++export type ThreadFacetParticipantsResult = ThreadFacetParticipantsResponse;
+ export type ThreadSearchResult = ThreadSearchResponse;
+ export type ThreadResolveMentionsResult = ResolveThreadMentionsResponse;
+ export interface ThreadOutputResponse {
+@@ -574,6 +609,16 @@ export interface ThreadsArea {
+   queue: ThreadQueueArea;
+   interactions: ThreadInteractionsArea;
+   list(args?: ThreadListArgs): Promise<ThreadListResult>;
++  queryFacets(args?: ThreadFacetQueryArgs): Promise<ThreadFacetQueryResult>;
++  experimental_preflightExecutionOverrides(
++    args: ExperimentalThreadExecutionPreflightArgs,
++  ): Promise<ExperimentalThreadExecutionPreflightResponse>;
++  experimental_applyExecutionOverrides(
++    args: ExperimentalThreadExecutionApplyArgs,
++  ): Promise<ExperimentalThreadExecutionApplyResponse>;
++  facetParticipants(
++    args: ThreadFacetParticipantsArgs,
++  ): Promise<ThreadFacetParticipantsResult>;
+   listRunning(args?: { signal?: AbortSignal }): Promise<ThreadRunningResult>;
+   markRead(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
+   markUnread(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
+@@ -1185,6 +1230,60 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
+         ),
+       );
+     },
++    async queryFacets(input) {
++      return transport.readJson(
++        transport.api.v1.threads["facet-query"].$post(
++          {
++            json: {
++              scope: input?.scope ?? {},
++              filters: input?.filters ?? [],
++              pageSize: input?.pageSize ?? 50,
++              ...(input?.order === undefined ? {} : { order: input.order }),
++              ...(input?.cursor === undefined ? {} : { cursor: input.cursor }),
++              ...(input?.experimental_includeExecution === undefined
++                ? {}
++                : {
++                    experimental_includeExecution:
++                      input.experimental_includeExecution,
++                  }),
++            },
++          },
++          ...signalRequestArgs(input?.signal),
++        ),
++      );
++    },
++    async experimental_preflightExecutionOverrides(input) {
++      return transport.readJson(
++        transport.api.v1.threads["execution-overrides"].preflight.$post(
++          { json: { items: input.items } },
++          ...signalRequestArgs(input.signal),
++        ),
++      );
++    },
++    async experimental_applyExecutionOverrides(input) {
++      return transport.readJson(
++        transport.api.v1.threads["execution-overrides"].apply.$post(
++          { json: { items: input.items } },
++          ...signalRequestArgs(input.signal),
++        ),
++      );
++    },
++    async facetParticipants(input) {
++      return transport.readJson(
++        transport.api.v1.threads[":id"]["facet-participants"].$get(
++          {
++            param: { id: input.threadId },
++            query: {
++              ...(input.pageSize === undefined
++                ? {}
++                : { pageSize: String(input.pageSize) }),
++              ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
++            },
++          },
++          ...signalRequestArgs(input.signal),
++        ),
++      );
++    },
+     async markRead(input) {
+       return transport.readJson(
+         transport.api.v1.threads[":id"].read.$post({
+diff --git a/packages/sdk/test/public-types.test.ts b/packages/sdk/test/public-types.test.ts
+index 47b5ec96121bc5b1a5bddff6353351cb0e9a00dc..b4998a2e540b52344eacdbbc5118fc5f8b4d4aba 100644
+--- a/packages/sdk/test/public-types.test.ts
++++ b/packages/sdk/test/public-types.test.ts
+@@ -379,7 +379,10 @@ type ExpectedThreadsKey =
+   | "defaultExecutionOptions"
+   | "delete"
+   | "editMessage"
++  | "experimental_applyExecutionOverrides"
++  | "experimental_preflightExecutionOverrides"
+   | "events"
++  | "facetParticipants"
+   | "fork"
+   | "get"
+   | "interactions"
+@@ -393,6 +396,7 @@ type ExpectedThreadsKey =
+   | "pin"
+   | "promptHistory"
+   | "queue"
++  | "queryFacets"
+   | "queuedMessages"
+   | "reorderPinned"
+   | "resolveMentions"
+diff --git a/packages/server-contract/src/api/threads.ts b/packages/server-contract/src/api/threads.ts
+index fb9b3106b3e4483223e82e28893342a51bec4276..0a2456743f810c7605090ad17b4208e05f7f602b 100644
+--- a/packages/server-contract/src/api/threads.ts
++++ b/packages/server-contract/src/api/threads.ts
+@@ -28,6 +28,9 @@ import {
+   threadTimelineModelFallbackSchema,
+   threadTimelinePendingTodosSchema,
+   threadEventTypeValues,
++  threadFacetOwnerStateSchema,
++  threadFacetQueryRequestSchema,
++  threadFacetTypeIdSchema,
+   threadVisibilitySchema,
+   threadWithRuntimeSchema,
+ } from "@bb/domain";
+@@ -413,6 +416,329 @@ export type SendQueuedMessageResponse = z.infer<
+ export const threadListResponseSchema = z.array(threadListEntrySchema);
+ export type ThreadListResponse = z.infer<typeof threadListResponseSchema>;
+ 
++export const experimentalThreadExecutionModelSourceSchema = z.enum([
++  "thread-override",
++  "last-turn",
++  "project-default",
++  "builtin-default",
++  "unresolved",
++]);
++export const experimentalThreadExecutionReasoningSourceSchema = z.enum([
++  "thread-override",
++  "last-turn",
++  "project-default",
++  "builtin-default",
++  "unresolved",
++]);
++
++const experimentalThreadExecutionSummaryBaseSchema = z
++  .object({
++    providerId: z.string().min(1),
++    catalogDependsOnWorkspace: z.boolean(),
++    projectId: z.string().min(1),
++    environmentId: z.string().min(1).nullable(),
++    hostId: z.string().min(1).nullable(),
++    workspacePath: z.string().min(1).nullable(),
++    effectiveReasoningLevel: reasoningLevelSchema.nullable(),
++    modelOverride: z.string().min(1).nullable(),
++    reasoningLevelOverride: reasoningLevelSchema.nullable(),
++    reasoningSource: experimentalThreadExecutionReasoningSourceSchema,
++    latestRequestSequence: z.number().int().nonnegative().nullable(),
++    witness: z.string().regex(/^[a-f0-9]{64}$/u),
++  })
++  .strict();
++
++export const experimentalThreadExecutionSummarySchema = z.discriminatedUnion(
++  "state",
++  [
++    experimentalThreadExecutionSummaryBaseSchema.extend({
++      state: z.literal("resolved"),
++      effectiveModel: z.string().min(1),
++      modelSource: experimentalThreadExecutionModelSourceSchema.exclude([
++        "unresolved",
++      ]),
++    }),
++    experimentalThreadExecutionSummaryBaseSchema.extend({
++      state: z.literal("unresolved"),
++      effectiveModel: z.null(),
++      modelSource: z.literal("unresolved"),
++      issue: z.enum(["missing-model", "malformed-history"]),
++    }),
++  ],
++);
++export type ExperimentalThreadExecutionSummary = z.infer<
++  typeof experimentalThreadExecutionSummarySchema
++>;
++
++export const EXPERIMENTAL_THREAD_EXECUTION_BATCH_LIMIT = 5_000;
++
++export const experimentalThreadExecutionOverridePatchSchema = z
++  .object({
++    model: z.string().min(1).nullable().optional(),
++    reasoningLevel: reasoningLevelSchema.nullable().optional(),
++  })
++  .strict()
++  .refine(
++    (patch) => "model" in patch || "reasoningLevel" in patch,
++    "At least one execution override field is required",
++  );
++export type ExperimentalThreadExecutionOverridePatch = z.infer<
++  typeof experimentalThreadExecutionOverridePatchSchema
++>;
++
++export const experimentalThreadExecutionPreflightRequestSchema = z
++  .object({
++    items: z
++      .array(
++        z
++          .object({
++            threadId: rawThreadIdSchema,
++            witness: z.string().regex(/^[a-f0-9]{64}$/u),
++            patch: experimentalThreadExecutionOverridePatchSchema,
++          })
++          .strict(),
++      )
++      .min(1)
++      .max(EXPERIMENTAL_THREAD_EXECUTION_BATCH_LIMIT),
++  })
++  .strict()
++  .superRefine((request, ctx) => {
++    const seen = new Set<string>();
++    request.items.forEach(({ threadId }, index) => {
++      if (seen.has(threadId)) {
++        ctx.addIssue({
++          code: "custom",
++          message: "Each thread may appear only once",
++          path: ["items", index, "threadId"],
++        });
++      }
++      seen.add(threadId);
++    });
++  });
++export type ExperimentalThreadExecutionPreflightRequest = z.infer<
++  typeof experimentalThreadExecutionPreflightRequestSchema
++>;
++
++const experimentalThreadExecutionUnavailableReasonSchema = z.enum([
++  "thread-not-found",
++  "unresolved-execution",
++  "catalog-unavailable",
++  "invalid-target",
++]);
++
++export const experimentalThreadExecutionPreflightResultSchema =
++  z.discriminatedUnion("status", [
++    z
++      .object({
++        status: z.literal("ready"),
++        threadId: rawThreadIdSchema,
++        current: experimentalThreadExecutionSummarySchema,
++        nextModelOverride: z.string().min(1).nullable(),
++        nextReasoningLevelOverride: reasoningLevelSchema.nullable(),
++        nextEffectiveModel: z.string().min(1).nullable(),
++        nextEffectiveReasoningLevel: reasoningLevelSchema.nullable(),
++        unchanged: z.boolean(),
++        applyToken: z.string().min(1).max(4096),
++      })
++      .strict(),
++    z
++      .object({
++        status: z.literal("stale"),
++        threadId: rawThreadIdSchema,
++        current: experimentalThreadExecutionSummarySchema,
++      })
++      .strict(),
++    z
++      .object({
++        status: z.literal("unavailable"),
++        threadId: rawThreadIdSchema,
++        reason: experimentalThreadExecutionUnavailableReasonSchema,
++        message: z.string().min(1),
++        current: experimentalThreadExecutionSummarySchema.optional(),
++      })
++      .strict(),
++  ]);
++export type ExperimentalThreadExecutionPreflightResult = z.infer<
++  typeof experimentalThreadExecutionPreflightResultSchema
++>;
++
++export const experimentalThreadExecutionPreflightResponseSchema = z
++  .object({
++    results: z.array(experimentalThreadExecutionPreflightResultSchema),
++  })
++  .strict();
++export type ExperimentalThreadExecutionPreflightResponse = z.infer<
++  typeof experimentalThreadExecutionPreflightResponseSchema
++>;
++
++export const experimentalThreadExecutionApplyRequestSchema = z
++  .object({
++    items: z
++      .array(
++        z
++          .object({
++            threadId: rawThreadIdSchema,
++            applyToken: z.string().min(1).max(4096),
++          })
++          .strict(),
++      )
++      .min(1)
++      .max(EXPERIMENTAL_THREAD_EXECUTION_BATCH_LIMIT),
++  })
++  .strict()
++  .superRefine((request, ctx) => {
++    const seen = new Set<string>();
++    request.items.forEach(({ threadId }, index) => {
++      if (seen.has(threadId)) {
++        ctx.addIssue({
++          code: "custom",
++          message: "Each thread may appear only once",
++          path: ["items", index, "threadId"],
++        });
++      }
++      seen.add(threadId);
++    });
++  });
++export type ExperimentalThreadExecutionApplyRequest = z.infer<
++  typeof experimentalThreadExecutionApplyRequestSchema
++>;
++
++export const experimentalThreadExecutionApplyResultSchema =
++  z.discriminatedUnion("status", [
++    z
++      .object({
++        status: z.enum(["applied", "unchanged"]),
++        threadId: rawThreadIdSchema,
++        finalModelOverride: z.string().min(1).nullable(),
++        finalReasoningLevelOverride: reasoningLevelSchema.nullable(),
++      })
++      .strict(),
++    z
++      .object({
++        status: z.literal("stale"),
++        threadId: rawThreadIdSchema,
++        current: experimentalThreadExecutionSummarySchema,
++      })
++      .strict(),
++    z
++      .object({
++        status: z.literal("rejected"),
++        threadId: rawThreadIdSchema,
++        reason: z.enum([
++          "invalid-token",
++          "thread-not-found",
++          "catalog-changed",
++        ]),
++        retryable: z.boolean(),
++      })
++      .strict(),
++    z
++      .object({
++        status: z.literal("failed"),
++        threadId: rawThreadIdSchema,
++        reason: z.enum(["write-conflict", "transaction-failed"]),
++        retryable: z.boolean(),
++      })
++      .strict(),
++  ]);
++export type ExperimentalThreadExecutionApplyResult = z.infer<
++  typeof experimentalThreadExecutionApplyResultSchema
++>;
++
++export const experimentalThreadExecutionApplyResponseSchema = z
++  .object({
++    results: z.array(experimentalThreadExecutionApplyResultSchema),
++  })
++  .strict();
++export type ExperimentalThreadExecutionApplyResponse = z.infer<
++  typeof experimentalThreadExecutionApplyResponseSchema
++>;
++
++export const threadFacetParticipantSummarySchema = z
++  .object({
++    totalCount: z.number().int().nonnegative(),
++    profiles: z
++      .array(
++        z
++          .object({
++            p6rPrincipalKey: z.string().min(1),
++            p6rIdentityKind: z.enum(["external", "person"]),
++            p6rDisplayName: z.string().min(1),
++            p6rImageUrl: z.string().min(1).nullable(),
++          })
++          .strict(),
++      )
++      .max(3),
++    nextCursor: z.string().max(4096).nullable(),
++  })
++  .strict();
++export type ThreadFacetParticipantSummary = z.infer<
++  typeof threadFacetParticipantSummarySchema
++>;
++
++export const threadFacetQueryThreadSchema = threadListEntrySchema.extend({
++  participantSummary: threadFacetParticipantSummarySchema,
++  experimental_execution: experimentalThreadExecutionSummarySchema.optional(),
++});
++export type ThreadFacetQueryThread = z.infer<
++  typeof threadFacetQueryThreadSchema
++>;
++
++export { threadFacetQueryRequestSchema };
++export type ThreadFacetQueryRequest = z.infer<
++  typeof threadFacetQueryRequestSchema
++>;
++
++export const threadFacetQueryResponseSchema = z
++  .object({
++    threads: z.array(threadFacetQueryThreadSchema),
++    nextCursor: z.string().max(4096).nullable(),
++    facetStates: z
++      .array(
++        z
++          .object({
++            typeId: threadFacetTypeIdSchema,
++            ownerState: threadFacetOwnerStateSchema,
++          })
++          .strict(),
++      )
++      .max(5),
++  })
++  .strict();
++export type ThreadFacetQueryResponse = z.infer<
++  typeof threadFacetQueryResponseSchema
++>;
++
++export const threadFacetParticipantsQuerySchema = z
++  .object({
++    pageSize: z.string().regex(/^\d+$/u).optional(),
++    cursor: z.string().max(4096).optional(),
++  })
++  .strict();
++export type ThreadFacetParticipantsQuery = z.infer<
++  typeof threadFacetParticipantsQuerySchema
++>;
++
++export const threadFacetParticipantsResponseSchema = z
++  .object({
++    totalCount: z.number().int().nonnegative(),
++    profiles: z.array(
++      z
++        .object({
++          p6rPrincipalKey: z.string().min(1),
++          p6rIdentityKind: z.enum(["external", "person"]),
++          p6rDisplayName: z.string().min(1),
++          p6rImageUrl: z.string().min(1).nullable(),
++        })
++        .strict(),
++    ),
++    nextCursor: z.string().max(4096).nullable(),
++  })
++  .strict();
++export type ThreadFacetParticipantsResponse = z.infer<
++  typeof threadFacetParticipantsResponseSchema
++>;
++
+ export const THREAD_MENTION_RESOLVE_MAX_IDS = 32;
+ 
+ export const resolveThreadMentionsRequestSchema = z
+diff --git a/packages/server-contract/src/public-api.ts b/packages/server-contract/src/public-api.ts
+index 2c074d47026a58148cdd6424a0ed4d054ca75bb8..b52089edf3f39692b48900dcd56cffdab4346884 100644
+--- a/packages/server-contract/src/public-api.ts
++++ b/packages/server-contract/src/public-api.ts
+@@ -219,6 +219,14 @@ import type {
+   ThreadCountResponse,
+   ThreadListQuery,
+   ThreadListResponse,
++  ThreadFacetParticipantsQuery,
++  ThreadFacetParticipantsResponse,
++  ThreadFacetQueryRequest,
++  ThreadFacetQueryResponse,
++  ExperimentalThreadExecutionPreflightRequest,
++  ExperimentalThreadExecutionPreflightResponse,
++  ExperimentalThreadExecutionApplyRequest,
++  ExperimentalThreadExecutionApplyResponse,
+   ThreadConversationOutlineResponse,
+   ThreadOpenRequest,
+   ThreadOpenResponse,
+@@ -349,6 +357,10 @@ import {
+   threadHostFileContentQuerySchema,
+   threadCountQuerySchema,
+   threadListQuerySchema,
++  threadFacetParticipantsQuerySchema,
++  threadFacetQueryRequestSchema,
++  experimentalThreadExecutionPreflightRequestSchema,
++  experimentalThreadExecutionApplyRequestSchema,
+   threadOpenRequestSchema,
+   threadPaneActionRequestSchema,
+   threadSearchQuerySchema,
+@@ -1119,6 +1131,39 @@ export const publicApiRoutes = {
+       ),
+       response: jsonResponse<ThreadListResponse>(),
+     }),
++    facetQuery: defineRoute({
++      path: "/threads/facet-query",
++      method: "post",
++      request: jsonRequest<EmptyInput, ThreadFacetQueryRequest>(
++        threadFacetQueryRequestSchema,
++      ),
++      response: jsonResponse<ThreadFacetQueryResponse>(),
++    }),
++    experimentalExecutionPreflight: defineRoute({
++      path: "/threads/execution-overrides/preflight",
++      method: "post",
++      request: jsonRequest<
++        EmptyInput,
++        ExperimentalThreadExecutionPreflightRequest
++      >(experimentalThreadExecutionPreflightRequestSchema),
++      response: jsonResponse<ExperimentalThreadExecutionPreflightResponse>(),
++    }),
++    experimentalExecutionApply: defineRoute({
++      path: "/threads/execution-overrides/apply",
++      method: "post",
++      request: jsonRequest<EmptyInput, ExperimentalThreadExecutionApplyRequest>(
++        experimentalThreadExecutionApplyRequestSchema,
++      ),
++      response: jsonResponse<ExperimentalThreadExecutionApplyResponse>(),
++    }),
++    facetParticipants: defineRoute({
++      path: "/threads/:id/facet-participants",
++      method: "get",
++      request: optionalQueryRequest<PathId, ThreadFacetParticipantsQuery>(
++        threadFacetParticipantsQuerySchema,
++      ),
++      response: jsonResponse<ThreadFacetParticipantsResponse>(),
++    }),
+     /**
+      * Grouped `SELECT count(*)` over threads. Exists because a plugin gate
+      * that limits concurrency must count without loading: `threads.list`
+-- 
+2.53.0
+

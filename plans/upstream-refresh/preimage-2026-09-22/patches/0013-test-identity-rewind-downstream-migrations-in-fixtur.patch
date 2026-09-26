@@ -1,0 +1,73 @@
+From 403059dca0c1af514c8ade5dd1ae789395304dba Mon Sep 17 00:00:00 2001
+From: Phosphor <engineering@phosphor.co>
+Date: Tue, 8 Sep 2026 17:46:17 +0200
+Subject: [PATCH 13/21] test(identity): rewind downstream migrations in
+ fixtures
+
+---
+ packages/db/test/migrate.test.ts | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
+index 2481ea7109cff1a77747d205e61ec6d2134caaea..193ee2ce312fed316218c9e850761910ad0c201f 100644
+--- a/packages/db/test/migrate.test.ts
++++ b/packages/db/test/migrate.test.ts
+@@ -721,6 +721,31 @@ function dropMarketplaceStatsColumn(db: DbConnection): void {
+   }
+ }
+ 
++/** Undo the downstream identity migrations that follow the queue rework. */
++function dropIdentityKernelSchema(db: DbConnection): void {
++  for (const table of [
++    "thread_facet_reconciliation_targets",
++    "thread_facet_principal_profiles",
++    "thread_facet_relations",
++    "thread_facet_snapshots",
++    "thread_facet_members",
++    "thread_facet_owners",
++    "thread_facet_declarations",
++    "thread_facet_cursor_keys",
++  ]) {
++    db.$client.prepare(`DROP TABLE IF EXISTS ${table}`).run();
++  }
++
++  const threadColumns = db.$client
++    .prepare<[], TableInfoRow>("PRAGMA table_info(threads)")
++    .all();
++  if (threadColumns.some((column) => column.name === "execution_revision")) {
++    db.$client
++      .prepare("ALTER TABLE threads DROP COLUMN execution_revision")
++      .run();
++  }
++}
++
+ /**
+  * Undo migration 0110, the dispatch-queue rework.
+  *
+@@ -768,6 +793,7 @@ function rewindEnvironmentProvisioningMigration(db: DbConnection): void {
+ 
+ function dropQueueReworkSchema(db: DbConnection): void {
+   rewindEnvironmentProvisioningMigration(db);
++  dropIdentityKernelSchema(db);
+   // Indexes first: SQLite refuses to drop a column an existing index names.
+   for (const index of [
+     "queued_thread_messages_due_idx",
+@@ -5673,6 +5699,7 @@ describe("environment providers migration", () => {
+   function seedPreProviderEnvironments(db: DbConnection): void {
+     db.$client.prepare("DROP TABLE ui_preferences").run();
+     db.$client.prepare("DROP TABLE retained_event_outputs").run();
++    dropIdentityKernelSchema(db);
+     rewindEnvironmentRowFactsMigration(db);
+     rewindEnvironmentProvidersMigration(db);
+     db.$client
+@@ -6089,6 +6116,7 @@ describe("environment and thread startup ownership migration", () => {
+     (phase) => {
+       const db = createMigratedConnection();
+       try {
++        dropIdentityKernelSchema(db);
+         rewindMachineProvidersMigration(db);
+         rewindEnvironmentProvisioningMigration(db);
+         const legacySchema = readFileSync(
+-- 
+2.53.0
+

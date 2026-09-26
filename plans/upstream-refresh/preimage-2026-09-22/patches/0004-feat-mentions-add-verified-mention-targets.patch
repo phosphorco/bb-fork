@@ -1,0 +1,1846 @@
+From da2c174d3c219db70495bc7c433ad15be4db9e39 Mon Sep 17 00:00:00 2001
+From: Phosphor <engineering@phosphor.co>
+Date: Tue, 8 Sep 2026 17:35:56 +0200
+Subject: [PATCH 04/21] feat(mentions): add verified mention targets
+
+---
+ apps/server/src/internal/events.ts            |   3 +
+ .../src/services/p6r/native-acceptance.ts     |  50 +----
+ .../services/p6r/participant-projection.ts    | 147 ++++++++++++++
+ .../src/services/p6r/provider-contract.ts     |  22 +-
+ .../src/services/p6r/provider-registry.ts     | 156 +++++++++++++-
+ .../src/services/plugins/plugin-mentions.ts   |  24 ++-
+ .../plugins/plugin-service-internal.ts        |   3 +-
+ .../src/services/plugins/plugin-service.ts    |  51 ++++-
+ .../src/services/threads/dispatch-attempt.ts  |   4 +
+ .../src/services/threads/queued-messages.ts   |  31 ++-
+ .../src/services/threads/thread-create.ts     |  18 +-
+ .../src/services/threads/thread-events.ts     |  19 ++
+ .../services/threads/thread-facet-query.ts    |  13 ++
+ .../services/threads/thread-provisioning.ts   |   9 +-
+ .../src/services/threads/thread-send.ts       |  80 ++++----
+ .../services/threads/thread-turn-dispatch.ts  |   3 +
+ .../daemon-forged-mention-http.test.ts        | 107 ++++++++++
+ .../p6r/mention-target-service-paths.test.ts  | 102 ++++++++++
+ .../test/services/p6r/mention-targets.test.ts | 192 ++++++++++++++++++
+ .../services/p6r/provider-registry.test.ts    | 114 ++++++++++-
+ docs/api_to_audit.md                          |  19 ++
+ packages/db/src/data/events.ts                |   3 +
+ packages/domain/src/change-kinds.ts           |   1 +
+ packages/domain/src/thread-events.ts          |  28 +++
+ packages/plugin-api-map/src/surfaces.ts       |  15 ++
+ packages/plugin-sdk/src/backend-contract.ts   |   8 +-
+ 26 files changed, 1096 insertions(+), 126 deletions(-)
+ create mode 100644 apps/server/src/services/p6r/participant-projection.ts
+ create mode 100644 apps/server/test/internal/daemon-forged-mention-http.test.ts
+ create mode 100644 apps/server/test/services/p6r/mention-target-service-paths.test.ts
+ create mode 100644 apps/server/test/services/p6r/mention-targets.test.ts
+
+diff --git a/apps/server/src/internal/events.ts b/apps/server/src/internal/events.ts
+index b04d4e54aef467d60e1062770dbc24da4a3fff1d..8a7f0accc15f85ce5ca37f2e0288902ba13acc74 100644
+--- a/apps/server/src/internal/events.ts
++++ b/apps/server/src/internal/events.ts
+@@ -920,6 +920,9 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
+         throw error;
+       }
+       const events = ungroupHostDaemonEvents(payload.eventGroups);
++      if (events.some(({ event }) => event.type === "client/turn/requested")) {
++        throw new ApiError(400, "invalid_request", "Client turn requests may only be appended by the server");
++      }
+       const { entries: ownedEntries, rejectedEvents } =
+         resolvePostableEventBatchEntries(deps, {
+           hostId: session.hostId,
+diff --git a/apps/server/src/services/p6r/native-acceptance.ts b/apps/server/src/services/p6r/native-acceptance.ts
+index 97975d34f85e925c66040724786caec83a3ede8d..f0a8000724aee11fdf74a11eb6bd73aec228148a 100644
+--- a/apps/server/src/services/p6r/native-acceptance.ts
++++ b/apps/server/src/services/p6r/native-acceptance.ts
+@@ -1,4 +1,5 @@
+-import { getThread, replaceCoreParticipantProfilesInTransaction, type DbConnection, type DbQueryConnection } from "@bb/db";
++import { projectP6rParticipantsInTransaction } from "./participant-projection.js";
++import { getThread, type DbConnection } from "@bb/db";
+ import { promptInputSchema, type JsonObject, type JsonValue, type PromptInput, type Thread } from "@bb/domain";
+ import type { SendMessageRequest } from "@bb/server-contract";
+ import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
+@@ -9,9 +10,6 @@ import { sendThreadMessage, type SendThreadMessageTransactionCommit, type SendTh
+ import type { P6rAcceptanceOutcome, P6rIdentityError, P6rJson, P6rNativeAcceptance } from "./identity-protocol.js";
+ import { p6rOutcomeFromStoredReceipt } from "./receipt-outcome.js";
+ import { lookupP6rOperationReceipt, acceptP6rOperationInTransaction, reserveP6rQueuedOperationInTransaction, type P6rOperationReceipt } from "./sidecar-store.js";
+-import { p6rContributions } from "./sidecar-schema.js";
+-import { z } from "zod";
+-import { eq } from "drizzle-orm";
+ 
+ export interface P6rNativeAcceptanceFactoryOptions {
+   readonly deps?: LoggedPendingInteractionWorkSessionDeps;
+@@ -39,50 +37,6 @@ function inputFromP6r(input: P6rNativeAcceptance["input"]): PromptInput[] | null
+   return values.length === 0 ? null : values;
+ }
+ 
+-const participantActorSchema = z.object({
+-  identity: z.discriminatedUnion("kind", [
+-    z.object({ key: z.string().min(1), kind: z.literal("person"), issuer: z.string().min(1), subject: z.string().min(1) }).passthrough(),
+-    z.object({ key: z.string().min(1), kind: z.literal("external"), pluginId: z.string().min(1), subject: z.string().min(1) }).passthrough(),
+-  ]),
+-  presentation: z.object({
+-    displayName: z.string().min(1),
+-    avatarUrl: z.string().min(1).nullable(),
+-  }).passthrough(),
+-}).passthrough();
+-
+-function projectP6rParticipantsInTransaction(
+-  db: DbQueryConnection,
+-  threadId: string,
+-): void {
+-  const rows = db.select({
+-    acceptedAt: p6rContributions.acceptedAt,
+-    acceptedAuthorship: p6rContributions.acceptedAuthorship,
+-    latestEditor: p6rContributions.latestEditor,
+-  }).from(p6rContributions).where(eq(p6rContributions.threadId, threadId)).all();
+-  const profiles = new Map<string, { p6rPrincipalKey: string; identityKind: "external" | "person"; p6rDisplayName: string; imageUrl: string | null }>();
+-  let sourceVersion = 0;
+-  for (const row of rows) {
+-    sourceVersion = Math.max(sourceVersion, row.acceptedAt);
+-    for (const encoded of [row.acceptedAuthorship, row.latestEditor]) {
+-      try {
+-        const actor = participantActorSchema.safeParse(JSON.parse(encoded));
+-        if (!actor.success) continue;
+-        profiles.set(actor.data.identity.key, {
+-          p6rPrincipalKey: actor.data.identity.key,
+-          identityKind: actor.data.identity.kind,
+-          p6rDisplayName: actor.data.presentation.displayName,
+-          imageUrl: actor.data.presentation.avatarUrl,
+-        });
+-      } catch {}
+-    }
+-  }
+-  replaceCoreParticipantProfilesInTransaction(db, {
+-    threadId,
+-    sourceVersion,
+-    profiles: [...profiles.values()].sort((left, right) => left.p6rPrincipalKey.localeCompare(right.p6rPrincipalKey)),
+-  });
+-}
+-
+ export function createP6rNativeAcceptance(options: P6rNativeAcceptanceFactoryOptions): (input: P6rNativeAcceptance) => Promise<P6rAcceptanceOutcome> {
+   return async (input) => {
+     const receiptDb = options.db ?? options.deps?.db;
+diff --git a/apps/server/src/services/p6r/participant-projection.ts b/apps/server/src/services/p6r/participant-projection.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..cbdeb567cd78be2415a3aab055183c53d345b938
+--- /dev/null
++++ b/apps/server/src/services/p6r/participant-projection.ts
+@@ -0,0 +1,147 @@
++import {
++  getStoredTurnRequestEventByRequestId,
++  events,
++  replaceCoreParticipantProfilesInTransaction,
++  type DbQueryConnection,
++} from "@bb/db";
++import { p6rMentionTargetSchema, type P6rMentionTarget } from "@bb/domain";
++import { and, eq, inArray, sql } from "drizzle-orm";
++import { z } from "zod";
++import { p6rContributions } from "./sidecar-schema.js";
++
++const targetListSchema = z.array(p6rMentionTargetSchema).max(256);
++export function readP6rMentionTargetsForRequest(
++  db: DbQueryConnection,
++  threadId: string,
++  requestId: string,
++): P6rMentionTarget[] {
++  const row = getStoredTurnRequestEventByRequestId(db, { threadId, requestId });
++  if (row === null) throw new Error("Original mention request is unavailable");
++  const value = JSON.parse(row.data).p6rMentionedTargets;
++  return value === undefined ? [] : targetListSchema.parse(value);
++}
++export function readP6rMentionTargets(
++  db: DbQueryConnection,
++  threadIds: readonly string[],
++): Array<{ threadId: string; createdAt: number; targets: P6rMentionTarget[] }> {
++  if (threadIds.length === 0) return [];
++  return db
++    .select({
++      threadId: events.threadId,
++      createdAt: events.createdAt,
++      data: events.data,
++    })
++    .from(events)
++    .where(
++      and(
++        inArray(events.threadId, [...new Set(threadIds)]),
++        eq(events.type, "client/turn/requested"),
++        sql`json_type(${events.data}, '$.p6rMentionedTargets') = 'array'`,
++      ),
++    )
++    .all()
++    .flatMap((row) => {
++      try {
++        const parsed = targetListSchema.safeParse(
++          JSON.parse(row.data).p6rMentionedTargets,
++        );
++        return parsed.success
++          ? [
++              {
++                threadId: row.threadId,
++                createdAt: row.createdAt,
++                targets: parsed.data,
++              },
++            ]
++          : [];
++      } catch {
++        return [];
++      }
++    });
++}
++
++const participantActorSchema = z
++  .object({
++    identity: z.discriminatedUnion("kind", [
++      z
++        .object({
++          key: z.string().min(1),
++          kind: z.literal("person"),
++          issuer: z.string().min(1),
++          subject: z.string().min(1),
++        })
++        .passthrough(),
++      z
++        .object({
++          key: z.string().min(1),
++          kind: z.literal("external"),
++          pluginId: z.string().min(1),
++          subject: z.string().min(1),
++        })
++        .passthrough(),
++    ]),
++    presentation: z
++      .object({
++        displayName: z.string().min(1),
++        avatarUrl: z.string().min(1).nullable(),
++      })
++      .passthrough(),
++  })
++  .passthrough();
++
++export function projectP6rParticipantsInTransaction(
++  db: DbQueryConnection,
++  threadId: string,
++): void {
++  const rows = db
++    .select({
++      acceptedAt: p6rContributions.acceptedAt,
++      acceptedAuthorship: p6rContributions.acceptedAuthorship,
++      latestEditor: p6rContributions.latestEditor,
++    })
++    .from(p6rContributions)
++    .where(eq(p6rContributions.threadId, threadId))
++    .all();
++  const profiles = new Map<
++    string,
++    {
++      p6rPrincipalKey: string;
++      identityKind: "external" | "person";
++      p6rDisplayName: string;
++      imageUrl: string | null;
++    }
++  >();
++  let sourceVersion = 0;
++  for (const row of rows) {
++    sourceVersion = Math.max(sourceVersion, row.acceptedAt);
++    for (const encoded of [row.acceptedAuthorship, row.latestEditor]) {
++      try {
++        const actor = participantActorSchema.safeParse(JSON.parse(encoded));
++        if (!actor.success) continue;
++        profiles.set(actor.data.identity.key, {
++          p6rPrincipalKey: actor.data.identity.key,
++          identityKind: actor.data.identity.kind,
++          p6rDisplayName: actor.data.presentation.displayName,
++          imageUrl: actor.data.presentation.avatarUrl,
++        });
++      } catch {}
++    }
++  }
++  for (const row of readP6rMentionTargets(db, [threadId])) {
++    sourceVersion = Math.max(sourceVersion, row.createdAt);
++    for (const target of row.targets)
++      profiles.set(target.identity.key, {
++        p6rPrincipalKey: target.identity.key,
++        identityKind: "person",
++        p6rDisplayName: target.presentation.displayName,
++        imageUrl: target.presentation.avatarUrl,
++      });
++  }
++  replaceCoreParticipantProfilesInTransaction(db, {
++    threadId,
++    sourceVersion,
++    profiles: [...profiles.values()].sort((left, right) =>
++      left.p6rPrincipalKey.localeCompare(right.p6rPrincipalKey),
++    ),
++  });
++}
+diff --git a/apps/server/src/services/p6r/provider-contract.ts b/apps/server/src/services/p6r/provider-contract.ts
+index 047586cfb7740507e1932d2dd15e1c52f275ba4d..1c17f9eddbc698edddaeb33385f8cbe512b2298b 100644
+--- a/apps/server/src/services/p6r/provider-contract.ts
++++ b/apps/server/src/services/p6r/provider-contract.ts
+@@ -16,4 +16,24 @@ export interface P6rForkIdentityProvider { readonly issuers: readonly string[];
+ export interface P6rForkProviderRegistration { readonly configuration: Readonly<P6rProviderConfiguration>; dispose(): void; readonly generation: string; getStatus(): "staged" | "active" | "retired"; invalidate(change: { readonly kind: "authentication"; readonly subjects?: readonly { readonly issuer: string; readonly subject: string }[] } | { readonly kind: "directory"; readonly revision: string }): P6rResult<void>; person(issuer: string, subject: string): P6rResult<P6rPersonReference>; readonly signal: AbortSignal; subscribe(listener: (status: "staged" | "active" | "retired") => void): () => void; }
+ export interface P6rPreparedProvider { readonly configuration: Readonly<P6rProviderConfiguration>; readonly generation: string; readonly pluginId: string; readonly registration: P6rForkProviderRegistration; }
+ export type P6rProviderInvalidation = { readonly epoch: number; readonly generation: string; readonly kind: "authentication"; readonly subjects?: readonly { readonly issuer: string; readonly subject: string }[] } | { readonly generation: string; readonly kind: "directory"; } | { readonly epoch: number; readonly generation: string; readonly kind: "retired"; };
+-export interface P6rProviderRegistry { directorySources(): readonly P6rProviderDirectorySource[]; notifyPublished(candidate: P6rPreparedProvider): void; prepare(input: { readonly configuration: P6rProviderConfiguration; readonly deadlineAt: number; readonly generation: string; readonly provider: P6rForkIdentityProvider }): Promise<P6rResult<P6rPreparedProvider>>; publish(candidate: P6rPreparedProvider): P6rResult<{ readonly active: P6rPreparedProvider; readonly predecessor: P6rPreparedProvider | null }>; resolve(evidence: P6rProviderEvidence): Promise<P6rProviderResolution>; retire(candidate: P6rPreparedProvider): void; subscribeInvalidations(listener: (event: P6rProviderInvalidation) => void): () => void; }
++export interface P6rProviderRegistry {
++  personForPlugin(input: {
++    readonly pluginId: string;
++    readonly issuer: string;
++    readonly subject: string
++    readonly signal?: AbortSignal
++  }): Promise<
++    P6rResult<{
++      readonly generation: string;
++      readonly person: P6rPersonReference;
++      readonly presentation: P6rProfilePresentation;
++    }>
++  >;
++  directorySources(): readonly P6rProviderDirectorySource[];
++  notifyPublished(candidate: P6rPreparedProvider): void;
++  prepare(input: { readonly configuration: P6rProviderConfiguration; readonly deadlineAt: number; readonly generation: string; readonly provider: P6rForkIdentityProvider }): Promise<P6rResult<P6rPreparedProvider>>;
++  publish(candidate: P6rPreparedProvider): P6rResult<{ readonly active: P6rPreparedProvider; readonly predecessor: P6rPreparedProvider | null }>;
++  resolve(evidence: P6rProviderEvidence): Promise<P6rProviderResolution>;
++  retire(candidate: P6rPreparedProvider): void;
++  subscribeInvalidations(listener: (event: P6rProviderInvalidation) => void): () => void;
++}
+diff --git a/apps/server/src/services/p6r/provider-registry.ts b/apps/server/src/services/p6r/provider-registry.ts
+index 1466704d0ea7b3a78869c9eda8bea8d4f409521c..1ae5b083387534b2e81ccd6ff90cf5f37e9323fe 100644
+--- a/apps/server/src/services/p6r/provider-registry.ts
++++ b/apps/server/src/services/p6r/provider-registry.ts
+@@ -8,13 +8,51 @@ export interface P6rProviderRegistryOptions { readonly clearTimeout?: (timer: Ti
+ function failure(code: "unavailable" | "invalid-input" | "invalid-operation" | "expired", message: string): P6rResult<never> { return { ok: false, error: { code, message, retry: code === "unavailable" ? "after-reconnect" : code === "expired" ? "same-operation" : "never" } }; }
+ function keyFor(issuer: string, subject: string): string { return `p6r-person:v1:${encodeURIComponent(issuer)}:${encodeURIComponent(subject)}`; }
+ function configurationSnapshot(value: P6rProviderConfiguration): Readonly<P6rProviderConfiguration> { return Object.freeze({ boundaryId: value.boundaryId, credentials: Object.freeze(value.credentials.map((credential) => Object.freeze({ field: credential.field, name: credential.name, source: credential.source }))), ingressIds: Object.freeze([...value.ingressIds]), pluginId: value.pluginId, resolver: Object.freeze({ maxSessionAgeMs: value.resolver.maxSessionAgeMs, timeoutMs: value.resolver.timeoutMs }), version: 1 }); }
+-function validConfiguration(value: P6rProviderConfiguration): boolean { return value.version === 1 && value.boundaryId.length > 0 && value.pluginId.length > 0 && Number.isFinite(value.resolver.timeoutMs) && value.resolver.timeoutMs > 0 && Number.isFinite(value.resolver.maxSessionAgeMs) && value.resolver.maxSessionAgeMs > 0; }
+-function validIssuers(issuers: readonly string[]): boolean { return issuers.length > 0 && issuers.every((issuer) => issuer.length > 0) && new Set(issuers).size === issuers.length; }
+-function sameConfiguration(left: Readonly<P6rProviderConfiguration>, right: Readonly<P6rProviderConfiguration>): boolean { return left.version === right.version && left.boundaryId === right.boundaryId && left.pluginId === right.pluginId && left.resolver.timeoutMs === right.resolver.timeoutMs && left.resolver.maxSessionAgeMs === right.resolver.maxSessionAgeMs && left.credentials.length === right.credentials.length && left.credentials.every((credential, index) => credential.name === right.credentials[index]?.name && credential.source === right.credentials[index]?.source && credential.field === right.credentials[index]?.field) && left.ingressIds.length === right.ingressIds.length && left.ingressIds.every((id, index) => id === right.ingressIds[index]); }
++function validConfiguration(value: P6rProviderConfiguration): boolean {
++  return (
++    value.version === 1 &&
++    value.boundaryId.length > 0 &&
++    value.pluginId.length > 0 &&
++    Number.isFinite(value.resolver.timeoutMs) &&
++    value.resolver.timeoutMs > 0 &&
++    Number.isFinite(value.resolver.maxSessionAgeMs) &&
++    value.resolver.maxSessionAgeMs > 0
++  );
++}
++function validIssuers(issuers: readonly string[]): boolean {
++  return (
++    issuers.length > 0 &&
++    issuers.every((issuer) => issuer.length > 0) &&
++    new Set(issuers).size === issuers.length
++  );
++}
++function sameConfiguration(
++  left: Readonly<P6rProviderConfiguration>,
++  right: Readonly<P6rProviderConfiguration>,
++): boolean {
++  return (
++    left.version === right.version &&
++    left.boundaryId === right.boundaryId &&
++    left.pluginId === right.pluginId &&
++    left.resolver.timeoutMs === right.resolver.timeoutMs &&
++    left.resolver.maxSessionAgeMs === right.resolver.maxSessionAgeMs &&
++    left.credentials.length === right.credentials.length &&
++    left.credentials.every(
++      (credential, index) =>
++        credential.name === right.credentials[index]?.name &&
++        credential.source === right.credentials[index]?.source &&
++        credential.field === right.credentials[index]?.field,
++    ) &&
++    left.ingressIds.length === right.ingressIds.length &&
++    left.ingressIds.every((id, index) => id === right.ingressIds[index])
++  );
++}
+ 
+ export function encodeP6rPersonKey(issuer: string, subject: string): string { return keyFor(issuer, subject); }
+ 
+-export function createP6rProviderRegistry(options: P6rProviderRegistryOptions): P6rProviderRegistry {
++export function createP6rProviderRegistry(
++  options: P6rProviderRegistryOptions,
++): P6rProviderRegistry {
+   const candidates = new Map<string, CandidateState>();
+   const timer = options.setTimeout ?? setTimeout;
+   const cancelTimer = options.clearTimeout ?? clearTimeout;
+@@ -68,6 +106,116 @@ export function createP6rProviderRegistry(options: P6rProviderRegistryOptions):
+   });
+ 
+   return {
++    async personForPlugin(input) {
++      const state = active;
++      if (
++        state === null ||
++        state.status !== "active" ||
++        state.pluginId !== input.pluginId
++      ) {
++        return failure("unavailable", "Provider is not the active owner");
++      }
++      const personValue = person(state, input.issuer, input.subject);
++      if (!personValue.ok) return personValue;
++      const lookup = state.provider.lookup;
++      if (lookup === undefined)
++        return failure("unavailable", "Provider lookup is unavailable");
++      const epoch = state.authEpoch;
++      const controller = new AbortController();
++      const abort = (): void => controller.abort();
++      state.controller.signal.addEventListener("abort", abort, { once: true });
++      input.signal?.addEventListener("abort", abort, { once: true });
++      state.resolutionControllers.add(controller);
++      if (input.signal?.aborted || state.controller.signal.aborted)
++        controller.abort();
++      try {
++        const result = await bounded(
++          () =>
++            lookup([{ issuer: input.issuer, subject: input.subject }], {
++              signal: controller.signal,
++            }),
++          options.now() + state.configuration.resolver.timeoutMs,
++          controller.signal,
++        );
++        if (
++          result === null ||
++          controller.signal.aborted ||
++          !current(state, epoch)
++        ) {
++          return failure(
++            "unavailable",
++            "Provider target lookup expired or was invalidated",
++          );
++        }
++        if (!result.ok) return result;
++        if (
++          !Array.isArray(result.value.records) ||
++          result.value.records.length !== 1
++        ) {
++          return failure(
++            "invalid-input",
++            "Provider target is missing or ambiguous",
++          );
++        }
++        const entry = result.value.records[0];
++        const record = entry?.record;
++        if (
++          entry?.issuer !== input.issuer ||
++          entry.subject !== input.subject ||
++          record == null ||
++          record.issuer !== input.issuer ||
++          record.subject !== input.subject ||
++          record.status !== "current"
++        ) {
++          return failure(
++            "invalid-input",
++            "Provider target does not match a current person",
++          );
++        }
++        const presentation = record.presentation;
++        if (
++          presentation == null ||
++          typeof presentation.displayName !== "string" ||
++          presentation.displayName.length === 0 ||
++          presentation.displayName.length > 256 ||
++          !(
++            presentation.handle === null ||
++            (typeof presentation.handle === "string" &&
++              presentation.handle.length <= 256)
++          ) ||
++          !(
++            presentation.avatarUrl === null ||
++            (typeof presentation.avatarUrl === "string" &&
++              presentation.avatarUrl.length > 0 &&
++              presentation.avatarUrl.length <= 2048)
++          )
++        ) {
++          return failure(
++            "invalid-input",
++            "Provider target presentation is malformed",
++          );
++        }
++        return {
++          ok: true,
++          value: Object.freeze({
++            generation: state.generation,
++            person: Object.freeze(personValue.value),
++            presentation: Object.freeze({
++              displayName: presentation.displayName,
++              handle: presentation.handle,
++              avatarUrl: presentation.avatarUrl,
++            }),
++          }),
++        };
++      } catch {
++        return failure("unavailable", "Provider target lookup failed");
++      } finally {
++        controller.abort();
++        state.resolutionControllers.delete(controller);
++        state.controller.signal.removeEventListener("abort", abort);
++        input.signal?.removeEventListener("abort", abort);
++      }
++    },
+     async prepare(input) {
+       if (!validConfiguration(input.configuration) || !validIssuers(input.provider.issuers) || input.generation.length === 0 || candidates.has(input.generation)) return failure("invalid-input", "Provider candidate is malformed or already staged");
+       const configuration = configurationSnapshot(input.configuration);
+diff --git a/apps/server/src/services/plugins/plugin-mentions.ts b/apps/server/src/services/plugins/plugin-mentions.ts
+index 0ab0afc5fee798ada455506be34694595da7da32..89e633fc6a8f507fa90158497c30db551573739a 100644
+--- a/apps/server/src/services/plugins/plugin-mentions.ts
++++ b/apps/server/src/services/plugins/plugin-mentions.ts
+@@ -1,4 +1,4 @@
+-import type { PromptInput } from "@bb/domain";
++import type { P6rMentionTarget, PromptInput } from "@bb/domain";
+ import { ApiError } from "../../errors.js";
+ import { resolvePluginMention } from "./plugin-agent-contributions.js";
+ 
+@@ -26,11 +26,18 @@ function collectPluginMentionResources(
+   return resources;
+ }
+ 
+-export async function resolvePluginMentionContextInputs(
++export async function resolvePluginMentionInputs(
+   input: readonly PromptInput[],
+-): Promise<PromptInput[]> {
++): Promise<{ contextInputs: PromptInput[]; targets: P6rMentionTarget[] }> {
+   const resources = collectPluginMentionResources(input);
+-  if (resources.length === 0) return [];
++  if (resources.length === 0) return { contextInputs: [], targets: [] };
++  if (resources.length > 256)
++    throw new ApiError(
++      422,
++      "plugin_mention_resolve_failed",
++      "Too many plugin mention targets",
++    );
++  const targets = new Map<string, P6rMentionTarget>();
+   const contextInputs: PromptInput[] = [];
+   for (const resource of resources) {
+     const result = await resolvePluginMention({
+@@ -44,6 +51,7 @@ export async function resolvePluginMentionContextInputs(
+         `Could not resolve @${resource.label} (plugin "${resource.pluginId}"): ${result.error}`,
+       );
+     }
++    if (result.target) targets.set(result.target.identity.key, result.target);
+     contextInputs.push({
+       type: "text",
+       text: `Context for @${resource.label} (resolved by plugin "${resource.pluginId}"):\n\n${result.context}`,
+@@ -51,5 +59,11 @@ export async function resolvePluginMentionContextInputs(
+       visibility: "agent-only",
+     });
+   }
+-  return contextInputs;
++  return { contextInputs, targets: [...targets.values()] };
++}
++
++export async function resolvePluginMentionContextInputs(
++  input: readonly PromptInput[],
++): Promise<PromptInput[]> {
++  return (await resolvePluginMentionInputs(input)).contextInputs;
+ }
+diff --git a/apps/server/src/services/plugins/plugin-service-internal.ts b/apps/server/src/services/plugins/plugin-service-internal.ts
+index e4b40147538ea6345a9f1f424529408de8bbe1e7..02ec95c94e6d1bf2d4e768f7d5919e3f1cc0347d 100644
+--- a/apps/server/src/services/plugins/plugin-service-internal.ts
++++ b/apps/server/src/services/plugins/plugin-service-internal.ts
+@@ -1,4 +1,5 @@
+ import type { MachineEnrollmentService } from "../machines/machine-services.js";
++import type { P6rMentionTarget } from "@bb/domain";
+ import type { AiServiceRegistry } from "../ai/ai-service-registry.js";
+ import type { DbConnection } from "@bb/db";
+ import type {
+@@ -212,7 +213,7 @@ export interface PluginMentionSearchGroup {
+ }
+ 
+ export type PluginMentionResolveResult =
+-  | { ok: true; context: string }
++  | { ok: true; context: string; target?: P6rMentionTarget }
+   | { ok: false; error: string };
+ 
+ export interface PluginThreadEventEmitter {
+diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
+index f95c08b83e427494160ac6eefd03a67882901a69..e7500bd7df8bc0d95ce8c546ddf036120e5fa3bc 100644
+--- a/apps/server/src/services/plugins/plugin-service.ts
++++ b/apps/server/src/services/plugins/plugin-service.ts
+@@ -2366,15 +2366,62 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+             `timed out after ${mentionResolveTimeoutMs}ms`,
+           );
+           const context = (result as { context?: unknown } | null)?.context;
++          const target = (result as { experimental_target?: unknown } | null)?.experimental_target;
++          const selected =
++            target !== null &&
++            typeof target === "object" &&
++            !Array.isArray(target) &&
++            (target as Record<string, unknown>).kind === "p6r-person" &&
++            typeof (target as Record<string, unknown>).issuer === "string" &&
++            typeof (target as Record<string, unknown>).subject === "string"
++              ? (target as {
++                  kind: "p6r-person";
++                  issuer: string;
++                  subject: string;
++                })
++              : undefined;
+           if (typeof context !== "string" || context.trim().length === 0) {
+             throw new Error(
+               `mention provider "${providerId}" resolve() must return { context: string }`,
+             );
+           }
+-          return context;
++          if (
++            target !== undefined &&
++            (selected === undefined ||
++              selected.issuer.length === 0 ||
++              selected.issuer.length > 512 ||
++              selected.subject.length === 0 ||
++              selected.subject.length > 512)
++          )
++            throw new Error("mention target selector is malformed");
++          if (selected === undefined) return { context };
++          const normalized = await deps.p6rProviderRegistry?.personForPlugin({
++            pluginId,
++            issuer: selected.issuer,
++            subject: selected.subject,
++          });
++          if (normalized === undefined || !normalized.ok)
++            throw new Error(
++              "mention target is not an active verified provider person",
++            );
++          return {
++            context,
++            target: {
++              identity: normalized.value.person,
++              presentation: normalized.value.presentation,
++              source: { pluginId, generation: normalized.value.generation },
++            },
++          };
+         },
+       );
+-      if (outcome.ok) return { ok: true, context: outcome.value };
++      if (outcome.ok)
++        return {
++          ok: true,
++          context: outcome.value.context,
++          ...(outcome.value.target === undefined
++            ? {}
++            : { target: outcome.value.target }),
++        };
+       return { ok: false, error: outcome.error };
+     },
+ 
+diff --git a/apps/server/src/services/threads/dispatch-attempt.ts b/apps/server/src/services/threads/dispatch-attempt.ts
+index e7524aa95f32d84755baa0b445a6a6991a2f1de0..f6641c3ead98267addf42c36cffc3ae30b6ad8d0 100644
+--- a/apps/server/src/services/threads/dispatch-attempt.ts
++++ b/apps/server/src/services/threads/dispatch-attempt.ts
+@@ -3,6 +3,7 @@ import {
+   cancelPreparingMachinePause,
+   isMachineWaitingForExecution,
+ } from "../machines/lifecycle.js";
++import { p6rMentionTargetSchema } from "@bb/domain";
+ import {
+   deleteClaimedQueuedThreadMessageBatchInTransaction,
+   getEnvironment,
+@@ -91,6 +92,7 @@ import type { TurnRequestRetryMarker } from "./thread-events.js";
+ import { restoreInterruptedThreadStartupRequest } from "./thread-provisioning.js";
+ 
+ export const pendingThreadStartContextSchema = z.object({
++  p6rMentionedTargets: z.array(p6rMentionTargetSchema).max(256).optional(),
+   environmentIntent: threadProvisionEnvironmentIntentSchema,
+   fork: threadForkDescriptorSchema.nullable(),
+   /** Provider-facing input when it differs from the persisted start seed. */
+@@ -740,6 +742,7 @@ async function admitPendingThread(
+     environmentIntent: startContext.environmentIntent,
+     execution,
+     fork: startContext.fork,
++    p6rMentionedTargets: startContext.p6rMentionedTargets,
+     input: args.payload.input,
+     ...(startContext.providerInput === undefined
+       ? {}
+@@ -816,6 +819,7 @@ async function launchAdmittedThread(
+     environmentIntent: startContext.environmentIntent,
+     execution: admission.execution,
+     fork: startContext.fork,
++    p6rMentionedTargets: startContext.p6rMentionedTargets,
+     input: admission.input,
+     ...(startContext.providerInput !== undefined
+       ? { providerInput: startContext.providerInput }
+diff --git a/apps/server/src/services/threads/queued-messages.ts b/apps/server/src/services/threads/queued-messages.ts
+index 112468ff41e074185b7f4780841fc407342b7a58..79f282c56197b46412a72fedf463a907702f9fd4 100644
+--- a/apps/server/src/services/threads/queued-messages.ts
++++ b/apps/server/src/services/threads/queued-messages.ts
+@@ -1,3 +1,4 @@
++import { readP6rMentionTargetsForRequest } from "../p6r/participant-projection.js";
+ import {
+   claimQueuedThreadMessageGroup,
+   claimNextQueuedThreadMessageGroup,
+@@ -52,6 +53,7 @@ import {
+   buildExecutionOptions,
+   prepareTurnSubmitCommandPayload,
+ } from "./thread-commands.js";
++import { resolvePluginMentionInputs } from "../plugins/plugin-mentions.js";
+ import {
+   prependDeferredFirstTurnContext,
+   requireDeferredFirstTurnContextCurrent,
+@@ -78,7 +80,6 @@ import {
+ } from "./queue-waits.js";
+ import { recordQueuedMessageDrainFailure } from "./queue-drain-failure.js";
+ import {
+-  appendPluginMentionContext,
+   captureUserMessageSentTelemetry,
+   ensureThreadIsWritable,
+   formatAgentThreadInput,
+@@ -472,10 +473,25 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
+     }),
+   );
+   let input = flattenPromptInputGroups(inputGroups);
+-  ({ input, inputGroups } = await appendPluginMentionContext({
+-    input,
+-    inputGroups,
+-  }));
++  const { contextInputs: pluginMentionContext, targets: p6rMentionedTargets } =
++    queuedMessage.payload.kind !== "retry"
++      ? await resolvePluginMentionInputs(input)
++      : {
++          contextInputs: [],
++          targets: readP6rMentionTargetsForRequest(
++            deps.db,
++            thread.id,
++            queuedMessage.payload.retryOfTurnRequestId,
++          ),
++        };
++  if (pluginMentionContext.length > 0) {
++    input = [...input, ...pluginMentionContext];
++    const lastGroup = inputGroups[inputGroups.length - 1]!;
++    inputGroups = [
++      ...inputGroups.slice(0, -1),
++      [...lastGroup, ...pluginMentionContext],
++    ];
++  }
+   const deferredFirstTurnContext = resolveDeferredFirstTurnContext(
+     deps.db,
+     thread.id,
+@@ -541,13 +557,14 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
+         queuedMessages: args.queuedMessages,
+       });
+       if (!consumed) {
+-        throw createQueuedMessageClaimLostError();
+-      }
++    throw createQueuedMessageClaimLostError();
++  }
+       const request = appendClientTurnEventInTransaction(tx, {
+         environmentId: thread.environmentId,
+         execution,
+         initiator,
+         input,
++        p6rMentionedTargets,
+         ...(inputGroups.length > 1 ? { inputGroups } : {}),
+         requestMethod: "turn/start",
+         senderThreadId,
+diff --git a/apps/server/src/services/threads/thread-create.ts b/apps/server/src/services/threads/thread-create.ts
+index 245eb7666b1fd6ef44d70bf819c06a482dfc5deb..bd8bc6f2170ff283b2dc78eb77719bc460b264bf 100644
+--- a/apps/server/src/services/threads/thread-create.ts
++++ b/apps/server/src/services/threads/thread-create.ts
+@@ -1,4 +1,5 @@
+ import { assertEnvironmentPathAvailable } from "../environments/path-admission.js";
++import type { P6rMentionTarget } from "@bb/domain";
+ import {
+   deleteThread,
+   getEnvironment,
+@@ -29,10 +30,8 @@ import {
+   resolveProjectExecutionDefaultsForCreate,
+ } from "./project-execution-defaults.js";
+ import { validatePromptAttachmentReferences } from "../projects/attachments.js";
+-import {
+-  appendPluginMentionContext,
+-  captureUserMessageSentTelemetry,
+-} from "./thread-send.js";
++import { captureUserMessageSentTelemetry } from "./thread-send.js";
++import { resolvePluginMentionInputs } from "../plugins/plugin-mentions.js";
+ import {
+   attemptDispatch,
+   hostIdForEnvironmentIntent,
+@@ -73,6 +72,7 @@ import {
+ type ThreadCreateDeps = LoggedPendingInteractionWorkSessionDeps;
+ 
+ interface CreateProvisioningThreadArgs {
++  p6rMentionedTargets?: P6rMentionTarget[];
+   environmentId: string | null;
+   executionDefaults: Parameters<
+     typeof buildExecutionOptions
+@@ -383,6 +383,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
+     );
+ 
+     const startContext: PendingThreadStartContext = {
++      p6rMentionedTargets: args.p6rMentionedTargets,
+       environmentIntent: args.environmentIntent,
+       fork: args.fork?.descriptor ?? null,
+       ...(args.providerInput !== undefined
+@@ -506,9 +507,11 @@ export async function createThreadFromRequest(
+   }
+   const pluginMetadata = resolveCreateThreadPluginMetadata(rawRequestInput);
+   const requestInput = { ...rawRequestInput };
+-  requestInput.input = (
+-    await appendPluginMentionContext({ input: requestInput.input })
+-  ).input;
++  const { contextInputs: pluginMentionContext, targets: p6rMentionedTargets } =
++    await resolvePluginMentionInputs(requestInput.input);
++  if (pluginMentionContext.length > 0) {
++    requestInput.input = [...requestInput.input, ...pluginMentionContext];
++  }
+   assertProjectWorkspaceCompatibility(project, requestInput);
+   const originKind = requestInput.originKind ?? null;
+   const sourceThreadId =
+@@ -725,6 +728,7 @@ export async function createThreadFromRequest(
+   }
+ 
+   const createArgs = {
++    p6rMentionedTargets,
+     environmentId,
+     environmentIntent,
+     executionDefaults: resolvedExecutionDefaults,
+diff --git a/apps/server/src/services/threads/thread-events.ts b/apps/server/src/services/threads/thread-events.ts
+index 8d27716268c26da59831d93e2e521bd1acfd6d76..073e8ebb468351994a89cdb67d096abb1a23de81 100644
+--- a/apps/server/src/services/threads/thread-events.ts
++++ b/apps/server/src/services/threads/thread-events.ts
+@@ -1,3 +1,5 @@
++import { projectP6rParticipantsInTransaction } from "../p6r/participant-projection.js";
++import type { P6rMentionTarget } from "@bb/domain";
+ import {
+   appendStoredThreadEventsInTransaction,
+   createEventId,
+@@ -73,6 +75,7 @@ export interface TurnRequestRetryMarker {
+ }
+ 
+ interface ClientTurnRequestedEventArgs {
++  p6rMentionedTargets?: P6rMentionTarget[];
+   /**
+    * Set only when a `turn.failed` retry row is dispatching, marking this turn
+    * as attempt N of an earlier request rather than something the user just
+@@ -216,6 +219,9 @@ function buildClientTurnRequestedEventData(
+       ? { systemMessageSubject: args.systemMessageSubject }
+       : {}),
+     input: args.input,
++    ...(args.p6rMentionedTargets?.length
++      ? { p6rMentionedTargets: args.p6rMentionedTargets }
++      : {}),
+     ...(args.inputGroups !== undefined
+       ? { inputGroups: args.inputGroups }
+       : {}),
+@@ -336,6 +342,19 @@ function appendThreadEventsInTransactionWithAttention(
+ ): AppendThreadEventsTransactionResult {
+   assertStoredTurnStartedForEvents(db, args);
+   const sequences = appendStoredThreadEventsInTransaction(db, args);
++  const mentionedThreads = new Set(
++    args
++      .filter(
++        (event) =>
++          event.type === "client/turn/requested" &&
++          event.data !== null &&
++          typeof event.data === "object" &&
++          "p6rMentionedTargets" in event.data,
++      )
++      .map((event) => event.threadId),
++  );
++  for (const threadId of mentionedThreads)
++    projectP6rParticipantsInTransaction(db, threadId);
+   const readStateUpdates = args
+     .map((eventArgs) => applyUserTurnReadForEvent(db, eventArgs))
+     .filter(isThreadReadStateUpdate);
+diff --git a/apps/server/src/services/threads/thread-facet-query.ts b/apps/server/src/services/threads/thread-facet-query.ts
+index 625fa6192508641f9fd4e3651af5093960b38d05..9fc6be737bda483333ec0981a89434bbeb5ce0b2 100644
+--- a/apps/server/src/services/threads/thread-facet-query.ts
++++ b/apps/server/src/services/threads/thread-facet-query.ts
+@@ -1,3 +1,4 @@
++import { readP6rMentionTargets } from "../p6r/participant-projection.js";
+ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+ import { inArray } from "drizzle-orm";
+ import {
+@@ -205,6 +206,7 @@ function ensureNativeParticipantProjection(
+     sourceVersion: number;
+     threadId: string;
+   }> = [];
++  const mentionRows = readP6rMentionTargets(deps.db, threadIds);
+   for (const threadId of threadIds) {
+     const contributionRows = rowsByThreadId.get(threadId) ?? [];
+     const byKey = new Map<
+@@ -232,6 +234,17 @@ function ensureNativeParticipantProjection(
+         } catch {}
+       }
+     }
++    for (const row of mentionRows) {
++      if (row.threadId !== threadId) continue;
++      sourceVersion = Math.max(sourceVersion, row.createdAt);
++      for (const target of row.targets)
++        byKey.set(target.identity.key, {
++          p6rPrincipalKey: target.identity.key,
++          identityKind: "person",
++          p6rDisplayName: target.presentation.displayName,
++          imageUrl: target.presentation.avatarUrl,
++        });
++    }
+     replacements.push({
+       threadId,
+       sourceVersion,
+diff --git a/apps/server/src/services/threads/thread-provisioning.ts b/apps/server/src/services/threads/thread-provisioning.ts
+index 133107b6f07eb0ee22d44bb8e3657d5d28675522..6728beb472703be50959361315da3f7e1e02f5c3 100644
+--- a/apps/server/src/services/threads/thread-provisioning.ts
++++ b/apps/server/src/services/threads/thread-provisioning.ts
+@@ -3,6 +3,7 @@ import { sweepProviderMachine } from "../machines/provider-orchestration.js";
+ import { cancelProviderEnvironmentCreation } from "../environments/environment-engine.js";
+ import { getPreparingEnvironment } from "@bb/db";
+ import { getThread, type DbTransaction, type EnvironmentRow } from "@bb/db";
++import type { P6rMentionTarget } from "@bb/domain";
+ import {
+   type EnvironmentProviderSelection,
+   type PromptInput,
+@@ -53,6 +54,7 @@ import { runtimeErrorLogFields } from "../lib/error-log-fields.js";
+ import { recordAcceptedPromptHistoryEntry } from "../prompt-history.js";
+ 
+ export interface ThreadProvisionRequestArgs {
++  p6rMentionedTargets?: P6rMentionTarget[];
+   environmentIntent: ThreadProvisionEnvironmentIntent;
+   execution: ResolvedThreadExecutionOptions;
+   fork: ThreadForkDescriptor | null;
+@@ -71,6 +73,7 @@ export interface PreappendedThreadProvisionRequest {
+ }
+ 
+ interface RequestThreadTargetReprovisionArgs {
++  p6rMentionedTargets?: P6rMentionTarget[];
+   beforeRequestAppendInTransaction?: (args: { tx: DbTransaction }) => void;
+   environment: EnvironmentRow;
+   execution: ResolvedThreadExecutionOptions;
+@@ -240,6 +243,7 @@ export function appendThreadProvisionRequestInTransaction(
+       environmentId: args.thread.environmentId,
+       type: "client/turn/requested",
+       input: args.input,
++      p6rMentionedTargets: args.p6rMentionedTargets,
+       execution: args.execution,
+       initiator,
+       senderThreadId,
+@@ -247,8 +251,7 @@ export function appendThreadProvisionRequestInTransaction(
+       source: "spawn",
+       target,
+       requestId: createClientTurnRequestId(),
+-    },
+-  );
++    });
+   recordAcceptedPromptHistoryEntry(
+     { db: tx },
+     {
+@@ -286,6 +289,7 @@ export function requestThreadProvision(
+             environmentId: args.thread.environmentId,
+             type: "client/turn/requested",
+             input: args.input,
++            p6rMentionedTargets: args.p6rMentionedTargets,
+             execution: args.execution,
+             initiator,
+             senderThreadId,
+@@ -397,6 +401,7 @@ function appendReprovisionTurnRequest(
+             environmentId: args.environment.id,
+             type: "client/turn/requested",
+             input: args.input,
++            p6rMentionedTargets: args.p6rMentionedTargets,
+             ...(args.inputGroups !== undefined
+               ? { inputGroups: args.inputGroups }
+               : {}),
+diff --git a/apps/server/src/services/threads/thread-send.ts b/apps/server/src/services/threads/thread-send.ts
+index 025876999fe8b4f2e44cb2230ebc2c187e635d6d..83bae6b6fef881fade1f37cc7ecc272ef98379bb 100644
+--- a/apps/server/src/services/threads/thread-send.ts
++++ b/apps/server/src/services/threads/thread-send.ts
+@@ -1,3 +1,5 @@
++import { readP6rMentionTargetsForRequest } from "../p6r/participant-projection.js";
++import type { P6rMentionTarget } from "@bb/domain";
+ import {
+   getEnvironment,
+   getThread,
+@@ -65,15 +67,13 @@ import {
+   throwThreadNotWritable,
+ } from "../lib/lifecycle-api-errors.js";
+ import { validatePromptAttachmentReferences } from "../projects/attachments.js";
+-import { resolvePluginMentionContextInputs } from "../plugins/plugin-mentions.js";
++import { resolvePluginMentionInputs } from "../plugins/plugin-mentions.js";
+ import { clearThreadContext } from "./thread-context-clear.js";
+ import { withThreadSendGuard } from "./thread-context-mutation-guard.js";
+ import {
+   prependDeferredFirstTurnContext,
+   requireDeferredFirstTurnContextCurrent,
+   resolveDeferredFirstTurnContext,
+-  type GroupedPrompt,
+-  type PromptWithGroups,
+ } from "./deferred-first-turn-context.js";
+ import type { TelemetryEvent } from "../system/telemetry.js";
+ 
+@@ -154,6 +154,7 @@ interface SendThreadMessageQueueRequest {
+ }
+ 
+ interface AppendAndQueueSendThreadMessageArgs {
++  p6rMentionedTargets?: P6rMentionTarget[];
+   afterAppendInTransaction?: SendThreadMessageTransactionCommit;
+   /** Retry provenance; absent for an original dispatch. */
+   retryOf?: TurnRequestRetryMarker;
+@@ -333,41 +334,6 @@ export function formatAgentThreadInput(
+   });
+ }
+ 
+-export function appendPluginMentionContext(
+-  prompt: GroupedPrompt,
+-): Promise<GroupedPrompt>;
+-export function appendPluginMentionContext(
+-  prompt: PromptWithGroups,
+-): Promise<PromptWithGroups>;
+-export async function appendPluginMentionContext(
+-  prompt: PromptWithGroups,
+-): Promise<PromptWithGroups> {
+-  const pluginMentionContext = await resolvePluginMentionContextInputs(
+-    prompt.input,
+-  );
+-  if (pluginMentionContext.length === 0) {
+-    return prompt;
+-  }
+-  const inputGroups = prompt.inputGroups;
+-  return {
+-    input: [...prompt.input, ...pluginMentionContext],
+-    ...(inputGroups !== undefined
+-      ? {
+-          inputGroups:
+-            inputGroups.length > 0
+-              ? [
+-                  ...inputGroups.slice(0, -1),
+-                  [
+-                    ...inputGroups[inputGroups.length - 1]!,
+-                    ...pluginMentionContext,
+-                  ],
+-                ]
+-              : inputGroups,
+-        }
+-      : {}),
+-  };
+-}
+-
+ type UserMessageSentProperties = Extract<
+   TelemetryEvent,
+   { name: "user_message_sent" }
+@@ -392,6 +358,7 @@ export function captureUserMessageSentTelemetry(
+ }
+ 
+ function appendAndQueueSendThreadMessageInTransaction({
++  p6rMentionedTargets,
+   afterAppendInTransaction,
+   retryOf,
+   beforeAppendInTransaction,
+@@ -420,6 +387,7 @@ function appendAndQueueSendThreadMessageInTransaction({
+             type: "client/turn/requested",
+             ...(retryOf !== undefined ? { retryOf } : {}),
+             input,
++            p6rMentionedTargets,
+             ...(inputGroups !== undefined ? { inputGroups } : {}),
+             execution,
+             initiator,
+@@ -513,10 +481,27 @@ async function sendThreadMessageWithoutContextClear(
+             senderThreadId,
+           })
+         : payload.input;
+-  ({ input, inputGroups } = await appendPluginMentionContext({
+-    input,
+-    ...(inputGroups !== undefined ? { inputGroups } : {}),
+-  }));
++  const { contextInputs: pluginMentionContext, targets: p6rMentionedTargets } =
++    args.retryOf === undefined
++      ? await resolvePluginMentionInputs(input)
++      : {
++          contextInputs: [],
++          targets: readP6rMentionTargetsForRequest(
++            deps.db,
++            thread.id,
++            args.retryOf.requestId,
++          ),
++        };
++  if (pluginMentionContext.length > 0) {
++    input = [...input, ...pluginMentionContext];
++    if (inputGroups !== undefined && inputGroups.length > 0) {
++      const lastGroup = inputGroups[inputGroups.length - 1]!;
++      inputGroups = [
++        ...inputGroups.slice(0, -1),
++        [...lastGroup, ...pluginMentionContext],
++      ];
++    }
++  }
+   const deferredFirstTurnContext = resolveDeferredFirstTurnContext(
+     deps.db,
+     thread.id,
+@@ -597,6 +582,7 @@ async function sendThreadMessageWithoutContextClear(
+ 
+   if (
+     await dispatchTurnDuringReprovision({
++      p6rMentionedTargets,
+       beforeRequestAppendInTransaction: beforeAppendInTransaction,
+       deps,
+       environment,
+@@ -673,6 +659,7 @@ async function sendThreadMessageWithoutContextClear(
+         }
+       : await prepareReadyThreadTurnCommand(deps, commandArgs);
+     const queuedRequest = appendAndQueueSendThreadMessageInTransaction({
++      p6rMentionedTargets,
+       afterAppendInTransaction,
+       ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
+       beforeAppendInTransaction: ({ tx }) => {
+@@ -710,10 +697,10 @@ async function sendThreadMessageWithoutContextClear(
+       thread,
+     });
+     deps.hub.notifyThread(
+-      thread.id,
+-      queuedRequest.request.notificationChanges,
+-      queuedRequest.request.notificationMetadata,
+-    );
++    thread.id,
++    queuedRequest.request.notificationChanges,
++    queuedRequest.request.notificationMetadata,
++  );
+     startLiveHostCommand(deps, {
+       command: command.command,
+       hostId: readyEnvironment.hostId,
+@@ -770,6 +757,7 @@ async function sendThreadMessageWithoutContextClear(
+     requestId,
+   });
+   const queuedRequest = appendAndQueueSendThreadMessageInTransaction({
++    p6rMentionedTargets,
+     afterAppendInTransaction,
+     ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
+     beforeAppendInTransaction,
+diff --git a/apps/server/src/services/threads/thread-turn-dispatch.ts b/apps/server/src/services/threads/thread-turn-dispatch.ts
+index 61ce97b0760f05cb0d9aac62aed16367476273af..163bdd6d44a3734f46e5552adcc8baf400b81438 100644
+--- a/apps/server/src/services/threads/thread-turn-dispatch.ts
++++ b/apps/server/src/services/threads/thread-turn-dispatch.ts
+@@ -1,3 +1,4 @@
++import type { P6rMentionTarget } from "@bb/domain";
+ import type {
+   PromptInput,
+   ResolvedThreadExecutionOptions,
+@@ -25,6 +26,7 @@ export interface ReadyThreadEnvironment extends EnvironmentRow {
+ }
+ 
+ interface DispatchTurnDuringReprovisionArgs {
++  p6rMentionedTargets?: P6rMentionTarget[];
+   beforeRequestAppendInTransaction?: (args: { tx: DbTransaction }) => void;
+   deps: LoggedPendingInteractionWorkSessionDeps;
+   environment: EnvironmentRow;
+@@ -76,6 +78,7 @@ export async function dispatchTurnDuringReprovision(
+     }
+     requestThreadTargetReprovision(args.deps, {
+       beforeRequestAppendInTransaction: args.beforeRequestAppendInTransaction,
++      p6rMentionedTargets: args.p6rMentionedTargets,
+       environment: args.environment,
+       execution: args.execution,
+       initiator: args.initiator,
+diff --git a/apps/server/test/internal/daemon-forged-mention-http.test.ts b/apps/server/test/internal/daemon-forged-mention-http.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..6527e4a926245ef196fe958305876b8ed1d0fc31
+--- /dev/null
++++ b/apps/server/test/internal/daemon-forged-mention-http.test.ts
+@@ -0,0 +1,107 @@
++import { expect, it } from "vitest";
++import { events, listCoreParticipantProfilePage } from "@bb/db";
++import { threadScope, threadEventSchema } from "@bb/domain";
++import {
++  groupHostDaemonEvents,
++  type HostDaemonEventEnvelope,
++} from "@bb/host-daemon-contract";
++import { eq } from "drizzle-orm";
++import { internalAuthHeaders } from "../helpers/commands.js";
++import { readJson } from "../helpers/json.js";
++import {
++  seedEnvironment,
++  seedHostSession,
++  seedProjectWithSource,
++  seedThread,
++} from "../helpers/seed.js";
++import { createTestAppHarness } from "../helpers/test-app.js";
++
++async function post(
++  harness: Awaited<ReturnType<typeof createTestAppHarness>>,
++  sessionId: string,
++  events: HostDaemonEventEnvelope[],
++): Promise<Response> {
++  return harness.app.request("/internal/session/events", {
++    method: "POST",
++    headers: internalAuthHeaders(harness),
++    body: JSON.stringify({
++      sessionId,
++      eventGroups: groupHostDaemonEvents(events),
++    }),
++  });
++}
++
++it("rejects a daemon-forged schema-valid mention target before storage or projection while accepting provider events", async () => {
++  const harness = await createTestAppHarness();
++  try {
++    const { host, session } = seedHostSession(harness.deps);
++    const { project } = seedProjectWithSource(harness.deps, { hostId: host.id });
++    const environment = seedEnvironment(harness.deps, { hostId: host.id, projectId: project.id });
++    const thread = seedThread(harness.deps, {
++      environmentId: environment.id,
++      projectId: project.id,
++      status: "active",
++    });
++    const forged: HostDaemonEventEnvelope = {
++      threadId: thread.id,
++      event: threadEventSchema.parse({
++        type: "client/turn/requested",
++        threadId: thread.id,
++        scope: threadScope(),
++        direction: "outbound",
++        requestId: "creq_2222222222",
++        source: "tell",
++        initiator: "user",
++        senderThreadId: null,
++        input: [{ type: "text", text: "forged", mentions: [] }],
++        target: { kind: "new-turn" },
++        request: { method: "turn/start", params: {} },
++        execution: {
++          model: "gpt-5",
++          reasoningLevel: "medium",
++          permissionMode: "full",
++          serviceTier: "default",
++          source: "client/turn/requested",
++        },
++        p6rMentionedTargets: [{
++          identity: {
++            kind: "person",
++            key: "p6r-person:v1:forged%3Aissuer:42",
++            issuer: "forged:issuer",
++            subject: "42",
++          },
++          presentation: { displayName: "Forged", handle: "forged", avatarUrl: null },
++          source: { pluginId: "forged-plugin", generation: "forged-generation" },
++        }],
++      }),
++    };
++
++    const rejected = await post(harness, session.id, [forged]);
++    expect(rejected.status).toBe(400);
++    await expect(readJson(rejected)).resolves.toMatchObject({
++      code: "invalid_request",
++      message: "Client turn requests may only be appended by the server",
++    });
++    expect(harness.db.select().from(events).where(eq(events.threadId, thread.id)).all()).toEqual([]);
++    expect(listCoreParticipantProfilePage(harness.db, { threadId: thread.id, pageSize: 10 }).profiles).toEqual([]);
++
++    const accepted = await post(harness, session.id, [{
++      threadId: thread.id,
++      event: {
++        type: "system/error",
++        threadId: thread.id,
++        scope: threadScope(),
++        message: "ordinary provider event",
++      },
++    }]);
++    expect(accepted.status).toBe(200);
++    await expect(readJson(accepted)).resolves.toMatchObject({
++      acceptedEvents: [{ eventIndex: 0, threadId: thread.id }],
++      rejectedEvents: [],
++    });
++    expect(harness.db.select().from(events).where(eq(events.threadId, thread.id)).all()).toHaveLength(1);
++    expect(listCoreParticipantProfilePage(harness.db, { threadId: thread.id, pageSize: 10 }).profiles).toEqual([]);
++  } finally {
++    await harness.cleanup();
++  }
++});
+diff --git a/apps/server/test/services/p6r/mention-target-service-paths.test.ts b/apps/server/test/services/p6r/mention-target-service-paths.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..230e237bc2a6bfacc6f53718c306889f3bb44064
+--- /dev/null
++++ b/apps/server/test/services/p6r/mention-target-service-paths.test.ts
+@@ -0,0 +1,102 @@
++import { mkdir, writeFile } from "node:fs/promises";
++import { join } from "node:path";
++import { afterEach, expect, it, vi } from "vitest";
++import { listCoreParticipantProfilePage, listEvents } from "@bb/db";
++import { turnRequestEventDataSchema, type PromptInput } from "@bb/domain";
++import { eq } from "drizzle-orm";
++import { createAiServiceRegistry } from "../../../src/services/ai/ai-service-registry.js";
++import { createP6rProviderRegistry } from "../../../src/services/p6r/provider-registry.js";
++import { p6rContributions } from "../../../src/services/p6r/sidecar-schema.js";
++import { setPluginAgentContributions } from "../../../src/services/plugins/plugin-agent-contributions.js";
++import { createPluginService } from "../../../src/services/plugins/plugin-service.js";
++import { sendQueuedMessage } from "../../../src/services/threads/queued-messages.js";
++import { createThreadFromRequest } from "../../../src/services/threads/thread-create.js";
++import { sendThreadMessage } from "../../../src/services/threads/thread-send.js";
++import { waitForQueuedCommand } from "../../helpers/commands.js";
++import { seedEnvironment, seedHostSession, seedProjectWithSource, seedQueuedMessage, seedThread, seedThreadRuntimeState } from "../../helpers/seed.js";
++import { createTestAppHarness, testLogger } from "../../helpers/test-app.js";
++import { createNoopTelemetryService } from "../../../src/services/system/telemetry.js";
++
++afterEach(() => setPluginAgentContributions(undefined));
++const input: PromptInput[] = [{ type: "text", text: "@Verified target", mentions: [{ start: 0, end: 16, resource: { kind: "plugin", pluginId: "verified-mentions", itemId: "person:42", label: "Verified target" } }] }];
++
++async function installVerifiedMentionResolver(harness: Awaited<ReturnType<typeof createTestAppHarness>>) {
++  const registry = createP6rProviderRegistry({ now: Date.now });
++  const prepared = await registry.prepare({
++    configuration: { version: 1, boundaryId: "mention-service-paths", pluginId: "verified-mentions", ingressIds: ["fixture"], credentials: [], resolver: { timeoutMs: 100, maxSessionAgeMs: 1_000 } },
++    generation: "mention-service-paths-generation", deadlineAt: Date.now() + 1_000,
++    provider: { issuers: ["fixture:people"], resolve: async () => ({ status: "not-applicable" }), lookup: async (subjects) => ({ ok: true, value: { revision: "directory-revision", records: subjects.map(({ issuer, subject }) => ({ issuer, subject, record: { issuer, subject, status: "current", presentation: { displayName: "Directory verified target", handle: "verified-target", avatarUrl: null } } })) } }) },
++  });
++  if (!prepared.ok) throw new Error("could not prepare mention target provider");
++  expect(registry.publish(prepared.value).ok).toBe(true);
++  const pluginRoot = join(harness.config.dataDir, "verified-mentions");
++  await mkdir(pluginRoot);
++  await writeFile(join(pluginRoot, "package.json"), JSON.stringify({ name: "bb-plugin-verified-mentions", version: "0.1.0", bb: { name: "Verified mentions", description: "Fixture", branding: { icon: "User" }, server: "./server.ts" } }));
++  await writeFile(join(pluginRoot, "server.ts"), `export default function (bb) { bb.ui.registerMentionProvider({ id: "person", label: "Person", search: () => [], resolve: () => ({ context: "verified mention context", experimental_target: { kind: "p6r-person", issuer: "fixture:people", subject: "42" } }) }); }`);
++  const service = createPluginService({ db: harness.db, dataDir: join(harness.config.dataDir, "verified-mention-service"), appVersion: "0.40.0", hub: harness.deps.hub, logger: testLogger, aiServices: createAiServiceRegistry(), telemetry: createNoopTelemetryService(), p6rProviderRegistry: registry });
++  const installed = await service.installPath(pluginRoot);
++  expect(installed.status, installed.statusDetail ?? "").toBe("running");
++  const resolveMention = vi.spyOn(service, "resolveMention");
++  setPluginAgentContributions(service);
++  const resolved = await service.resolveMention({ pluginId: "verified-mentions", itemId: "person:42" });
++  if (!resolved.ok || !resolved.target) throw new Error("expected a normalized mention target");
++  resolveMention.mockClear();
++  return { service, target: resolved.target, resolveMention };
++}
++
++function seedFixture(harness: Awaited<ReturnType<typeof createTestAppHarness>>, value: number, warm = false) {
++  const { host } = seedHostSession(harness.deps, { id: `host-mention-path-${value}` });
++  const { project } = seedProjectWithSource(harness.deps, { hostId: host.id, path: `/tmp/mention-path-${value}` });
++  const environment = seedEnvironment(harness.deps, { hostId: host.id, projectId: project.id, path: `/tmp/mention-path-${value}`, status: "ready" });
++  const thread = seedThread(harness.deps, { projectId: project.id, environmentId: environment.id, status: "idle" });
++  if (warm) seedThreadRuntimeState(harness.deps, { environmentId: environment.id, providerThreadId: `provider-mention-path-${value}`, threadId: thread.id });
++  return { environment, project, thread };
++}
++
++function expectPersistedMentionTarget(harness: Awaited<ReturnType<typeof createTestAppHarness>>, threadId: string, afterSequence: number, target: { identity: { key: string }; presentation: { displayName: string } }) {
++  const requests = listEvents(harness.db, { threadId }).filter((candidate) =>
++    candidate.type === "client/turn/requested" && candidate.sequence > afterSequence,
++  );
++  expect(requests).toHaveLength(1);
++  const event = requests[0];
++  if (!event) throw new Error("expected client turn request event");
++  const rawRequest = JSON.parse(event.data);
++  expect(rawRequest.p6rMentionedTargets).toEqual([target]);
++  const request = turnRequestEventDataSchema.parse(rawRequest);
++  expect(request.p6rMentionedTargets).toEqual([target]);
++  expect(listCoreParticipantProfilePage(harness.db, { threadId, pageSize: 10 }).profiles).toMatchObject([{ p6rPrincipalKey: target.identity.key, p6rDisplayName: target.presentation.displayName }]);
++  expect(harness.db.select().from(p6rContributions).where(eq(p6rContributions.threadId, threadId)).all()).toHaveLength(0);
++}
++
++it("persists a normalized mention target through create, live send, and queued dispatch without authorship", async () => {
++  const harness = await createTestAppHarness();
++  const { service, target, resolveMention } = await installVerifiedMentionResolver(harness);
++  try {
++    const createdFixture = seedFixture(harness, 1);
++    const created = await createThreadFromRequest(harness.deps, { environment: { type: "reuse", environmentId: createdFixture.environment.id }, input, origin: "app", projectId: createdFixture.project.id, providerId: "codex", startedOnBehalfOf: null });
++    expect(resolveMention).toHaveBeenCalledWith({
++      pluginId: "verified-mentions",
++      itemId: "person:42",
++    });
++    await expect(resolveMention.mock.results[0]?.value).resolves.toMatchObject({
++      ok: true,
++      target,
++    });
++    expectPersistedMentionTarget(harness, created.id, 0, target);
++    const liveFixture = seedFixture(harness, 2);
++    const beforeLiveSend = Math.max(0, ...listEvents(harness.db, { threadId: liveFixture.thread.id }).map((event) => event.sequence));
++    await sendThreadMessage(harness.deps, { environment: liveFixture.environment, payload: { input, mode: "start", model: "gpt-5", permissionMode: "full", reasoningLevel: "medium", serviceTier: "default" }, thread: liveFixture.thread, trigger: "user" });
++    await waitForQueuedCommand(harness, (candidate) => candidate.command.type === "thread.start" && candidate.command.threadId === liveFixture.thread.id);
++    expectPersistedMentionTarget(harness, liveFixture.thread.id, beforeLiveSend, target);
++    const queuedFixture = seedFixture(harness, 3, true);
++    const queued = seedQueuedMessage(harness.deps, { threadId: queuedFixture.thread.id, content: input });
++    const beforeQueuedDispatch = Math.max(0, ...listEvents(harness.db, { threadId: queuedFixture.thread.id }).map((event) => event.sequence));
++    await sendQueuedMessage(harness.deps, { claimPolicy: { kind: "automatic", isGroupEligible: () => true }, threadId: queuedFixture.thread.id, queuedMessageId: queued.id, mode: "auto" });
++    await waitForQueuedCommand(harness, (candidate) => candidate.command.type === "turn.submit" && candidate.command.threadId === queuedFixture.thread.id);
++    expectPersistedMentionTarget(harness, queuedFixture.thread.id, beforeQueuedDispatch, target);
++  } finally {
++    setPluginAgentContributions(undefined);
++    await service.stop();
++    await harness.cleanup();
++  }
++});
+diff --git a/apps/server/test/services/p6r/mention-targets.test.ts b/apps/server/test/services/p6r/mention-targets.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f3a6eca86e0c59300a5d233341c97b0783881342
+--- /dev/null
++++ b/apps/server/test/services/p6r/mention-targets.test.ts
+@@ -0,0 +1,192 @@
++import { threadScope } from "@bb/domain";
++import { mkdir, writeFile } from "node:fs/promises";
++import { join } from "node:path";
++import { expect, it } from "vitest";
++import { appendDaemonEventsInTransaction, events, listCoreParticipantProfilePage } from "@bb/db";
++import { eq } from "drizzle-orm";
++import { createP6rProviderRegistry } from "../../../src/services/p6r/provider-registry.js";
++import {
++  readP6rMentionTargetsForRequest,
++  projectP6rParticipantsInTransaction,
++} from "../../../src/services/p6r/participant-projection.js";
++import { p6rContributions } from "../../../src/services/p6r/sidecar-schema.js";
++import { createPluginService } from "../../../src/services/plugins/plugin-service.js";
++import { createAiServiceRegistry } from "../../../src/services/ai/ai-service-registry.js";
++import { createNoopTelemetryService } from "../../../src/services/system/telemetry.js";
++import { appendClientTurnEventInTransaction } from "../../../src/services/threads/thread-events.js";
++import {
++  seedHostSession,
++  seedProjectWithSource,
++  seedThread,
++} from "../../helpers/seed.js";
++import { withTestHarness, testLogger } from "../../helpers/test-app.js";
++
++it("normalizes a loaded mention resolver, persists its target atomically and projects it without authorship", async () => {
++  await withTestHarness(async (harness) => {
++    const registry = createP6rProviderRegistry({ now: Date.now });
++    let displayName = "Directory name";
++    const prepared = await registry.prepare({
++      configuration: {
++        version: 1,
++        boundaryId: "mentions",
++        pluginId: "verified-mentions",
++        ingressIds: ["fixture"],
++        credentials: [],
++        resolver: { timeoutMs: 100, maxSessionAgeMs: 1000 },
++      },
++      generation: "verified-generation",
++      deadlineAt: Date.now() + 1000,
++      provider: {
++        issuers: ["fixture:people"],
++        resolve: async () => ({ status: "not-applicable" }),
++        lookup: async (subjects) => ({
++          ok: true,
++          value: {
++            revision: "directory-one",
++            records: subjects.map(({ issuer, subject }) => ({
++              issuer,
++              subject,
++              record: {
++                issuer,
++                subject,
++                status: "current",
++                presentation: {
++                  displayName,
++                  handle: "person",
++                  avatarUrl: "/avatars/person.jpg",
++                },
++              },
++            })),
++          },
++        }),
++      },
++    });
++    if (!prepared.ok) throw new Error("provider setup failed");
++    expect(registry.publish(prepared.value).ok).toBe(true);
++    const pluginRoot = join(harness.config.dataDir, "verified-mentions");
++    await mkdir(pluginRoot);
++    await writeFile(
++      join(pluginRoot, "package.json"),
++      JSON.stringify({
++        name: "bb-plugin-verified-mentions",
++        version: "0.1.0",
++        bb: {
++          name: "Verified mentions",
++          description: "Fixture",
++          branding: { icon: "User" },
++          server: "./server.ts",
++        },
++      }),
++    );
++    await writeFile(
++      join(pluginRoot, "server.ts"),
++      `export default function(bb) { bb.ui.registerMentionProvider({ id: "person", label: "Person", search: () => [], resolve: () => ({ context: "target context", experimental_target: {kind:"p6r-person", issuer:"fixture:people", subject:"42", key:"forged", presentation:{displayName:"forged"}} }) }); }`,
++    );
++    const service = createPluginService({
++      db: harness.db,
++      dataDir: join(harness.config.dataDir, "mention-service"),
++      appVersion: "0.40.0",
++      hub: harness.deps.hub,
++      logger: testLogger,
++      aiServices: createAiServiceRegistry(),
++      telemetry: createNoopTelemetryService(),
++      p6rProviderRegistry: registry,
++    });
++    try {
++      const installed = await service.installPath(pluginRoot);
++      expect(installed.status, installed.statusDetail ?? "").toBe("running");
++      const resolved = await service.resolveMention({
++        pluginId: "verified-mentions",
++        itemId: "person:42",
++      });
++      if (!resolved.ok || !resolved.target)
++        throw new Error("expected normalized target");
++      expect(resolved.target.presentation.displayName).toBe("Directory name");
++      expect(resolved.target.identity.key).not.toBe("forged");
++      const { host } = seedHostSession(harness.deps);
++      const { project } = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++      });
++      const thread = seedThread(harness.deps, { projectId: project.id });
++      const args = {
++        threadId: thread.id,
++        environmentId: null,
++        type: "client/turn/requested" as const,
++        input: [{ type: "text" as const, text: "Mention", mentions: [] }],
++        p6rMentionedTargets: [resolved.target],
++        execution: {
++          model: "gpt-5",
++          reasoningLevel: "medium" as const,
++          permissionMode: "full" as const,
++          serviceTier: "default" as const,
++          source: "client/turn/requested" as const,
++        },
++        initiator: "user" as const,
++        senderThreadId: null,
++        requestMethod: "turn/start" as const,
++        source: "tell" as const,
++        target: { kind: "new-turn" as const },
++      };
++      expect(() =>
++        harness.db.transaction(
++          (tx) => {
++            appendClientTurnEventInTransaction(tx, args);
++            throw new Error("rollback");
++          },
++          { behavior: "immediate" },
++        ),
++      ).toThrow("rollback");
++      expect(
++        harness.db
++          .select()
++          .from(events)
++          .where(eq(events.threadId, thread.id))
++          .all(),
++      ).toHaveLength(0);
++      expect(
++        listCoreParticipantProfilePage(harness.db, {
++          threadId: thread.id,
++          pageSize: 10,
++        }).profiles,
++      ).toHaveLength(0);
++      const request = harness.db.transaction(
++        (tx) => appendClientTurnEventInTransaction(tx, args),
++        { behavior: "immediate" },
++      );
++      const stored = harness.db.select().from(events).where(eq(events.threadId, thread.id)).get()!;
++      const forgedData = { ...JSON.parse(stored.data), p6rMentionedTargets: [{ ...resolved.target, identity: { ...resolved.target.identity, key: "forged-daemon-key" } }] };
++      expect(() => harness.db.transaction((tx) => appendDaemonEventsInTransaction(tx, [{ threadId: thread.id, environmentId: null, providerThreadId: null, scope: threadScope(), type: "client/turn/requested", itemId: null, itemKind: null, parentToolCallId: null, data: JSON.stringify(forgedData) }]), { behavior: "immediate" })).toThrow("only be appended by the server");
++      expect(harness.db.select().from(events).where(eq(events.threadId, thread.id)).all()).toHaveLength(1);
++      displayName = "Changed directory";
++      registry.retire(prepared.value);
++      expect(
++        readP6rMentionTargetsForRequest(
++          harness.db,
++          thread.id,
++          request.requestId,
++        ),
++      ).toEqual([resolved.target]);
++      projectP6rParticipantsInTransaction(harness.db, thread.id);
++      expect(
++        listCoreParticipantProfilePage(harness.db, {
++          threadId: thread.id,
++          pageSize: 10,
++        }).profiles,
++      ).toMatchObject([
++        {
++          p6rPrincipalKey: resolved.target.identity.key,
++          p6rDisplayName: "Directory name",
++        },
++      ]);
++      expect(harness.db.select().from(p6rContributions).all()).toHaveLength(0);
++      expect(
++        await service.resolveMention({
++          pluginId: "verified-mentions",
++          itemId: "person:42",
++        }),
++      ).toMatchObject({ ok: false });
++    } finally {
++      await service.stop();
++    }
++  });
++});
+diff --git a/apps/server/test/services/p6r/provider-registry.test.ts b/apps/server/test/services/p6r/provider-registry.test.ts
+index 88dc269d9bc6a238bfc807500530724ecb1c2a22..6bd657717b50cabe2a49c51e490638edcaf09feb 100644
+--- a/apps/server/test/services/p6r/provider-registry.test.ts
++++ b/apps/server/test/services/p6r/provider-registry.test.ts
+@@ -1,4 +1,4 @@
+-import { describe, expect, it } from "vitest";
++import { describe, expect, it, vi } from "vitest";
+ import { createP6rProviderRegistry } from "../../../src/services/p6r/provider-registry.js";
+ import type { P6rForkIdentityProvider, P6rProviderConfiguration, P6rProviderEvidence, P6rProviderResolution } from "../../../src/services/p6r/provider-contract.js";
+ 
+@@ -146,3 +146,115 @@ describe("P6r provider registry", () => {
+     expect(await registry.resolve({ ...evidence(100), configuration: { ...configuration(), credentials: [{ field: "X-Other", name: "fixture", source: "header" }] } })).toEqual({ status: "unavailable", reason: "provider-configuration-mismatch" });
+   });
+ });
++
++describe("verified mention targets", () => {
++  const target = {
++    pluginId: "fixture-provider",
++    issuer: "fixture:issuer",
++    subject: "subject-1",
++  };
++  const row = () => ({
++    issuer: target.issuer,
++    subject: target.subject,
++    record: {
++      issuer: target.issuer,
++      subject: target.subject,
++      status: "current" as const,
++      presentation: {
++        displayName: "Verified",
++        handle: null,
++        avatarUrl: "/avatars/person.png",
++      },
++    },
++  });
++  async function setup(lookup: NonNullable<P6rForkIdentityProvider["lookup"]>) {
++    const registry = createP6rProviderRegistry({ now: () => Date.now() });
++    const prepared = await registry.prepare({
++      configuration: configuration(),
++      deadlineAt: Date.now() + 1000,
++      generation: "mention-generation",
++      provider: { ...provider(async () => resolved()), lookup },
++    });
++    if (!prepared.ok) throw new Error("provider setup failed");
++    expect(registry.publish(prepared.value).ok).toBe(true);
++    return { registry, prepared: prepared.value };
++  }
++  it("uses only a current matching provider record and freezes its presentation", async () => {
++    const record = row();
++    const lookup = vi.fn(async () => ({
++      ok: true as const,
++      value: { records: [record], revision: "one" },
++    }));
++    const { registry } = await setup(lookup);
++    expect(
++      await registry.personForPlugin({ ...target, pluginId: "foreign" }),
++    ).toMatchObject({ ok: false });
++    expect(
++      await registry.personForPlugin({ ...target, issuer: "foreign" }),
++    ).toMatchObject({ ok: false });
++    expect(lookup).not.toHaveBeenCalled();
++    const result = await registry.personForPlugin(target);
++    expect(result).toMatchObject({
++      ok: true,
++      value: {
++        person: { issuer: target.issuer, subject: target.subject },
++        presentation: record.record.presentation,
++      },
++    });
++    if (!result.ok) throw new Error("expected target");
++    record.record.presentation.displayName = "changed later";
++    expect(result.value.presentation.displayName).toBe("Verified");
++    expect(Object.isFrozen(result.value.presentation)).toBe(true);
++  });
++  it("rejects mismatched inner identity, historical records, and duplicate rows", async () => {
++    for (const records of [
++      [{ ...row(), record: { ...row().record, subject: "other" } }],
++      [
++        {
++          ...row(),
++          record: { ...row().record, status: "historical" as const },
++        },
++      ],
++      [row(), row()],
++    ]) {
++      const { registry } = await setup(async () => ({
++        ok: true,
++        value: { records, revision: "one" },
++      }));
++      expect(await registry.personForPlugin(target)).toMatchObject({
++        ok: false,
++      });
++    }
++  });
++  it("settles a held lookup on retirement without accepting its late result", async () => {
++    let release!: (value: {
++      ok: true;
++      value: { records: ReturnType<typeof row>[]; revision: string };
++    }) => void;
++    const held = new Promise<{
++      ok: true;
++      value: { records: ReturnType<typeof row>[]; revision: string };
++    }>((resolve) => {
++      release = resolve;
++    });
++    const { registry, prepared } = await setup(async () => held);
++    const pending = registry.personForPlugin(target);
++    registry.retire(prepared);
++    expect(await pending).toMatchObject({ ok: false });
++    release({ ok: true, value: { records: [row()], revision: "late" } });
++  });
++  it("bounds a provider that ignores cancellation", async () => {
++    vi.useFakeTimers();
++    try {
++      const { registry } = await setup(async () => new Promise(() => {}));
++      const pending = registry.personForPlugin(target);
++      await vi.advanceTimersByTimeAsync(25);
++      expect(await pending).toMatchObject({
++        ok: false,
++        error: { code: "unavailable" },
++      });
++    } finally {
++      vi.useRealTimers();
++    }
++  });
++});
+diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
+index 5373d6b89f1eca82c325a9e1602bb6ad6264a0eb..2ae96a7bcedbea539cb7a45b2d13eb1e9b085fec 100644
+--- a/docs/api_to_audit.md
++++ b/docs/api_to_audit.md
+@@ -2966,3 +2966,22 @@ same-id isolation and legacy override fallback,
+ asset-vs-glyph precedence, cross-plugin overrides, reload/error/recursion behavior,
+ accessibility and theme rendering on desktop and mobile. Keep metadata fetching
+ and plugin branding separate from provider artwork resolution.
++
++## `PluginMentionProviderRegistration.resolve().experimental_target`
++
++Selects a person by issuer and subject from the resolver plugin's active P6R provider. The host derives the canonical key and current directory presentation, then freezes a mentioned target in the client request. A target is distinct from authorship. Retries reuse the retained target. Missing, ambiguous, foreign or retired provider evidence blocks the send.
++
++Audit the plugin-scoped provider restriction, directory deadline/invalidation behavior, target bounds, replay and native participant projection before stabilizing. Daemons cannot author client requests.
++
++## `bb.experimental_p6rIdentity`
++
++Optional host protocol for a generation-bound identity provider, scoped plugin
++RPC/HTTP invocation, verified directory records, external acceptance receipts,
++and exact retained contribution/attempt/tool history. Consumers use the public
++`@phosphorco/bb-identity/bb` binding rather than manufacturing invocation scopes.
++Absence supports baseline package behavior; a configured provider failure does
++not select a fallback actor.
++
++Audit provider prepare/publish/retire, ingress ownership, credential selection,
++revocation/deadlines, durable operation finality and exact request/tool linkage.
++Ordinary native UI attribution and presence are separate capabilities.
+diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
+index 0fadaac607ed2ddf58700cb94afbeeabf1088827..7d28b221fa4b314868f7ff7d087e47a855d448c1 100644
+--- a/packages/db/src/data/events.ts
++++ b/packages/db/src/data/events.ts
+@@ -736,6 +736,9 @@ export function appendDaemonEventsInTransaction(
+   db: DbTransaction,
+   eventInputs: readonly AppendDaemonEventInput[],
+ ): AppendDaemonEventsResult {
++  if (eventInputs.some((input) => input.type === "client/turn/requested")) {
++    throw new Error("Client turn requests may only be appended by the server");
++  }
+   if (eventInputs.length === 0) {
+     return {
+       acceptedEvents: [],
+diff --git a/packages/domain/src/change-kinds.ts b/packages/domain/src/change-kinds.ts
+index 85bfd9778761345665f61c82592c53b16f556c42..370ae55dd1b661808fc20f1a1668eb80ebe3ae3a 100644
+--- a/packages/domain/src/change-kinds.ts
++++ b/packages/domain/src/change-kinds.ts
+@@ -14,6 +14,7 @@ export const THREAD_CHANGE_KINDS = [
+   "thread-created",
+   "thread-deleted",
+   "events-appended",
++  "execution-options-changed",
+   "history-rewritten",
+   "interactions-changed",
+   "status-changed",
+diff --git a/packages/domain/src/thread-events.ts b/packages/domain/src/thread-events.ts
+index 299f912a2da0efa1020bcf50780c8542ebbeab0a..b4733adfafaf556879b773b7e22b0f043d3a9f2a 100644
+--- a/packages/domain/src/thread-events.ts
++++ b/packages/domain/src/thread-events.ts
+@@ -74,6 +74,33 @@ export type ClientTurnLifecycleEventData = z.infer<
+   typeof clientTurnLifecycleEventDataSchema
+ >;
+ 
++export const p6rMentionTargetSchema = z
++  .object({
++    identity: z
++      .object({
++        kind: z.literal("person"),
++        key: z.string().min(1).max(2048),
++        issuer: z.string().min(1).max(512),
++        subject: z.string().min(1).max(512),
++      })
++      .strict(),
++    presentation: z
++      .object({
++        displayName: z.string().min(1).max(256),
++        handle: z.string().max(256).nullable(),
++        avatarUrl: z.string().min(1).max(2048).nullable(),
++      })
++      .strict(),
++    source: z
++      .object({
++        pluginId: z.string().min(1).max(256),
++        generation: z.string().min(1).max(256),
++      })
++      .strict(),
++  })
++  .strict();
++export type P6rMentionTarget = z.infer<typeof p6rMentionTargetSchema>;
++
+ export const turnRequestEventDataSchema = z.object({
+   direction: z.literal("outbound"),
+   requestId: clientTurnRequestIdSchema,
+@@ -93,6 +120,7 @@ export const turnRequestEventDataSchema = z.object({
+   systemMessageSubject: systemMessageSubjectSchema.nullable().optional(),
+   input: z.array(promptInputSchema),
+   inputGroups: z.array(z.array(promptInputSchema).min(1)).min(1).optional(),
++  p6rMentionedTargets: z.array(p6rMentionTargetSchema).max(256).optional(),
+   target: turnRequestTargetSchema,
+   request: z.object({
+     method: z.enum(["thread/start", "turn/start"]),
+diff --git a/packages/plugin-api-map/src/surfaces.ts b/packages/plugin-api-map/src/surfaces.ts
+index cc5c20d354bf752699e0eed29bc6c1850493706f..fc446bdd2c7370e03a737507c7608a832002514e 100644
+--- a/packages/plugin-api-map/src/surfaces.ts
++++ b/packages/plugin-api-map/src/surfaces.ts
+@@ -339,9 +339,11 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+           "Answer each keystroke after the trigger with a list of items to show",
+           "Claim one or more of the trigger characters @, #, $, !, and ~. Omit them to answer the default @",
+           "Turn a picked item into a chip in the draft prompt, and send its content to the agent along with the message",
++          "Select a person from the same plugin's active identity provider with experimental_target; bb freezes the verified mentioned target separately from authorship",
+         ],
+         apiSymbols: [
+           "PluginMentionProviderRegistration",
++          "ExperimentalPluginMentionTargetSelector",
+           "PluginMentionSearchContext",
+           "PluginMentionItem",
+         ],
+@@ -567,6 +569,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+       {
+         title: "Data & platform",
+         surfaceIds: [
++          "identity-provider",
+           "storage",
+           "bb-sdk",
+           "thread-plugin-metadata",
+@@ -913,6 +916,18 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+         ],
+         experimental: true,
+       },
++      {
++        id: "identity-provider",
++        title: "Verified identity",
++        summary: "Connects an operator-selected identity provider and exposes scoped identity through the public bb-identity binding. With this, a plugin can:",
++        bullets: [
++          "Resolve credentials supplied by the host's trusted ingress boundary",
++          "Retain immutable external-operation receipts and exact request/turn/tool history",
++          "Retire provider generations and invalidate issued sessions without assigning a fallback actor",
++        ],
++        apiSymbols: ["ExperimentalP6rIdentityProtocol"],
++        experimental: true,
++      },
+       {
+         id: "storage",
+         tagline: "Namespaced KV plus your own SQLite",
+diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
+index d2cfb65130b0937d63473922328e7cc660c3c910..e47cc494a31782fd23b837b403e2d4f3f9d1fc9c 100644
+--- a/packages/plugin-sdk/src/backend-contract.ts
++++ b/packages/plugin-sdk/src/backend-contract.ts
+@@ -1659,6 +1659,8 @@ export interface PluginMentionItem {
+   icon?: string;
+ }
+ 
++export type ExperimentalPluginMentionTargetSelector = { kind: "p6r-person"; issuer: string; subject: string };
++
+ export interface PluginMentionProviderRegistration {
+   /** Unique within this plugin: [a-zA-Z0-9_-]+ (no ":" — the host composes
+    * wire item ids as "<providerId>:<itemId>"). */
+@@ -1683,9 +1685,11 @@ export interface PluginMentionProviderRegistration {
+    * Resolves one picked item into agent context, called once per unique
+    * item at message send time. The returned `context` is attached to the
+    * message as an agent-visible (user-hidden) prompt input. Throwing blocks
+-   * the send with a visible error.
++   * the send with a visible error. `experimental_target` selects a person
++   * from this plugin's active identity provider. The host resolves its key and
++   * presentation; the selector never supplies authorship or a profile.
+    */
+-  resolve(itemId: string): { context: string } | Promise<{ context: string }>;
++  resolve(itemId: string): { context: string; experimental_target?: ExperimentalPluginMentionTargetSelector } | Promise<{ context: string; experimental_target?: ExperimentalPluginMentionTargetSelector }>;
+ }
+ 
+ export interface PluginUi {
+-- 
+2.53.0
+

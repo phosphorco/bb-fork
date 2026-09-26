@@ -1,0 +1,420 @@
+From d09cfdc78800b759e6e481fe6d7d3a2daf817768 Mon Sep 17 00:00:00 2001
+From: Phosphor <engineering@phosphor.co>
+Date: Tue, 8 Sep 2026 17:35:56 +0200
+Subject: [PATCH 12/21] feat(editor): add Pkl syntax highlighting
+
+---
+ .../ui/markdown-code-highlight.test.ts        |  74 ++++++++++
+ .../components/ui/markdown-code-highlight.ts  |  37 +++++
+ packages/shared-ui/package.json               |   5 +
+ packages/shared-ui/src/lib/pkl-highlight.ts   | 135 ++++++++++++++++++
+ plugins/monaco-editor/lib/languages.test.ts   |   4 +
+ plugins/monaco-editor/lib/languages.ts        |   1 +
+ plugins/monaco-editor/lib/pkl-language.ts     |  56 ++++++++
+ plugins/monaco-editor/monaco-bundle/editor.js |   4 +
+ 8 files changed, 316 insertions(+)
+ create mode 100644 packages/shared-ui/src/lib/pkl-highlight.ts
+ create mode 100644 plugins/monaco-editor/lib/pkl-language.ts
+
+diff --git a/apps/app/src/components/ui/markdown-code-highlight.test.ts b/apps/app/src/components/ui/markdown-code-highlight.test.ts
+index a3c4b5d96dde3f18763393a986da9f914e93c652..8fabfec4762b7dd54ad54108fffcf2c5cb7bd8c6 100644
+--- a/apps/app/src/components/ui/markdown-code-highlight.test.ts
++++ b/apps/app/src/components/ui/markdown-code-highlight.test.ts
+@@ -1,3 +1,7 @@
++import {
++  tokenizePklLine,
++  type PklHighlightState,
++} from "@bb/shared-ui/pkl-highlight";
+ import { readFileSync } from "node:fs";
+ import { describe, expect, it } from "vitest";
+ import { highlightMarkdownCode } from "./markdown-code-highlight.js";
+@@ -100,3 +104,73 @@ describe("highlightMarkdownCode", () => {
+     );
+   });
+ });
++
++describe("Pkl highlighting", () => {
++  it.each(["pkl", "Pkl", ".pkl"])(
++    "recognizes %s fences and Pkl declarations",
++    (language) => {
++      const result = tokens(
++        highlightMarkdownCode({
++          language,
++          code: 'amends "base.pkl"\nlocal port: Int = 8080\nfraction = .23\nenabled = true',
++        }),
++      );
++      expect(result).toContainEqual(["keyword", "amends"]);
++      expect(result).toContainEqual(["keyword", "local"]);
++      expect(result).toContainEqual(["class", "Int"]);
++      expect(result).toContainEqual(["class", "8080"]);
++      expect(result).toContainEqual(["class", ".23"]);
++      expect(result).toContainEqual(["keyword", "true"]);
++    },
++  );
++
++  it("carries raw multiline strings and nested comments without leaking state between fences", () => {
++    const code =
++      'text = #"""\n// literal "quoted" text\n"""#\n/* outer /* nested */ still comment */\nlocal x = 1';
++    const result = tokens(highlightMarkdownCode({ language: "pkl", code }));
++    expect(result).toContainEqual([
++      "string",
++      "// literal &quot;quoted&quot; text",
++    ]);
++    expect(result).toContainEqual([
++      "comment",
++      "/* outer /* nested */ still comment */",
++    ]);
++    expect(result).toContainEqual(["keyword", "local"]);
++    highlightMarkdownCode({ language: "pkl", code: "/* unfinished" });
++    expect(
++      tokens(highlightMarkdownCode({ language: "pkl", code: "local y = 2" })),
++    ).toContainEqual(["keyword", "local"]);
++  });
++
++  it("resumes a raw string after nested interpolation and preserves every source character", () => {
++    const code = String.raw`value = ##"hello \##(if (true) "world" else "<script>")!"##`;
++    const parsed = tokenizePklLine(code);
++    expect(parsed.tokens.map((token) => token.value).join("")).toBe(code);
++    expect(parsed.tokens).toContainEqual(
++      expect.objectContaining({ kind: "keyword", value: "if" }),
++    );
++    expect(parsed.tokens).toContainEqual(
++      expect.objectContaining({ kind: "string", value: '!"##' }),
++    );
++    expect(parsed.state).toEqual([]);
++    const html = highlightMarkdownCode({ language: "pkl", code });
++    expect(html).not.toContain("<script>");
++    expect(html).toContain("&lt;script&gt;");
++  });
++
++  it("does not mutate incremental editor state, and recovers after incomplete single-line strings", () => {
++    const previous = tokenizePklLine('x = """').state;
++    const snapshot = JSON.stringify(previous);
++    expect(tokenizePklLine('end"""', previous).state).toEqual([]);
++    expect(JSON.stringify(previous)).toBe(snapshot);
++    expect(tokenizePklLine('"unfinished').state).toEqual([]);
++    let state: PklHighlightState = [];
++    for (const line of ["/* outer", "/* nested */", "end */ const x = 0xFF"]) {
++      const parsed = tokenizePklLine(line, state);
++      expect(parsed.tokens.map((token) => token.value).join("")).toBe(line);
++      state = parsed.state;
++    }
++    expect(state).toEqual([]);
++  });
++});
+diff --git a/apps/app/src/components/ui/markdown-code-highlight.ts b/apps/app/src/components/ui/markdown-code-highlight.ts
+index 4e262c04a92c0f13a28c60cad236794f54d9228d..7bda92f97eb3d3c9ea5bb858373297035bb91789 100644
+--- a/apps/app/src/components/ui/markdown-code-highlight.ts
++++ b/apps/app/src/components/ui/markdown-code-highlight.ts
+@@ -1,3 +1,9 @@
++import {
++  tokenizePklLine,
++  type PklHighlightState,
++  type PklTokenKind,
++} from "@bb/shared-ui/pkl-highlight";
++import { render, type ParsedLine, type TokenType } from "sugar-high/core";
+ import { highlight, type LanguageName } from "sugar-high";
+ import { lang } from "sugar-high/lang";
+ 
+@@ -20,9 +26,40 @@ export function highlightMarkdownCode({
+   code,
+   language,
+ }: HighlightMarkdownCodeArgs): string {
++  if (language?.trim().toLowerCase().replace(/^\./, "") === "pkl")
++    return highlightPkl(code);
+   const resolved =
+     language === null
+       ? undefined
+       : (lang(language) ?? EXTRA_LANGUAGE_ALIASES[language]);
+   return highlight(code, { lang: resolved });
+ }
++
++const PKL_TOKEN_TYPES: Record<PklTokenKind, TokenType> = {
++  keyword: "keyword",
++  type: "class",
++  identifier: "identifier",
++  number: "class",
++  string: "string",
++  comment: "comment",
++  delimiter: "sign",
++  white: "space",
++};
++
++function highlightPkl(code: string): string {
++  let state: PklHighlightState = [];
++  const lines: ParsedLine[] = code.split("\n").map((value, index) => {
++    const parsed = tokenizePklLine(value, state);
++    state = parsed.state;
++    return {
++      index,
++      value,
++      annotations: [],
++      tokens: parsed.tokens.map(({ kind, value }) => ({
++        type: PKL_TOKEN_TYPES[kind],
++        value,
++      })),
++    };
++  });
++  return render({ value: code, lines });
++}
+diff --git a/packages/shared-ui/package.json b/packages/shared-ui/package.json
+index d2a9d68fd9c6cd4ecbfd66b98d0aab4b312010df..59ed1b4ed7977e14e8d325dcbeaa78ca8d3c3afe 100644
+--- a/packages/shared-ui/package.json
++++ b/packages/shared-ui/package.json
+@@ -263,6 +263,11 @@
+       "source": "./src/components/ui/question-form-host.tsx",
+       "types": "./src/components/ui/question-form-host.tsx",
+       "default": "./src/components/ui/question-form-host.tsx"
++    },
++    "./pkl-highlight": {
++      "source": "./src/lib/pkl-highlight.ts",
++      "types": "./src/lib/pkl-highlight.ts",
++      "default": "./src/lib/pkl-highlight.ts"
+     }
+   },
+   "scripts": {
+diff --git a/packages/shared-ui/src/lib/pkl-highlight.ts b/packages/shared-ui/src/lib/pkl-highlight.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..8be2aabfe772325fe72df996c368e2df36ebc761
+--- /dev/null
++++ b/packages/shared-ui/src/lib/pkl-highlight.ts
+@@ -0,0 +1,135 @@
++export type PklTokenKind =
++  | "keyword"
++  | "type"
++  | "identifier"
++  | "number"
++  | "string"
++  | "comment"
++  | "delimiter"
++  | "white";
++export interface PklToken {
++  startIndex: number;
++  value: string;
++  kind: PklTokenKind;
++}
++type Frame =
++  | { kind: "comment" }
++  | { kind: "string"; close: string; escape: string; multiline: boolean }
++  | { kind: "interpolation"; depth: number };
++export type PklHighlightState = readonly Frame[];
++
++const keywords = new Set(
++  "abstract amends as class const else extends external false fixed for function hidden if import in is let local module new nothing null open out outer read super this throw trace true typealias unknown when".split(
++    " ",
++  ),
++);
++const types = new Set(
++  "Any Boolean Class Collection DataSize Duration Dynamic Float Int Int8 Int16 Int32 Int64 List Listing Map Mapping Module NonNull Number Pair Regex Set String Typed UInt UInt8 UInt16 UInt32 UInt64 VarArgs".split(
++    " ",
++  ),
++);
++
++export function tokenizePklLine(
++  line: string,
++  previous: PklHighlightState = [],
++): { tokens: PklToken[]; state: PklHighlightState } {
++  const state = previous.map((frame) => ({ ...frame }));
++  const tokens: PklToken[] = [];
++  let index = 0;
++  function emit(kind: PklTokenKind, length: number) {
++    const value = line.slice(index, index + length);
++    const last = tokens.at(-1);
++    if (last?.kind === kind) last.value += value;
++    else tokens.push({ startIndex: index, value, kind });
++    index += length;
++  }
++  while (index < line.length) {
++    const frame = state.at(-1);
++    if (frame?.kind === "comment") {
++      if (line.startsWith("/*", index)) {
++        state.push({ kind: "comment" });
++        emit("comment", 2);
++      } else if (line.startsWith("*/", index)) {
++        state.pop();
++        emit("comment", 2);
++      } else emit("comment", 1);
++      continue;
++    }
++    if (frame?.kind === "string") {
++      if (line.startsWith(frame.close, index)) {
++        state.pop();
++        emit("string", frame.close.length);
++      } else if (line.startsWith(frame.escape + "(", index)) {
++        emit("delimiter", frame.escape.length + 1);
++        state.push({ kind: "interpolation", depth: 1 });
++      } else if (line.startsWith(frame.escape, index))
++        emit("string", Math.min(frame.escape.length + 1, line.length - index));
++      else emit("string", 1);
++      continue;
++    }
++    if (line.startsWith("//", index)) {
++      emit("comment", line.length - index);
++      continue;
++    }
++    if (line.startsWith("/*", index)) {
++      state.push({ kind: "comment" });
++      emit("comment", 2);
++      continue;
++    }
++    const rest = line.slice(index);
++    const string = /^(#*)("""|")/.exec(rest);
++    if (string) {
++      const hashes = string[1]!;
++      const quote = string[2]!;
++      state.push({
++        kind: "string",
++        close: quote + hashes,
++        escape: "\\" + hashes,
++        multiline: quote.length === 3,
++      });
++      emit("string", string[0].length);
++      continue;
++    }
++    if (line[index] === "`") {
++      const end = line.indexOf("`", index + 1);
++      emit("identifier", end < 0 ? line.length - index : end - index + 1);
++      continue;
++    }
++    const whitespace = /^\s+/.exec(rest);
++    if (whitespace) {
++      emit("white", whitespace[0].length);
++      continue;
++    }
++    const number =
++      /^(?:0[xX][\da-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?[\d_]+)?|\.\d[\d_]*(?:[eE][+-]?[\d_]+)?)/.exec(
++        rest,
++      );
++    if (number) {
++      emit("number", number[0].length);
++      continue;
++    }
++    const word = /^[\p{L}_$][\p{L}\p{N}_$]*/u.exec(rest);
++    if (word) {
++      const value = word[0];
++      emit(
++        keywords.has(value)
++          ? "keyword"
++          : types.has(value) || /^\p{Lu}/u.test(value)
++            ? "type"
++            : "identifier",
++        value.length,
++      );
++      continue;
++    }
++    if (frame?.kind === "interpolation") {
++      if (line[index] === "(") frame.depth++;
++      if (line[index] === ")" && --frame.depth === 0) state.pop();
++    }
++    emit("delimiter", 1);
++  }
++  const singleLine = state.findIndex(
++    (frame) => frame.kind === "string" && !frame.multiline,
++  );
++  if (singleLine >= 0) state.splice(singleLine);
++  return { tokens, state };
++}
+diff --git a/plugins/monaco-editor/lib/languages.test.ts b/plugins/monaco-editor/lib/languages.test.ts
+index 7ec932f1f46ffc7db7c6e265c42ec986a81df0b1..2b39b890d2a4c519f37d1ef1051eb50deffc0656 100644
+--- a/plugins/monaco-editor/lib/languages.test.ts
++++ b/plugins/monaco-editor/lib/languages.test.ts
+@@ -24,6 +24,10 @@ async function bundledLanguageIds(): Promise<Set<string> | null> {
+ }
+ 
+ describe("claimed languages", () => {
++  it("claims Pkl files, including uppercase extensions", () => {
++    expect(CLAIMED_EXTENSIONS).toContain("pkl");
++    expect(languageForPath("config/app.PKL")).toBe("pkl");
++  });
+   it("maps every claimed extension to a language id", () => {
+     for (const extension of CLAIMED_EXTENSIONS) {
+       expect(languageForPath(`file.${extension}`)).toBeTruthy();
+diff --git a/plugins/monaco-editor/lib/languages.ts b/plugins/monaco-editor/lib/languages.ts
+index 608ee41f97294b32bf543d2c286be374b3a44356..0929eadb8973a7cfaecec0f49a86919a4a200bac 100644
+--- a/plugins/monaco-editor/lib/languages.ts
++++ b/plugins/monaco-editor/lib/languages.ts
+@@ -20,6 +20,7 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
+   yaml: "yaml",
+   yml: "yaml",
+   toml: "ini",
++  pkl: "pkl",
+   ini: "ini",
+   cfg: "ini",
+   conf: "ini",
+diff --git a/plugins/monaco-editor/lib/pkl-language.ts b/plugins/monaco-editor/lib/pkl-language.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..c69048152e90607fa81f72b8dce9ee48a309c72c
+--- /dev/null
++++ b/plugins/monaco-editor/lib/pkl-language.ts
+@@ -0,0 +1,56 @@
++import type * as Monaco from "monaco-editor";
++import {
++  tokenizePklLine,
++  type PklHighlightState,
++} from "@bb/shared-ui/pkl-highlight";
++
++class PklState implements Monaco.languages.IState {
++  constructor(readonly frames: PklHighlightState = []) {}
++  clone(): PklState {
++    return new PklState(this.frames);
++  }
++  equals(other: Monaco.languages.IState): boolean {
++    return (
++      other instanceof PklState &&
++      JSON.stringify(this.frames) === JSON.stringify(other.frames)
++    );
++  }
++}
++
++export function registerPkl(monaco: typeof Monaco): void {
++  monaco.languages.register({
++    id: "pkl",
++    extensions: [".pkl"],
++    aliases: ["Pkl", "pkl"],
++  });
++  monaco.languages.setTokensProvider("pkl", {
++    getInitialState: () => new PklState(),
++    tokenize(line, state) {
++      const parsed = tokenizePklLine(
++        line,
++        state instanceof PklState ? state.frames : [],
++      );
++      return {
++        tokens: parsed.tokens.map(({ startIndex, kind }) => ({
++          startIndex,
++          scopes: kind,
++        })),
++        endState: new PklState(parsed.state),
++      };
++    },
++  });
++  monaco.languages.setLanguageConfiguration("pkl", {
++    comments: { lineComment: "//", blockComment: ["/*", "*/"] },
++    brackets: [
++      ["{", "}"],
++      ["[", "]"],
++      ["(", ")"],
++    ],
++    autoClosingPairs: [
++      { open: "{", close: "}" },
++      { open: "[", close: "]" },
++      { open: "(", close: ")" },
++      { open: '"', close: '"', notIn: ["string", "comment"] },
++    ],
++  });
++}
+diff --git a/plugins/monaco-editor/monaco-bundle/editor.js b/plugins/monaco-editor/monaco-bundle/editor.js
+index 206c9f5bcd1a0a55152a46c387353a5fa9effad5..f297588caa43c6b48cae554697246d07689eedb3 100644
+--- a/plugins/monaco-editor/monaco-bundle/editor.js
++++ b/plugins/monaco-editor/monaco-bundle/editor.js
+@@ -16,3 +16,7 @@
+  */
+ export * as monaco from "monaco-editor/editor/editor.api.js";
+ import "monaco-editor/editor/editor.main.js";
++
++import * as monacoApi from "monaco-editor/editor/editor.api.js";
++import { registerPkl } from "../lib/pkl-language.ts";
++registerPkl(monacoApi);
+-- 
+2.53.0
+

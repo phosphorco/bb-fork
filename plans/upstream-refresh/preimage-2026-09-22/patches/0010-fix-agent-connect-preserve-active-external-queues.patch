@@ -1,0 +1,636 @@
+From c90ca545d6b840493e9413f7331fd1086d7c714c Mon Sep 17 00:00:00 2001
+From: Phosphor <engineering@phosphor.co>
+Date: Tue, 8 Sep 2026 17:35:56 +0200
+Subject: [PATCH 10/21] fix(agent-connect): preserve active external queues
+
+---
+ .../src/services/p6r/native-acceptance.ts     |   7 +-
+ apps/server/src/services/p6r/sidecar-store.ts |   3 +-
+ .../src/services/threads/queued-messages.ts   | 107 +++--
+ .../services/p6r/native-acceptance.test.ts    | 404 +++++++++++++++++-
+ 4 files changed, 473 insertions(+), 48 deletions(-)
+
+diff --git a/apps/server/src/services/p6r/native-acceptance.ts b/apps/server/src/services/p6r/native-acceptance.ts
+index f0a8000724aee11fdf74a11eb6bd73aec228148a..f49a4e27959975b36977b42f72a2c53762dbf692 100644
+--- a/apps/server/src/services/p6r/native-acceptance.ts
++++ b/apps/server/src/services/p6r/native-acceptance.ts
+@@ -69,7 +69,10 @@ export function createP6rNativeAcceptance(options: P6rNativeAcceptanceFactoryOpt
+       projectP6rParticipantsInTransaction(tx, thread.id);
+     };
+     try {
+-      if (thread.status === "pending") {
++      const dispatchQueuedOperation =
++        thread.status === "pending" ||
++        (thread.status === "active" && input.input.mode === "queue-if-active");
++      if (dispatchQueuedOperation) {
+         if (options.deps === undefined) return rejected("unavailable", "Native P6r pending-thread acceptance dependencies are unavailable");
+         await attemptDispatch(options.deps, {
+           thread,
+@@ -109,6 +112,8 @@ export function createP6rNativeAcceptance(options: P6rNativeAcceptanceFactoryOpt
+             });
+             return request;
+           },
++          queuedBeforeAppendInTransaction: beforeAppendInTransaction,
++          queuedAfterAppendInTransaction: afterAppendInTransaction,
+         });
+       } else if (options.dispatch !== undefined) await options.dispatch({ afterAppendInTransaction, beforeAppendInTransaction, payload, thread });
+       else {
+diff --git a/apps/server/src/services/p6r/sidecar-store.ts b/apps/server/src/services/p6r/sidecar-store.ts
+index bb006df44b12ff0ad8f4b7dc5b37c998b94778b5..d2e7bd0d293d4621d04b0401ac250fdf48b55f17 100644
+--- a/apps/server/src/services/p6r/sidecar-store.ts
++++ b/apps/server/src/services/p6r/sidecar-store.ts
+@@ -565,6 +565,7 @@ export function promoteP6rQueuedOperationInTransaction(
+   input: {
+     readonly acceptedAt: number;
+     readonly nativeRequestId: string;
++    readonly groupIndex: number;
+     readonly queuedMessageId: string;
+     readonly requestSequence: number;
+     readonly retentionDeadline: number;
+@@ -607,7 +608,7 @@ export function promoteP6rQueuedOperationInTransaction(
+   db.insert(p6rAttemptInputs).values({
+     attemptId,
+     contributionId: storedContributionId,
+-    groupIndex: 0,
++    groupIndex: input.groupIndex,
+     snapshot: serialize(reservation.input),
+     sourceIndex: 0,
+     sourceKind: "contribution",
+diff --git a/apps/server/src/services/threads/queued-messages.ts b/apps/server/src/services/threads/queued-messages.ts
+index 79f282c56197b46412a72fedf463a907702f9fd4..2500b689c2d035c14a9f87b464a6c9949e592a61 100644
+--- a/apps/server/src/services/threads/queued-messages.ts
++++ b/apps/server/src/services/threads/queued-messages.ts
+@@ -1,4 +1,7 @@
+-import { readP6rMentionTargetsForRequest } from "../p6r/participant-projection.js";
++import {
++  projectP6rParticipantsInTransaction,
++  readP6rMentionTargetsForRequest,
++} from "../p6r/participant-projection.js";
+ import {
+   claimQueuedThreadMessageGroup,
+   claimNextQueuedThreadMessageGroup,
+@@ -465,6 +468,12 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
+   const queuedMessages = args.queuedMessages.map(toThreadQueuedMessage);
+   const queuedMessage = queuedMessages[0]!;
+ 
++  if (args.queuedMessages.some(
++    (queued) => p6rQueuedOperationReservation(deps.db, queued.id) !== null,
++  )) {
++    return null;
++  }
++
+   const senderThreadId = args.queuedMessages[0]!.senderThreadId;
+   let inputGroups = args.queuedMessages.map((claimedQueuedMessage) =>
+     formatQueuedMessageInputForSender({
+@@ -699,30 +708,32 @@ async function sendClaimedQueuedMessageForThread(
+   );
+   const input = flattenPromptInputGroups(inputGroups);
+   const lead = args.queuedMessages[0]!;
+-  const p6rReservation = p6rQueuedOperationReservation(deps.db, lead.id);
+-  const p6rQueuedInput =
+-    p6rReservation === null || !Array.isArray(p6rReservation.input)
+-      ? null
+-      : p6rReservation.input.map((value) => promptInputSchema.safeParse(value));
+-  if (
+-    p6rReservation !== null &&
+-    (p6rQueuedInput === null ||
+-      p6rQueuedInput.some((value) => !value.success) ||
+-      inputGroups.length !== 1 ||
+-      JSON.stringify(inputGroups[0]) !==
+-        JSON.stringify(p6rQueuedInput.map((value) => value.data)))
+-  ) {
+-    throw new ApiError(
+-      409,
+-      "p6r_queued_operation_input_mismatch",
+-      "Queued P6r operation input no longer matches its immutable receipt",
+-    );
++  const p6rReservations = args.queuedMessages.flatMap((queuedMessage, groupIndex) => {
++    const reservation = p6rQueuedOperationReservation(deps.db, queuedMessage.id);
++    return reservation === null ? [] : [{ groupIndex, queuedMessage, reservation }];
++  });
++  for (const { queuedMessage, reservation } of p6rReservations) {
++    const reservedInput = Array.isArray(reservation.input)
++      ? reservation.input.map((value) => promptInputSchema.safeParse(value))
++      : null;
++    if (
++      reservedInput === null ||
++      reservedInput.some((value) => !value.success) ||
++      JSON.stringify(toThreadQueuedMessage(queuedMessage).content) !==
++        JSON.stringify(reservedInput.map((value) => value.data))
++    ) {
++      throw new ApiError(
++        409,
++        "p6r_queued_operation_input_mismatch",
++        "Queued P6r operation input no longer matches its immutable receipt",
++      );
++    }
+   }
+   const p6rCommit: Pick<
+     Parameters<typeof attemptDispatch>[1],
+     "pendingStartCommit" | "queuedAfterAppendInTransaction"
+   > =
+-    p6rReservation === null
++    p6rReservations.length === 0
+       ? {}
+       : {
+           pendingStartCommit: ({ provision, tx }) => {
+@@ -730,35 +741,43 @@ async function sendClaimedQueuedMessageForThread(
+               tx,
+               provision,
+             );
+-            const promoted = promoteP6rQueuedOperationInTransaction(tx, {
+-              acceptedAt: Date.now(),
+-              nativeRequestId: request.clientRequestId,
+-              queuedMessageId: lead.id,
+-              requestSequence: request.requestSequence,
+-              retentionDeadline: p6rReservation.receipt.retentionDeadline,
+-              threadId: args.thread.id,
+-            });
+-            if (promoted === null) {
+-              throw new Error(
+-                "P6r queued operation reservation disappeared during admission",
+-              );
++            for (const { groupIndex, queuedMessage, reservation } of p6rReservations) {
++              const promoted = promoteP6rQueuedOperationInTransaction(tx, {
++                acceptedAt: Date.now(),
++                groupIndex,
++                nativeRequestId: request.clientRequestId,
++                queuedMessageId: queuedMessage.id,
++                requestSequence: request.requestSequence,
++                retentionDeadline: reservation.receipt.retentionDeadline,
++                threadId: args.thread.id,
++              });
++              if (promoted === null) {
++                throw new Error(
++                  "P6r queued operation reservation disappeared during admission",
++                );
++              }
+             }
++            projectP6rParticipantsInTransaction(tx, args.thread.id);
+             return request;
+           },
+           queuedAfterAppendInTransaction: ({ request, tx }) => {
+-            const promoted = promoteP6rQueuedOperationInTransaction(tx, {
+-              acceptedAt: Date.now(),
+-              nativeRequestId: request.requestId,
+-              queuedMessageId: lead.id,
+-              requestSequence: request.sequence,
+-              retentionDeadline: p6rReservation.receipt.retentionDeadline,
+-              threadId: args.thread.id,
+-            });
+-            if (promoted === null) {
+-              throw new Error(
+-                "P6r queued operation reservation disappeared during dispatch",
+-              );
++            for (const { groupIndex, queuedMessage, reservation } of p6rReservations) {
++              const promoted = promoteP6rQueuedOperationInTransaction(tx, {
++                acceptedAt: Date.now(),
++                groupIndex,
++                nativeRequestId: request.requestId,
++                queuedMessageId: queuedMessage.id,
++                requestSequence: request.sequence,
++                retentionDeadline: reservation.receipt.retentionDeadline,
++                threadId: args.thread.id,
++              });
++              if (promoted === null) {
++                throw new Error(
++                  "P6r queued operation reservation disappeared during dispatch",
++                );
++              }
+             }
++            projectP6rParticipantsInTransaction(tx, args.thread.id);
+           },
+         };
+   const outcome = await attemptDispatch(deps, {
+diff --git a/apps/server/test/services/p6r/native-acceptance.test.ts b/apps/server/test/services/p6r/native-acceptance.test.ts
+index e94af25a53392a0d43028851ede6f6c6d0b7f3f1..0c0390d4d9e6b6381b68ca5ceb5242ecd2696e25 100644
+--- a/apps/server/test/services/p6r/native-acceptance.test.ts
++++ b/apps/server/test/services/p6r/native-acceptance.test.ts
+@@ -1,5 +1,7 @@
+ import {
+   createConnection,
++  listCoreParticipantProfilePage,
++  setQueuedThreadMessageGroupBoundary,
+   createProject,
+   createThread,
+   listEvents,
+@@ -15,9 +17,17 @@ import { createP6rNativeAcceptance } from "../../../src/services/p6r/native-acce
+ import { setPluginHookProvider } from "../../../src/services/plugins/plugin-hook-registry.js";
+ import { applyLoggedThreadLifecycleEvent } from "../../../src/services/threads/lifecycle-outcome.js";
+ import { clearQueuedMessageWait } from "../../../src/services/threads/queue-waits.js";
+-import { sendNextQueuedMessageIfPresent } from "../../../src/services/threads/queued-messages.js";
++import {
++  createQueuedMessageForThread,
++  sendNextQueuedMessageIfPresent,
++} from "../../../src/services/threads/queued-messages.js";
+ import { migrateP6rSidecars } from "../../../src/services/p6r/sidecar-migrate.js";
+-import { lookupP6rOperationReceipt } from "../../../src/services/p6r/sidecar-store.js";
++import {
++  lookupP6rOperationReceipt,
++  listP6rAttempts,
++  listP6rContributions,
++  p6rQueuedOperationReservation,
++} from "../../../src/services/p6r/sidecar-store.js";
+ import { listQueuedThreadCommands } from "../../helpers/commands.js";
+ import {
+   configuredAcpProvider,
+@@ -283,6 +293,396 @@ describe("P6r native acceptance", () => {
+     });
+   });
+ 
++  it("reserves active external queue work atomically and promotes its frozen receipt on drain", async () => {
++    await withTestHarness(async (harness) => {
++      const { host } = seedHostSession(harness.deps, { id: "p6r-active-queue-host" });
++      const { project } = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/p6r-active-queue",
++      });
++      const environment = seedEnvironment(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/p6r-active-queue",
++        projectId: project.id,
++        status: "ready",
++      });
++      const thread = seedThread(harness.deps, {
++        environmentId: environment.id,
++        projectId: project.id,
++        status: "active",
++      });
++      seedThreadRuntimeState(harness.deps, {
++        environmentId: environment.id,
++        providerThreadId: "active-queue-provider-thread",
++        threadId: thread.id,
++      });
++      setThreadExecutionOverride(harness.db, {
++        modelOverride: "gpt-5",
++        threadId: thread.id,
++      });
++      const operation = {
++        ...acceptance(),
++        input: {
++          ...acceptance().input,
++          mode: "queue-if-active" as const,
++          operationId: "active-queue-operation",
++          threadId: thread.id,
++        },
++        operationNamespace: "active-queue:plugin-1",
++        payloadHash: "active-queue-hash",
++      };
++      const accept = createP6rNativeAcceptance({
++        deps: harness.deps,
++        now: () => 100,
++        retentionMs: 1_000,
++      });
++
++      await expect(accept(operation)).resolves.toMatchObject({
++        operationId: "active-queue-operation",
++        status: "indeterminate",
++      });
++      const [queued] = listQueuedThreadMessages(harness.db, thread.id);
++      if (!queued) throw new Error("Expected active P6r queue reservation");
++      expect(p6rQueuedOperationReservation(harness.db, queued.id)).toMatchObject({
++        acceptedAuthorship: operation.authorEvidence,
++        input: operation.input.input,
++        receipt: { operationId: "active-queue-operation", status: "pending" },
++      });
++      await expect(accept(operation)).resolves.toMatchObject({
++        operationId: "active-queue-operation",
++        status: "indeterminate",
++      });
++      expect(listQueuedThreadMessages(harness.db, thread.id)).toHaveLength(1);
++
++      applyLoggedThreadLifecycleEvent(harness.deps, {
++        event: { type: "run.succeeded" },
++        threadId: thread.id,
++      });
++      clearQueuedMessageWait(harness.deps, {
++        queuedMessageId: queued.id,
++        threadId: thread.id,
++      });
++      const requestsBeforeDrain = listEvents(harness.db, { threadId: thread.id }).filter(
++        (event) => event.type === "client/turn/requested",
++      ).length;
++      await expect(sendNextQueuedMessageIfPresent(harness.deps, {
++        threadId: thread.id,
++      })).resolves.toBe(true);
++      expect(lookupP6rOperationReceipt(
++        harness.db,
++        "active-queue:plugin-1",
++        "active-queue-operation",
++      )).toMatchObject({ status: "accepted" });
++      expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
++      expect(
++        listEvents(harness.db, { threadId: thread.id }).filter(
++          (event) => event.type === "client/turn/requested",
++        ),
++      ).toHaveLength(requestsBeforeDrain + 1);
++      await expect(accept(operation)).resolves.toMatchObject({
++        receipt: { operationId: "active-queue-operation" },
++        status: "submitted",
++      });
++      expect(
++        listEvents(harness.db, { threadId: thread.id }).filter(
++          (event) => event.type === "client/turn/requested",
++        ),
++      ).toHaveLength(requestsBeforeDrain + 1);
++    });
++  });
++
++  it("commits one receipt when a stale active snapshot queues and then drains", async () => {
++    await withTestHarness(async (harness) => {
++      const { host } = seedHostSession(harness.deps, { id: "p6r-active-race-host" });
++      const { project } = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/p6r-active-race",
++      });
++      const environment = seedEnvironment(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/p6r-active-race",
++        projectId: project.id,
++        status: "ready",
++      });
++      const thread = seedThread(harness.deps, {
++        environmentId: environment.id,
++        projectId: project.id,
++        status: "idle",
++      });
++      seedThreadRuntimeState(harness.deps, {
++        environmentId: environment.id,
++        providerThreadId: "active-race-provider-thread",
++        threadId: thread.id,
++      });
++      setThreadExecutionOverride(harness.db, {
++        modelOverride: "gpt-5",
++        threadId: thread.id,
++      });
++      const operation = {
++        ...acceptance(),
++        input: {
++          ...acceptance().input,
++          mode: "queue-if-active" as const,
++          operationId: "active-race-operation",
++          threadId: thread.id,
++        },
++        operationNamespace: "active-race:plugin-1",
++        payloadHash: "active-race-hash",
++      };
++      const accept = createP6rNativeAcceptance({
++        deps: harness.deps,
++        findThread: () => ({ ...thread, status: "active" }),
++        now: () => 100,
++        retentionMs: 1_000,
++      });
++
++      await expect(accept(operation)).resolves.toMatchObject({
++        operationId: "active-race-operation",
++        status: "indeterminate",
++      });
++      const [queued] = listQueuedThreadMessages(harness.db, thread.id);
++      if (!queued) throw new Error("Expected race-to-idle P6r queue reservation");
++      clearQueuedMessageWait(harness.deps, {
++        queuedMessageId: queued.id,
++        threadId: thread.id,
++      });
++      const requestsBeforeDrain = listEvents(harness.db, { threadId: thread.id }).filter(
++        (event) => event.type === "client/turn/requested",
++      ).length;
++      await expect(sendNextQueuedMessageIfPresent(harness.deps, {
++        threadId: thread.id,
++      })).resolves.toBe(true);
++      expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
++      const requests = listEvents(harness.db, { threadId: thread.id }).filter(
++        (event) => event.type === "client/turn/requested",
++      );
++      expect(requests).toHaveLength(requestsBeforeDrain + 1);
++      expect(lookupP6rOperationReceipt(
++        harness.db,
++        "active-race:plugin-1",
++        "active-race-operation",
++      )).toMatchObject({
++        acceptedRequestSequence: expect.any(Number),
++        status: "accepted",
++      });
++      await expect(accept(operation)).resolves.toMatchObject({
++        receipt: { operationId: "active-race-operation" },
++        status: "submitted",
++      });
++      expect(
++        listEvents(harness.db, { threadId: thread.id }).filter(
++          (event) => event.type === "client/turn/requested",
++        ),
++      ).toHaveLength(requestsBeforeDrain + 1);
++    });
++  });
++
++  it("preserves grouped position and frozen external authors across mixed queue drain", async () => {
++    await withTestHarness(async (harness) => {
++      const { host } = seedHostSession(harness.deps, { id: "p6r-mixed-queue-host" });
++      const { project } = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/p6r-mixed-queue",
++      });
++      const environment = seedEnvironment(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/p6r-mixed-queue",
++        projectId: project.id,
++        status: "ready",
++      });
++      const thread = seedThread(harness.deps, {
++        environmentId: environment.id,
++        projectId: project.id,
++        status: "active",
++      });
++      seedThreadRuntimeState(harness.deps, {
++        environmentId: environment.id,
++        providerThreadId: "mixed-queue-provider-thread",
++        threadId: thread.id,
++      });
++      setThreadExecutionOverride(harness.db, {
++        modelOverride: "gpt-5",
++        threadId: thread.id,
++      });
++      const ordinary = await createQueuedMessageForThread(harness.deps, {
++        payload: {
++          input: [{ mentions: [], text: "ordinary grouped lead", type: "text" }],
++          model: "gpt-5",
++          permissionMode: "full",
++          reasoningLevel: "medium",
++          serviceTier: "default",
++        },
++        thread,
++      });
++      const firstOperation = {
++        ...acceptance(),
++        authorEvidence: {
++          ...acceptance().authorEvidence,
++          identity: {
++            key: "mixed-external-one",
++            kind: "external" as const,
++            pluginId: "plugin-1",
++            subject: "mixed-external-one",
++          },
++          presentation: {
++            avatarUrl: null,
++            displayName: "Mixed external one",
++            handle: null,
++          },
++        },
++        input: {
++          ...acceptance().input,
++          input: [{ mentions: [], text: "first external grouped input", type: "text" }],
++          mode: "queue-if-active" as const,
++          operationId: "mixed-queue-operation-one",
++          threadId: thread.id,
++        },
++        operationNamespace: "mixed-queue:plugin-1",
++        payloadHash: "mixed-queue-hash-one",
++      };
++      const secondOperation = {
++        ...acceptance(),
++        authorEvidence: {
++          ...acceptance().authorEvidence,
++          identity: {
++            key: "mixed-external-two",
++            kind: "external" as const,
++            pluginId: "plugin-1",
++            subject: "mixed-external-two",
++          },
++          presentation: {
++            avatarUrl: null,
++            displayName: "Mixed external two",
++            handle: null,
++          },
++        },
++        input: {
++          ...acceptance().input,
++          input: [{ mentions: [], text: "second external grouped input", type: "text" }],
++          mode: "queue-if-active" as const,
++          operationId: "mixed-queue-operation-two",
++          threadId: thread.id,
++        },
++        operationNamespace: "mixed-queue:plugin-1",
++        payloadHash: "mixed-queue-hash-two",
++      };
++      const accept = createP6rNativeAcceptance({
++        deps: harness.deps,
++        now: () => 100,
++        retentionMs: 1_000,
++      });
++      await expect(accept(firstOperation)).resolves.toMatchObject({
++        operationId: "mixed-queue-operation-one",
++        status: "indeterminate",
++      });
++      await expect(accept(secondOperation)).resolves.toMatchObject({
++        operationId: "mixed-queue-operation-two",
++        status: "indeterminate",
++      });
++      const queued = listQueuedThreadMessages(harness.db, thread.id);
++      const p6rQueued = queued.filter((row) => row.id !== ordinary.id);
++      if (p6rQueued.length !== 2) {
++        throw new Error("Expected two P6r queue rows after ordinary lead");
++      }
++      setQueuedThreadMessageGroupBoundary({
++        db: harness.db,
++        notifier: harness.hub,
++        threadId: thread.id,
++        expectedGroupedPrefixQueuedMessageIds: [
++          ordinary.id,
++          p6rQueued[0]!.id,
++          p6rQueued[1]!.id,
++        ],
++        groupBoundaryQueuedMessageId: p6rQueued[1]!.id,
++      });
++      applyLoggedThreadLifecycleEvent(harness.deps, {
++        event: { type: "run.succeeded" },
++        threadId: thread.id,
++      });
++      for (const queuedMessage of [ordinary, ...p6rQueued]) {
++        clearQueuedMessageWait(harness.deps, {
++          queuedMessageId: queuedMessage.id,
++          threadId: thread.id,
++        });
++      }
++      await expect(sendNextQueuedMessageIfPresent(harness.deps, {
++        threadId: thread.id,
++      })).resolves.toBe(true);
++      expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
++      const firstReceipt = lookupP6rOperationReceipt(
++        harness.db,
++        "mixed-queue:plugin-1",
++        "mixed-queue-operation-one",
++      );
++      const secondReceipt = lookupP6rOperationReceipt(
++        harness.db,
++        "mixed-queue:plugin-1",
++        "mixed-queue-operation-two",
++      );
++      if (
++        firstReceipt === null ||
++        firstReceipt.contributionId === null ||
++        secondReceipt === null ||
++        secondReceipt.contributionId === null
++      ) {
++        throw new Error("Expected accepted mixed queue contributions");
++      }
++      expect(firstReceipt).toMatchObject({ status: "accepted" });
++      expect(secondReceipt).toMatchObject({ status: "accepted" });
++      expect(listP6rAttempts(harness.db, "mixed-queue:plugin-1", {
++        contributionId: firstReceipt.contributionId,
++      })[0]?.inputs).toMatchObject([{
++        groupIndex: 1,
++        snapshot: firstOperation.input.input,
++        sourceIndex: 0,
++      }]);
++      expect(listP6rAttempts(harness.db, "mixed-queue:plugin-1", {
++        contributionId: secondReceipt.contributionId,
++      })[0]?.inputs).toMatchObject([{
++        groupIndex: 2,
++        snapshot: secondOperation.input.input,
++        sourceIndex: 0,
++      }]);
++      expect(listP6rContributions(harness.db, "mixed-queue:plugin-1", {
++        threadId: thread.id,
++      })).toEqual(expect.arrayContaining([
++        expect.objectContaining({
++          acceptedAuthorship: firstOperation.authorEvidence,
++          currentProjection: firstOperation.input.input,
++          id: firstReceipt.contributionId,
++          initialInput: firstOperation.input.input,
++        }),
++        expect.objectContaining({
++          acceptedAuthorship: secondOperation.authorEvidence,
++          currentProjection: secondOperation.input.input,
++          id: secondReceipt.contributionId,
++          initialInput: secondOperation.input.input,
++        }),
++      ]));
++      expect(listCoreParticipantProfilePage(harness.db, {
++        pageSize: 10,
++        threadId: thread.id,
++      }).profiles).toEqual(expect.arrayContaining([
++        expect.objectContaining({
++          p6rDisplayName: "Mixed external one",
++          p6rPrincipalKey: "mixed-external-one",
++        }),
++        expect.objectContaining({
++          p6rDisplayName: "Mixed external two",
++          p6rPrincipalKey: "mixed-external-two",
++        }),
++      ]));
++      await expect(accept(firstOperation)).resolves.toMatchObject({
++        receipt: { operationId: "mixed-queue-operation-one" },
++        status: "submitted",
++      });
++      await expect(accept(secondOperation)).resolves.toMatchObject({
++        receipt: { operationId: "mixed-queue-operation-two" },
++        status: "submitted",
++      });
++    });
++  });
++
+   it("rolls back a pending cold-start receipt when admission loses its thread", async () => {
+     await withTestHarness(async (harness) => {
+       const { host } = seedHostSession(harness.deps, { id: "p6r-pending-lost-host" });
+-- 
+2.53.0
+
