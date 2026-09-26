@@ -48,7 +48,7 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The thirty-three patches listed in `patches/series` form the current implementation
+The thirty-eight patches listed in `patches/series` form the current implementation
 candidate. Queue numbers 0022 and 0027 are intentionally absent: 0022 is a
 historical gap, and the former 0027 Monaco routing backport is supplied by
 upstream commit `283e6d7`. Obsolete
@@ -101,16 +101,16 @@ retain machine attribution.
 Patch 35 validates the Tailnet port before binding either listener, closes the
 primary listener if the second bind fails, and starts detached recovery only
 after the configured listeners are ready.
+Patch 36 adds restart fault barriers for Perspectives. Patches 37–39 keep CLI
+and agent-runtime tests aligned with the current artifact and error contracts.
+Patch 40 bridges the exact historical bb-machine core migration ledger and
+identity column order observed in the private migration rehearsal.
 
 ## Verification boundary for this source receipt
 
-This latest-upstream source receipt is not a live deployment. The preceding
-tree passed the complete workspace typecheck and build, both server test projects,
-and focused plugin-build, provider, P6R, and artifact-v2 checks. Organization
-plugin typechecks and builds and community-plugin typechecks, tests, and builds
-also pass with the selected SDK. Context Magnet Inspector's full test suite
-still reports an external Codex router-launcher digest mismatch; it is not
-resolved by changing the expected hash alone. The patch-35 successor has a
-focused seven-test real-socket startup witness and server typecheck; broader
-checks must be rebound to its exact result tree. Live materialization, host-side
-policy checks, migration, restart, and browser acceptance remain separate gates.
+The locked source passed workspace typecheck and build. The database package
+passed 632 tests at patch 40, and the exact core migration passed on a private
+copy of bb-machine state; its receipt is in `plans/reconciliation/`. The broader
+test graph has a host `/tmp` inode-pressure limitation documented in the
+reconciliation handoff. Runtime, host policy, and browser acceptance are checked
+at activation.

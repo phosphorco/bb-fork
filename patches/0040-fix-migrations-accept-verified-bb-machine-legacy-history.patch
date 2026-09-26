@@ -1,0 +1,115 @@
+From 85a17c14c31da980974e9aa2f24e0c784cf9e0f8 Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Sat, 26 Sep 2026 03:22:23 +0200
+Subject: [PATCH] fix(migrations): accept verified bb-machine legacy history
+
+---
+ packages/db/src/migrate.ts       | 29 ++++++++++++++++++++++++++++-
+ packages/db/test/migrate.test.ts | 23 +++++++++++++++++++++++
+ 2 files changed, 51 insertions(+), 1 deletion(-)
+
+diff --git a/packages/db/src/migrate.ts b/packages/db/src/migrate.ts
+index 176217d53844f058d4b65e7b07a27a56729329a0..05263be1bdb787d296322e945f33837c7a54cee8 100644
+--- a/packages/db/src/migrate.ts
++++ b/packages/db/src/migrate.ts
+@@ -187,6 +187,12 @@ const branchLocalThreadTabsMigrationCreatedAts = [1783633750817] as const;
+ const legacyIdentityAndContextMagnetMigrationCreatedAts = [
+   1789068314079, 1789920055084, 1789922567893, 1789936012627,
+ ] as const;
++const historicalBranchMigrationsBeforeLegacyIdentity = [
++  { createdAt: 1788709732614, hash: "5b5b024b00bd42268e971fc672de03450a49f09d47a31363c3e207675b640b44" },
++  { createdAt: 1788709886473, hash: "e051e9e2591a08907d9b53bb1243a11d5c1384f07a131c4a2a9367b0b4954cce" },
++  { createdAt: 1788710900181, hash: "4231f09f771c45fbc30b4394ca4618bf34e3b0fe6be5ffe259a9ad515ce69e83" },
++  { createdAt: 1788905798305, hash: "165bed6c94339613763d987cd3dc2e93229888ee393eae1ce6eaf1f7fdbae0a8" },
++] as const;
+ const legacyIdentityAndContextMagnetMigrations = [
+   {
+     createdAt: 1789068314079,
+@@ -1288,6 +1294,7 @@ function applyTargetMigrationsSkippedByLegacyIdentityHistory(
+   const knownCreatedAts = new Set([
+     ...expectedMigrations.map((migration) => migration.createdAt),
+     ...legacyIdentityAndContextMagnetMigrationCreatedAts,
++    ...historicalBranchMigrationsBeforeLegacyIdentity.map((migration) => migration.createdAt),
+   ]);
+   const appliedCreatedAts = new Set(
+     appliedMigrations
+@@ -1318,6 +1325,16 @@ function applyTargetMigrationsSkippedByLegacyIdentityHistory(
+       "Unsupported legacy identity/context migration history: an unknown ledger row appears at or before the legacy prefix.",
+     );
+   }
++  for (const historicalMigration of historicalBranchMigrationsBeforeLegacyIdentity) {
++    const applied = appliedMigrations.find(
++      (migration) => migration.createdAt === historicalMigration.createdAt,
++    );
++    if (applied !== undefined && applied.hash !== historicalMigration.hash) {
++      throw new Error(
++        "Unsupported legacy identity/context migration history: a historical branch migration has an unrecognized hash.",
++      );
++    }
++  }
+ 
+   const expectedLegacyCreatedAts =
+     legacyIdentityAndContextMagnetMigrations.slice(0, legacyPrefixLength);
+@@ -1337,7 +1354,9 @@ function applyTargetMigrationsSkippedByLegacyIdentityHistory(
+       !appliedMigrations.some(
+         (migration) =>
+           migration.createdAt === legacyMigration.createdAt &&
+-          migration.hash === legacyMigration.hash,
++          (migration.hash === legacyMigration.hash ||
++            (legacyMigration.tag === "0119_soft_pandemic" &&
++              migration.hash === "70be23ac3c47053d8b4d59cc0b5af9c5c1412b2656c44062af31d5ff16538319")),
+       )
+     ) {
+       throw new Error(
+@@ -1755,6 +1774,14 @@ let identityContextCanonicalTableContracts:
+   | CanonicalTableContract[]
+   | undefined;
+ const permittedLegacyIdentityContextColumnOrders = new Map<string, string[]>([
++  [
++    "thread_facet_principal_profiles",
++    [
++      "type_scope", "type_owner", "local_name", "assignment_scope", "thread_id",
++      "principal_key", "member_position", "display_name", "image_url",
++      "updated_at", "identity_kind",
++    ],
++  ],
+   [
+     "context_magnet_contribution_trace_receipts",
+     [
+diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
+index f8bb4ee2af4c745ff7b85764376ba0ec15e8a37f..7d722daa3baa4ce3e821e9e5646c92fc442d9d2a 100644
+--- a/packages/db/test/migrate.test.ts
++++ b/packages/db/test/migrate.test.ts
+@@ -6071,6 +6071,29 @@ describe("identity and context magnet migration bridge", () => {
+     },
+   );
+ 
++  it("upgrades the observed pre-canonical branch ledger and identity hash", () => {
++    const db = createConnection(":memory:");
++    try {
++      createLegacyIdentityAndContextMagnetHistory(db, 1);
++      for (const [createdAt, hash] of [
++        [1788709732614, "5b5b024b00bd42268e971fc672de03450a49f09d47a31363c3e207675b640b44"],
++        [1788709886473, "e051e9e2591a08907d9b53bb1243a11d5c1384f07a131c4a2a9367b0b4954cce"],
++        [1788710900181, "4231f09f771c45fbc30b4394ca4618bf34e3b0fe6be5ffe259a9ad515ce69e83"],
++        [1788905798305, "165bed6c94339613763d987cd3dc2e93229888ee393eae1ce6eaf1f7fdbae0a8"],
++      ] as const) {
++        db.$client.prepare<InsertMigrationParameters>(
++          "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
++        ).run(hash, createdAt);
++      }
++      db.$client.prepare("UPDATE __drizzle_migrations SET hash = ? WHERE created_at = ?")
++        .run("70be23ac3c47053d8b4d59cc0b5af9c5c1412b2656c44062af31d5ff16538319", 1789068314079);
++      migrate(db);
++      expect(readLatestAppliedMigrationCreatedAt(db)).toBe(latestMigrationWhen);
++    } finally {
++      closeConnection(db);
++    }
++  });
++
+   it("rolls back the non-idempotent 0123 settings move and retries after reopen", () => {
+     const directory = mkdtempSync(join(tmpdir(), "bb-migration-0123-"));
+     const databasePath = join(directory, "state.db");
+-- 
+2.53.0
+
