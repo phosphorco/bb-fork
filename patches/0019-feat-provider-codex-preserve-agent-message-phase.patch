@@ -1,7 +1,7 @@
-From 65551e84e71f2d287a7c9315952ef8a127d21a04 Mon Sep 17 00:00:00 2001
+From ad14ed8f564d7dadc24e61e8c52d01c43db3548d Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Wed, 16 Sep 2026 16:31:38 +0200
-Subject: [PATCH 19/32] feat(provider-codex): preserve agent message phase
+Subject: [PATCH] feat(provider-codex): preserve agent message phase
 
 ---
  .../test/public/public-thread-data.test.ts    | 142 ++++++++++++++++++
@@ -34,10 +34,10 @@ Subject: [PATCH 19/32] feat(provider-codex): preserve agent message phase
  27 files changed, 639 insertions(+), 77 deletions(-)
 
 diff --git a/apps/server/test/public/public-thread-data.test.ts b/apps/server/test/public/public-thread-data.test.ts
-index eaccca47feb2c10f984fed5a37e7026332df3b24..b7aa9106d5276475d023b7c16c93aa21f9c26a31 100644
+index 5c077d1e8639e9cc0a782f8b3d4f2e7eae178642..def6d86a9515d9dfec150e439495c5189f29447b 100644
 --- a/apps/server/test/public/public-thread-data.test.ts
 +++ b/apps/server/test/public/public-thread-data.test.ts
-@@ -25,6 +25,7 @@ import {
+@@ -26,6 +26,7 @@ import {
  import {
    encodeClientTurnRequestIdNumber,
    turnRequestEventDataSchema,
@@ -45,7 +45,7 @@ index eaccca47feb2c10f984fed5a37e7026332df3b24..b7aa9106d5276475d023b7c16c93aa21
    threadQueuedMessageSchema,
    threadScope,
    threadSchema,
-@@ -5095,6 +5096,147 @@ describe("public thread data routes", () => {
+@@ -5339,6 +5340,147 @@ describe("public thread data routes", () => {
      });
    });
  
@@ -820,10 +820,10 @@ index 57d2d90d24bf74517fedc38f4f60391168a8647d..b26641a89ba05a1e0be6ea827dfdb150
  {"ts":1787279446059,"run":1787279443667,"seq":22.63157894736842,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_kbyc2f5ivt\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787279446060,"run":1787279443667,"seq":22.68421052631579,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_kbyc2f5ivt\",\"deltas\":[{\"kind\":\"turn.boundary\",\"providerTurnId\":\"01a02228-1024-7680-bd98-b1dd3fd15eeb\",\"status\":\"completed\",\"providerCheckpointId\":\"01a02228-1024-7680-bd98-b1dd3fd15eeb\"}]}}"}
 diff --git a/packages/provider-bridge-protocol/src/assembler/delta-assembler.test.ts b/packages/provider-bridge-protocol/src/assembler/delta-assembler.test.ts
-index 99ba12b1953dd516d311630ac7ebae82ea136496..25040d29e46fff5238f4bbc36832c1da302e17e0 100644
+index c58437a2519e86691038e971c49ab211467965ee..192ceb1ec88111e6adc5f6f2f3f255354cae284b 100644
 --- a/packages/provider-bridge-protocol/src/assembler/delta-assembler.test.ts
 +++ b/packages/provider-bridge-protocol/src/assembler/delta-assembler.test.ts
-@@ -1187,6 +1187,76 @@ describe("delta assembler unified streaming dialect", () => {
+@@ -1163,6 +1163,76 @@ describe("delta assembler unified streaming dialect", () => {
        : undefined;
    }
  
@@ -901,7 +901,7 @@ index 99ba12b1953dd516d311630ac7ebae82ea136496..25040d29e46fff5238f4bbc36832c1da
      const assembler = createAssembler();
      assemble(assembler, { kind: "turn.open" });
 diff --git a/packages/provider-bridge-protocol/src/assembler/delta-assembler.ts b/packages/provider-bridge-protocol/src/assembler/delta-assembler.ts
-index 2db5465b0627e6690b2c751df27e117ff9ec8805..f5c227ced4088b58addefca928a97ef48c9019a2 100644
+index a6418535700dded89769c59b460ff78f35a5d538..011e8d8ecd393c37ad8d9a785f1996c4c8db7e59 100644
 --- a/packages/provider-bridge-protocol/src/assembler/delta-assembler.ts
 +++ b/packages/provider-bridge-protocol/src/assembler/delta-assembler.ts
 @@ -762,7 +762,12 @@ export function createDeltaAssembler(
@@ -1013,10 +1013,10 @@ index 6c91529d946854b06758dd8b572089da409103ef..4607771599c811d205eff818f021b012
      type: z.literal("reasoning"),
      summary: z.array(z.string()),
 diff --git a/packages/sdk/test/sdk.test.ts b/packages/sdk/test/sdk.test.ts
-index befea385c9deac2dc92b958f80376c321f9ae7dd..2152bff8995ba4e992927b10fc25052be02ee78a 100644
+index 716f000c5ab10acc1b89e1987f60209349d30cfd..74c1c516d89a65d3bb6df07bb1a5acfa99ebf4e4 100644
 --- a/packages/sdk/test/sdk.test.ts
 +++ b/packages/sdk/test/sdk.test.ts
-@@ -296,6 +296,109 @@ describe("@bb/sdk", () => {
+@@ -297,6 +297,109 @@ describe("@bb/sdk", () => {
      ]);
    });
  

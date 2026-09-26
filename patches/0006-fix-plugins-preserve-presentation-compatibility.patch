@@ -1,7 +1,7 @@
-From cec82fd8241eb90845a47d25f96959394b85dcec Mon Sep 17 00:00:00 2001
+From 8011088552fcc19f3e2b3fcba02f90082418b836 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
-Subject: [PATCH 06/32] fix(plugins): preserve presentation compatibility
+Subject: [PATCH] fix(plugins): preserve presentation compatibility
 
 ---
  apps/server/package.json                      |   1 +
@@ -30,7 +30,7 @@ index df919e43bb5781fa9aa855a96908bd4298d4ee3c..d80eaa715d119ec4b7413efa630c6aa0
      "@bb/core-ui": "workspace:*",
      "@bb/db": "workspace:*",
 diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
-index 8fd37623afe72478c074348270359d9916cf5fc8..f686fd191aeba34033fae624711dfa3d19d8dffa 100644
+index 14c9e150c6951d8cfd9bf3926357c2b2d1412a6d..5b40d3583eb8240223f39be7ed05317871828142 100644
 --- a/apps/server/src/services/plugins/plugin-api.ts
 +++ b/apps/server/src/services/plugins/plugin-api.ts
 @@ -28,7 +28,13 @@ import {
@@ -56,7 +56,7 @@ index 8fd37623afe72478c074348270359d9916cf5fc8..f686fd191aeba34033fae624711dfa3d
    PluginSettingDescriptors,
    PluginSettingValue,
    PluginSettings,
-@@ -1174,6 +1181,13 @@ export function createPluginApi(options: {
+@@ -1175,6 +1182,13 @@ export function createPluginApi(options: {
      },
    };
  
@@ -70,7 +70,7 @@ index 8fd37623afe72478c074348270359d9916cf5fc8..f686fd191aeba34033fae624711dfa3d
    const server: PluginServerApi = {
      get experimental_appUrl(): string | null {
        assertLive();
-@@ -1517,6 +1531,7 @@ export function createPluginApi(options: {
+@@ -1518,6 +1532,7 @@ export function createPluginApi(options: {
      hosts,
      experimental_aiServices,
      experimental_facets,
@@ -79,10 +79,10 @@ index 8fd37623afe72478c074348270359d9916cf5fc8..f686fd191aeba34033fae624711dfa3d
        ? {}
        : { experimental_p6rIdentity: p6rIdentity.protocol }),
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index 1fd5213cbb1ab8763a88c84a4db2c3d0bbd61d2f..1b7bbdc10f47b08b5cbd83c33455743fef30f774 100644
+index fc4f2026b939ee9098b02e3c7c196ffd27c3f4eb..9ea290e44f410bd838fa602bc6d6c17b9d1774f3 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
-@@ -555,6 +555,18 @@ function normalizeMentionSearchItems(
+@@ -561,6 +561,18 @@ function normalizeMentionSearchItems(
    });
  }
  
@@ -101,7 +101,7 @@ index 1fd5213cbb1ab8763a88c84a4db2c3d0bbd61d2f..1b7bbdc10f47b08b5cbd83c33455743f
  export function createPluginService(deps: PluginServiceDeps): PluginService {
    const logger = deps.logger;
    const installHandlerTimeoutMs = deps.installHandlerTimeoutMs ?? 30_000;
-@@ -1862,10 +1874,18 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1934,10 +1946,18 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
          id,
          `http ${route.method} ${route.path}`,
          async () => {
@@ -121,7 +121,7 @@ index 1fd5213cbb1ab8763a88c84a4db2c3d0bbd61d2f..1b7bbdc10f47b08b5cbd83c33455743f
            }
            if (
              binding.pluginId !== id ||
-@@ -1901,7 +1921,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1973,7 +1993,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
              const response = await dispatch.runWithInvocation(
                route.handler,
                { request: context, scope: capture.scope },
@@ -131,7 +131,7 @@ index 1fd5213cbb1ab8763a88c84a4db2c3d0bbd61d2f..1b7bbdc10f47b08b5cbd83c33455743f
              return retainP6rHttpResponse(
                adoptHttpRouteResponse(response),
 diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-index 8dbd8cb2e4a83704b57c7d516f49923f519723a5..39b9622cf8f29c6186a62c7e904e1538ea4109f9 100644
+index 88a4ae3ce458061d4a72ac11212cea8a167e47b0..2e5f9810fda2610ee7ef6504c464d4978a7780f4 100644
 --- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
 +++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
 @@ -172,6 +172,7 @@ const BB_PLUGIN_API_KEYS = [
@@ -250,7 +250,7 @@ index 0000000000000000000000000000000000000000..31045a90a15310d48e9ab7e5b8b6d0e6
 +  });
 +});
 diff --git a/packages/plugin-sdk/package.json b/packages/plugin-sdk/package.json
-index eff8ba26b4073485c80700c2dee2c06e5aa766ed..01d91e9f8b2328713045f99071fe2a66d980d1d9 100644
+index 2fc2b65d659199676212b190fe74023329798dd6..706a6f1c37441e6fa6c975a4a0c922418c749cd9 100644
 --- a/packages/plugin-sdk/package.json
 +++ b/packages/plugin-sdk/package.json
 @@ -132,6 +132,7 @@
@@ -316,10 +316,10 @@ index 71293a0d0e11fa25b8585faf1449a7f087627f89..7f89926f602df8cf3888c229c3ad45b6
      expectTypeOf<
        BbPluginApi["experimental_p6rIdentity"]
 diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
-index a0a162a2c3e092eac2342037f14f2433d6f61795..bcf43a02155ed976f480049e7b0e0ec12ea6c63f 100644
+index eeefdbae72aec9f55cb534e488fe3bb137e51258..c5483abd94f864f1366407d1171629417030afbd 100644
 --- a/packages/plugin-sdk/src/backend-contract.ts
 +++ b/packages/plugin-sdk/src/backend-contract.ts
-@@ -784,8 +784,22 @@ export interface PluginHooks {
+@@ -791,8 +791,22 @@ export interface PluginHooks {
  
  export type PluginHttpAuthMode = "local" | "token" | "none";
  
@@ -342,7 +342,7 @@ index a0a162a2c3e092eac2342037f14f2433d6f61795..bcf43a02155ed976f480049e7b0e0ec1
  ) => Response | Promise<Response>;
  
  export interface ExperimentalPluginWebSocket {
-@@ -1851,6 +1865,11 @@ export interface PluginEvents {
+@@ -1858,6 +1872,11 @@ export interface PluginEvents {
  // Server info.
  // ---------------------------------------------------------------------------
  
@@ -354,7 +354,7 @@ index a0a162a2c3e092eac2342037f14f2433d6f61795..bcf43a02155ed976f480049e7b0e0ec1
  export interface PluginServerApi {
    /**
     * The operator-configured public app URL from `BB_APP_URL`, or `null` when
-@@ -2100,6 +2119,8 @@ export type PluginBbSdk = Omit<BbSdk, "threads"> & {
+@@ -2107,6 +2126,8 @@ export type PluginBbSdk = Omit<BbSdk, "threads"> & {
   * against.
   */
  export interface BbPluginApi {
@@ -364,7 +364,7 @@ index a0a162a2c3e092eac2342037f14f2433d6f61795..bcf43a02155ed976f480049e7b0e0ec1
    /** The plugin's own id (namespaces storage, routes, commands). */
    readonly pluginId: string;
 diff --git a/packages/plugin-sdk/src/testing/fake-plugin-host.ts b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
-index 20a19ee193bf887c3671e6d9f3afb9cd2674b43d..4a98be5748cb36679fa91ae6ee64d1d70f44ff0c 100644
+index 6718a10161d56b9f497a500af10374ddfbb51bd2..ec068731b5af727be1131b213323444be2e575eb 100644
 --- a/packages/plugin-sdk/src/testing/fake-plugin-host.ts
 +++ b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
 @@ -11,6 +11,8 @@ import Database from "better-sqlite3";
@@ -384,7 +384,7 @@ index 20a19ee193bf887c3671e6d9f3afb9cd2674b43d..4a98be5748cb36679fa91ae6ee64d1d7
    PluginSettingDescriptors,
    PluginSettingValue,
    PluginSettings,
-@@ -1506,6 +1509,13 @@ function createFakePluginHostInternal(
+@@ -1507,6 +1510,13 @@ function createFakePluginHostInternal(
      },
    };
  
@@ -398,7 +398,7 @@ index 20a19ee193bf887c3671e6d9f3afb9cd2674b43d..4a98be5748cb36679fa91ae6ee64d1d7
    const bb: BbPluginApi = {
      pluginId,
      log,
-@@ -1543,6 +1553,7 @@ function createFakePluginHostInternal(
+@@ -1544,6 +1554,7 @@ function createFakePluginHostInternal(
      hosts,
      experimental_aiServices,
      experimental_facets,
@@ -406,7 +406,7 @@ index 20a19ee193bf887c3671e6d9f3afb9cd2674b43d..4a98be5748cb36679fa91ae6ee64d1d7
      get sdk() {
        assertLive();
        return sdk;
-@@ -1868,7 +1879,14 @@ function createFakePluginHostInternal(
+@@ -1871,7 +1882,14 @@ function createFakePluginHostInternal(
        const app = new Hono();
        app.on(route.method, route.path, async (context) => {
          try {
@@ -423,10 +423,10 @@ index 20a19ee193bf887c3671e6d9f3afb9cd2674b43d..4a98be5748cb36679fa91ae6ee64d1d7
            const message = errorMessage(error);
            emitLog(
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index 37df5d1f9e23ea291100dd62b86a9f0113e7feb7..1f4e86b90d73583a02e82dcf45737f202c28a661 100644
+index a5ac5f1fbaf426482bd114451dc4d3fd00ad0999..e3d9e76911c641f8a73a793f1fd6357df978a6c1 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
-@@ -951,6 +951,9 @@ importers:
+@@ -957,6 +957,9 @@ importers:
  
    apps/server:
      dependencies:
@@ -436,7 +436,7 @@ index 37df5d1f9e23ea291100dd62b86a9f0113e7feb7..1f4e86b90d73583a02e82dcf45737f20
        '@bb/config':
          specifier: workspace:*
          version: link:../../packages/config
-@@ -1063,9 +1066,6 @@ importers:
+@@ -1069,9 +1072,6 @@ importers:
        '@bb/agent-runtime':
          specifier: workspace:*
          version: link:../../packages/agent-runtime
@@ -446,7 +446,7 @@ index 37df5d1f9e23ea291100dd62b86a9f0113e7feb7..1f4e86b90d73583a02e82dcf45737f20
        '@bb/scripts':
          specifier: workspace:*
          version: link:../../packages/scripts
-@@ -2220,6 +2220,9 @@ importers:
+@@ -2229,6 +2229,9 @@ importers:
          specifier: 4.3.6
          version: 4.3.6
      devDependencies:

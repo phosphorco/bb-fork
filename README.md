@@ -13,7 +13,7 @@
 
 This is a thin, auditable deployment overlay for [get-bb/bb](https://github.com/get-bb/bb). It does not carry a second copy of upstream source and it does not treat a long-lived Git branch as the release definition.
 
-The current base is exact upstream commit `fdd3de3b19b97e6cd1ef7300cbb54711431249d3`. The lock records a reviewed source receipt rather than a moving branch or inferred release tag.
+The current base is exact upstream commit `9c9bae7f36a237c7e1b96de3d4c2186d13967686`. The lock records a reviewed source receipt rather than a moving branch or inferred release tag.
 
 The deployable source is exactly:
 
@@ -48,7 +48,7 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The thirty-eight patches listed in `patches/series` form the current implementation
+The forty patches listed in `patches/series` form the current implementation
 candidate. Queue numbers 0022 and 0027 are intentionally absent: 0022 is a
 historical gap, and the former 0027 Monaco routing backport is supplied by
 upstream commit `283e6d7`. Obsolete
@@ -105,11 +105,15 @@ Patch 36 adds restart fault barriers for Perspectives. Patches 37–39 keep CLI
 and agent-runtime tests aligned with the current artifact and error contracts.
 Patch 40 bridges the exact historical bb-machine core migration ledger and
 identity column order observed in the private migration rehearsal.
+Patch 41 regenerates the downstream schema snapshot after upstream migration
+0131; the identity/context bridge now follows it as migration 0132. Patch 42
+recognizes the exact preceding fork bridge receipt when upgrading an already
+bridged database, without rewriting its migration history.
 
 ## Verification boundary for this source receipt
 
 The locked source passed workspace typecheck and build. The database package
-passed 632 tests at patch 40, and the exact core migration passed on a private
+passed 623 tests after the upstream 0.44.0 refresh, and the exact core migration passed on a private
 copy of bb-machine state; its receipt is in `plans/reconciliation/`. The broader
 test graph has a host `/tmp` inode-pressure limitation documented in the
 reconciliation handoff. Runtime, host policy, and browser acceptance are checked

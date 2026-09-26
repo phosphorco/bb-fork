@@ -1,7 +1,7 @@
-From d6ee139554be174285beba4a18332d83b31fe7a5 Mon Sep 17 00:00:00 2001
+From dcd39e65f6be08f1474179bd07d66d6775631087 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Sun, 13 Sep 2026 16:00:00 -0400
-Subject: [PATCH 18/32] feat(sidebar): add native layout provider seam
+Subject: [PATCH] feat(sidebar): add native layout provider seam
 
 Keep native sidebar rendering while an optional plugin provides layout data.
 ---
@@ -19,7 +19,7 @@ Keep native sidebar rendering while an optional plugin provides layout data.
  11 files changed, 264 insertions(+), 12 deletions(-)
 
 diff --git a/apps/app/src/components/sidebar/NavigationPlugin.test.tsx b/apps/app/src/components/sidebar/NavigationPlugin.test.tsx
-index 71d9978e6eb1472cb5397c3fb9be13b802e00708..6142764a297fe6c79384bad637c6f269216ae50c 100644
+index de3e8dcc9b1107544ff845f5929b3b8bd3644385..8cbd235125a61afead936ba76e7dea30cb5a4cac 100644
 --- a/apps/app/src/components/sidebar/NavigationPlugin.test.tsx
 +++ b/apps/app/src/components/sidebar/NavigationPlugin.test.tsx
 @@ -9,6 +9,7 @@ import {
@@ -403,7 +403,7 @@ index 181e28cd40635a39af4368e40b22f06466278b9b..df61b4408125f1d2e34113b2e10484e6
      threadHeaderActions: stamp(set.threadHeaderActions),
      browserToolbarActions: stamp(set.browserToolbarActions),
 diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-index 39b9622cf8f29c6186a62c7e904e1538ea4109f9..338d3b108fe5dc4bc6074f684dcab0423ff8f54f 100644
+index 2e5f9810fda2610ee7ef6504c464d4978a7780f4..798ed463b2cf9122885781b97f7d5407169322ff 100644
 --- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
 +++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
 @@ -7,6 +7,7 @@ import * as pluginSdkApp from "@get-bb/plugin-sdk/app";
@@ -414,7 +414,7 @@ index 39b9622cf8f29c6186a62c7e904e1538ea4109f9..338d3b108fe5dc4bc6074f684dcab042
    type PluginAppBuilder,
    type PluginAppSlots,
    type PluginContentScriptContext,
-@@ -268,6 +269,7 @@ type SlotPropsByName = {
+@@ -269,6 +270,7 @@ type SlotPropsByName = {
    sidebarFooterAction: PluginSidebarFooterActionProps;
    experimental_sidebarNavigation: ExperimentalSidebarNavigationProps;
    experimental_sidebarHeader: ExperimentalSidebarHeaderProps;
@@ -422,7 +422,7 @@ index 39b9622cf8f29c6186a62c7e904e1538ea4109f9..338d3b108fe5dc4bc6074f684dcab042
    experimental_threadList: PluginThreadListProps;
    experimental_threadHeaderAction: PluginThreadHeaderActionProps;
    experimental_browserToolbarAction: ExperimentalPluginBrowserToolbarActionProps;
-@@ -349,6 +351,7 @@ const FRONTEND_SLOT_PROP_FIELDS = {
+@@ -350,6 +352,7 @@ const FRONTEND_SLOT_PROP_FIELDS = {
      "experimental_Original",
    ],
    experimental_sidebarHeader: ["width", "controlSize", "isCompactViewport"],
@@ -431,10 +431,10 @@ index 39b9622cf8f29c6186a62c7e904e1538ea4109f9..338d3b108fe5dc4bc6074f684dcab042
      "activeThreadId",
      "activeProjectId",
 diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
-index 9a3859c1837c848d227924f74403002a3c669fd4..8ac2f4fd38a413884827cb7af7ae49579fa9ee96 100644
+index 4ad7f00ca573d283fb08f387551954f339360b4a..059ff5b2d8e2533977199b6b756dcf31fd073599 100644
 --- a/docs/api_to_audit.md
 +++ b/docs/api_to_audit.md
-@@ -2393,6 +2393,28 @@ and navigation from `bb.onInstall`; later choices are the user's.
+@@ -2417,6 +2417,28 @@ and navigation from `bb.onInstall`; later choices are the user's.
  5. **Drag regions.** Confirm the interactive-descendant no-drag rule covers
     real plugin markup, including custom elements and menus.
  
@@ -464,7 +464,7 @@ index 9a3859c1837c848d227924f74403002a3c669fd4..8ac2f4fd38a413884827cb7af7ae4957
  
  **Kept experimental (2026-08-22).** examples only; no shipped consumer has tested the arbitration/fallback model or the accessibility contract.
 diff --git a/packages/plugin-sdk/src/app-contract.ts b/packages/plugin-sdk/src/app-contract.ts
-index 3371da65bee53c4da8c47ce36e010dc2da1a25af..4d8801ff638932e107736500149809dc200b0692 100644
+index b7ba767d8dfe2dacce211071e5757dfccb45d96f..d6562c363b03551ba7e24765cb8888f1d7562e39 100644
 --- a/packages/plugin-sdk/src/app-contract.ts
 +++ b/packages/plugin-sdk/src/app-contract.ts
 @@ -338,6 +338,26 @@ export interface ExperimentalSidebarNavigationProps {
@@ -494,7 +494,7 @@ index 3371da65bee53c4da8c47ce36e010dc2da1a25af..4d8801ff638932e107736500149809dc
  /**
   * Props passed to an `experimental_sidebarHeader` component, rendered in the
   * sidebar's header row between the sidebar toggle (and the macOS window
-@@ -1602,6 +1622,12 @@ export interface ExperimentalSidebarNavigationRegistration {
+@@ -1609,6 +1629,12 @@ export interface ExperimentalSidebarNavigationRegistration {
    component: ComponentType<ExperimentalSidebarNavigationProps>;
  }
  
@@ -507,7 +507,7 @@ index 3371da65bee53c4da8c47ce36e010dc2da1a25af..4d8801ff638932e107736500149809dc
  /**
   * Render a component in the sidebar's header row, between the sidebar toggle
   * and bb's back and forward buttons. Exclusive: the user picks at most one
-@@ -2038,6 +2064,9 @@ export interface PluginAppSlots {
+@@ -2045,6 +2071,9 @@ export interface PluginAppSlots {
    experimental_sidebarNavigation(
      registration: ExperimentalSidebarNavigationRegistration,
    ): void;
@@ -608,7 +608,7 @@ index 4b4ea1385b4cd10634b7bdba874ffa4957b57261..2f90eec9e6fc897a8b87279faf07b240
    for file extensions: `{ id, title, extensions: ["md"], component }`.
    Matching files use the first applicable opener in deterministic slot order
 diff --git a/plugins/plugin-api-docs/src/surfaces.ts b/plugins/plugin-api-docs/src/surfaces.ts
-index 84308d6965c456c36b533a46e81e6896036a007e..58c46e115f875e05520401c70888833af1d59015 100644
+index ef967daf540262aa79c07461a1f29515c935e230..009c8ff2e7ff35f29291d8fdeb4c6df5ca287597 100644
 --- a/plugins/plugin-api-docs/src/surfaces.ts
 +++ b/plugins/plugin-api-docs/src/surfaces.ts
 @@ -56,6 +56,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [

@@ -1,7 +1,7 @@
-From 33a0444676ede92cb85c50fa8379bd3b6066271a Mon Sep 17 00:00:00 2001
+From 0fd8fb67c558570f2accc4c915d747e1057ba2c8 Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Tue, 22 Sep 2026 15:29:53 +0200
-Subject: [PATCH 26/32] feat(plugins): serve versioned lazy frontend artifacts
+Subject: [PATCH] feat(plugins): serve versioned lazy frontend artifacts
 
 ---
  apps/cli/src/__tests__/plugin-build.test.ts   | 155 +++++++++++++----
@@ -252,7 +252,7 @@ index f2795af428d3d37da619375948cf4594c8cefdcb..527fb75231d4523dbd3cbe586e837aac
    });
  });
 diff --git a/apps/server/src/routes/plugins.ts b/apps/server/src/routes/plugins.ts
-index f419bf64f04535f84d4a473c627d5e2941dca7d2..8fdd742810a84c5655c95a010b816c99a1cc7fad 100644
+index 3512ce0265d789510346871c42f373b57c70ec7e..b3d651fc657e499153d6e4b607b64b55fe235059 100644
 --- a/apps/server/src/routes/plugins.ts
 +++ b/apps/server/src/routes/plugins.ts
 @@ -1,5 +1,4 @@
@@ -261,15 +261,15 @@ index f419bf64f04535f84d4a473c627d5e2941dca7d2..8fdd742810a84c5655c95a010b816c99
  import { promisify } from "node:util";
  import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
  import type { Context, Hono } from "hono";
-@@ -35,7 +34,6 @@ import {
+@@ -36,7 +35,6 @@ import {
  } from "./plugin-image-response.js";
  import {
    pluginApplyUpdateRequestSchema,
 -  pluginRpcDiscoveryQuerySchema,
    pluginInstallRequestSchema,
+   pluginSafeModeRequestSchema,
    pluginSettingsUpdateRequestSchema,
-   pluginTokenRequestSchema,
-@@ -381,13 +379,6 @@ export function registerPluginRoutes(
+@@ -440,13 +438,6 @@ export function registerPluginRoutes(
      });
    });
  
@@ -283,7 +283,7 @@ index f419bf64f04535f84d4a473c627d5e2941dca7d2..8fdd742810a84c5655c95a010b816c99
    app.get("/plugins", (context) => context.json({ plugins: plugins.list() }));
  
    app.get("/plugins/contributions", (context) =>
-@@ -471,37 +462,29 @@ export function registerPluginRoutes(
+@@ -528,37 +519,29 @@ export function registerPluginRoutes(
      "app.css": { kind: "css", contentType: "text/css; charset=utf-8" },
    } as const;
  
@@ -340,7 +340,7 @@ index f419bf64f04535f84d4a473c627d5e2941dca7d2..8fdd742810a84c5655c95a010b816c99
        contentHash: asset.hash,
      });
    });
-@@ -539,34 +522,25 @@ export function registerPluginRoutes(
+@@ -596,34 +579,25 @@ export function registerPluginRoutes(
          hashedAssetCacheControl(context.req.query("h"), asset.hash),
        );
      }
@@ -661,10 +661,10 @@ index 81db348df8c313ec7fd38d5507b8ecebb980b8d8..87706e87b735253d3bf9f56335bb5275
    };
  }
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index 6bf407e83db886e95e9bdd03f78eea9f1de20882..ecc45bc10d577a73758af3135744a864f2ffd9dc 100644
+index 34595534a5057a7188426fa88cc00aa22fdf2119..72a7b6037ad2c0ef756c29043faa19c2ca51cc8c 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
-@@ -302,20 +302,12 @@ export interface PluginService {
+@@ -308,20 +308,12 @@ export interface PluginService {
     * and its waits clear.
     */
    isPluginExpectedToRun(id: string): boolean;
@@ -689,7 +689,7 @@ index 6bf407e83db886e95e9bdd03f78eea9f1de20882..ecc45bc10d577a73758af3135744a864
    getBrandingAsset(
      id: string,
      variant: PluginBrandingAssetVariant,
-@@ -639,6 +631,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -651,6 +643,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
      REGISTRATION_MUTATION_KEY,
      agentToolProblems,
      appBundles,
@@ -697,7 +697,7 @@ index 6bf407e83db886e95e9bdd03f78eea9f1de20882..ecc45bc10d577a73758af3135744a864
      bindSdk: bindRuntimeSdk,
      buildThreadDto,
      builtinSourceWatchers,
-@@ -1687,23 +1680,17 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1759,23 +1752,17 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
        return row !== undefined && getStatus(row).status === "starting";
      },
  
@@ -731,10 +731,10 @@ index 6bf407e83db886e95e9bdd03f78eea9f1de20882..ecc45bc10d577a73758af3135744a864
  
      getBrandingAsset(id, variant) {
 diff --git a/apps/server/test/services/plugins/builtin-plugins.test.ts b/apps/server/test/services/plugins/builtin-plugins.test.ts
-index ed51d2ef85b4c3f8d120683ffc2032710df4f2d6..7654f560f452ba9473a0910d120c26d13611afbe 100644
+index 305a619adc83f672ce68e77c1b5f9bf49735f702..db693e33e42047194b6a2047516928a75ac671ba 100644
 --- a/apps/server/test/services/plugins/builtin-plugins.test.ts
 +++ b/apps/server/test/services/plugins/builtin-plugins.test.ts
-@@ -59,6 +59,17 @@ function packagedLoadCount(): number {
+@@ -67,6 +67,17 @@ function packagedLoadCount(): number {
    return (globals.__packagedBuiltinLoads as number | undefined) ?? 0;
  }
  
@@ -752,7 +752,7 @@ index ed51d2ef85b4c3f8d120683ffc2032710df4f2d6..7654f560f452ba9473a0910d120c26d1
  async function writePackagedBuiltinSource(
    workDir: string,
    names: readonly string[],
-@@ -895,18 +906,13 @@ describe("builtin plugin reconciliation", () => {
+@@ -815,18 +826,13 @@ describe("builtin plugin reconciliation", () => {
      await service.start();
      const beforeHash = service.list()[0]?.app.bundle?.hash;
      expect(beforeHash).toBeTruthy();
@@ -774,7 +774,7 @@ index ed51d2ef85b4c3f8d120683ffc2032710df4f2d6..7654f560f452ba9473a0910d120c26d1
      service = createService({
        db,
        dataDir: join(workDir, "data"),
-@@ -917,9 +923,10 @@ describe("builtin plugin reconciliation", () => {
+@@ -837,9 +843,10 @@ describe("builtin plugin reconciliation", () => {
      await service.start();
  
      expect(service.list()[0]?.app.bundle?.hash).not.toBe(beforeHash);
@@ -788,7 +788,7 @@ index ed51d2ef85b4c3f8d120683ffc2032710df4f2d6..7654f560f452ba9473a0910d120c26d1
    }, 30_000);
  
    it("surfaces builtin app build failures in status until the next successful build", async () => {
-@@ -993,7 +1000,7 @@ describe("builtin plugin reconciliation", () => {
+@@ -913,7 +920,7 @@ describe("builtin plugin reconciliation", () => {
      expect(after?.statusDetail).toBeNull();
      expect(after?.app.bundle?.hash).not.toBe(before?.hash);
      await expect(

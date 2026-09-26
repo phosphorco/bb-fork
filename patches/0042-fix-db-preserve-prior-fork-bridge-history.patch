@@ -1,0 +1,80 @@
+From ae2c32cde3817093e55812d59620cf7993bed9c8 Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Sat, 26 Sep 2026 03:41:59 +0200
+Subject: [PATCH] fix(db): accept exact prior fork bridge after upstream sync
+
+---
+ packages/db/src/migrate.ts       | 13 +++++++++++--
+ packages/db/test/migrate.test.ts | 18 ++++++++++++++++++
+ 2 files changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/packages/db/src/migrate.ts b/packages/db/src/migrate.ts
+index e03a84cd6ca240efe51f7a87503973bec2bbefe5..0dd7ff3048a47e15c8d8945f4fd89abca01ab49e 100644
+--- a/packages/db/src/migrate.ts
++++ b/packages/db/src/migrate.ts
+@@ -217,6 +217,14 @@ const legacyIdentityAndContextMagnetMigrations = [
+ ] as const;
+ const identityContextBridgeCompletionTable = "bb_schema_bridge_completions";
+ const identityContextBridgeCompletionName = "identity-context-0131";
++
++// The preceding fork used 0131 before upstream allocated that index.
++// Preserve its exact receipt when upgrading an already-bridged database.
++function isPriorIdentityContextBridge(migration: AppliedMigrationIdentityRow): boolean {
++  return migration.createdAt === 1790103658751 &&
++    migration.hash === "75a11b641e07ba8ec55cc617bd692fed6fd4d14e7fa47de765879cc81986e039";
++}
++
+ const targetMigrationsThatMayBeSkippedByLegacyIdentityHistory = [
+   "0119_provider_model_catalogs",
+   "0120_perfect_clint_barton",
+@@ -1367,7 +1375,7 @@ function applyTargetMigrationsSkippedByLegacyIdentityHistory(
+   assertLegacyIdentityAndContextMagnetSchema(
+     db,
+     legacyPrefixLength,
+-    expectedMigrations.some(
++    appliedMigrations.some(isPriorIdentityContextBridge) || expectedMigrations.some(
+       (migration) =>
+         migration.tag === "0132_zippy_reavers" &&
+         appliedMigrations.some(
+@@ -1388,7 +1396,8 @@ function applyTargetMigrationsSkippedByLegacyIdentityHistory(
+   for (const migration of appliedMigrations) {
+     if (
+       migration.createdAt === null ||
+-      migration.createdAt <= latestLegacyCreatedAt
++      migration.createdAt <= latestLegacyCreatedAt ||
++      isPriorIdentityContextBridge(migration)
+     ) {
+       continue;
+     }
+diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
+index 94620c328cadc6f173f56349360c924c5fc19799..d659b77c7e921cd5306f4de8ceb32149755f2fac 100644
+--- a/packages/db/test/migrate.test.ts
++++ b/packages/db/test/migrate.test.ts
+@@ -6072,6 +6072,24 @@ describe("identity and context magnet migration bridge", () => {
+     },
+   );
+ 
++  it("upgrades the preceding fork bridge before upstream retention indexes", () => {
++    const db = createConnection(":memory:");
++    try {
++      createLegacyIdentityAndContextMagnetHistory(db, 1);
++      migrate(db);
++      db.$client.prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
++        .run(1790230932025);
++      db.$client.prepare<InsertMigrationParameters>(
++        "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
++      ).run("75a11b641e07ba8ec55cc617bd692fed6fd4d14e7fa47de765879cc81986e039", 1790103658751);
++      migrate(db);
++      migrate(db);
++      expect(readLatestAppliedMigrationCreatedAt(db)).toBe(latestMigrationWhen);
++    } finally {
++      closeConnection(db);
++    }
++  });
++
+   it("upgrades the observed pre-canonical branch ledger and identity hash", () => {
+     const db = createConnection(":memory:");
+     try {
+-- 
+2.53.0
+

@@ -1,7 +1,7 @@
-From 36ce8125a2e2451bebc4de8aa21e893fc8f42451 Mon Sep 17 00:00:00 2001
+From ab33a1c2de8aefb6dbd096bb3aa780a76c3c0213 Mon Sep 17 00:00:00 2001
 From: bb-fork materializer <bb-fork@invalid.local>
 Date: Sun, 20 Sep 2026 20:00:00 +0200
-Subject: [PATCH 25/32] feat(context-magnet): add provider admission
+Subject: [PATCH] feat(context-magnet): add provider admission
 
 ---
  apps/host-daemon/src/command-dispatch.test.ts |  69 +++++-
@@ -213,10 +213,10 @@ index 8f404d386b106b8230b08ea81189d1b49548b269..d51d0c4a190f9926791a49a215ccbd74
        dynamicInstructions: [] as Array<{ pluginId: string; text: string }>,
      };
 diff --git a/apps/server/src/services/plugins/plugin-service-internal.ts b/apps/server/src/services/plugins/plugin-service-internal.ts
-index 9d964b645d273b10fd506f0b768cf27adc3e96c8..58333fffa150d2a9b7365e673e80b729c1d23fc1 100644
+index 2368b5d7de3b4de8c8174746b27a9656a8d09299..5e976a67f8eff8b97ee96324cb0aaf52a2a23f87 100644
 --- a/apps/server/src/services/plugins/plugin-service-internal.ts
 +++ b/apps/server/src/services/plugins/plugin-service-internal.ts
-@@ -179,6 +179,7 @@ export interface PluginInstructionContribution {
+@@ -180,6 +180,7 @@ export interface PluginInstructionContribution {
  }
  
  export interface PluginResolvedAgentConfiguration {
@@ -225,10 +225,10 @@ index 9d964b645d273b10fd506f0b768cf27adc3e96c8..58333fffa150d2a9b7365e673e80b729
    selectedSkillIdsByPlugin: ReadonlyMap<string, ReadonlySet<string>>;
    dynamicInstructions: Array<{ pluginId: string; text: string }>;
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index da45c3c52c93fcdbfe1d09e92715a281ef44b011..6bf407e83db886e95e9bdd03f78eea9f1de20882 100644
+index 07f6219e8920b30dd82f370086483ec44655577c..34595534a5057a7188426fa88cc00aa22fdf2119 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
-@@ -63,6 +63,7 @@ import {
+@@ -64,6 +64,7 @@ import {
  import {
    claimPluginScheduledRun,
    appendContextMagnetContributionTrace,
@@ -236,7 +236,7 @@ index da45c3c52c93fcdbfe1d09e92715a281ef44b011..6bf407e83db886e95e9bdd03f78eea9f
    recordContextMagnetContributionReceipt,
    deleteAllPluginSettings,
    deleteInstalledPlugin,
-@@ -2210,6 +2211,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2282,6 +2283,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
        const tools: PluginAgentToolContribution[] = [];
        const selectedSkillIdsByPlugin = new Map<string, ReadonlySet<string>>();
        const dynamicInstructions: Array<{ pluginId: string; text: string }> = [];
@@ -244,7 +244,7 @@ index da45c3c52c93fcdbfe1d09e92715a281ef44b011..6bf407e83db886e95e9bdd03f78eea9f
        const plugins = [...loaded.entries()]
          .sort(([a], [b]) => a.localeCompare(b))
          .map(([pluginId, plugin]) => ({
-@@ -2285,12 +2287,24 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2357,12 +2359,24 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
          selectedSkillIdsByPlugin.set(pluginId, new Set(outcome.value.skillIds));
          if (outcome.value.contextMagnetTrace !== null) {
            try {
@@ -270,7 +270,7 @@ index da45c3c52c93fcdbfe1d09e92715a281ef44b011..6bf407e83db886e95e9bdd03f78eea9f
            } catch (error) {
              logger.warn(
                `Rejected Context Magnet trace from plugin ${pluginId}: ${error instanceof Error ? error.message : String(error)}`,
-@@ -2305,7 +2319,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2377,7 +2391,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
          }
        }
  
@@ -315,7 +315,7 @@ index 115894054b933aea1319f73f3accfa7e7cd118a9..972c88ea5aaf2a162477a3c961d02852
    } = start;
    return { type: "thread.rewind.prepare", ...context, ...args };
 diff --git a/apps/server/src/services/threads/thread-lifecycle.ts b/apps/server/src/services/threads/thread-lifecycle.ts
-index 392cb4432405886d5221bd43d6e45738366c2dce..ed305ad682e2cdcfaaa098bd2f01826f9947d16d 100644
+index 3ccec9007cee5448bd14fbe96fbf0c35689038aa..a1ccb9af334ce1d0a967b960f8b97eb4f1de86ee 100644
 --- a/apps/server/src/services/threads/thread-lifecycle.ts
 +++ b/apps/server/src/services/threads/thread-lifecycle.ts
 @@ -22,6 +22,7 @@ import {
@@ -326,7 +326,7 @@ index 392cb4432405886d5221bd43d6e45738366c2dce..ed305ad682e2cdcfaaa098bd2f01826f
    listThreadIdsWithLatestHostDaemonRestartInterruption,
    listThreadTurnInterruptionEventStates,
    markThreadStorageDeleted,
-@@ -774,6 +775,7 @@ function recordEmptyThreadStartProviderSessionInTransaction(
+@@ -781,6 +782,7 @@ function recordEmptyThreadStartProviderSessionInTransaction(
  ): void {
    if (
      !args.report.ok ||
@@ -334,7 +334,7 @@ index 392cb4432405886d5221bd43d6e45738366c2dce..ed305ad682e2cdcfaaa098bd2f01826f
      !shouldAutoSendQueuedMessagesAfterThreadStart(args.command)
    ) {
      return;
-@@ -869,6 +871,33 @@ function settleThreadCommandFailure(
+@@ -876,6 +878,33 @@ function settleThreadCommandFailure(
    return { postCommitActions };
  }
  
@@ -368,7 +368,7 @@ index 392cb4432405886d5221bd43d6e45738366c2dce..ed305ad682e2cdcfaaa098bd2f01826f
  export function settleThreadStartCommandResult(
    args: SettleThreadStartCommandResultArgs,
  ): CommandResultSideEffectsResult {
-@@ -886,6 +915,22 @@ export function settleThreadStartCommandResult(
+@@ -893,6 +922,22 @@ export function settleThreadStartCommandResult(
      });
    }
  
@@ -758,10 +758,10 @@ index 0000000000000000000000000000000000000000..e7160fa3591be1c53f089b278f2f118f
 +ALTER TABLE `context_magnet_contribution_trace_snapshots` ADD `admission_retention_high_water_sequence` integer DEFAULT 0 NOT NULL;
 \ No newline at end of file
 diff --git a/packages/db/drizzle/meta/_journal.json b/packages/db/drizzle/meta/_journal.json
-index 72269c91e61084c1fd405d3964ef5fd1be2217c9..9ac6ad8a93b24367bec9e078bc0e9b1f4258a195 100644
+index eaff2b0923f9b0564b3aeecdc8221cf2e697ea56..438d00753bac8c4d433485cbb354035aa062ae70 100644
 --- a/packages/db/drizzle/meta/_journal.json
 +++ b/packages/db/drizzle/meta/_journal.json
-@@ -932,6 +932,13 @@
+@@ -939,6 +939,13 @@
        "when": 1789922567893,
        "tag": "0121_sticky_king_bedlam",
        "breakpoints": true
@@ -987,10 +987,10 @@ index e81f19e866e0a9e2ba7a9be05b43b4dddcfa0a7d..2b80bb035e2c3acba8e7428ffe4ec62f
  export function createPromptHistoryEntryId(): string {
    return createId("phist");
 diff --git a/packages/db/src/schema.ts b/packages/db/src/schema.ts
-index 9ad2a6775ab3e5d24ec468f0c2510b4f7e3d4f1b..86686657e4711dfa3c6065db6f017cbdbcd436e8 100644
+index bdbb5b151be7091ddba80609727b3c2d5110b311..5b84a35b162ad4a60e8aee238e54c169a4e707ab 100644
 --- a/packages/db/src/schema.ts
 +++ b/packages/db/src/schema.ts
-@@ -735,6 +735,9 @@ export const contextMagnetContributionTraceSnapshots = sqliteTable(
+@@ -742,6 +742,9 @@ export const contextMagnetContributionTraceSnapshots = sqliteTable(
      receiptHighWaterSequence: integer("receipt_high_water_sequence")
        .notNull()
        .default(0),
@@ -1000,7 +1000,7 @@ index 9ad2a6775ab3e5d24ec468f0c2510b4f7e3d4f1b..86686657e4711dfa3c6065db6f017cbd
      capturedAt: integer("captured_at").notNull(),
    },
    (table) => [
-@@ -745,6 +748,60 @@ export const contextMagnetContributionTraceSnapshots = sqliteTable(
+@@ -752,6 +755,60 @@ export const contextMagnetContributionTraceSnapshots = sqliteTable(
    ],
  );
  
@@ -1262,7 +1262,7 @@ index 3f6bd7aeb0e241cb9e3a7ce54198deb733688793..ec616b9133eb5b09dacda8cb79dc0581
      expect(contextMagnetContributionTraceDeclarationSchema.parse(declaration)).toMatchObject({
        operation: { kind: "unmatched" },
 diff --git a/packages/host-daemon-contract/src/commands.ts b/packages/host-daemon-contract/src/commands.ts
-index 6102aabbb69337f6864847ba8554a85d41871862..456290e0c02d322776f255e04aa863dd5280915d 100644
+index ea4393d84df834f38b1814300d112fae0c92f66a..23b107edb3b48801c207e609db82be5973962b54 100644
 --- a/packages/host-daemon-contract/src/commands.ts
 +++ b/packages/host-daemon-contract/src/commands.ts
 @@ -296,6 +296,7 @@ const threadStartCommandSchema = hostDaemonThreadTargetSchema
@@ -1273,7 +1273,7 @@ index 6102aabbb69337f6864847ba8554a85d41871862..456290e0c02d322776f255e04aa863dd
    })
    .strict()
    .superRefine((value, ctx) => {
-@@ -1210,9 +1211,16 @@ const providerListModelsResultSchema = z.object({
+@@ -1238,9 +1239,16 @@ const providerListModelsResultSchema = z.object({
    selectedOnlyModels: z.array(availableModelSchema),
  });
  
@@ -1293,7 +1293,7 @@ index 6102aabbb69337f6864847ba8554a85d41871862..456290e0c02d322776f255e04aa863dd
  const turnSubmitResultSchema = z.object({
    appliedAs: z.enum(["new-turn", "steer"]),
  });
-@@ -1429,7 +1437,7 @@ export const hostDaemonCommandRegistry = {
+@@ -1457,7 +1465,7 @@ export const hostDaemonCommandRegistry = {
    "thread.rewind.prepare": defineHostDaemonCommandDescriptor({
      type: "thread.rewind.prepare",
      schema: threadRewindPrepareCommandSchema,
@@ -1303,10 +1303,10 @@ index 6102aabbb69337f6864847ba8554a85d41871862..456290e0c02d322776f255e04aa863dd
      retryable: false,
      flushEventsBeforeResult: true,
 diff --git a/packages/host-daemon-contract/test/contract.test.ts b/packages/host-daemon-contract/test/contract.test.ts
-index a9618b4cd6869fd8478c6c907a066819dfec2c0b..9d5522d8fb9307c45af51ba754fa52858fcf904f 100644
+index a1f61f3d6989377df81f9c76babf88e4bc1f3ebe..e1089fdf6b26a352e9317293a7665330014ae26f 100644
 --- a/packages/host-daemon-contract/test/contract.test.ts
 +++ b/packages/host-daemon-contract/test/contract.test.ts
-@@ -528,6 +528,8 @@ const SETTLED_RESPONSE_RESULT_FIXTURES: SettledResponseResultFixtures = {
+@@ -536,6 +536,8 @@ const SETTLED_RESPONSE_RESULT_FIXTURES: SettledResponseResultFixtures = {
      providerThreadId: "provider-thread-rewind",
    },
    "thread.start": {
@@ -1315,7 +1315,7 @@ index a9618b4cd6869fd8478c6c907a066819dfec2c0b..9d5522d8fb9307c45af51ba754fa5285
      providerThreadId: "provider-thread-123",
    },
    "turn.submit": {
-@@ -824,6 +826,8 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
+@@ -832,6 +834,8 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
      "thread.start.fork names a checkpoint only when the clone should stop at an earlier source turn; absent means clone the session tip.",
    "hostDaemonCommandSchema.inputGroups":
      "thread.start and turn.submit omit inputGroups for ordinary single user-message turns; presence preserves grouped user messages within one turn.",
@@ -1324,7 +1324,7 @@ index a9618b4cd6869fd8478c6c907a066819dfec2c0b..9d5522d8fb9307c45af51ba754fa5285
    "hostDaemonCommandSchema.disallowedTools":
      "thread runtime context may omit provider-specific built-in tool removals for providers that do not need them.",
    "hostDaemonCommandSchema.options.promptMode":
-@@ -2009,6 +2013,78 @@ describe("host-daemon command schemas", () => {
+@@ -2017,6 +2021,78 @@ describe("host-daemon command schemas", () => {
      });
    });
  
@@ -1403,7 +1403,7 @@ index a9618b4cd6869fd8478c6c907a066819dfec2c0b..9d5522d8fb9307c45af51ba754fa5285
    it.each([
      {
        permissionMode: "accept-edits" as const,
-@@ -3974,6 +4050,46 @@ describe("host-daemon session schemas", () => {
+@@ -3982,6 +4058,46 @@ describe("host-daemon session schemas", () => {
      }
    });
  
