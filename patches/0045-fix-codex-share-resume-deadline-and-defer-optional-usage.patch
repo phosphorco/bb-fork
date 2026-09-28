@@ -1,0 +1,309 @@
+From ef11be7c6325789fc9258e4794b4e62b5cc8832f Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Mon, 28 Sep 2026 19:50:34 +0200
+Subject: [PATCH] fix(codex): share resume deadline and defer optional usage
+
+---
+ .../src/bridge-protocol-adapter.ts            |  1 +
+ .../agent-runtime/src/provider-adapter.ts     |  1 +
+ .../src/runtime.codex-topology.test.ts        | 72 +++++++++++++++++--
+ packages/agent-runtime/src/runtime.ts         |  4 +-
+ .../provider-bridge-protocol/src/requests.ts  |  1 +
+ plugins/provider-codex/src/bridge/bridge.ts   | 42 +++++++++--
+ .../src/bridge/fake-codex-app-server.mjs      |  6 ++
+ 7 files changed, 117 insertions(+), 10 deletions(-)
+
+diff --git a/packages/agent-runtime/src/bridge-protocol-adapter.ts b/packages/agent-runtime/src/bridge-protocol-adapter.ts
+index f6f28ed0fe653089c38a570d3a440f4d11a73a11..8e435b4217ce114ef56d85d033af0c84ecbf64f0 100644
+--- a/packages/agent-runtime/src/bridge-protocol-adapter.ts
++++ b/packages/agent-runtime/src/bridge-protocol-adapter.ts
+@@ -277,6 +277,7 @@ export function createBridgeProtocolAdapter(
+               threadId: command.threadId,
+               cwd: command.cwd,
+               providerThreadId: command.providerThreadId,
++              ...(command.constructionDeadlineAtMs === undefined ? {} : { constructionDeadlineAtMs: command.constructionDeadlineAtMs }),
+               ...sessionConstructionParams(command),
+             },
+           };
+diff --git a/packages/agent-runtime/src/provider-adapter.ts b/packages/agent-runtime/src/provider-adapter.ts
+index 9e90eb95b5b1ba78e2f8e18a1711f48eaef03e20..caa5c2086f1eca93965535be63f937e6b5fcfffe 100644
+--- a/packages/agent-runtime/src/provider-adapter.ts
++++ b/packages/agent-runtime/src/provider-adapter.ts
+@@ -65,6 +65,7 @@ export type AdapterCommand =
+       threadId: string;
+       cwd: string;
+       providerThreadId: string;
++      constructionDeadlineAtMs?: number;
+       options: ProviderExecutionContext;
+       dynamicTools?: DynamicTool[];
+       disallowedTools?: readonly string[];
+diff --git a/packages/agent-runtime/src/runtime.codex-topology.test.ts b/packages/agent-runtime/src/runtime.codex-topology.test.ts
+index bd72652e0c861aa9050145038892af47cd8bc026..b12cb19bdf4c014c40bfc0d359ccfb247d1551a7 100644
+--- a/packages/agent-runtime/src/runtime.codex-topology.test.ts
++++ b/packages/agent-runtime/src/runtime.codex-topology.test.ts
+@@ -1,4 +1,4 @@
+-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
++import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { fileURLToPath } from "node:url";
+@@ -379,10 +379,12 @@ describe("codex process topology", () => {
+   }, 30_000);
+ 
+   it("uses the thread construction deadline when restoring a Codex session", async () => {
+-    const { runtime } = createCodexTopologyRuntime({
+-      fakeScript: { stallThreadResume: true },
+-      threadCreationTimeoutMs: 200,
++    const writerLockPath = join(workspaceDir, "resume-writer.lock");
++    const topology = createCodexTopologyRuntime({
++      fakeScript: { resumeDelayMs: 1_500, writerLockPath },
++      threadCreationTimeoutMs: 1_000,
+     });
++    const { runtime } = topology;
+     const providerThreadId = await startCodexThread(runtime, "source");
+     await runtime.stopThread({ threadId: "source" });
+ 
+@@ -393,8 +395,68 @@ describe("codex process topology", () => {
+       providerThreadId,
+       threadId: "resumed",
+       options: fullRuntimeOptions,
+-    })).rejects.toThrow(/timed out: thread\/resume/i);
++    })).rejects.toThrow(/codex app-server request timed out/i);
+     expect(runtime.hasThread("resumed")).toBe(false);
++    await waitForRuntimeState({
++      label: "the late resume child exited and released its writer",
++      predicate: () => topology.exited() === topology.spawned() && !existsSync(writerLockPath),
++      timeoutMs: 10_000,
++    });
++    writeFileSync(join(workspaceDir, "fake-codex-script.json"), JSON.stringify({
++      processLogPath: join(workspaceDir, "app-server-processes.log"),
++      archiveStatePath: join(workspaceDir, "fake-codex-archived.json"),
++      writerLockPath,
++    }));
++    const retried = await runtime.resumeThread({
++      environmentId: "env-1",
++      projectId: "p1",
++      providerId: "codex",
++      providerThreadId,
++      threadId: "retried",
++      options: fullRuntimeOptions,
++    });
++    expect(retried.providerThreadId).toBe(providerThreadId);
++    await runtime.stopThread({ threadId: "retried" });
++  }, 10_000);
++
++  it("accepts a delayed Codex resume within the shared construction deadline", async () => {
++    const { runtime } = createCodexTopologyRuntime({
++      fakeScript: { resumeDelayMs: 75 },
++      threadCreationTimeoutMs: 500,
++    });
++    const providerThreadId = await startCodexThread(runtime, "source");
++    await runtime.stopThread({ threadId: "source" });
++    const result = await runtime.resumeThread({
++      environmentId: "env-1",
++      projectId: "p1",
++      providerId: "codex",
++      providerThreadId,
++      threadId: "resumed",
++      options: fullRuntimeOptions,
++    });
++    expect(result.providerThreadId).toBe(providerThreadId);
++    await runtime.stopThread({ threadId: "resumed" });
++  }, 10_000);
++
++  it("restores while optional Codex usage telemetry never answers", async () => {
++    const { runtime } = createCodexTopologyRuntime({ threadCreationTimeoutMs: 500 });
++    const providerThreadId = await startCodexThread(runtime, "source");
++    await runtime.stopThread({ threadId: "source" });
++    writeFileSync(join(workspaceDir, "fake-codex-script.json"), JSON.stringify({
++      processLogPath: join(workspaceDir, "app-server-processes.log"),
++      archiveStatePath: join(workspaceDir, "fake-codex-archived.json"),
++      stallRateLimitRead: true,
++    }));
++    const result = await runtime.resumeThread({
++      environmentId: "env-1",
++      projectId: "p1",
++      providerId: "codex",
++      providerThreadId,
++      threadId: "resumed",
++      options: fullRuntimeOptions,
++    });
++    expect(result.providerThreadId).toBe(providerThreadId);
++    await runtime.stopThread({ threadId: "resumed" });
+   }, 10_000);
+ 
+   it("refuses to resume a provider thread that another hosted thread already owns", async () => {
+diff --git a/packages/agent-runtime/src/runtime.ts b/packages/agent-runtime/src/runtime.ts
+index 7fd0fd14abde3024869bdfc7e28d9692dc64d3e1..ca271724a9e5f02f0fe9870604e10890b0c8df7a 100644
+--- a/packages/agent-runtime/src/runtime.ts
++++ b/packages/agent-runtime/src/runtime.ts
+@@ -1942,10 +1942,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+             recordProviderThreadIdentity(proc, threadId, providerThreadId);
+           }
+ 
++          const constructionDeadlineAtMs = Date.now() + threadCreationRequestTimeoutMs;
+           const adapterCommand: AdapterCommand = {
+             type: "thread/resume",
+             threadId,
+             cwd: options.workspacePath,
++            constructionDeadlineAtMs,
+             providerThreadId:
+               providerThreadId ?? requireProviderThreadId(threadId),
+             options: toProviderExecutionContext({
+@@ -1974,7 +1976,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+               proc,
+               message: plan,
+               resultSchema: threadIdentityResultSchema,
+-              timeoutMs: threadCreationRequestTimeoutMs,
++              timeoutMs: Math.max(1, constructionDeadlineAtMs - Date.now()),
+               recovery: {
+                 providerId,
+                 providerThreadId: adapterCommand.providerThreadId,
+diff --git a/packages/provider-bridge-protocol/src/requests.ts b/packages/provider-bridge-protocol/src/requests.ts
+index e707681afbdc8151f183b13f9f1effc4438b80d9..e3aa3659dcdd3ee136824897388fd6e724cb40c4 100644
+--- a/packages/provider-bridge-protocol/src/requests.ts
++++ b/packages/provider-bridge-protocol/src/requests.ts
+@@ -31,6 +31,7 @@ export const BRIDGE_REQUEST_METHODS = {
+ const sessionConstructionFields = {
+   threadId: z.string().min(1),
+   cwd: z.string().min(1),
++  constructionDeadlineAtMs: z.number().int().positive().optional(),
+   options: bridgeExecutionOptionsSchema,
+   dynamicTools: z.array(dynamicToolSchema).optional(),
+   disallowedTools: z.array(z.string().min(1)).optional(),
+diff --git a/plugins/provider-codex/src/bridge/bridge.ts b/plugins/provider-codex/src/bridge/bridge.ts
+index 71ee63d5b8707eaddc510446ce0c5bdd6b0815f3..ed079a8c295eb8c9db04084b5722a1cea4b00e10 100644
+--- a/plugins/provider-codex/src/bridge/bridge.ts
++++ b/plugins/provider-codex/src/bridge/bridge.ts
+@@ -281,6 +281,9 @@ const CODEX_INITIALIZE_PARAMS = {
+ };
+ 
+ const CHILD_REQUEST_TIMEOUT_MS = 60_000;
++const CHILD_RESUME_MAX_TIMEOUT_MS = 115_000;
++const CHILD_RESUME_DEADLINE_RESERVE_MS = 5_000;
++const OPTIONAL_RESUME_TELEMETRY_TIMEOUT_MS = 5_000;
+ const INTERRUPT_SETTLEMENT_TIMEOUT_MS = 5_000;
+ const CODEX_ARCHIVED_SESSION_ERROR_PATTERN =
+   /\b(?:session|thread)\s+\S+\s+is archived\b/i;
+@@ -975,16 +978,26 @@ async function requestThreadConstructionWithWriterRetry(
+   connection: CodexAppServerConnection,
+   method: string,
+   params: BbThreadStartParams | BbThreadResumeParams | BbThreadForkParams,
++  constructionDeadlineAtMs?: number,
+ ): Promise<z.infer<typeof codexThreadIdentityResultSchema>> {
+   const sendOnce = (): Promise<
+     z.infer<typeof codexThreadIdentityResultSchema>
+-  > =>
+-    connection.request({
++  > => {
++    const remainingMs = constructionDeadlineAtMs === undefined
++      ? null : constructionDeadlineAtMs - Date.now();
++    if (remainingMs !== null && remainingMs <= 0) {
++      throw new Error(`codex ${method} construction deadline expired`);
++    }
++    const reserveMs = remainingMs === null ? 0
++      : Math.min(CHILD_RESUME_DEADLINE_RESERVE_MS, Math.floor(remainingMs / 10));
++    return connection.request({
+       method,
+       params,
+       resultSchema: codexThreadIdentityResultSchema,
+-      timeoutMs: CHILD_REQUEST_TIMEOUT_MS,
++      timeoutMs: remainingMs === null ? CHILD_REQUEST_TIMEOUT_MS
++        : Math.max(1, Math.min(CHILD_RESUME_MAX_TIMEOUT_MS, remainingMs - reserveMs)),
+     });
++  };
+   for (const [
+     retryIndex,
+     retryDelayMs,
+@@ -1016,6 +1029,7 @@ type CodexSessionConstructionRequest =
+ interface ConstructThreadSessionArgs {
+   threadId: string;
+   cwd: string;
++  constructionDeadlineAtMs?: number;
+   options: BridgeExecutionOptions;
+   instructionMode: "append" | "replace";
+   dynamicTools?: DynamicTool[];
+@@ -1108,7 +1122,10 @@ async function constructThreadSession(
+   session.connection = connection;
+ 
+   try {
+-    await initializeChild(connection, translator.buildPostInitializeRequests());
++    const postInitializeRequests = translator.buildPostInitializeRequests();
++    await initializeChild(connection, args.request.kind === "resume"
++      ? postInitializeRequests.filter((request) => request.required)
++      : postInitializeRequests);
+ 
+     const preparedGitRoots = translator.prepareWorkspaceWriteGitRoots({
+       command: {
+@@ -1180,6 +1197,7 @@ async function constructThreadSession(
+       connection,
+       method,
+       params,
++      args.request.kind === "resume" ? args.constructionDeadlineAtMs : undefined,
+     );
+     const codexThreadId = result.thread.id;
+     // A validated non-empty provider ID is the sole acceptance checkpoint.
+@@ -1191,6 +1209,21 @@ async function constructThreadSession(
+       threadId: args.threadId,
+     });
+     announceSessionIdentity(session, codexThreadId);
++    if (args.request.kind === "resume") {
++      // Optional usage is useful, but it must never sit before a restore.
++      // Schedule it after the bridge has replied to BB and bound the thread.
++      setImmediate(() => {
++        if (session.closing || session.connection !== connection || connection.exited) return;
++        for (const request of postInitializeRequests.filter((entry) => !entry.required)) {
++          void connection.request({
++            method: request.plan.method,
++            ...(request.plan.params === undefined ? {} : { params: request.plan.params }),
++            resultSchema: ignoredChildResultSchema,
++            timeoutMs: OPTIONAL_RESUME_TELEMETRY_TIMEOUT_MS,
++          }).then((result) => request.onResult(result)).catch(() => undefined);
++        }
++      });
++    }
+     return { session, codexThreadId };
+   } catch (error) {
+     const released = session.closing;
+@@ -1501,6 +1534,7 @@ async function handleThreadConstruction(
+     const sessionResult = await constructThreadSession({
+       threadId: params.threadId,
+       cwd: params.cwd,
++      ...(typeof params.constructionDeadlineAtMs === "number" ? { constructionDeadlineAtMs: params.constructionDeadlineAtMs } : {}),
+       options: params.options,
+       instructionMode: params.instructionMode,
+       ...(params.dynamicTools !== undefined
+diff --git a/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs b/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
+index b6909731ee3eeb79c111c1a26e201f6d13dfa728..2bff6062c890272b7602388bf98ddf2f33f24f39 100644
+--- a/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
++++ b/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
+@@ -215,6 +215,8 @@ const archivedThreadIds = new Set();
+ const processLogPath = script?.processLogPath ?? null;
+ const stallThreadStart = script?.stallThreadStart ?? false;
+ const stallThreadResume = script?.stallThreadResume ?? false;
++const stallRateLimitRead = script?.stallRateLimitRead ?? false;
++const resumeDelayMs = script?.resumeDelayMs ?? 0;
+ const writerLockPath = script?.writerLockPath ?? null;
+ const rejectThreadStart = script?.rejectThreadStart ?? false;
+ const malformedThreadStart = script?.malformedThreadStart ?? false;
+@@ -417,6 +419,7 @@ async function handleRequest(message) {
+       respond(id, {});
+       return;
+     case "account/rateLimits/read":
++      if (stallRateLimitRead) return;
+       respond(id, { rateLimits: {} });
+       return;
+     case "model/list":
+@@ -483,6 +486,9 @@ async function handleRequest(message) {
+         );
+         return;
+       }
++      if (resumeDelayMs > 0) {
++        await new Promise((resolve) => setTimeout(resolve, resumeDelayMs));
++      }
+ 
+       if (
+         String(params.threadId).startsWith("archived-") ||
+-- 
+2.53.0
+

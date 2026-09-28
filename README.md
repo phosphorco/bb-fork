@@ -48,7 +48,7 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The forty-two patches listed in `patches/series` form the current implementation
+The forty-three patches listed in `patches/series` form the current implementation
 candidate. Queue numbers 0022 and 0027 are intentionally absent: 0022 is a
 historical gap, and the former 0027 Monaco routing backport is supplied by
 upstream commit `283e6d7`. Obsolete
@@ -112,6 +112,8 @@ bridged database, without rewriting its migration history. Patch 43 aligns
 host dispatch tests with the downstream result contract.
 Patch 44 gives Codex thread resume the configured thread construction deadline,
 covering bridge initialization and router startup before the native resume reply.
+Patch 45 carries that remaining deadline into the Codex child request, leaves
+time for cleanup, and reads optional usage after the restore is accepted.
 
 ## Verification boundary for this source receipt
 
