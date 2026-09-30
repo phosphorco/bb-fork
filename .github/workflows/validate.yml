@@ -18,6 +18,145 @@ env:
   PNPM_VERSION: 9.15.0
 
 jobs:
+  environment-git-qualification:
+    name: Environment Git inspection SDK qualification
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'qualification/environment-git-inspection-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    env:
+      BB_ENV_GIT_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+      BB_ENV_GIT_QUAL_ROOT: ${{ runner.temp }}/environment-git-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout exact overlay source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          submodules: true
+          persist-credentials: false
+
+      - name: Preflight exact source and private runner capacity
+        env:
+          HOME: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/home
+          TMPDIR: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/tmp
+          XDG_CACHE_HOME: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/cache
+          npm_config_cache: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/cache/npm
+          npm_config_store_dir: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/store
+        run: node scripts/check-environment-git-qualification.mjs preflight
+
+      - name: Test negative private-path and capacity gates
+        env:
+          TMPDIR: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/tmp
+        run: node --test scripts/check-environment-git-qualification.test.mjs
+
+      - name: Verify and materialize exact locked source
+        env:
+          TMPDIR: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/tmp
+        run: ./scripts/verify && ./scripts/materialize
+
+      - name: Bind materialized source, lock, SDK and protocol
+        env:
+          HOME: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/home
+          TMPDIR: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/tmp
+          XDG_CACHE_HOME: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/cache
+          npm_config_cache: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/cache/npm
+          npm_config_store_dir: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/store
+        run: node scripts/check-environment-git-qualification.mjs source
+
+      - name: Install pinned package manager
+        working-directory: build/bb
+        env:
+          GITHUB_WORKSPACE: ${{ github.workspace }}/build/bb
+          PNPM_VERSION: ${{ env.PNPM_VERSION }}
+        run: bash .github/actions/setup-workspace/install-pnpm.sh
+
+      - name: Set up Node without dependency cache
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Frozen install into private store
+        working-directory: build/bb
+        env:
+          HOME: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/home
+          TMPDIR: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/tmp
+          XDG_CACHE_HOME: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/cache
+          npm_config_cache: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/cache/npm
+          npm_config_store_dir: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/store
+        run: pnpm install --frozen-lockfile --prefer-offline --store-dir "$BB_ENV_GIT_QUAL_ROOT/store"
+
+      - name: Recheck dependency and external-write boundary
+        env:
+          HOME: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/home
+          TMPDIR: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/tmp
+          XDG_CACHE_HOME: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/cache
+          npm_config_cache: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/cache/npm
+          npm_config_store_dir: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/store
+        run: node scripts/check-environment-git-qualification.mjs postinstall
+
+      - name: Build and typecheck inspection, server, daemon and public SDK
+        working-directory: build/bb
+        env:
+          HOME: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/home
+          TMPDIR: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/tmp
+          XDG_CACHE_HOME: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/cache
+          npm_config_cache: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/cache/npm
+          npm_config_store_dir: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/store
+        run: pnpm exec turbo run build typecheck --filter=@bb/host-daemon --filter=@bb/host-daemon-contract --filter=@bb/server --filter=@get-bb/plugin-sdk --concurrency=4 --output-logs=new-only
+
+      - name: Test pinned Git-object inspection and public SDK contract
+        working-directory: build/bb
+        env:
+          HOME: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/home
+          TMPDIR: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/tmp
+          XDG_CACHE_HOME: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/cache
+          npm_config_cache: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/cache/npm
+          npm_config_store_dir: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/store
+        run: |
+          pnpm exec vitest run \
+            apps/host-daemon/src/command-handlers/environment-git-objects.test.ts \
+            packages/host-daemon-contract/test/contract.test.ts \
+            packages/plugin-sdk/src/__tests__/public-types.test.ts \
+            packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts \
+            apps/server/test/services/plugins/environment-git-objects.test.ts \
+            apps/server/test/services/plugins/plugin-sdk.test.ts \
+            apps/server/test/services/plugins/plugin-authoring-docs.test.ts \
+            --no-file-parallelism
+
+      - name: Guard published SDK version and pack exact candidate
+        working-directory: build/bb
+        env:
+          HOME: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/home
+          TMPDIR: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/tmp
+          XDG_CACHE_HOME: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/cache
+          npm_config_cache: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/cache/npm
+          npm_config_store_dir: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/store
+        run: |
+          node packages/plugin-sdk/scripts/check-npm-version-guard.mjs
+          pnpm --filter @get-bb/plugin-sdk run build:types
+          npm pack --ignore-scripts --pack-destination "$BB_ENV_GIT_QUAL_ROOT/out" ./packages/plugin-sdk
+
+      - name: Seal SDK tarball and negative host boundary receipt
+        env:
+          HOME: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/home
+          TMPDIR: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/tmp
+          XDG_CACHE_HOME: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/cache
+          npm_config_cache: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/cache/npm
+          npm_config_store_dir: ${{ env.BB_ENV_GIT_QUAL_ROOT }}/store
+        run: node scripts/check-environment-git-qualification.mjs artifact
+
+      - name: Retain qualification receipts and unpublished SDK candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: environment-git-inspection-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ env.BB_ENV_GIT_QUAL_ROOT }}/*.json
+            ${{ env.BB_ENV_GIT_QUAL_ROOT }}/out/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
   overlay:
     name: Overlay integrity
     runs-on: ubuntu-latest
