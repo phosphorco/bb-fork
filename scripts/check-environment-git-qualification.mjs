@@ -189,10 +189,62 @@ export function assertNoExternalSymlinks(source, root) {
   }
 }
 
-function assertMaterializedTrackedClean(bb) {
+export function assertMaterializedTrackedClean(bb) {
   if (git(bb, "status", "--porcelain", "--untracked-files=no") !== "") {
     fail("materialized tracked source changed during qualification");
   }
+}
+
+export function assertPackedSdkInventory(entries, types, packedManifest, sourceManifest) {
+  if (entries.length !== types.length || entries.length === 0) {
+    fail("SDK archive listing and member types disagree");
+  }
+  const names = new Set();
+  for (let i = 0; i < entries.length; i += 1) {
+    const name = entries[i];
+    if (
+      !name.startsWith("package/") ||
+      name.includes("\\") ||
+      name.includes("\0") ||
+      name.split("/").some((segment) => segment === "." || segment === "..") ||
+      names.has(name) ||
+      (types[i] !== "-" && types[i] !== "d")
+    ) {
+      fail(`SDK archive has an unsafe or duplicate member: ${name}`);
+    }
+    names.add(name);
+  }
+  if (
+    packedManifest.name !== "@get-bb/plugin-sdk" ||
+    packedManifest.name !== sourceManifest.name ||
+    packedManifest.version !== sourceManifest.version ||
+    JSON.stringify(packedManifest.exports) !== JSON.stringify(sourceManifest.exports) ||
+    JSON.stringify(packedManifest.files) !== JSON.stringify(sourceManifest.files) ||
+    packedManifest.types !== sourceManifest.types
+  ) {
+    fail("packed SDK identity or public manifest differs from source");
+  }
+  const targets = new Set();
+  for (const conditions of Object.values(packedManifest.exports ?? {})) {
+    if (!conditions || typeof conditions !== "object") fail("invalid SDK export conditions");
+    for (const condition of ["types", "import", "default", "require"]) {
+      const target = conditions[condition];
+      if (target === undefined) continue;
+      if (typeof target !== "string" || !target.startsWith("./")) {
+        fail(`invalid SDK ${condition} export target`);
+      }
+      const relative = target.slice(2);
+      if (!relative || relative.split("/").some((segment) => !segment || segment === "." || segment === "..")) {
+        fail(`unsafe SDK ${condition} export target`);
+      }
+      const member = `package/${relative}`;
+      if (!names.has(member)) fail(`missing packed SDK export target: ${member}`);
+      targets.add(member);
+    }
+  }
+  const primaryTypes = `package/${packedManifest.types?.replace(/^\.\//u, "")}`;
+  if (!names.has(primaryTypes)) fail("packed SDK lacks its primary declaration");
+  return [...targets].sort();
 }
 
 function preflight() {
@@ -341,10 +393,9 @@ function artifact() {
   if (tarballs.length !== 1) fail("expected exactly one SDK tarball");
   const tarball = path.join(out, tarballs[0]);
   if (!lstatSync(tarball).isFile()) fail("SDK artifact is not a regular file");
-  const entries = execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" });
-  if (!entries.split("\n").includes("package/bundled-types/bb-plugin-sdk.d.ts")) {
-    fail("SDK artifact lacks its public declaration");
-  }
+  const entries = execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" }).trimEnd().split("\n");
+  const memberTypes = execFileSync("tar", ["-tvzf", tarball], { encoding: "utf8" })
+    .trimEnd().split("\n").map((line) => line[0]);
   const declaration = execFileSync(
     "tar",
     ["-xOzf", tarball, "package/bundled-types/bb-plugin-sdk.d.ts"],
@@ -357,6 +408,10 @@ function artifact() {
     ["-xOzf", tarball, "package/package.json"],
   );
   const manifest = JSON.parse(packedManifest.toString("utf8"));
+  const sourceManifest = JSON.parse(
+    readFileSync(path.join(bb, "packages/plugin-sdk/package.json"), "utf8"),
+  );
+  const exportTargets = assertPackedSdkInventory(entries, memberTypes, manifest, sourceManifest);
   if (manifest.version !== before.sdkVersion) fail("SDK artifact version drifted");
   requireCanonicalAbsent();
   writeReceipt(root, "artifact.json", {
@@ -371,6 +426,11 @@ function artifact() {
     tarballSha256: hashFile(tarball),
     manifestSha256: sha256(packedManifest),
     declarationSha256: sha256(declaration),
+    exportTargetSha256: Object.fromEntries(exportTargets.map((member) => [
+      member,
+      sha256(execFileSync("tar", ["-xOzf", tarball, member])),
+    ])),
+    archiveMemberCount: entries.length,
     canonicalPathsAbsent: canonicalPaths,
   });
 }
