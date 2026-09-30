@@ -171,7 +171,7 @@ function assertPrivatePaths(root) {
 }
 
 export function assertNoExternalSymlinks(source, root) {
-  const stack = [source];
+  const stack = [source, root];
   while (stack.length > 0) {
     const dir = stack.pop();
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -186,6 +186,12 @@ export function assertNoExternalSymlinks(source, root) {
         }
       }
     }
+  }
+}
+
+function assertMaterializedTrackedClean(bb) {
+  if (git(bb, "status", "--porcelain", "--untracked-files=no") !== "") {
+    fail("materialized tracked source changed during qualification");
   }
 }
 
@@ -233,6 +239,7 @@ function source() {
   if (upstream !== pre.source.upstream || tree !== pre.source.resultTree) {
     fail("materialized source differs from locked overlay");
   }
+  assertMaterializedTrackedClean(bb);
   if (existsSync(path.join(bb, "node_modules"))) {
     fail("materialized source already links dependencies");
   }
@@ -292,6 +299,7 @@ function postinstall() {
   if (git(bb, "rev-parse", "HEAD^{tree}") !== before.materializedTree) {
     fail("materialized Git tree changed during install");
   }
+  assertMaterializedTrackedClean(bb);
   for (const [name, expected] of Object.entries(before.hashes)) {
     if (hashFile(path.join(bb, name)) !== expected) {
       fail(`frozen input changed during install: ${name}`);
@@ -321,6 +329,7 @@ function artifact() {
   if (git(bb, "rev-parse", "HEAD^{tree}") !== before.materializedTree) {
     fail("materialized tree drifted after package build");
   }
+  assertMaterializedTrackedClean(bb);
   for (const [name, expected] of Object.entries(before.hashes)) {
     if (hashFile(path.join(bb, name)) !== expected) {
       fail(`frozen input changed during package build: ${name}`);

@@ -32,4 +32,7 @@ test("private-path containment rejects prefix collisions and resolved symlink es
   assert.equal(isInside(privateRoot, outside), false);
   symlinkSync(path.join(outside, "file"), path.join(source, "link"));
   assert.throws(() => assertNoExternalSymlinks(source, privateRoot), /escapes private source/);
+  rmSync(path.join(source, "link"));
+  symlinkSync(path.join(outside, "file"), path.join(privateRoot, "link"));
+  assert.throws(() => assertNoExternalSymlinks(source, privateRoot), /escapes private source/);
 });
