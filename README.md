@@ -48,7 +48,7 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The forty-three patches listed in `patches/series` form the current implementation
+The forty-four patches listed in `patches/series` form the current implementation
 candidate. Queue numbers 0022 and 0027 are intentionally absent: 0022 is a
 historical gap, and the former 0027 Monaco routing backport is supplied by
 upstream commit `283e6d7`. Obsolete
@@ -114,6 +114,10 @@ Patch 44 gives Codex thread resume the configured thread construction deadline,
 covering bridge initialization and router startup before the native resume reply.
 Patch 45 carries that remaining deadline into the Codex child request, leaves
 time for cleanup, and reads optional usage after the restore is accepted.
+Patch 46 adds source-bound, non-waking environment Git-object inspection to the
+experimental public Plugin SDK and advances the server/host protocol to 220.
+Its SDK version is provisional until package qualification and publication; this
+source-only overlay does not install, serve, or authorize a consumer adapter.
 
 ## Verification boundary for this source receipt
 

@@ -100,6 +100,11 @@
 35. **Transactional ingress startup** validates the optional Tailnet port before
     binding, closes the primary listener after a secondary bind failure, and
     gates detached recovery on both configured listeners being ready.
+46. **Pinned environment Git-object inspection** adds a typed, non-waking
+    experimental Plugin SDK surface bound to the selected project, source,
+    environment, host, and current remote origin. It disables replacement refs,
+    verifies recursive object closure, and advances the server/host protocol to
+    220. The SDK version is provisional until package qualification.
 
 Number 22 is intentionally absent: it was a historical queue gap. Number 27 is
 intentionally absent because upstream commit `283e6d7` already supplies the
@@ -107,8 +112,8 @@ former Monaco routing change; it is not replayed downstream.
 
 ## Exact source receipt
 
-- Upstream: `fdd3de3b19b97e6cd1ef7300cbb54711431249d3`.
-- Patch queue: thirty-three logical patches in `patches/series`; numbers 22 and
+- Upstream: `9c9bae7f36a237c7e1b96de3d4c2186d13967686`.
+- Patch queue: forty-four logical patches in `patches/series`; numbers 22 and
   27 are intentionally absent as described above. This queue is the current
   implementation candidate, while
   running deployments may remain on earlier historical compositions until root-owned

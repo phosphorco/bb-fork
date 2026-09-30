@@ -1,0 +1,2455 @@
+From 706235ac3f2ab82d34a96a5a60ce305f11b3a81b Mon Sep 17 00:00:00 2001
+From: BB Core source preparation <bb-core-source@invalid.local>
+Date: Wed, 30 Sep 2026 06:12:04 +0200
+Subject: [PATCH] feat(plugin-sdk): expose pinned environment Git objects
+
+---
+ apps/host-daemon/src/command-dispatch.ts      |   2 +
+ .../environment-git-objects.test.ts           | 400 +++++++++++++
+ .../environment-git-objects.ts                | 562 ++++++++++++++++++
+ apps/server/src/server.ts                     |   3 +
+ apps/server/src/services/hosts/wake-policy.ts |   1 +
+ .../plugins/environment-git-objects.ts        | 183 ++++++
+ .../server/src/services/plugins/plugin-api.ts | 100 +++-
+ .../src/services/plugins/plugin-runtime.ts    |   1 +
+ .../plugins/plugin-service-internal.ts        |   2 +
+ .../plugins/environment-git-objects.test.ts   | 180 ++++++
+ .../plugins/plugin-authoring-docs.test.ts     |   1 +
+ .../test/services/plugins/plugin-sdk.test.ts  |  23 +
+ docs/api_to_audit.md                          |  41 ++
+ packages/domain/src/plugin-sdk-version.ts     |   2 +-
+ packages/host-daemon-contract/src/commands.ts | 161 +++++
+ packages/host-daemon-contract/src/protocol.ts |   2 +-
+ packages/host-daemon-contract/src/session.ts  |   1 +
+ .../test/contract.test.ts                     |  69 ++-
+ packages/plugin-sdk/package.json              |   2 +-
+ .../src/__tests__/public-types.test.ts        |   9 +
+ packages/plugin-sdk/src/backend-contract.ts   | 131 ++++
+ .../__tests__/fake-plugin-host.test.ts        |  16 +
+ .../src/testing/fake-plugin-host.ts           |   9 +
+ .../references/backend-api-index.md           |  11 +
+ .../references/backend-foundation.md          |   1 +
+ plugins/plugin-api-docs/src/surfaces.ts       |  26 +
+ 26 files changed, 1915 insertions(+), 24 deletions(-)
+ create mode 100644 apps/host-daemon/src/command-handlers/environment-git-objects.test.ts
+ create mode 100644 apps/host-daemon/src/command-handlers/environment-git-objects.ts
+ create mode 100644 apps/server/src/services/plugins/environment-git-objects.ts
+ create mode 100644 apps/server/test/services/plugins/environment-git-objects.test.ts
+
+diff --git a/apps/host-daemon/src/command-dispatch.ts b/apps/host-daemon/src/command-dispatch.ts
+index fa665f51b51881c9659ecfdeba41a3e38a3bf2d4..f002e533b692a653d7c69aa827f4d6bafe34e329 100644
+--- a/apps/host-daemon/src/command-dispatch.ts
++++ b/apps/host-daemon/src/command-dispatch.ts
+@@ -32,6 +32,7 @@ import {
+   inspectHostGitSource,
+   listHostBranchOptions,
+ } from "./command-handlers/host-branches.js";
++import { inspectEnvironmentGitObjects } from "./command-handlers/environment-git-objects.js";
+ import {
+   installGlobalSkills,
+   readGlobalSkillsStatus,
+@@ -656,6 +657,7 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
+   "host.global_skills_status": async (command) =>
+     readGlobalSkillsStatus(command, {}),
+   "host.inspect_git_source": inspectHostGitSource,
++  "host.inspect_environment_git_objects": inspectEnvironmentGitObjects,
+   "host.list_branch_options": listHostBranchOptions,
+   "host.file_metadata": readHostFileMetadata,
+   "host.read_file": readHostFile,
+diff --git a/apps/host-daemon/src/command-handlers/environment-git-objects.test.ts b/apps/host-daemon/src/command-handlers/environment-git-objects.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f81cb848f03739988441b0c38df71a802d03b743
+--- /dev/null
++++ b/apps/host-daemon/src/command-handlers/environment-git-objects.test.ts
+@@ -0,0 +1,400 @@
++import { execFile } from "node:child_process";
++import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import path from "node:path";
++import { promisify } from "node:util";
++import { afterEach, describe, expect, it } from "vitest";
++import { inspectEnvironmentGitObjects } from "./environment-git-objects.js";
++
++const execFileAsync = promisify(execFile);
++const temporaryDirectories: string[] = [];
++
++async function runGit(
++  rootPath: string,
++  args: readonly string[],
++): Promise<string> {
++  const result = await execFileAsync("git", [...args], {
++    cwd: rootPath,
++    encoding: "utf8",
++  });
++  return result.stdout;
++}
++
++async function createRepository(): Promise<{
++  rootPath: string;
++  baseCommitOid: string;
++  commitOid: string;
++  treeOid: string;
++  readmeBlobOid: string;
++}> {
++  const rootPath = await mkdtemp(path.join(tmpdir(), "bb-environment-git-"));
++  temporaryDirectories.push(rootPath);
++  await runGit(rootPath, ["init", "-b", "main"]);
++  await runGit(rootPath, ["config", "user.name", "BB Tests"]);
++  await runGit(rootPath, ["config", "user.email", "bb@example.test"]);
++  await runGit(rootPath, [
++    "remote",
++    "add",
++    "origin",
++    "https://github.com/PhosphorCo/bb.git",
++  ]);
++  await writeFile(path.join(rootPath, "README.md"), "base\n", "utf8");
++  await runGit(rootPath, ["add", "README.md"]);
++  await runGit(rootPath, ["commit", "-m", "base"]);
++  const baseCommitOid = (await runGit(rootPath, ["rev-parse", "HEAD"])).trim();
++  await writeFile(path.join(rootPath, "README.md"), "head\n", "utf8");
++  await writeFile(
++    path.join(rootPath, "pointer.txt"),
++    "version https://git-lfs.github.com/spec/v1\noid sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nsize 42\n",
++    "utf8",
++  );
++  await runGit(rootPath, ["add", "README.md", "pointer.txt"]);
++  await runGit(rootPath, ["commit", "-m", "head"]);
++  const commitOid = (await runGit(rootPath, ["rev-parse", "HEAD"])).trim();
++  const treeOid = (await runGit(rootPath, ["rev-parse", "HEAD^{tree}"])).trim();
++  const readmeBlobOid = (
++    await runGit(rootPath, ["rev-parse", "HEAD:README.md"])
++  ).trim();
++  return { rootPath, baseCommitOid, commitOid, treeOid, readmeBlobOid };
++}
++
++afterEach(async () => {
++  await Promise.all(
++    temporaryDirectories
++      .splice(0)
++      .map((directory) => rm(directory, { recursive: true, force: true })),
++  );
++});
++
++describe("inspectEnvironmentGitObjects", () => {
++  it("reads pinned tree, blob, and diff data without mutating Git state", async () => {
++    const repository = await createRepository();
++    const before = await Promise.all([
++      readFile(path.join(repository.rootPath, ".git", "config"), "utf8"),
++      readFile(path.join(repository.rootPath, ".git", "HEAD"), "utf8"),
++      readFile(path.join(repository.rootPath, ".git", "index")),
++      readFile(
++        path.join(repository.rootPath, ".git", "refs", "heads", "main"),
++        "utf8",
++      ),
++      readFile(path.join(repository.rootPath, "README.md"), "utf8"),
++    ]);
++
++    const result = await inspectEnvironmentGitObjects({
++      type: "host.inspect_environment_git_objects",
++      rootPath: repository.rootPath,
++      commitOid: repository.commitOid,
++      expectedCommitTreeOid: repository.treeOid,
++      maxOutputBytes: 64 * 1024,
++      selections: [
++        {
++          id: "tree",
++          kind: "tree",
++          path: "",
++          recursive: true,
++          expectedTreeOid: repository.treeOid,
++        },
++        {
++          id: "readme",
++          kind: "blob",
++          path: "README.md",
++          expectedBlobOid: repository.readmeBlobOid,
++        },
++        {
++          id: "diff",
++          kind: "diff",
++          baseCommitOid: repository.baseCommitOid,
++          paths: ["README.md"],
++        },
++      ],
++    });
++
++    expect(result).toMatchObject({
++      outcome: "ok",
++      originRemote: {
++        host: "github.com",
++        repositoryPath: "PhosphorCo/bb",
++        transport: "https",
++      },
++      commitOid: repository.commitOid,
++      treeOid: repository.treeOid,
++    });
++    if (result.outcome !== "ok") throw new Error("Expected Git inspection");
++    expect(result.values).toEqual(
++      expect.arrayContaining([
++        expect.objectContaining({
++          id: "tree",
++          kind: "tree",
++          treeOid: repository.treeOid,
++          entries: expect.arrayContaining([
++            expect.objectContaining({
++              path: "README.md",
++              objectType: "blob",
++              objectOid: repository.readmeBlobOid,
++            }),
++          ]),
++        }),
++        expect.objectContaining({
++          id: "readme",
++          kind: "blob",
++          blobOid: repository.readmeBlobOid,
++          content: Buffer.from("head\n").toString("base64"),
++          externalContent: null,
++        }),
++        expect.objectContaining({
++          id: "diff",
++          kind: "diff",
++          baseCommitOid: repository.baseCommitOid,
++          commitOid: repository.commitOid,
++          patchEncoding: "utf8",
++          patch: expect.stringContaining("-base"),
++        }),
++      ]),
++    );
++
++    await expect(
++      Promise.all([
++        readFile(path.join(repository.rootPath, ".git", "config"), "utf8"),
++        readFile(path.join(repository.rootPath, ".git", "HEAD"), "utf8"),
++        readFile(path.join(repository.rootPath, ".git", "index")),
++        readFile(
++          path.join(repository.rootPath, ".git", "refs", "heads", "main"),
++          "utf8",
++        ),
++        readFile(path.join(repository.rootPath, "README.md"), "utf8"),
++      ]),
++    ).resolves.toEqual(before);
++  });
++
++  it("attests one canonical current origin remote and refuses invalid identity", async () => {
++    const repository = await createRepository();
++    const request = {
++      type: "host.inspect_environment_git_objects" as const,
++      rootPath: repository.rootPath,
++      commitOid: repository.commitOid,
++      maxOutputBytes: 64 * 1024,
++      selections: [
++        { id: "tree", kind: "tree" as const, path: "", recursive: false },
++      ],
++    };
++
++    await runGit(repository.rootPath, [
++      "remote",
++      "set-url",
++      "origin",
++      "git@GITHUB.COM:PhosphorCo/bb.git",
++    ]);
++    await expect(inspectEnvironmentGitObjects(request)).resolves.toMatchObject({
++      outcome: "ok",
++      originRemote: {
++        host: "github.com",
++        repositoryPath: "PhosphorCo/bb",
++        transport: "ssh",
++      },
++    });
++
++    await runGit(repository.rootPath, ["remote", "remove", "origin"]);
++    await expect(inspectEnvironmentGitObjects(request)).resolves.toEqual({
++      outcome: "unavailable",
++      reason: "origin_remote_missing",
++    });
++
++    await runGit(repository.rootPath, [
++      "remote",
++      "add",
++      "origin",
++      "file:///tmp/not-a-remote-identity",
++    ]);
++    await expect(inspectEnvironmentGitObjects(request)).resolves.toEqual({
++      outcome: "unavailable",
++      reason: "origin_remote_invalid",
++    });
++
++    await runGit(repository.rootPath, [
++      "config",
++      "--add",
++      "remote.origin.url",
++      "https://github.com/PhosphorCo/other.git",
++    ]);
++    await expect(inspectEnvironmentGitObjects(request)).resolves.toEqual({
++      outcome: "unavailable",
++      reason: "origin_remote_ambiguous",
++    });
++  });
++
++  it("ignores replacement refs for pinned commit, tree, blob, and diff reads", async () => {
++    const repository = await createRepository();
++    await writeFile(
++      path.join(repository.rootPath, "README.md"),
++      "replacement\n",
++      "utf8",
++    );
++    await runGit(repository.rootPath, ["add", "README.md"]);
++    await runGit(repository.rootPath, ["commit", "-m", "replacement"]);
++    const replacementCommitOid = (
++      await runGit(repository.rootPath, ["rev-parse", "HEAD"])
++    ).trim();
++    await runGit(repository.rootPath, [
++      "replace",
++      repository.commitOid,
++      replacementCommitOid,
++    ]);
++
++    const result = await inspectEnvironmentGitObjects({
++      type: "host.inspect_environment_git_objects",
++      rootPath: repository.rootPath,
++      commitOid: repository.commitOid,
++      maxOutputBytes: 64 * 1024,
++      selections: [
++        { id: "tree", kind: "tree", path: "", recursive: true },
++        { id: "blob", kind: "blob", path: "README.md" },
++        {
++          id: "diff",
++          kind: "diff",
++          baseCommitOid: repository.baseCommitOid,
++          paths: ["README.md"],
++        },
++      ],
++    });
++
++    expect(result).toMatchObject({
++      outcome: "ok",
++      commitOid: repository.commitOid,
++      treeOid: repository.treeOid,
++    });
++    if (result.outcome !== "ok") throw new Error("Expected Git inspection");
++    expect(result.values).toEqual(
++      expect.arrayContaining([
++        expect.objectContaining({
++          id: "tree",
++          entries: expect.arrayContaining([
++            expect.objectContaining({
++              path: "README.md",
++              objectOid: repository.readmeBlobOid,
++            }),
++          ]),
++        }),
++        expect.objectContaining({
++          id: "blob",
++          blobOid: repository.readmeBlobOid,
++          content: Buffer.from("head\n").toString("base64"),
++        }),
++        expect.objectContaining({
++          id: "diff",
++          patch: expect.stringContaining("+head"),
++        }),
++      ]),
++    );
++  });
++
++  it("rejects path escape, symbolic expectations, and output truncation", async () => {
++    const repository = await createRepository();
++    await expect(
++      inspectEnvironmentGitObjects({
++        type: "host.inspect_environment_git_objects",
++        rootPath: repository.rootPath,
++        commitOid: repository.commitOid,
++        maxOutputBytes: 64 * 1024,
++        selections: [{ id: "escape", kind: "blob", path: "../README.md" }],
++      }),
++    ).resolves.toEqual({
++      outcome: "unavailable",
++      reason: "object_unreachable",
++    });
++    await expect(
++      inspectEnvironmentGitObjects({
++        type: "host.inspect_environment_git_objects",
++        rootPath: repository.rootPath,
++        commitOid: repository.commitOid,
++        expectedCommitTreeOid: "0".repeat(40),
++        maxOutputBytes: 64 * 1024,
++        selections: [{ id: "tree", kind: "tree", path: "", recursive: false }],
++      }),
++    ).resolves.toEqual({
++      outcome: "unavailable",
++      reason: "object_unreachable",
++    });
++    await expect(
++      inspectEnvironmentGitObjects({
++        type: "host.inspect_environment_git_objects",
++        rootPath: repository.rootPath,
++        commitOid: repository.commitOid,
++        maxOutputBytes: 8,
++        selections: [{ id: "blob", kind: "blob", path: "README.md" }],
++      }),
++    ).resolves.toEqual({ outcome: "unavailable", reason: "output_limit" });
++  });
++
++  it("labels an LFS pointer without fetching external content", async () => {
++    const repository = await createRepository();
++    const result = await inspectEnvironmentGitObjects({
++      type: "host.inspect_environment_git_objects",
++      rootPath: repository.rootPath,
++      commitOid: repository.commitOid,
++      maxOutputBytes: 64 * 1024,
++      selections: [{ id: "pointer", kind: "blob", path: "pointer.txt" }],
++    });
++    expect(result).toMatchObject({
++      outcome: "ok",
++      values: [
++        expect.objectContaining({
++          id: "pointer",
++          externalContent: {
++            kind: "git-lfs-pointer",
++            oid: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
++            sizeBytes: 42,
++          },
++        }),
++      ],
++    });
++  });
++
++  it("refuses recursive proof when a committed tree contains a submodule", async () => {
++    const repository = await createRepository();
++    await runGit(repository.rootPath, [
++      "update-index",
++      "--add",
++      "--cacheinfo",
++      `160000,${"d".repeat(40)},vendor/submodule`,
++    ]);
++    await runGit(repository.rootPath, ["commit", "-m", "submodule"]);
++    const submoduleCommitOid = (
++      await runGit(repository.rootPath, ["rev-parse", "HEAD"])
++    ).trim();
++
++    await expect(
++      inspectEnvironmentGitObjects({
++        type: "host.inspect_environment_git_objects",
++        rootPath: repository.rootPath,
++        commitOid: submoduleCommitOid,
++        maxOutputBytes: 64 * 1024,
++        selections: [{ id: "tree", kind: "tree", path: "", recursive: true }],
++      }),
++    ).resolves.toEqual({ outcome: "unavailable", reason: "tree_incomplete" });
++  });
++
++  it("refuses recursive proof when a listed blob object is unavailable", async () => {
++    const repository = await createRepository();
++    const objectPath = path.join(
++      repository.rootPath,
++      ".git",
++      "objects",
++      repository.readmeBlobOid.slice(0, 2),
++      repository.readmeBlobOid.slice(2),
++    );
++    await rm(objectPath);
++    await expect(
++      runGit(repository.rootPath, ["ls-tree", "-r", "HEAD", "--", "README.md"]),
++    ).resolves.toContain(repository.readmeBlobOid);
++
++    await expect(
++      inspectEnvironmentGitObjects({
++        type: "host.inspect_environment_git_objects",
++        rootPath: repository.rootPath,
++        commitOid: repository.commitOid,
++        maxOutputBytes: 64 * 1024,
++        selections: [{ id: "tree", kind: "tree", path: "", recursive: true }],
++      }),
++    ).resolves.toEqual({ outcome: "unavailable", reason: "tree_incomplete" });
++  });
++});
+diff --git a/apps/host-daemon/src/command-handlers/environment-git-objects.ts b/apps/host-daemon/src/command-handlers/environment-git-objects.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..bd7e5db8505a864467a0bd3a38df6c3379cc5e41
+--- /dev/null
++++ b/apps/host-daemon/src/command-handlers/environment-git-objects.ts
+@@ -0,0 +1,562 @@
++import { execFile } from "node:child_process";
++import { promisify } from "node:util";
++import path from "node:path";
++import type { HostDaemonOnlineRpcResult } from "@bb/host-daemon-contract";
++import type { CommandOf } from "../command-dispatch-support.js";
++import { resolveNonSymlinkDirectoryPath } from "./root-path.js";
++
++const execFileAsync = promisify(execFile);
++const GIT_OBJECT_TIMEOUT_MS = 5_000;
++const GIT_OBJECT_TREE_ENTRY_LIMIT = 2_048;
++
++type InspectionCommand = CommandOf<"host.inspect_environment_git_objects">;
++type InspectionResult =
++  HostDaemonOnlineRpcResult<"host.inspect_environment_git_objects">;
++
++type InspectionReason = Extract<
++  InspectionResult,
++  { outcome: "unavailable" }
++>["reason"];
++
++type OriginRemote = Extract<
++  InspectionResult,
++  { outcome: "ok" }
++>["originRemote"];
++
++class InspectionFailure extends Error {
++  constructor(readonly reason: InspectionReason) {
++    super(reason);
++  }
++}
++
++function unavailable(reason: InspectionReason): InspectionResult {
++  return { outcome: "unavailable", reason };
++}
++
++function assertRelativePath(value: string, allowEmpty: boolean): void {
++  if (value.length === 0) {
++    if (allowEmpty) return;
++    throw new InspectionFailure("object_unreachable");
++  }
++  if (value.startsWith("/") || value.includes("\\") || value.includes("\0")) {
++    throw new InspectionFailure("object_unreachable");
++  }
++  const segments = value.split("/");
++  if (
++    segments.some(
++      (segment) => segment.length === 0 || segment === "." || segment === "..",
++    )
++  ) {
++    throw new InspectionFailure("object_unreachable");
++  }
++}
++
++function gitEnvironment(): NodeJS.ProcessEnv {
++  return {
++    HOME: process.env.HOME ?? "/nonexistent",
++    PATH: process.env.PATH ?? "/usr/bin:/bin",
++    GIT_ALLOW_PROTOCOL: "none",
++    GIT_CONFIG_GLOBAL: "/dev/null",
++    GIT_CONFIG_NOSYSTEM: "1",
++    GIT_NO_REPLACE_OBJECTS: "1",
++    GIT_OPTIONAL_LOCKS: "0",
++    GIT_TERMINAL_PROMPT: "0",
++    LC_ALL: "C",
++  };
++}
++
++async function runGit(
++  rootPath: string,
++  args: readonly string[],
++  maxBuffer: number,
++  failure: InspectionReason,
++): Promise<Buffer> {
++  try {
++    const result = await execFileAsync(
++      "git",
++      [
++        "-c",
++        "core.hooksPath=/dev/null",
++        "-c",
++        "protocol.file.allow=never",
++        ...args,
++      ],
++      {
++        cwd: rootPath,
++        encoding: "buffer",
++        env: gitEnvironment(),
++        maxBuffer,
++        timeout: GIT_OBJECT_TIMEOUT_MS,
++      },
++    );
++    return Buffer.from(result.stdout);
++  } catch (error) {
++    if (
++      typeof error === "object" &&
++      error !== null &&
++      ("killed" in error || "code" in error) &&
++      (("killed" in error && error.killed === true) ||
++        ("code" in error && error.code === "ETIMEDOUT"))
++    ) {
++      throw new InspectionFailure("timeout");
++    }
++    throw new InspectionFailure(failure);
++  }
++}
++
++async function resolveCommit(
++  rootPath: string,
++  commitOid: string,
++  expectedTreeOid: string | undefined,
++): Promise<{ commitOid: string; treeOid: string }> {
++  const resolvedCommit = (
++    await runGit(
++      rootPath,
++      ["rev-parse", "--verify", `${commitOid}^{commit}`],
++      1_024,
++      "object_not_found",
++    )
++  )
++    .toString("utf8")
++    .trim();
++  if (resolvedCommit !== commitOid) {
++    throw new InspectionFailure("object_unreachable");
++  }
++  const treeOid = (
++    await runGit(
++      rootPath,
++      ["rev-parse", "--verify", `${commitOid}^{tree}`],
++      1_024,
++      "object_not_found",
++    )
++  )
++    .toString("utf8")
++    .trim();
++  if (expectedTreeOid !== undefined && treeOid !== expectedTreeOid) {
++    throw new InspectionFailure("object_unreachable");
++  }
++  return { commitOid: resolvedCommit, treeOid };
++}
++
++function normalizeRepositoryPath(value: string): string | null {
++  if (
++    value.length === 0 ||
++    value.startsWith("/") ||
++    value.endsWith("/") ||
++    value.includes("%")
++  ) {
++    return null;
++  }
++  const segments = value.split("/");
++  if (
++    segments.some(
++      (segment) =>
++        segment.length === 0 ||
++        segment === "." ||
++        segment === ".." ||
++        !/^[A-Za-z0-9._-]+$/u.test(segment),
++    )
++  ) {
++    return null;
++  }
++  const lastIndex = segments.length - 1;
++  if (segments[lastIndex]?.endsWith(".git")) {
++    segments[lastIndex] = segments[lastIndex].slice(0, -4);
++  }
++  if (segments[lastIndex]?.length === 0) return null;
++  return segments.join("/");
++}
++
++function normalizeOriginRemote(value: string): OriginRemote | null {
++  if (value.length === 0 || value.includes("\0") || /\s/u.test(value)) {
++    return null;
++  }
++  const scpStyle = /^git@([A-Za-z0-9.-]+):([A-Za-z0-9._/-]+)$/u.exec(value);
++  if (scpStyle !== null) {
++    const repositoryPath = normalizeRepositoryPath(scpStyle[2]);
++    if (repositoryPath === null) return null;
++    return {
++      host: scpStyle[1].toLowerCase(),
++      repositoryPath,
++      transport: "ssh",
++    };
++  }
++  try {
++    const parsed = new URL(value);
++    if (
++      (parsed.protocol !== "https:" && parsed.protocol !== "ssh:") ||
++      parsed.hostname.length === 0 ||
++      parsed.port.length > 0 ||
++      parsed.password.length > 0 ||
++      parsed.search.length > 0 ||
++      parsed.hash.length > 0 ||
++      (parsed.protocol === "https:" && parsed.username.length > 0) ||
++      (parsed.protocol === "ssh:" && parsed.username !== "git")
++    ) {
++      return null;
++    }
++    const repositoryPath = normalizeRepositoryPath(
++      parsed.pathname.replace(/^\//u, ""),
++    );
++    if (repositoryPath === null) return null;
++    return {
++      host: parsed.hostname.toLowerCase(),
++      repositoryPath,
++      transport: parsed.protocol === "https:" ? "https" : "ssh",
++    };
++  } catch {
++    return null;
++  }
++}
++
++async function resolveOriginRemote(rootPath: string): Promise<OriginRemote> {
++  let output: Buffer;
++  try {
++    output = await runGit(
++      rootPath,
++      ["config", "--no-includes", "--null", "--get-all", "remote.origin.url"],
++      8_192,
++      "origin_remote_missing",
++    );
++  } catch (error) {
++    if (error instanceof InspectionFailure && error.reason === "timeout") {
++      throw error;
++    }
++    throw new InspectionFailure("origin_remote_missing");
++  }
++  const values = output
++    .toString("utf8")
++    .split("\0")
++    .filter((value) => value.length > 0);
++  if (values.length === 0) {
++    throw new InspectionFailure("origin_remote_missing");
++  }
++  if (values.length !== 1) {
++    throw new InspectionFailure("origin_remote_ambiguous");
++  }
++  const originRemote = normalizeOriginRemote(values[0]);
++  if (originRemote === null) {
++    throw new InspectionFailure("origin_remote_invalid");
++  }
++  return originRemote;
++}
++
++async function objectAtPath(
++  rootPath: string,
++  commitOid: string,
++  treeOid: string,
++  relativePath: string,
++): Promise<{ oid: string; type: "blob" | "tree" | "commit" }> {
++  if (relativePath.length === 0) {
++    return { oid: treeOid, type: "tree" };
++  }
++  const oid = (
++    await runGit(
++      rootPath,
++      ["rev-parse", "--verify", `${commitOid}:${relativePath}`],
++      1_024,
++      "object_not_found",
++    )
++  )
++    .toString("utf8")
++    .trim();
++  const type = (
++    await runGit(rootPath, ["cat-file", "-t", oid], 1_024, "object_not_found")
++  )
++    .toString("utf8")
++    .trim();
++  if (type !== "blob" && type !== "tree" && type !== "commit") {
++    throw new InspectionFailure("object_type_mismatch");
++  }
++  return { oid, type };
++}
++
++function parseTreeEntries(output: Buffer): Array<{
++  path: string;
++  mode: string;
++  objectType: "blob" | "tree" | "submodule";
++  objectOid: string;
++}> {
++  const entries = output
++    .toString("utf8")
++    .split("\0")
++    .filter((entry) => entry.length > 0)
++    .map((entry) => {
++      const match =
++        /^([0-7]+) (blob|tree|commit) ((?:[a-f0-9]{40}|[a-f0-9]{64}))\t([\s\S]+)$/u.exec(
++          entry,
++        );
++      if (match === null) throw new InspectionFailure("internal_error");
++      const objectType: "blob" | "tree" | "submodule" =
++        match[2] === "commit"
++          ? "submodule"
++          : match[2] === "blob"
++            ? "blob"
++            : "tree";
++      return {
++        mode: match[1],
++        objectType,
++        objectOid: match[3],
++        path: match[4],
++      };
++    });
++  if (entries.length > GIT_OBJECT_TREE_ENTRY_LIMIT) {
++    throw new InspectionFailure("tree_incomplete");
++  }
++  return entries;
++}
++
++async function verifyRecursiveTreeEntries(
++  rootPath: string,
++  entries: ReadonlyArray<{
++    objectType: "blob" | "tree" | "submodule";
++    objectOid: string;
++  }>,
++): Promise<void> {
++  for (const entry of entries) {
++    if (entry.objectType === "submodule") {
++      throw new InspectionFailure("tree_incomplete");
++    }
++    await runGit(
++      rootPath,
++      ["cat-file", "-e", `${entry.objectOid}^{${entry.objectType}}`],
++      1_024,
++      "tree_incomplete",
++    );
++  }
++}
++
++function parseLfsPointer(
++  contents: Buffer,
++): { kind: "git-lfs-pointer"; oid: string; sizeBytes: number } | null {
++  const pointer =
++    /^version https:\/\/git-lfs.github.com\/spec\/v1\noid (sha256:[a-f0-9]{64})\nsize ([0-9]+)\n?$/u.exec(
++      contents.toString("utf8"),
++    );
++  if (pointer === null) return null;
++  const sizeBytes = Number(pointer[2]);
++  if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) return null;
++  return { kind: "git-lfs-pointer", oid: pointer[1], sizeBytes };
++}
++
++function appendValue<T>(args: {
++  value: T;
++  outputBytes: number;
++  maxOutputBytes: number;
++}): { value: T; outputBytes: number } {
++  const bytes = Buffer.byteLength(JSON.stringify(args.value));
++  if (args.outputBytes + bytes > args.maxOutputBytes) {
++    throw new InspectionFailure("output_limit");
++  }
++  return { value: args.value, outputBytes: args.outputBytes + bytes };
++}
++
++export async function inspectEnvironmentGitObjects(
++  command: InspectionCommand,
++): Promise<InspectionResult> {
++  try {
++    if (!path.isAbsolute(command.rootPath))
++      return unavailable("internal_error");
++    const rootPath = await resolveNonSymlinkDirectoryPath({
++      description: "Git source root",
++      path: command.rootPath,
++    });
++    const originRemote = await resolveOriginRemote(rootPath);
++    const commit = await resolveCommit(
++      rootPath,
++      command.commitOid,
++      command.expectedCommitTreeOid,
++    );
++    const values: Array<
++      Extract<InspectionResult, { outcome: "ok" }>["values"][number]
++    > = [];
++    let outputBytes = 0;
++
++    for (const selection of command.selections) {
++      if (selection.kind === "tree") {
++        assertRelativePath(selection.path, true);
++        const target = await objectAtPath(
++          rootPath,
++          commit.commitOid,
++          commit.treeOid,
++          selection.path,
++        );
++        if (target.type === "commit") {
++          throw new InspectionFailure("submodule_excluded");
++        }
++        if (target.type !== "tree") {
++          throw new InspectionFailure("object_type_mismatch");
++        }
++        if (
++          selection.expectedTreeOid !== undefined &&
++          target.oid !== selection.expectedTreeOid
++        ) {
++          throw new InspectionFailure("object_unreachable");
++        }
++        const entries = parseTreeEntries(
++          await runGit(
++            rootPath,
++            [
++              "ls-tree",
++              "-z",
++              "-t",
++              ...(selection.recursive ? ["-r"] : []),
++              commit.commitOid,
++              "--",
++              ...(selection.path.length === 0 ? [] : [selection.path]),
++            ],
++            command.maxOutputBytes,
++            "internal_error",
++          ),
++        );
++        if (selection.recursive) {
++          await verifyRecursiveTreeEntries(rootPath, entries);
++        }
++        const appended = appendValue({
++          maxOutputBytes: command.maxOutputBytes,
++          outputBytes,
++          value: {
++            id: selection.id,
++            kind: "tree" as const,
++            path: selection.path,
++            treeOid: target.oid,
++            recursive: selection.recursive,
++            entries,
++          },
++        });
++        values.push(appended.value);
++        outputBytes = appended.outputBytes;
++        continue;
++      }
++
++      if (selection.kind === "blob") {
++        assertRelativePath(selection.path, false);
++        const target = await objectAtPath(
++          rootPath,
++          commit.commitOid,
++          commit.treeOid,
++          selection.path,
++        );
++        if (target.type === "commit") {
++          throw new InspectionFailure("submodule_excluded");
++        }
++        if (target.type !== "blob") {
++          throw new InspectionFailure("object_type_mismatch");
++        }
++        if (
++          selection.expectedBlobOid !== undefined &&
++          target.oid !== selection.expectedBlobOid
++        ) {
++          throw new InspectionFailure("object_unreachable");
++        }
++        const sizeBytes = Number(
++          (
++            await runGit(
++              rootPath,
++              ["cat-file", "-s", target.oid],
++              1_024,
++              "object_not_found",
++            )
++          )
++            .toString("utf8")
++            .trim(),
++        );
++        if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0) {
++          throw new InspectionFailure("internal_error");
++        }
++        if (sizeBytes > command.maxOutputBytes) {
++          throw new InspectionFailure("output_limit");
++        }
++        const contents = await runGit(
++          rootPath,
++          ["cat-file", "blob", target.oid],
++          command.maxOutputBytes,
++          "object_not_found",
++        );
++        if (contents.byteLength !== sizeBytes) {
++          throw new InspectionFailure("internal_error");
++        }
++        const appended = appendValue({
++          maxOutputBytes: command.maxOutputBytes,
++          outputBytes,
++          value: {
++            id: selection.id,
++            kind: "blob" as const,
++            path: selection.path,
++            blobOid: target.oid,
++            sizeBytes,
++            content: contents.toString("base64"),
++            contentEncoding: "base64" as const,
++            externalContent: parseLfsPointer(contents),
++          },
++        });
++        values.push(appended.value);
++        outputBytes = appended.outputBytes;
++        continue;
++      }
++
++      for (const relativePath of selection.paths) {
++        assertRelativePath(relativePath, false);
++      }
++      const base = await resolveCommit(
++        rootPath,
++        selection.baseCommitOid,
++        undefined,
++      );
++      const patch = await runGit(
++        rootPath,
++        [
++          "diff-tree",
++          "--no-ext-diff",
++          "--no-textconv",
++          "--no-renames",
++          "--format=",
++          "--patch",
++          base.commitOid,
++          commit.commitOid,
++          "--",
++          ...selection.paths,
++        ],
++        command.maxOutputBytes,
++        "internal_error",
++      );
++      const decoded = new TextDecoder("utf-8", { fatal: true });
++      let patchText: string;
++      let patchEncoding: "utf8" | "base64";
++      try {
++        patchText = decoded.decode(patch);
++        patchEncoding = "utf8";
++      } catch {
++        patchText = patch.toString("base64");
++        patchEncoding = "base64";
++      }
++      const appended = appendValue({
++        maxOutputBytes: command.maxOutputBytes,
++        outputBytes,
++        value: {
++          id: selection.id,
++          kind: "diff" as const,
++          baseCommitOid: base.commitOid,
++          commitOid: commit.commitOid,
++          paths: selection.paths,
++          patch: patchText,
++          patchEncoding,
++        },
++      });
++      values.push(appended.value);
++      outputBytes = appended.outputBytes;
++    }
++
++    return {
++      outcome: "ok",
++      originRemote,
++      commitOid: commit.commitOid,
++      treeOid: commit.treeOid,
++      outputBytes,
++      values,
++    };
++  } catch (error) {
++    if (error instanceof InspectionFailure) return unavailable(error.reason);
++    return unavailable("internal_error");
++  }
++}
+diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
+index a809d549f03c7cecb4664dce289f4cc0d3a7a866..deed945433828b19987a91eaf8877727359446f1 100644
+--- a/apps/server/src/server.ts
++++ b/apps/server/src/server.ts
+@@ -38,6 +38,7 @@ import {
+   createPluginService,
+   type PluginService,
+ } from "./services/plugins/plugin-service.js";
++import { createPluginEnvironmentGitObjectInspector } from "./services/plugins/environment-git-objects.js";
+ import { setPluginAgentContributions } from "./services/plugins/plugin-agent-contributions.js";
+ import { setPluginThreadEventEmitter } from "./services/plugins/plugin-thread-events.js";
+ import { setPluginHookProvider } from "./services/plugins/plugin-hook-registry.js";
+@@ -821,6 +822,8 @@ export function createApp(
+         }),
+       ),
+     callPluginHost: (args) => callPluginHostRpc(deps, args),
++    inspectEnvironmentGitObjects:
++      createPluginEnvironmentGitObjectInspector(deps),
+     disposePluginHost: (args) => disposePluginHostWorkers(deps, args),
+     onSettingsChanged: (pluginId) => {
+       deps.providerNativeRoots.invalidate(pluginId);
+diff --git a/apps/server/src/services/hosts/wake-policy.ts b/apps/server/src/services/hosts/wake-policy.ts
+index 7ef9ef212880ae8c222169ddd864643ceb0950ab..f02b5d3d2e00fd78c7f1f5ff2e1354333b0a7380 100644
+--- a/apps/server/src/services/hosts/wake-policy.ts
++++ b/apps/server/src/services/hosts/wake-policy.ts
+@@ -58,6 +58,7 @@ const hostCommandWakePolicy = {
+   "host.install_global_skills": "work",
+   "host.global_skills_status": "work",
+   "host.inspect_git_source": "work",
++  "host.inspect_environment_git_objects": "never",
+   "host.list_branch_options": "work",
+   "host.file_metadata": "work",
+   "host.read_file": "work",
+diff --git a/apps/server/src/services/plugins/environment-git-objects.ts b/apps/server/src/services/plugins/environment-git-objects.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..3e1ad37eb9d6c2ee13e99a9ad0b69a191381a28d
+--- /dev/null
++++ b/apps/server/src/services/plugins/environment-git-objects.ts
+@@ -0,0 +1,183 @@
++import {
++  getEnvironment,
++  getProjectSourceForProject,
++  type DbConnection,
++} from "@bb/db";
++import type {
++  ExperimentalEnvironmentGitObjectInspectionRequest,
++  ExperimentalEnvironmentGitObjectInspectionResult,
++} from "@get-bb/plugin-sdk";
++import { z } from "zod";
++import { callHostOnlineRpc } from "../hosts/online-rpc.js";
++import { ApiError } from "../../errors.js";
++import type { WorkSessionDeps } from "../../types.js";
++
++const GIT_OBJECT_OID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
++const DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024;
++const MAX_OUTPUT_BYTES = 512 * 1024;
++
++const selectionSchema = z.discriminatedUnion("kind", [
++  z
++    .object({
++      id: z.string().min(1).max(128),
++      kind: z.literal("tree"),
++      path: z.string().max(4096),
++      recursive: z.boolean(),
++      expectedTreeOid: z.string().regex(GIT_OBJECT_OID).optional(),
++    })
++    .strict(),
++  z
++    .object({
++      id: z.string().min(1).max(128),
++      kind: z.literal("blob"),
++      path: z.string().min(1).max(4096),
++      expectedBlobOid: z.string().regex(GIT_OBJECT_OID).optional(),
++    })
++    .strict(),
++  z
++    .object({
++      id: z.string().min(1).max(128),
++      kind: z.literal("diff"),
++      baseCommitOid: z.string().regex(GIT_OBJECT_OID),
++      paths: z.array(z.string().min(1).max(4096)).min(1).max(32),
++    })
++    .strict(),
++]);
++
++const requestSchema = z
++  .object({
++    projectId: z.string().min(1),
++    sourceId: z.string().min(1),
++    environmentId: z.string().min(1),
++    commitOid: z.string().regex(GIT_OBJECT_OID),
++    expectedCommitTreeOid: z.string().regex(GIT_OBJECT_OID).optional(),
++    selections: z.array(selectionSchema).min(1).max(32),
++    maxOutputBytes: z.number().int().min(1).max(MAX_OUTPUT_BYTES).optional(),
++  })
++  .strict()
++  .superRefine((value, context) => {
++    const ids = new Set<string>();
++    for (const [index, selection] of value.selections.entries()) {
++      if (ids.has(selection.id)) {
++        context.addIssue({
++          code: "custom",
++          path: ["selections", index, "id"],
++          message: "Selection ids must be unique",
++        });
++      }
++      ids.add(selection.id);
++    }
++  });
++
++type ValidRequest = z.infer<typeof requestSchema>;
++type UnavailableReason = Extract<
++  ExperimentalEnvironmentGitObjectInspectionResult,
++  { outcome: "unavailable" }
++>["reason"];
++
++export type PluginEnvironmentGitObjectInspector = (args: {
++  pluginId: string;
++  request: ExperimentalEnvironmentGitObjectInspectionRequest;
++}) => Promise<ExperimentalEnvironmentGitObjectInspectionResult>;
++
++function unavailable(
++  reason: UnavailableReason,
++): ExperimentalEnvironmentGitObjectInspectionResult {
++  return { outcome: "unavailable", reason };
++}
++
++function validateRequest(
++  request: ExperimentalEnvironmentGitObjectInspectionRequest,
++): ValidRequest | null {
++  const parsed = requestSchema.safeParse(request);
++  return parsed.success ? parsed.data : null;
++}
++
++function resolveSource(
++  db: DbConnection,
++  request: ValidRequest,
++):
++  | { outcome: "ok"; hostId: string; rootPath: string }
++  | { outcome: "unavailable"; reason: UnavailableReason } {
++  const environment = getEnvironment(db, request.environmentId);
++  if (environment === null) {
++    return { outcome: "unavailable", reason: "environment_not_found" };
++  }
++  if (environment.status !== "ready" || environment.path === null) {
++    return { outcome: "unavailable", reason: "environment_not_ready" };
++  }
++  if (environment.projectId !== request.projectId) {
++    return { outcome: "unavailable", reason: "identity_mismatch" };
++  }
++  const source = getProjectSourceForProject(db, {
++    projectId: request.projectId,
++    sourceId: request.sourceId,
++  });
++  if (source === null || source.type !== "local_path") {
++    return { outcome: "unavailable", reason: "source_unavailable" };
++  }
++  if (source.hostId !== environment.hostId) {
++    return { outcome: "unavailable", reason: "identity_mismatch" };
++  }
++  return { outcome: "ok", hostId: source.hostId, rootPath: source.path };
++}
++
++function unavailableFromError(
++  error: unknown,
++): ExperimentalEnvironmentGitObjectInspectionResult {
++  if (error instanceof ApiError) {
++    if (error.body.code === "protocol_version_mismatch") {
++      return unavailable("protocol_unsupported");
++    }
++    if (error.body.code === "host_unavailable") {
++      return unavailable("host_unavailable");
++    }
++  }
++  return unavailable("internal_error");
++}
++
++export function createPluginEnvironmentGitObjectInspector(
++  deps: WorkSessionDeps,
++): PluginEnvironmentGitObjectInspector {
++  return async ({ pluginId, request }) => {
++    const valid = validateRequest(request);
++    if (valid === null) return unavailable("invalid_request");
++    const source = resolveSource(deps.db, valid);
++    if (source.outcome === "unavailable") return source;
++    try {
++      const result = await callHostOnlineRpc(deps, {
++        hostId: source.hostId,
++        timeoutMs: 5_000,
++        command: {
++          type: "host.inspect_environment_git_objects",
++          rootPath: source.rootPath,
++          commitOid: valid.commitOid,
++          ...(valid.expectedCommitTreeOid === undefined
++            ? {}
++            : { expectedCommitTreeOid: valid.expectedCommitTreeOid }),
++          selections: valid.selections,
++          maxOutputBytes: valid.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
++        },
++      });
++      if (result.outcome === "unavailable") return result;
++      return {
++        outcome: "ok",
++        provenance: {
++          pluginId,
++          projectId: valid.projectId,
++          sourceId: valid.sourceId,
++          environmentId: valid.environmentId,
++          hostId: source.hostId,
++          sourceRootPath: source.rootPath,
++          originRemote: result.originRemote,
++          commitOid: result.commitOid,
++          treeOid: result.treeOid,
++        },
++        outputBytes: result.outputBytes,
++        values: result.values,
++      };
++    } catch (error) {
++      return unavailableFromError(error);
++    }
++  };
++}
+diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
+index b4b2cab4e6856bd5103f387731b95bdef24951cf..3384124123f51ee2f0a02deb4ae48154311d5944 100644
+--- a/apps/server/src/services/plugins/plugin-api.ts
++++ b/apps/server/src/services/plugins/plugin-api.ts
+@@ -45,6 +45,7 @@ import type {
+   PluginCliContext,
+   PluginCliResult,
+   PluginEnvironments,
++  PluginEnvironmentGitObjects,
+   PluginHooks,
+   PluginHookHandler,
+   PluginHookName,
+@@ -357,7 +358,10 @@ interface ThreadFacetTargetRecord {
+ }
+ 
+ interface StagedThreadFacet {
+-  active: { generation: number; typeId: import("@bb/domain").ThreadFacetTypeId } | null;
++  active: {
++    generation: number;
++    typeId: import("@bb/domain").ThreadFacetTypeId;
++  } | null;
+   censusInFlight: boolean;
+   cursorPositions: Map<string, string>;
+   declaration: {
+@@ -554,6 +558,7 @@ export function createPluginApi(options: {
+     signal?: AbortSignal;
+     timeoutMs?: number;
+   }) => Promise<unknown>;
++  inspectEnvironmentGitObjects?: import("./environment-git-objects.js").PluginEnvironmentGitObjectInspector;
+   registerProvider: (declaration: NormalizedPluginProviderDeclaration) => {
+     dispose(): void;
+   };
+@@ -590,6 +595,7 @@ export function createPluginApi(options: {
+     declareSharedPorts,
+     replaceDeclaredSharedPorts,
+     callPluginHost,
++    inspectEnvironmentGitObjects,
+     registerProvider,
+     registerAiService,
+     isProviderIdTaken,
+@@ -684,16 +690,21 @@ export function createPluginApi(options: {
+     return staged.active;
+   }
+ 
+-  function grantRecord(target: ExperimentalThreadFacetTargetGrant): ThreadFacetGrantRecord {
++  function grantRecord(
++    target: ExperimentalThreadFacetTargetGrant,
++  ): ThreadFacetGrantRecord {
+     assertFacetAuthorityLive();
+     const grant = threadFacetGrants.get(target);
+     if (grant === undefined) refuseThreadFacetCapability();
+     const current = threadFacetTargets.get(grant.thread);
+-    if (current !== grant || grant.thread.id !== grant.threadId) refuseThreadFacetCapability();
++    if (current !== grant || grant.thread.id !== grant.threadId)
++      refuseThreadFacetCapability();
+     return grant;
+   }
+ 
+-  async function facetOperation<T>(operation: () => T | Promise<T>): Promise<T> {
++  async function facetOperation<T>(
++    operation: () => T | Promise<T>,
++  ): Promise<T> {
+     try {
+       return await operation();
+     } catch {
+@@ -704,20 +715,30 @@ export function createPluginApi(options: {
+   function facetHandle<
+     Cardinality extends ExperimentalThreadFacetCardinality,
+     Member extends string,
+-  >(staged: StagedThreadFacet): ExperimentalThreadFacetHandle<Cardinality, Member> {
++  >(
++    staged: StagedThreadFacet,
++  ): ExperimentalThreadFacetHandle<Cardinality, Member> {
+     return {
+       replace(target, members) {
+         return facetOperation(() => {
+           const active = activeFacet(staged);
+           const grant = grantRecord(target);
+-          replaceThreadFacetRelationsInGeneration(db, { ...active, threadId: grant.threadId, members });
++          replaceThreadFacetRelationsInGeneration(db, {
++            ...active,
++            threadId: grant.threadId,
++            members,
++          });
+         });
+       },
+       clear(target) {
+         return facetOperation(() => {
+           const active = activeFacet(staged);
+           const grant = grantRecord(target);
+-          replaceThreadFacetRelationsInGeneration(db, { ...active, threadId: grant.threadId, members: [] });
++          replaceThreadFacetRelationsInGeneration(db, {
++            ...active,
++            threadId: grant.threadId,
++            members: [],
++          });
+         });
+       },
+       listPriorTargets(args) {
+@@ -727,20 +748,37 @@ export function createPluginApi(options: {
+           try {
+             const active = activeFacet(staged);
+             const supplied = args?.cursor;
+-            if (staged.expectedCursor === null || supplied !== staged.expectedCursor) refuseThreadFacetCapability();
++            if (
++              staged.expectedCursor === null ||
++              supplied !== staged.expectedCursor
++            )
++              refuseThreadFacetCapability();
+             const pageSize = args?.pageSize ?? 50;
+-            if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) refuseThreadFacetCapability();
+-            const afterThreadId = supplied === undefined ? undefined : staged.cursorPositions.get(supplied);
+-            if (supplied !== undefined && afterThreadId === undefined) refuseThreadFacetCapability();
+-            const page = listPriorThreadFacetSnapshotTargets(db, { ...active, limit: pageSize, ...(afterThreadId === undefined ? {} : { afterThreadId }) });
++            if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100)
++              refuseThreadFacetCapability();
++            const afterThreadId =
++              supplied === undefined
++                ? undefined
++                : staged.cursorPositions.get(supplied);
++            if (supplied !== undefined && afterThreadId === undefined)
++              refuseThreadFacetCapability();
++            const page = listPriorThreadFacetSnapshotTargets(db, {
++              ...active,
++              limit: pageSize,
++              ...(afterThreadId === undefined ? {} : { afterThreadId }),
++            });
+             const sdk = getSdk();
+             if (sdk === undefined) refuseThreadFacetCapability();
+             const targets: ExperimentalThreadFacetTarget[] = [];
+-            for (const threadId of page.threadIds) targets.push(registerThreadFacetTarget(await sdk.threads.get({ threadId })));
++            for (const threadId of page.threadIds)
++              targets.push(
++                registerThreadFacetTarget(await sdk.threads.get({ threadId })),
++              );
+             if (page.nextAfterThreadId === null) {
+               recordThreadFacetCensusExhausted(db, active);
+               staged.expectedCursor = null;
+-              if (supplied !== undefined) staged.cursorPositions.delete(supplied);
++              if (supplied !== undefined)
++                staged.cursorPositions.delete(supplied);
+               return { targets, nextCursor: null };
+             }
+             const nextCursor = randomUUID();
+@@ -754,7 +792,9 @@ export function createPluginApi(options: {
+         });
+       },
+       markReady() {
+-        return facetOperation(() => markThreadFacetOwnerGenerationReady(db, activeFacet(staged)));
++        return facetOperation(() =>
++          markThreadFacetOwnerGenerationReady(db, activeFacet(staged)),
++        );
+       },
+     };
+   }
+@@ -763,7 +803,8 @@ export function createPluginApi(options: {
+     target(thread) {
+       assertFacetAuthorityLive();
+       const target = threadFacetTargets.get(thread);
+-      if (target === undefined || target.thread.id !== target.threadId) refuseThreadFacetCapability();
++      if (target === undefined || target.thread.id !== target.threadId)
++        refuseThreadFacetCapability();
+       const grant = Object.freeze({}) as ExperimentalThreadFacetTargetGrant;
+       threadFacetGrants.set(grant, target);
+       return grant;
+@@ -797,7 +838,9 @@ export function createPluginApi(options: {
+       try {
+         markThreadFacetOwnerGenerationUnavailable(db, staged.active);
+       } catch (error) {
+-        logger.warn(`plugin ${pluginId} thread facet revocation failed: ${error instanceof Error ? error.message : String(error)}`);
++        logger.warn(
++          `plugin ${pluginId} thread facet revocation failed: ${error instanceof Error ? error.message : String(error)}`,
++        );
+       }
+     }
+   }
+@@ -1425,6 +1468,16 @@ export function createPluginApi(options: {
+     },
+   };
+ 
++  const experimental_environmentGitObjects: PluginEnvironmentGitObjects = {
++    async inspect(request) {
++      assertLive();
++      if (inspectEnvironmentGitObjects === undefined) {
++        return { outcome: "unavailable", reason: "protocol_unsupported" };
++      }
++      return inspectEnvironmentGitObjects({ pluginId, request });
++    },
++  };
++
+   const experimental_serverAccess: import("@get-bb/plugin-sdk").PluginServerAccess =
+     {
+       register(declaration) {
+@@ -1520,6 +1573,7 @@ export function createPluginApi(options: {
+     events,
+     experimental_hooks,
+     experimental_environments,
++    experimental_environmentGitObjects,
+     experimental_machines,
+     experimental_serverAccess,
+     status,
+@@ -1604,12 +1658,18 @@ export function createPluginApi(options: {
+         declarations: stagedThreadFacets.map(({ declaration }) => declaration),
+       });
+       if (activatedFacets.length !== stagedThreadFacets.length) {
+-        throw new Error("Thread facet declarations did not activate completely");
++        throw new Error(
++          "Thread facet declarations did not activate completely",
++        );
+       }
+       for (const [index, active] of activatedFacets.entries()) {
+         const staged = stagedThreadFacets[index];
+-        if (staged === undefined) throw new Error("Missing staged thread facet");
+-        staged.active = { generation: active.generation, typeId: active.declaration.typeId };
++        if (staged === undefined)
++          throw new Error("Missing staged thread facet");
++        staged.active = {
++          generation: active.generation,
++          typeId: active.declaration.typeId,
++        };
+       }
+       facetsCommitted = true;
+       activated = true;
+diff --git a/apps/server/src/services/plugins/plugin-runtime.ts b/apps/server/src/services/plugins/plugin-runtime.ts
+index fad7673092dc8bebe279dd85e1c12d11b08f69e1..4fab5165c4491a64d73cd22aad931353106cfa75 100644
+--- a/apps/server/src/services/plugins/plugin-runtime.ts
++++ b/apps/server/src/services/plugins/plugin-runtime.ts
+@@ -1782,6 +1782,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+           artifact: hostArtifactCandidate,
+         });
+       },
++      inspectEnvironmentGitObjects: deps.inspectEnvironmentGitObjects,
+       registerAiService: (declaration) =>
+         deps.aiServices.register({
+           ...declaration,
+diff --git a/apps/server/src/services/plugins/plugin-service-internal.ts b/apps/server/src/services/plugins/plugin-service-internal.ts
+index 5e976a67f8eff8b97ee96324cb0aaf52a2a23f87..1340181e66600ddd3d6dd3d9dec0211aa22f729f 100644
+--- a/apps/server/src/services/plugins/plugin-service-internal.ts
++++ b/apps/server/src/services/plugins/plugin-service-internal.ts
+@@ -29,6 +29,7 @@ import type {
+ import type { HostSharedPortCoordinator } from "../../ws/host-shared-ports.js";
+ import type { ProviderRegistryService } from "../providers/provider-registry.js";
+ import type { PluginHostArtifactRegistry } from "./plugin-host-artifact-registry.js";
++import type { PluginEnvironmentGitObjectInspector } from "./environment-git-objects.js";
+ import type { P6rIdentityService } from "../p6r/identity-protocol.js";
+ import type { P6rInvocationIngress } from "../p6r/invocation-registry.js";
+ import type { P6rProviderRegistry } from "../p6r/provider-contract.js";
+@@ -157,6 +158,7 @@ export interface PluginServiceDeps {
+     timeoutMs?: number;
+     artifact: PluginHostArtifactSnapshot;
+   }) => Promise<unknown>;
++  inspectEnvironmentGitObjects?: PluginEnvironmentGitObjectInspector;
+   disposePluginHost?: (args: {
+     pluginId: string;
+     generation: string;
+diff --git a/apps/server/test/services/plugins/environment-git-objects.test.ts b/apps/server/test/services/plugins/environment-git-objects.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b780b019a40fa2e6c3bb289b97829d6f3e0b6b50
+--- /dev/null
++++ b/apps/server/test/services/plugins/environment-git-objects.test.ts
+@@ -0,0 +1,180 @@
++import { describe, expect, it } from "vitest";
++import { setProjectGitRemoteUrlIfMissing } from "@bb/db";
++import { createPluginEnvironmentGitObjectInspector } from "../../../src/services/plugins/environment-git-objects.js";
++import { registerHostRpcResponder } from "../../helpers/host-rpc.js";
++import {
++  seedEnvironment,
++  seedHostSession,
++  seedProjectWithSource,
++} from "../../helpers/seed.js";
++import { withTestHarness } from "../../helpers/test-app.js";
++
++const COMMIT_OID = "a".repeat(40);
++const TREE_OID = "b".repeat(40);
++const BLOB_OID = "c".repeat(40);
++
++describe("plugin environment Git object inspection", () => {
++  it("binds the plugin, project, source, environment, and host before one fixed host call", async () => {
++    await withTestHarness(async (harness) => {
++      const { host, session } = seedHostSession(harness.deps);
++      const { project, source } = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++        path: "/project-source",
++      });
++      setProjectGitRemoteUrlIfMissing(
++        harness.deps.db,
++        harness.deps.hub,
++        project.id,
++        "https://github.com/example/stale-cache.git",
++      );
++      const environment = seedEnvironment(harness.deps, {
++        hostId: host.id,
++        projectId: project.id,
++        path: "/environment-worktree",
++      });
++      const responder = registerHostRpcResponder(harness, {
++        hostId: host.id,
++        sessionId: session.id,
++        handle: (request) => {
++          expect(request.command).toEqual({
++            type: "host.inspect_environment_git_objects",
++            rootPath: "/project-source",
++            commitOid: COMMIT_OID,
++            expectedCommitTreeOid: TREE_OID,
++            maxOutputBytes: 1024,
++            selections: [
++              {
++                id: "readme",
++                kind: "blob",
++                path: "README.md",
++                expectedBlobOid: BLOB_OID,
++              },
++            ],
++          });
++          return {
++            ok: true,
++            result: {
++              outcome: "ok",
++              originRemote: {
++                host: "github.com",
++                repositoryPath: "phosphorco/bb",
++                transport: "https",
++              },
++              commitOid: COMMIT_OID,
++              treeOid: TREE_OID,
++              outputBytes: 12,
++              values: [
++                {
++                  id: "readme",
++                  kind: "blob",
++                  path: "README.md",
++                  blobOid: BLOB_OID,
++                  sizeBytes: 3,
++                  content: "YWJj",
++                  contentEncoding: "base64",
++                  externalContent: null,
++                },
++              ],
++            },
++          } as const;
++        },
++      });
++      const inspect = createPluginEnvironmentGitObjectInspector(harness.deps);
++
++      const result = await inspect({
++        pluginId: "github-review",
++        request: {
++          projectId: project.id,
++          sourceId: source.id,
++          environmentId: environment.id,
++          commitOid: COMMIT_OID,
++          expectedCommitTreeOid: TREE_OID,
++          maxOutputBytes: 1024,
++          selections: [
++            {
++              id: "readme",
++              kind: "blob",
++              path: "README.md",
++              expectedBlobOid: BLOB_OID,
++            },
++          ],
++        },
++      });
++      expect(result).toMatchObject({
++        outcome: "ok",
++        provenance: {
++          pluginId: "github-review",
++          projectId: project.id,
++          sourceId: source.id,
++          environmentId: environment.id,
++          hostId: host.id,
++          sourceRootPath: "/project-source",
++          originRemote: {
++            host: "github.com",
++            repositoryPath: "phosphorco/bb",
++            transport: "https",
++          },
++          commitOid: COMMIT_OID,
++          treeOid: TREE_OID,
++        },
++      });
++      expect(responder.requests).toHaveLength(1);
++    });
++  });
++
++  it("refuses mismatched identity and malformed requests before a host or terminal transport is called", async () => {
++    await withTestHarness(async (harness) => {
++      const { host, session } = seedHostSession(harness.deps);
++      const { project, source } = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++      });
++      const otherProject = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++      }).project;
++      const environment = seedEnvironment(harness.deps, {
++        hostId: host.id,
++        projectId: project.id,
++      });
++      const responder = registerHostRpcResponder(harness, {
++        hostId: host.id,
++        sessionId: session.id,
++        handle: () => {
++          throw new Error("Host inspection must not be called");
++        },
++      });
++      const inspect = createPluginEnvironmentGitObjectInspector(harness.deps);
++      const request = {
++        projectId: project.id,
++        sourceId: source.id,
++        environmentId: environment.id,
++        commitOid: COMMIT_OID,
++        selections: [
++          { id: "tree", kind: "tree" as const, path: "", recursive: false },
++        ],
++      };
++
++      await expect(
++        inspect({
++          pluginId: "github-review",
++          request: { ...request, projectId: otherProject.id },
++        }),
++      ).resolves.toEqual({
++        outcome: "unavailable",
++        reason: "identity_mismatch",
++      });
++      await expect(
++        inspect({
++          pluginId: "github-review",
++          request: {
++            ...request,
++            selections: [
++              { id: "same", kind: "tree", path: "", recursive: false },
++              { id: "same", kind: "tree", path: "", recursive: false },
++            ],
++          },
++        }),
++      ).resolves.toEqual({ outcome: "unavailable", reason: "invalid_request" });
++      expect(responder.requests).toHaveLength(0);
++    });
++  });
++});
+diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
+index 798ed463b2cf9122885781b97f7d5407169322ff..2d4f0cf1ea14f076b2775c48aed55a3fc378e48a 100644
+--- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
++++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
+@@ -170,6 +170,7 @@ const BB_PLUGIN_API_KEYS = [
+   "experimental_facets",
+   "experimental_hooks",
+   "experimental_environments",
++  "experimental_environmentGitObjects",
+   "experimental_machines",
+   "experimental_serverAccess",
+   "experimental_p6rIdentity",
+diff --git a/apps/server/test/services/plugins/plugin-sdk.test.ts b/apps/server/test/services/plugins/plugin-sdk.test.ts
+index a7214d47351610779a2caeff5fd7e172a22b4f8d..e4a588d2b0326f07a895c060b9e7469a802dfc44 100644
+--- a/apps/server/test/services/plugins/plugin-sdk.test.ts
++++ b/apps/server/test/services/plugins/plugin-sdk.test.ts
+@@ -233,6 +233,29 @@ describe("plugin bb.sdk bind gate", () => {
+     expect(typeof api.sdk.threads.spawn).toBe("function");
+   });
+ 
++  it("fails closed without a configured environment Git object inspector", async () => {
++    const rootDir = await writePlugin(workDir, {
++      name: "bb-plugin-git-objects-compatibility",
++      serverSource: `export default function plugin() {}`,
++    });
++    await service.installPath(rootDir);
++    const api = requireApi(service, "git-objects-compatibility");
++
++    await expect(
++      api.experimental_environmentGitObjects.inspect({
++        projectId: "project-1",
++        sourceId: "source-1",
++        environmentId: "environment-1",
++        commitOid: "a".repeat(40),
++        selections: [{ id: "tree", kind: "tree", path: "", recursive: false }],
++      }),
++    ).resolves.toEqual({
++      outcome: "unavailable",
++      reason: "protocol_unsupported",
++    });
++    expect(callPluginHost).not.toHaveBeenCalled();
++  });
++
+   it("rejects unsafe plugin metadata before transport serialization", async () => {
+     const rootDir = await writePlugin(workDir, {
+       name: "bb-plugin-metadata-boundary",
+diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
+index f65816be5d091eeb793656b378aee691b4dfb89e..d05104a992c43db9106cb21c7ac1e7e6b6f19163 100644
+--- a/docs/api_to_audit.md
++++ b/docs/api_to_audit.md
+@@ -504,6 +504,47 @@ built-in checkout, worktree, and personal workspace behaviors are first-party
+ plugins; legacy workspace request shapes are compatibility sugar resolved to
+ those providers at the server boundary.
+ 
++## `bb.experimental_environmentGitObjects.inspect`
++
++**What it does.** Inspects named Git objects in one existing project source on
++the host that owns a ready environment. The request is fully pinned: callers
++name a project, registered source, ready environment, commit object ID and a
++bounded list of tree, blob, or diff selections. Core resolves the source root
++from its own records, verifies project and host identity, and sends that
++stored root to the enrolled host. The caller never supplies a repository path,
++ref, command, shell, working tree, remote, or network policy.
++
++The host resolves only a full commit ID and its tree, rejects unexpected tree
++or object IDs, and uses fixed Git plumbing with hooks, external diff/textconv,
++interactive prompts, optional locks, global/system configuration and file
++protocols disabled. It returns typed data with plugin/project/source/
++environment/host/source-root/commit/tree provenance, including the current canonical
++`origin` identity from the selected source's local Git configuration. The
++attestation accepts one non-credentialed HTTPS or Git-SSH remote, normalizes
++its host and repository path, and rejects missing, malformed, or multiple
++origin URLs. It does not consult cached project remote metadata, fetch, or
++resolve refs. Results are capped, non-streaming and all-or-nothing: a
++recursive tree that reaches the entry bound or a submodule, or any selection
++exceeding the output limit, returns an explicit unavailable result rather than
++a partial proof. LFS pointers are labels for the committed pointer only; no LFS
++content is fetched. An old or mismatched host protocol, missing
++environment/source, identity mismatch, unavailable host or missing object also
++fails closed. This surface never creates a terminal or uses a generic plugin
++RPC fallback.
++
++**Audit before stabilizing.**
++
++1. Review each caller's authorization to inspect the selected project source;
++   this API proves host/source identity, not repository-review policy.
++2. Verify SHA-1 and SHA-256 repositories, empty and nested trees, binary blobs,
++   diffs, object-type confusion, malformed paths, symbolic IDs, output limits,
++   timeouts, submodules and LFS pointers.
++3. Confirm no operation mutates refs, index, worktree, Git configuration or
++   network state, including hostile repository configuration and hooks.
++4. Exercise mixed old/new SDKs and server/host protocol versions, plus
++   disconnected hosts, to retain explicit unavailable outcomes rather than a
++   terminal, shell or advisory read-only fallback.
++
+ **Audit before stabilizing.**
+ 
+ 1. **Requirement vocabulary.** `requires` has four booleans, each a fact core
+diff --git a/packages/domain/src/plugin-sdk-version.ts b/packages/domain/src/plugin-sdk-version.ts
+index 318506cef4caffdbb548c78b67dba563a725eb45..5820dc457d7d85f1761bb551affdf1fb4d02c3af 100644
+--- a/packages/domain/src/plugin-sdk-version.ts
++++ b/packages/domain/src/plugin-sdk-version.ts
+@@ -1,3 +1,3 @@
+-export const PLUGIN_SDK_VERSION = "0.5.29";
++export const PLUGIN_SDK_VERSION = "0.5.31";
+ 
+ export const PLUGIN_SDK_MAJOR = Number(PLUGIN_SDK_VERSION.split(".", 1)[0]);
+diff --git a/packages/host-daemon-contract/src/commands.ts b/packages/host-daemon-contract/src/commands.ts
+index 23b107edb3b48801c207e609db82be5973962b54..fe210d5828d206cbc2199040fbdb25307aaeb987 100644
+--- a/packages/host-daemon-contract/src/commands.ts
++++ b/packages/host-daemon-contract/src/commands.ts
+@@ -861,6 +861,64 @@ const hostInspectGitSourceCommandSchema = z
+   })
+   .strict();
+ 
++const gitObjectOidSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u);
++
++const environmentGitObjectSelectionSchema = z.discriminatedUnion("kind", [
++  z
++    .object({
++      id: z.string().min(1).max(128),
++      kind: z.literal("tree"),
++      path: z.string().max(4096),
++      recursive: z.boolean(),
++      expectedTreeOid: gitObjectOidSchema.optional(),
++    })
++    .strict(),
++  z
++    .object({
++      id: z.string().min(1).max(128),
++      kind: z.literal("blob"),
++      path: z.string().min(1).max(4096),
++      expectedBlobOid: gitObjectOidSchema.optional(),
++    })
++    .strict(),
++  z
++    .object({
++      id: z.string().min(1).max(128),
++      kind: z.literal("diff"),
++      baseCommitOid: gitObjectOidSchema,
++      paths: z.array(z.string().min(1).max(4096)).min(1).max(32),
++    })
++    .strict(),
++]);
++
++const hostInspectEnvironmentGitObjectsCommandSchema = z
++  .object({
++    type: z.literal("host.inspect_environment_git_objects"),
++    rootPath: z.string().min(1),
++    commitOid: gitObjectOidSchema,
++    expectedCommitTreeOid: gitObjectOidSchema.optional(),
++    selections: z.array(environmentGitObjectSelectionSchema).min(1).max(32),
++    maxOutputBytes: z
++      .number()
++      .int()
++      .min(1)
++      .max(512 * 1024),
++  })
++  .strict()
++  .superRefine((command, context) => {
++    const seen = new Set<string>();
++    for (const [index, selection] of command.selections.entries()) {
++      if (seen.has(selection.id)) {
++        context.addIssue({
++          code: "custom",
++          path: ["selections", index, "id"],
++          message: "Selection ids must be unique",
++        });
++      }
++      seen.add(selection.id);
++    }
++  });
++
+ const hostListBranchOptionsCommandSchema = z
+   .object({
+     type: z.literal("host.list_branch_options"),
+@@ -1041,6 +1099,100 @@ const hostReadFileResultSchema = z.union([
+   fileReadNotModifiedResultSchema,
+ ]);
+ 
++const environmentGitTreeEntrySchema = z
++  .object({
++    path: z.string(),
++    mode: z.string(),
++    objectType: z.enum(["blob", "tree", "submodule"]),
++    objectOid: gitObjectOidSchema,
++  })
++  .strict();
++
++const environmentGitOriginRemoteSchema = z
++  .object({
++    host: z.string().min(1).max(253),
++    repositoryPath: z.string().min(1).max(4096),
++    transport: z.enum(["https", "ssh"]),
++  })
++  .strict();
++
++const environmentGitObjectInspectionValueSchema = z.discriminatedUnion("kind", [
++  z
++    .object({
++      id: z.string().min(1).max(128),
++      kind: z.literal("tree"),
++      path: z.string(),
++      treeOid: gitObjectOidSchema,
++      recursive: z.boolean(),
++      entries: z.array(environmentGitTreeEntrySchema),
++    })
++    .strict(),
++  z
++    .object({
++      id: z.string().min(1).max(128),
++      kind: z.literal("blob"),
++      path: z.string(),
++      blobOid: gitObjectOidSchema,
++      sizeBytes: z.number().int().nonnegative(),
++      content: z.string(),
++      contentEncoding: z.literal("base64"),
++      externalContent: z
++        .object({
++          kind: z.literal("git-lfs-pointer"),
++          oid: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
++          sizeBytes: z.number().int().nonnegative(),
++        })
++        .strict()
++        .nullable(),
++    })
++    .strict(),
++  z
++    .object({
++      id: z.string().min(1).max(128),
++      kind: z.literal("diff"),
++      baseCommitOid: gitObjectOidSchema,
++      commitOid: gitObjectOidSchema,
++      paths: z.array(z.string()),
++      patch: z.string(),
++      patchEncoding: z.enum(["utf8", "base64"]),
++    })
++    .strict(),
++]);
++
++const hostInspectEnvironmentGitObjectsResultSchema = z.discriminatedUnion(
++  "outcome",
++  [
++    z
++      .object({
++        outcome: z.literal("ok"),
++        originRemote: environmentGitOriginRemoteSchema,
++        commitOid: gitObjectOidSchema,
++        treeOid: gitObjectOidSchema,
++        outputBytes: z.number().int().nonnegative(),
++        values: z.array(environmentGitObjectInspectionValueSchema),
++      })
++      .strict(),
++    z
++      .object({
++        outcome: z.literal("unavailable"),
++        reason: z.enum([
++          "object_not_found",
++          "object_type_mismatch",
++          "object_unreachable",
++          "origin_remote_missing",
++          "origin_remote_invalid",
++          "origin_remote_ambiguous",
++          "tree_incomplete",
++          "submodule_excluded",
++          "output_limit",
++          "timeout",
++          "internal_error",
++        ]),
++      })
++      .strict(),
++  ],
++);
++
+ const fileWriteResultSchema = z.discriminatedUnion("outcome", [
+   z
+     .object({
+@@ -1815,6 +1967,15 @@ export const hostDaemonCommandRegistry = {
+     flushEventsBeforeResult: false,
+     envLane: null,
+   }),
++  "host.inspect_environment_git_objects": defineHostDaemonCommandDescriptor({
++    type: "host.inspect_environment_git_objects",
++    schema: hostInspectEnvironmentGitObjectsCommandSchema,
++    resultSchema: hostInspectEnvironmentGitObjectsResultSchema,
++    transport: "onlineRpc",
++    retryable: false,
++    flushEventsBeforeResult: false,
++    envLane: null,
++  }),
+   "host.list_branch_options": defineHostDaemonCommandDescriptor({
+     type: "host.list_branch_options",
+     schema: hostListBranchOptionsCommandSchema,
+diff --git a/packages/host-daemon-contract/src/protocol.ts b/packages/host-daemon-contract/src/protocol.ts
+index e3823a94d34353dfe16b8295569ef47b1fb6b8d3..f59a0a8a9f0d21d1dd82be32584e6c1cc23624c9 100644
+--- a/packages/host-daemon-contract/src/protocol.ts
++++ b/packages/host-daemon-contract/src/protocol.ts
+@@ -1,4 +1,4 @@
+-export const HOST_DAEMON_PROTOCOL_VERSION = 219 as const;
++export const HOST_DAEMON_PROTOCOL_VERSION = 220 as const;
+ 
+ export const HOST_ARTIFACT_MAX_BYTES = 256 * 1024 * 1024;
+ 
+diff --git a/packages/host-daemon-contract/src/session.ts b/packages/host-daemon-contract/src/session.ts
+index 6778a60fb1dbe9ec5d5b698eacef2d79681e9dd9..75b054a56afd25fd6dc4b4a44084e282a4fe35c0 100644
+--- a/packages/host-daemon-contract/src/session.ts
++++ b/packages/host-daemon-contract/src/session.ts
+@@ -438,6 +438,7 @@ const hostDaemonOnlineRpcResponseSuccessSchema = z.discriminatedUnion(
+     onlineRpcResponseSuccessSchemaFor("host.file_metadata"),
+     onlineRpcResponseSuccessSchemaFor("host.list_branch_options"),
+     onlineRpcResponseSuccessSchemaFor("host.inspect_git_source"),
++    onlineRpcResponseSuccessSchemaFor("host.inspect_environment_git_objects"),
+     onlineRpcResponseSuccessSchemaFor("host.read_file"),
+     onlineRpcResponseSuccessSchemaFor("host.read_file_chunk"),
+     onlineRpcResponseSuccessSchemaFor("host.read_file_relative"),
+diff --git a/packages/host-daemon-contract/test/contract.test.ts b/packages/host-daemon-contract/test/contract.test.ts
+index e1089fdf6b26a352e9317293a7665330014ae26f..c63e76b769f2e5e546ac445bb9433bf324c38118 100644
+--- a/packages/host-daemon-contract/test/contract.test.ts
++++ b/packages/host-daemon-contract/test/contract.test.ts
+@@ -347,6 +347,29 @@ const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
+     },
+     originDefaultBranch: "origin/main",
+   },
++  "host.inspect_environment_git_objects": {
++    outcome: "ok",
++    originRemote: {
++      host: "github.com",
++      repositoryPath: "get-bb/bb",
++      transport: "https",
++    },
++    commitOid: "a".repeat(40),
++    treeOid: "b".repeat(40),
++    outputBytes: 12,
++    values: [
++      {
++        id: "readme",
++        kind: "blob",
++        path: "README.md",
++        blobOid: "c".repeat(40),
++        sizeBytes: 3,
++        content: "YWJj",
++        contentEncoding: "base64",
++        externalContent: null,
++      },
++    ],
++  },
+   "host.list_branch_options": {
+     branches: ["main"],
+     branchesTruncated: false,
+@@ -796,6 +819,12 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
+     "project.clone omits targetPath when the daemon should derive its default checkout location for the project.",
+   "hostDaemonOnlineRpcCommandSchema.expectedSha256":
+     "host.write_file may omit expectedSha256 for unconditional writes; a hash is the compare-and-swap guard and null means create-only.",
++  "hostDaemonOnlineRpcCommandSchema.expectedCommitTreeOid":
++    "pinned Git inspection may omit a redundant commit-tree assertion when the caller has only the full commit object ID; when present it proves the expected tree before any selection is read.",
++  "hostDaemonOnlineRpcCommandSchema.selections.expectedBlobOid":
++    "a pinned blob selection may omit a redundant object assertion when its full commit and path already identify the object; when present a mismatch refuses the complete inspection.",
++  "hostDaemonOnlineRpcCommandSchema.selections.expectedTreeOid":
++    "a pinned tree selection may omit a redundant object assertion when its full commit and path already identify the tree; when present a mismatch refuses the complete inspection.",
+   "hostDaemonOnlineRpcCommandSchema.ifNoneMatch":
+     "host.read_file omits ifNoneMatch for unconditional reads; when present the daemon may omit unchanged file content.",
+   "hostDaemonOnlineRpcCommandSchema.mode":
+@@ -1148,7 +1177,7 @@ const CONTRIBUTED_ENV = [
+ 
+ describe("host-daemon command schemas", () => {
+   it("uses the current host-daemon protocol version", () => {
+-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(219);
++    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(220);
+     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
+   });
+ 
+@@ -1578,6 +1607,28 @@ describe("host-daemon command schemas", () => {
+       remoteRefresh: "background",
+     });
+ 
++    expect(
++      hostDaemonOnlineRpcCommandSchema.parse({
++        type: "host.inspect_environment_git_objects",
++        rootPath: "/tmp/workspace",
++        commitOid: "a".repeat(40),
++        expectedCommitTreeOid: "b".repeat(40),
++        selections: [
++          {
++            id: "readme",
++            kind: "blob",
++            path: "README.md",
++            expectedBlobOid: "c".repeat(40),
++          },
++        ],
++        maxOutputBytes: 1024,
++      }),
++    ).toMatchObject({
++      type: "host.inspect_environment_git_objects",
++      rootPath: "/tmp/workspace",
++      commitOid: "a".repeat(40),
++    });
++
+     expect(
+       hostDaemonOnlineRpcCommandSchema.parse({
+         type: "host.file_metadata",
+@@ -1759,6 +1810,13 @@ describe("host-daemon command schemas", () => {
+         path: "/tmp/workspace",
+         remoteRefresh: "blocking",
+       },
++      {
++        type: "host.inspect_environment_git_objects",
++        rootPath: "/tmp/workspace",
++        commitOid: "a".repeat(40),
++        selections: [{ id: "tree", kind: "tree", path: "", recursive: false }],
++        maxOutputBytes: 1024,
++      },
+       {
+         type: "host.file_metadata",
+         path: "/tmp/workspace/README.md",
+@@ -3139,6 +3197,15 @@ describe("host-daemon command schemas", () => {
+       operation: { kind: "merge", hasConflicts: true },
+     });
+ 
++    expect(
++      hostDaemonOnlineRpcResultSchemaByType[
++        "host.inspect_environment_git_objects"
++      ].parse({
++        outcome: "unavailable",
++        reason: "submodule_excluded",
++      }),
++    ).toEqual({ outcome: "unavailable", reason: "submodule_excluded" });
++
+     expect(
+       hostDaemonOnlineRpcResultSchemaByType["host.read_file"].parse({
+         path: "/tmp/bb-data/thread-storage/thread-123/notes.md",
+diff --git a/packages/plugin-sdk/package.json b/packages/plugin-sdk/package.json
+index 706a6f1c37441e6fa6c975a4a0c922418c749cd9..49c5bae115660bc765d219f2fab0b23aeaa4cc9e 100644
+--- a/packages/plugin-sdk/package.json
++++ b/packages/plugin-sdk/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "@get-bb/plugin-sdk",
+-  "version": "0.5.29",
++  "version": "0.5.31",
+   "homepage": "https://github.com/get-bb/bb#readme",
+   "bugs": {
+     "url": "https://github.com/get-bb/bb/issues"
+diff --git a/packages/plugin-sdk/src/__tests__/public-types.test.ts b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+index 87da2dcc49bb3a73ee368149855109dd5026b4bc..ad78364ca9360c84914f629b6b504f60affb421b 100644
+--- a/packages/plugin-sdk/src/__tests__/public-types.test.ts
++++ b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+@@ -23,6 +23,7 @@ type ExpectedBbPluginApiKey =
+   | "events"
+   | "experimental_aiServices"
+   | "experimental_environments"
++  | "experimental_environmentGitObjects"
+   | "experimental_facets"
+   | "experimental_hooks"
+   | "experimental_machines"
+@@ -81,6 +82,14 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
+   "PluginCliRegistration",
+   "PluginCliResult",
+   "PluginDispatchAttemptKind",
++  "ExperimentalEnvironmentGitObjectInspectionRequest",
++  "ExperimentalEnvironmentGitObjectInspectionResult",
++  "ExperimentalEnvironmentGitObjectInspectionValue",
++  "ExperimentalEnvironmentGitObjectProvenance",
++  "ExperimentalEnvironmentGitOriginRemote",
++  "ExperimentalEnvironmentGitObjectSelection",
++  "ExperimentalEnvironmentGitTreeEntry",
++  "PluginEnvironmentGitObjects",
+   "PluginEnvironmentValidateDecision",
+   "PluginEnvironmentProviderDeclaration",
+   "PluginEnvironmentProviderRequirements",
+diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
+index 42da6bc3381708f28740848e8bd5bea5126bd1b0..34cce6d9f87ba53f2ebf4e47cfa7b31d604d24b7 100644
+--- a/packages/plugin-sdk/src/backend-contract.ts
++++ b/packages/plugin-sdk/src/backend-contract.ts
+@@ -1915,6 +1915,135 @@ export interface PluginServerApi {
+   readonly experimental_dataDir: string;
+ }
+ 
++// ---------------------------------------------------------------------------
++// Environment Git object inspection.
++// ---------------------------------------------------------------------------
++
++export type ExperimentalEnvironmentGitObjectSelection =
++  | {
++      readonly id: string;
++      readonly kind: "tree";
++      readonly path: string;
++      readonly recursive: boolean;
++      readonly expectedTreeOid?: string;
++    }
++  | {
++      readonly id: string;
++      readonly kind: "blob";
++      readonly path: string;
++      readonly expectedBlobOid?: string;
++    }
++  | {
++      readonly id: string;
++      readonly kind: "diff";
++      readonly baseCommitOid: string;
++      readonly paths: readonly string[];
++    };
++
++export interface ExperimentalEnvironmentGitObjectInspectionRequest {
++  readonly projectId: string;
++  readonly sourceId: string;
++  readonly environmentId: string;
++  readonly commitOid: string;
++  readonly expectedCommitTreeOid?: string;
++  readonly selections: readonly ExperimentalEnvironmentGitObjectSelection[];
++  readonly maxOutputBytes?: number;
++}
++
++export interface ExperimentalEnvironmentGitObjectProvenance {
++  readonly pluginId: string;
++  readonly projectId: string;
++  readonly sourceId: string;
++  readonly environmentId: string;
++  readonly hostId: string;
++  readonly sourceRootPath: string;
++  readonly originRemote: ExperimentalEnvironmentGitOriginRemote;
++  readonly commitOid: string;
++  readonly treeOid: string;
++}
++
++export interface ExperimentalEnvironmentGitOriginRemote {
++  readonly host: string;
++  readonly repositoryPath: string;
++  readonly transport: "https" | "ssh";
++}
++
++export interface ExperimentalEnvironmentGitTreeEntry {
++  readonly path: string;
++  readonly mode: string;
++  readonly objectType: "blob" | "tree" | "submodule";
++  readonly objectOid: string;
++}
++
++export type ExperimentalEnvironmentGitObjectInspectionValue =
++  | {
++      readonly id: string;
++      readonly kind: "tree";
++      readonly path: string;
++      readonly treeOid: string;
++      readonly recursive: boolean;
++      readonly entries: readonly ExperimentalEnvironmentGitTreeEntry[];
++    }
++  | {
++      readonly id: string;
++      readonly kind: "blob";
++      readonly path: string;
++      readonly blobOid: string;
++      readonly sizeBytes: number;
++      readonly content: string;
++      readonly contentEncoding: "base64";
++      readonly externalContent: null | {
++        readonly kind: "git-lfs-pointer";
++        readonly oid: string;
++        readonly sizeBytes: number;
++      };
++    }
++  | {
++      readonly id: string;
++      readonly kind: "diff";
++      readonly baseCommitOid: string;
++      readonly commitOid: string;
++      readonly paths: readonly string[];
++      readonly patch: string;
++      readonly patchEncoding: "utf8" | "base64";
++    };
++
++export type ExperimentalEnvironmentGitObjectInspectionResult =
++  | {
++      readonly outcome: "ok";
++      readonly provenance: ExperimentalEnvironmentGitObjectProvenance;
++      readonly outputBytes: number;
++      readonly values: readonly ExperimentalEnvironmentGitObjectInspectionValue[];
++    }
++  | {
++      readonly outcome: "unavailable";
++      readonly reason:
++        | "invalid_request"
++        | "environment_not_found"
++        | "environment_not_ready"
++        | "identity_mismatch"
++        | "source_unavailable"
++        | "host_unavailable"
++        | "object_not_found"
++        | "object_type_mismatch"
++        | "object_unreachable"
++        | "origin_remote_missing"
++        | "origin_remote_invalid"
++        | "origin_remote_ambiguous"
++        | "tree_incomplete"
++        | "submodule_excluded"
++        | "output_limit"
++        | "timeout"
++        | "protocol_unsupported"
++        | "internal_error";
++    };
++
++export interface PluginEnvironmentGitObjects {
++  inspect(
++    request: ExperimentalEnvironmentGitObjectInspectionRequest,
++  ): Promise<ExperimentalEnvironmentGitObjectInspectionResult>;
++}
++
+ // ---------------------------------------------------------------------------
+ // AI services.
+ // ---------------------------------------------------------------------------
+@@ -2180,6 +2309,8 @@ export interface BbPluginApi {
+    * docs/api_to_audit.md.
+    */
+   readonly experimental_environments: PluginEnvironments;
++  /** Environment-scoped, pinned Git object inspection. Experimental: see docs/api_to_audit.md. */
++  readonly experimental_environmentGitObjects: PluginEnvironmentGitObjects;
+   /** Machine providers provision execution machines. Experimental: see docs/api_to_audit.md. */
+   readonly experimental_machines: PluginMachines;
+   readonly experimental_serverAccess: PluginServerAccess;
+diff --git a/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts b/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
+index 328d0c4d0b409c1877d96dbeb4c29f738dea68d3..1a6524e1af6d2badd2b30df556f1a78b43708712 100644
+--- a/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
++++ b/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
+@@ -44,6 +44,22 @@ describe("fixtures", () => {
+     });
+   });
+ 
++  it("fails closed for environment Git object inspection", async () => {
++    const { bb } = createFakePluginHost();
++    await expect(
++      bb.experimental_environmentGitObjects.inspect({
++        projectId: "project-target",
++        sourceId: "source-target",
++        environmentId: "environment-target",
++        commitOid: "a".repeat(40),
++        selections: [{ id: "tree", kind: "tree", path: "", recursive: false }],
++      }),
++    ).resolves.toEqual({
++      outcome: "unavailable",
++      reason: "protocol_unsupported",
++    });
++  });
++
+   it("derives linked dispatch identities unless explicitly overridden", () => {
+     const inherited = makeMessageDispatchHookContext({
+       project: { id: "project-target" },
+diff --git a/packages/plugin-sdk/src/testing/fake-plugin-host.ts b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+index b25467cfb1a1bdb9b47d97d6972f1a15538f63e5..910e47e9f645d7f67696272d05e67aa357be6a95 100644
+--- a/packages/plugin-sdk/src/testing/fake-plugin-host.ts
++++ b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+@@ -73,6 +73,7 @@ import type {
+   PluginCliResult,
+   PluginHookHandler,
+   PluginEnvironments,
++  PluginEnvironmentGitObjects,
+   PluginMachines,
+   PluginHookName,
+   PluginHooks,
+@@ -1463,6 +1464,13 @@ function createFakePluginHostInternal(
+     },
+   };
+ 
++  const experimental_environmentGitObjects: PluginEnvironmentGitObjects = {
++    async inspect() {
++      assertLive();
++      return { outcome: "unavailable", reason: "protocol_unsupported" };
++    },
++  };
++
+   const unavailableMachineBootstrap = (): never => {
+     throw new Error(
+       "Configure machineBootstrap in createFakePluginHost to exercise machine bootstrap",
+@@ -1532,6 +1540,7 @@ function createFakePluginHostInternal(
+     events,
+     experimental_hooks,
+     experimental_environments,
++    experimental_environmentGitObjects,
+     experimental_machines,
+     experimental_serverAccess: {
+       register(declaration) {
+diff --git a/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md b/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
+index a5ff6921104fe90bb594a266098aae45a0ab7556..c37c86c8fcb29a321f43e26e91385b751e1d70f3 100644
+--- a/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
++++ b/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
+@@ -77,6 +77,17 @@ Read the installed declarations for exact current signatures.
+ - `PluginDispatchExecutionSources`
+ - `PluginEnvironments` — `bb.experimental_environments`: `register` +
+   `recheck` (see backend-events.md, environment providers)
++- `PluginEnvironmentGitObjects` — `bb.experimental_environmentGitObjects.inspect`;
++  inspects bounded pinned Git objects through a ready environment and returns
++  source/host/current-origin provenance without a terminal, shell, ref refresh,
++  or working-tree mutation
++- `ExperimentalEnvironmentGitObjectInspectionRequest`
++- `ExperimentalEnvironmentGitObjectInspectionResult`
++- `ExperimentalEnvironmentGitObjectInspectionValue`
++- `ExperimentalEnvironmentGitObjectProvenance`
++- `ExperimentalEnvironmentGitOriginRemote`
++- `ExperimentalEnvironmentGitObjectSelection`
++- `ExperimentalEnvironmentGitTreeEntry`
+ - `PluginServerAccess` — `bb.experimental_serverAccess.register`
+ - `ServerAccessProviderDeclaration`
+ - `ServerAccessGrant`
+diff --git a/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-foundation.md b/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-foundation.md
+index 6f48242e28ccbd91dd8d89485cd390be781f6bb7..497e8f4b0bf584b9f604270f3518f07fd587426f 100644
+--- a/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-foundation.md
++++ b/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-foundation.md
+@@ -21,6 +21,7 @@ reports the reload failure in its detail. `bb.pluginId` is the plugin's own id.
+ The complete top-level factory API is `pluginId`, `log`, `settings`, `storage`,
+ `http`, `rpc`, `realtime`, `background`, `cli`, `agents`, `providers`, `ui`,
+ `events`, `experimental_hooks`, `experimental_environments`,
++`experimental_environmentGitObjects`,
+ `experimental_machines`, `experimental_serverAccess`, `status`, `server`, `hosts`,
+ `experimental_aiServices`, `sdk`, `onDispose`, and `onInstall`.
+ 
+diff --git a/plugins/plugin-api-docs/src/surfaces.ts b/plugins/plugin-api-docs/src/surfaces.ts
+index 68d911b8e73a3efd17dab61c905b1b12e864ea7d..4eda305151a10b83970585636becc85b385588c0 100644
+--- a/plugins/plugin-api-docs/src/surfaces.ts
++++ b/plugins/plugin-api-docs/src/surfaces.ts
+@@ -699,6 +699,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+           "thread-events",
+           "dispatch-hook",
+           "environment-providers",
++          "environment-git-objects",
+           "machine-providers",
+           "server-access",
+           "host-workers",
+@@ -971,6 +972,31 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+         firstParty: ["Project checkout", "Personal workspace", "Worktree"],
+         experimental: true,
+       },
++      {
++        id: "environment-git-objects",
++        tagline: "Inspect pinned Git objects in a ready environment",
++        title: "Environment Git object inspection",
++        summary:
++          "Reads a bounded set of already-committed Git trees, blobs, and diffs from the project source that owns a ready environment. With this, a plugin can:",
++        bullets: [
++          "Bind every request to one project, registered source, ready environment, host, commit and tree rather than accepting a filesystem path or branch name",
++          "Read typed tree entries, base64 blobs, or a bounded diff for full object IDs and receive selected source-root, host, and current canonical origin-remote provenance with the result",
++          "Require recursive tree completeness; entry-bound, submodule, LFS-content, object, host, identity, protocol, timeout, and output-limit gaps return explicit unavailable results",
++          "Reject a missing, malformed, or ambiguous current origin remote instead of consulting cached project metadata or refreshing a repository",
++          "Inspect the committed LFS pointer only; bb never fetches LFS content, runs caller commands, creates a terminal, refreshes refs, checks out work, or falls back to generic RPC",
++          "Treat the result as source evidence, not authorization to inspect every project: the plugin still owns its review and user-consent policy",
++        ],
++        apiSymbols: [
++          "PluginEnvironmentGitObjects",
++          "ExperimentalEnvironmentGitObjectInspectionRequest",
++          "ExperimentalEnvironmentGitObjectInspectionResult",
++          "ExperimentalEnvironmentGitObjectInspectionValue",
++          "ExperimentalEnvironmentGitObjectProvenance",
++          "ExperimentalEnvironmentGitOriginRemote",
++        ],
++        firstParty: ["GitHub"],
++        experimental: true,
++      },
+       {
+         id: "machine-providers",
+         tagline: "Create and own execution machines",
+-- 
+2.53.0
+
