@@ -71,7 +71,7 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The forty-three patches listed in `patches/series` form the current implementation
+The forty-five patches listed in `patches/series` form the current implementation
 candidate. Queue numbers 0022 and 0027 are intentionally absent: 0022 is a
 historical gap, and the former 0027 Monaco routing backport is supplied by
 upstream commit `283e6d7`. Obsolete
@@ -137,6 +137,14 @@ Patch 44 gives Codex thread resume the configured thread construction deadline,
 covering bridge initialization and router startup before the native resume reply.
 Patch 45 carries that remaining deadline into the Codex child request, leaves
 time for cleanup, and reads optional usage after the restore is accepted.
+
+Patches 46–47 expose the downstream `experimental_p6rPrompts` synchronous
+renderer and adapt selected server-owned prompt producers. They retain the
+native identity and sender behavior already carried by this queue. The generated
+plugin-command skill adapter and prototype example are excluded. See the
+[prompt maintainer map](plans/p6r-prompts-maintainer-map.md) for stable IDs,
+producer boundaries, replay assumptions and verification limits. The source-only
+receipt does not activate prompt customization in a running deployment.
 
 ## Verification boundary for this source receipt
 

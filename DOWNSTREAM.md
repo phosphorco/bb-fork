@@ -107,8 +107,8 @@ former Monaco routing change; it is not replayed downstream.
 
 ## Exact source receipt
 
-- Upstream: `fdd3de3b19b97e6cd1ef7300cbb54711431249d3`.
-- Patch queue: thirty-three logical patches in `patches/series`; numbers 22 and
+- Upstream: `9c9bae7f36a237c7e1b96de3d4c2186d13967686`.
+- Patch queue: forty-five logical patches in `patches/series`; numbers 22 and
   27 are intentionally absent as described above. This queue is the current
   implementation candidate, while
   running deployments may remain on earlier historical compositions until root-owned
@@ -175,3 +175,23 @@ evidence that a running deployment has changed.
 The patch-35 successor additionally passed focused real-socket startup tests
 and server typecheck; the prior broad receipt must be rebound to its new tree
 before normal deployment qualification.
+
+## Experimental prompt rendering (patches 46–47)
+
+The downstream API is `bb.experimental_p6rPrompts`, with public `P6rPrompt*`
+request/observation types and `ExperimentalP6rPrompts`. The shared pure engine
+uses its own `internal/p6r-prompt-rendering` SDK export. Middleware and observers
+follow plugin load/disposal, with deterministic plugin order, synchronous string
+results, default fallback and immutable observations. Core stores no samples.
+
+Selected producers render native tool/schema descriptions, instruction sections
+and their aggregate, title/commit templates, structured child/ownership/agent
+messages, and mention context headers. The aggregate intentionally sees already
+customized sections; matching both stages can apply a rule twice. Observations
+are render receipts, not evidence of provider consumption or reconstructed stock
+defaults. Opaque resolved mention content and native attribution remain intact.
+Generated-command skills are excluded until a coherent settings/sync lifecycle
+exists. No example plugin, lockfile importer, DB migration, host transport,
+provider wrapper or service activation is included. The
+[maintainer map](plans/p6r-prompts-maintainer-map.md) records exact source and
+coverage boundaries.
