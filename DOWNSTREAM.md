@@ -101,6 +101,13 @@
     binding, closes the primary listener after a secondary bind failure, and
     gates detached recovery on both configured listeners being ready.
 
+36. **Archived-teardown sweep query plan** runs the status arm and the
+    open-terminal arm of `listArchivedThreadsPendingTeardown` as two indexed
+    queries merged by id instead of one OR with a correlated EXISTS, so the
+    10-second sweep no longer range-scans every archived thread (~150 ms to
+    ~3 ms on 134k archived threads). Same rows, same shape, no migration;
+    proposed upstream as well.
+
 Number 22 is intentionally absent: it was a historical queue gap. Number 27 is
 intentionally absent because upstream commit `283e6d7` already supplies the
 former Monaco routing change; it is not replayed downstream.
@@ -108,7 +115,7 @@ former Monaco routing change; it is not replayed downstream.
 ## Exact source receipt
 
 - Upstream: `9c9bae7f36a237c7e1b96de3d4c2186d13967686`.
-- Patch queue: forty-five logical patches in `patches/series`; numbers 22 and
+- Patch queue: forty-six logical patches in `patches/series`; numbers 22 and
   27 are intentionally absent as described above. This queue is the current
   implementation candidate, while
   running deployments may remain on earlier historical compositions until root-owned
