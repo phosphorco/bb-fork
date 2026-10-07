@@ -139,6 +139,45 @@ former Monaco routing change; it is not replayed downstream.
   integration and activation.
 - Result tree: recorded in `result-tree.lock` and verified by `scripts/verify`.
 
+## Refresh notes for patches 0048-0051 (added 2026-10-08)
+
+These notes come from a four-lens review of the performance patches
+(perspectives run `thr_rtbdi5iz67`). Read them before the next upstream
+refresh; none of them changes the shipped patches.
+
+- **0049 participant watermarks.** The watermark (latest client/turn/requested
+  sequence and event id, contribution count, max acceptedAt, projector
+  version) assumes that every supported writer appends or bumps one of those
+  inputs; an in-place change that preserves all four is not detected. Inputs
+  are read before the replacement transaction, so a second writer committing
+  between the read and the replacement could have its newer projection
+  overwritten by an older rebuild. No supported writer with that behavior is
+  known; a second-connection interleaving test is the follow-up before any
+  in-transaction recheck is added. Any change to attribution or parser
+  semantics must bump `P6R_PARTICIPANT_PROJECTOR_VERSION`; the version
+  mismatch regression test enforces the rebuild.
+- **0050 delegating item index hint.** `INDEXED BY events_delegating_item_lookup_idx`
+  fails statement preparation if that partial index (predicate
+  `item_kind IN ('toolCall', 'delegation')`) is renamed, dropped, or its
+  predicate changes upstream. Check the index at every refresh. The query
+  also moved its selection to `storedEventRowSqlFields`; add an equality test
+  with a finite `maxInlineOutputChars` and oversized output at the next touch.
+- **0051 incremental ordering context.** Upstream #4716 (`6840d63f5`) already
+  splits ordering from parented change detection and keeps a scan cutoff for
+  late accepted steers. This patch is the pin-era shape and WILL conflict at
+  the next refresh: do not resolve mechanically. Replace it with the reshaped
+  commit on branch `phosphor/perf-incremental-ordering-context` (an extension
+  of upstream's split cache) or with the merged upstream PR, and keep
+  upstream's child-streaming, older-snapshot and late-steer regressions
+  alongside the incremental-read and eviction tests. Memory note: the
+  120,000-row cap bounds retained raw rows per connection cache, not folded
+  contexts (acceptedTurnIds maps) nor the total across up to four versions of
+  128 keys; folding cost is proportional to the accumulated context, not to
+  the incremental read. Budgeting folded entries is a proposed amendment, not
+  shipped.
+- **0048 teardown sweep split.** Proposed upstream as
+  `phosphor/perf-teardown-sweep-split`; drop this patch when it merges.
+
 ## Compatibility boundaries
 
 - Producer bindings may enable the optional identity-protocol
