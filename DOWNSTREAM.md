@@ -108,6 +108,23 @@
     ~3 ms on 134k archived threads). Same rows, same shape, no migration;
     proposed upstream as well.
 
+37. **Participant projection watermarks** record, per thread, the latest
+    client/turn/requested event sequence and id, contribution count, latest
+    acceptance time and projector version in a fork-owned sidecar table
+    (`p6r_participant_watermarks`, one CREATE TABLE, no backfill). The facet
+    query rebuilds a thread's participant projection only when its watermark
+    differs or is missing; output is byte-identical to a full rebuild.
+
+38. **Delegating item lookup index hint** reads delegating item rows through
+    the existing partial index instead of walking every event of the thread,
+    matching the sibling lookups; identical rows, no schema change. Proposed
+    upstream.
+
+39. **Incremental timeline ordering context** extends a cached ordering
+    context with only the sequences appended since it was built when the
+    rewrite generation and data version are unchanged, bounded to 120,000
+    retained rows per process. Exact by construction; proposed upstream.
+
 Number 22 is intentionally absent: it was a historical queue gap. Number 27 is
 intentionally absent because upstream commit `283e6d7` already supplies the
 former Monaco routing change; it is not replayed downstream.
@@ -115,7 +132,7 @@ former Monaco routing change; it is not replayed downstream.
 ## Exact source receipt
 
 - Upstream: `9c9bae7f36a237c7e1b96de3d4c2186d13967686`.
-- Patch queue: forty-six logical patches in `patches/series`; numbers 22 and
+- Patch queue: forty-nine logical patches in `patches/series`; numbers 22 and
   27 are intentionally absent as described above. This queue is the current
   implementation candidate, while
   running deployments may remain on earlier historical compositions until root-owned
