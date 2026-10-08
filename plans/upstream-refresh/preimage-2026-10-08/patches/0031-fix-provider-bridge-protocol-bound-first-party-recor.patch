@@ -1,0 +1,373 @@
+From c42628fd5b455df71907a303761a4e03061cff8d Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Tue, 22 Sep 2026 23:45:38 +0200
+Subject: [PATCH] fix(provider-bridge-protocol): bound first-party recorded
+ replays
+
+---
+ .../src/testing/first-party-replay.ts         |   1 +
+ .../src/testing/parity.test.ts                | 208 +++++++++++++++++-
+ .../src/testing/parity.ts                     |  98 ++++++---
+ 3 files changed, 275 insertions(+), 32 deletions(-)
+
+diff --git a/packages/provider-bridge-protocol/src/testing/first-party-replay.ts b/packages/provider-bridge-protocol/src/testing/first-party-replay.ts
+index b2c419856fe1f0060d0868324128f13e05c50114..4a5577601852e7b9c74503717ac9c0953e179ac2 100644
+--- a/packages/provider-bridge-protocol/src/testing/first-party-replay.ts
++++ b/packages/provider-bridge-protocol/src/testing/first-party-replay.ts
+@@ -318,6 +318,7 @@ export async function runFirstPartyRecordedConformance(
+         assembleMessage: (message) => collector.assembleMessage(message),
+       };
+     },
++    maxConcurrentReplays: 1,
+     timeoutMs: 60_000,
+     onStderr: (text) => process.stderr.write(`[bridge] ${text}`),
+     recordingsRoot: COMMITTED_RECORDINGS_ROOT,
+diff --git a/packages/provider-bridge-protocol/src/testing/parity.test.ts b/packages/provider-bridge-protocol/src/testing/parity.test.ts
+index 9e7f12143b9d69bea422431a0813a46d0a626c20..895c8877a83915eb98d5d7f621fd9c0d31b42ca4 100644
+--- a/packages/provider-bridge-protocol/src/testing/parity.test.ts
++++ b/packages/provider-bridge-protocol/src/testing/parity.test.ts
+@@ -1,9 +1,15 @@
+-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
++import {
++  mkdirSync,
++  mkdtempSync,
++  readFileSync,
++  rmSync,
++  writeFileSync,
++} from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { expect, it } from "vitest";
+ import { threadEventSchema, type ThreadEvent } from "@bb/domain";
+-import { replayRecording } from "./parity.js";
++import { replayRecordedCells, replayRecording } from "./parity.js";
+ 
+ function writeLane(
+   dir: string,
+@@ -29,6 +35,204 @@ function writeLane(
+   );
+ }
+ 
++function createRecordedCell(root: string, cell: string): void {
++  const dir = join(root, "test-provider", cell);
++  mkdirSync(dir, { recursive: true });
++  writeLane(dir, "runtime→bridge", []);
++  writeLane(dir, "bridge→runtime", []);
++}
++
++function writeReplayProbeBridge(dir: string): string {
++  const bridgePath = join(dir, "replay-probe-bridge.mjs");
++  writeFileSync(
++    bridgePath,
++    [
++      "import { appendFileSync } from 'node:fs';",
++      "const trace = process.env.TRACE_PATH;",
++      "const cell = process.env.CELL;",
++      "const delayMs = Number(process.env.DELAY_MS ?? '0');",
++      "const record = (event) => appendFileSync(trace, `${event}:${cell}\\n`);",
++      "record('start');",
++      "let pending = '';",
++      "process.stdin.setEncoding('utf8');",
++      "process.stdin.on('data', (chunk) => {",
++      "  pending += chunk;",
++      "  for (;;) {",
++      "    const newline = pending.indexOf('\\n');",
++      "    if (newline === -1) break;",
++      "    const line = pending.slice(0, newline);",
++      "    pending = pending.slice(newline + 1);",
++      "    const message = JSON.parse(line);",
++      "    if (message.method === 'initialize') {",
++      "      setTimeout(() => {",
++      "        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: {} }) + '\\n');",
++      "      }, delayMs);",
++      "    }",
++      "  }",
++      "});",
++      "process.stdin.on('end', () => { record('finish'); process.exit(0); });",
++      "",
++    ].join("\n"),
++  );
++  return bridgePath;
++}
++
++function tracePeak(trace: readonly string[]): number {
++  const active = new Set<string>();
++  let peak = 0;
++  for (const entry of trace) {
++    const [event, cell] = entry.split(":");
++    if (event === "start") active.add(cell!);
++    if (event === "finish") active.delete(cell!);
++    peak = Math.max(peak, active.size);
++  }
++  return peak;
++}
++
++function emptyAssembler() {
++  return { assembleMessage: () => [] };
++}
++
++it("bounds recorded replays and preserves selected order", async () => {
++  const root = mkdtempSync(join(tmpdir(), "bb-parity-recorded-cells-"));
++  const tracePath = join(root, "trace");
++  const bridgePath = writeReplayProbeBridge(root);
++  for (const cell of ["alpha", "beta", "gamma"]) {
++    createRecordedCell(root, cell);
++  }
++  try {
++    const replays = await replayRecordedCells({
++      recordingsRoot: root,
++      servesProvider: (providerId) => providerId === "test-provider",
++      maxConcurrentReplays: 2,
++      createAssembler: emptyAssembler,
++      bridge: (cell) => ({
++        launch: {
++          command: process.execPath,
++          args: [bridgePath],
++          cwd: root,
++          env: {
++            TRACE_PATH: tracePath,
++            CELL: cell.cell,
++            DELAY_MS: cell.cell === "alpha" ? "80" : "0",
++          },
++        },
++      }),
++    });
++
++    const trace = readFileSync(tracePath, "utf8").trim().split("\n");
++    expect(tracePeak(trace)).toBeLessThanOrEqual(2);
++    expect(trace.filter((entry) => entry.startsWith("start:"))).toEqual([
++      "start:alpha",
++      "start:beta",
++      "start:gamma",
++    ]);
++    expect(trace.indexOf("finish:beta")).toBeLessThan(
++      trace.indexOf("finish:alpha"),
++    );
++    expect(replays.map((replay) => replay.cell)).toEqual([
++      "alpha",
++      "beta",
++      "gamma",
++    ]);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++it("preserves unbounded recorded replay when no limit is supplied", async () => {
++  const root = mkdtempSync(join(tmpdir(), "bb-parity-recorded-unbounded-"));
++  const tracePath = join(root, "trace");
++  const bridgePath = writeReplayProbeBridge(root);
++  for (const cell of ["alpha", "beta", "gamma"]) {
++    createRecordedCell(root, cell);
++  }
++  try {
++    const replays = await replayRecordedCells({
++      recordingsRoot: root,
++      servesProvider: (providerId) => providerId === "test-provider",
++      createAssembler: emptyAssembler,
++      bridge: (cell) => ({
++        launch: {
++          command: process.execPath,
++          args: [bridgePath],
++          cwd: root,
++          env: { TRACE_PATH: tracePath, CELL: cell.cell },
++        },
++      }),
++    });
++
++    const trace = readFileSync(tracePath, "utf8").trim().split("\n");
++    expect(tracePeak(trace)).toBe(3);
++    expect(replays.map((replay) => replay.cell)).toEqual([
++      "alpha",
++      "beta",
++      "gamma",
++    ]);
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++it("rejects invalid recorded replay limits", async () => {
++  const root = mkdtempSync(join(tmpdir(), "bb-parity-recorded-limit-"));
++  try {
++    for (const maxConcurrentReplays of [0, -1, 1.5, Number.NaN, Infinity]) {
++      await expect(
++        replayRecordedCells({
++          recordingsRoot: root,
++          servesProvider: () => true,
++          maxConcurrentReplays,
++          createAssembler: emptyAssembler,
++          bridge: () => {
++            throw new Error("bridge must not be resolved");
++          },
++        }),
++      ).rejects.toThrow("maxConcurrentReplays must be a positive integer");
++    }
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
++it("stops scheduling queued recorded replays after a failure", async () => {
++  const root = mkdtempSync(join(tmpdir(), "bb-parity-recorded-failure-"));
++  const tracePath = join(root, "trace");
++  const bridgePath = writeReplayProbeBridge(root);
++  for (const cell of ["alpha", "beta", "gamma"]) {
++    createRecordedCell(root, cell);
++  }
++  try {
++    await expect(
++      replayRecordedCells({
++        recordingsRoot: root,
++        servesProvider: (providerId) => providerId === "test-provider",
++        maxConcurrentReplays: 2,
++        createAssembler: emptyAssembler,
++        bridge: (cell) => {
++          if (cell.cell === "alpha")
++            throw new Error("synthetic replay failure");
++          return {
++            launch: {
++              command: process.execPath,
++              args: [bridgePath],
++              cwd: root,
++              env: { TRACE_PATH: tracePath, CELL: cell.cell },
++            },
++          };
++        },
++      }),
++    ).rejects.toThrow("synthetic replay failure");
++
++    const trace = readFileSync(tracePath, "utf8").trim().split("\n");
++    expect(trace).toContain("start:beta");
++    expect(trace).toContain("finish:beta");
++    expect(trace).not.toContain("start:gamma");
++  } finally {
++    rmSync(root, { recursive: true, force: true });
++  }
++});
++
+ it("waits for the exact planned tail and a quiet period before closing", async () => {
+   const dir = mkdtempSync(join(tmpdir(), "bb-parity-tail-test-"));
+   const bridgePath = join(dir, "delayed-tail-bridge.mjs");
+diff --git a/packages/provider-bridge-protocol/src/testing/parity.ts b/packages/provider-bridge-protocol/src/testing/parity.ts
+index c94380c660647e4111e5611641065b13185e1379..e04e1e6396364db0ddb8c969767448d1859f9070 100644
+--- a/packages/provider-bridge-protocol/src/testing/parity.ts
++++ b/packages/provider-bridge-protocol/src/testing/parity.ts
+@@ -970,46 +970,84 @@ export interface ReplayRecordedCellsOptions {
+   createAssembler: CreateParityAssembler;
+   timeoutMs?: number;
+   onStderr?: (text: string) => void;
++  maxConcurrentReplays?: number;
+ }
+ 
+ export async function replayRecordedCells(
+   options: ReplayRecordedCellsOptions,
+ ): Promise<RecordedCellReplay[]> {
++  const maxConcurrentReplays = options.maxConcurrentReplays;
++  if (
++    maxConcurrentReplays !== undefined &&
++    (!Number.isSafeInteger(maxConcurrentReplays) || maxConcurrentReplays < 1)
++  ) {
++    throw new Error("maxConcurrentReplays must be a positive integer");
++  }
+   const cells = listRecordedCells(options.recordingsRoot).filter(
+     (cell: RecordedCell) =>
+       options.servesProvider(cell.provider) &&
+       (options.cells === undefined || options.cells.includes(cell.cell)) &&
+       readBridgeRecording(cell.dir).manifest?.scope !== "process",
+   );
+-  return Promise.all(
+-    cells.map(async (cell): Promise<RecordedCellReplay> => {
+-      const recorded = assembleRecordedEvents(
+-        withCurrentBridgeLane(readBridgeRecording(cell.dir)),
+-        options.createAssembler,
+-        cell.provider,
+-      );
+-      const bridge = options.bridge(cell);
+-      const run = await replayRecording({
+-        recordingDir: cell.dir,
+-        providerId: cell.provider,
+-        bridge: bridge.launch,
+-        ...(bridge.profile === undefined ? {} : { profile: bridge.profile }),
+-        createAssembler: options.createAssembler,
+-        planFromCurrentLane: true,
+-        ...(options.timeoutMs !== undefined
+-          ? { timeoutMs: options.timeoutMs }
+-          : {}),
+-        ...(options.onStderr !== undefined
+-          ? { onStderr: options.onStderr }
+-          : {}),
+-      });
+-      return {
+-        provider: cell.provider,
+-        cell: cell.cell,
+-        events: run.events,
+-        recordedEvents: recorded.events,
+-        stalls: run.stalls,
+-      };
+-    }),
++  const replayCell = async (
++    cell: RecordedCell,
++  ): Promise<RecordedCellReplay> => {
++    const recorded = assembleRecordedEvents(
++      withCurrentBridgeLane(readBridgeRecording(cell.dir)),
++      options.createAssembler,
++      cell.provider,
++    );
++    const bridge = options.bridge(cell);
++    const run = await replayRecording({
++      recordingDir: cell.dir,
++      providerId: cell.provider,
++      bridge: bridge.launch,
++      ...(bridge.profile === undefined ? {} : { profile: bridge.profile }),
++      createAssembler: options.createAssembler,
++      planFromCurrentLane: true,
++      ...(options.timeoutMs !== undefined
++        ? { timeoutMs: options.timeoutMs }
++        : {}),
++      ...(options.onStderr !== undefined ? { onStderr: options.onStderr } : {}),
++    });
++    return {
++      provider: cell.provider,
++      cell: cell.cell,
++      events: run.events,
++      recordedEvents: recorded.events,
++      stalls: run.stalls,
++    };
++  };
++  if (maxConcurrentReplays === undefined) {
++    return Promise.all(cells.map(replayCell));
++  }
++
++  const results: RecordedCellReplay[] = new Array(cells.length);
++  let nextIndex = 0;
++  const state: { cancelled: boolean; failure: unknown } = {
++    cancelled: false,
++    failure: undefined,
++  };
++  const worker = async (): Promise<void> => {
++    while (!state.cancelled) {
++      const index = nextIndex;
++      nextIndex += 1;
++      if (index >= cells.length) return;
++      try {
++        results[index] = await replayCell(cells[index]!);
++      } catch (error) {
++        state.cancelled = true;
++        state.failure = error;
++        return;
++      }
++    }
++  };
++  await Promise.all(
++    Array.from(
++      { length: Math.min(maxConcurrentReplays, cells.length) },
++      worker,
++    ),
+   );
++  if (state.cancelled) throw state.failure;
++  return results;
+ }
+-- 
+2.53.0
+

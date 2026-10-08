@@ -1,34 +1,35 @@
-From b53fb254decc00bf78914cfd78601ddcec858c10 Mon Sep 17 00:00:00 2001
+From 174a9a6e12f852f971b29bcd78cd21c2e9623e46 Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Wed, 23 Sep 2026 02:06:50 +0200
 Subject: [PATCH] fix(migrations): bridge legacy identity and context histories
 
+The identity and Context Magnet bridge follows upstream migration 0141
+as 0142_zippy_reavers. Its SQL is unchanged (idempotent CREATE ... IF
+NOT EXISTS); migrate.ts adds the two non-idempotent columns, validates
+the complete table contract and records the identity-context-0131
+completion marker in the same transaction.
 ---
- packages/db/drizzle/0132_zippy_reavers.sql    | 186 ++++
- packages/db/drizzle/meta/0116_snapshot.json   |   2 +-
- packages/db/drizzle/meta/_journal.json        |  22 +-
- packages/db/src/data/events.ts                |  44 +
+ packages/db/drizzle/0142_zippy_reavers.sql    | 186 ++++
+ packages/db/drizzle/meta/_journal.json        |   7 +
  packages/db/src/migrate.ts                    | 926 +++++++++++++++++-
- packages/db/src/migration-history.ts          |   1 -
- packages/db/src/schema.ts                     |   2 +-
  packages/db/test/data/events.test.ts          |  21 +-
  .../0119_soft_pandemic.sql                    | 102 ++
  .../0120_early_virginia_dare.sql              |  33 +
  .../0121_sticky_king_bedlam.sql               |   4 +
  .../0122_living_quasimodo.sql                 |  49 +
  packages/db/test/migrate.test.ts              | 671 ++++++++++++-
- 13 files changed, 2035 insertions(+), 28 deletions(-)
- create mode 100644 packages/db/drizzle/0132_zippy_reavers.sql
+ 9 files changed, 1992 insertions(+), 7 deletions(-)
+ create mode 100644 packages/db/drizzle/0142_zippy_reavers.sql
  create mode 100644 packages/db/test/fixtures/legacy-identity-context-magnet/0119_soft_pandemic.sql
  create mode 100644 packages/db/test/fixtures/legacy-identity-context-magnet/0120_early_virginia_dare.sql
  create mode 100644 packages/db/test/fixtures/legacy-identity-context-magnet/0121_sticky_king_bedlam.sql
  create mode 100644 packages/db/test/fixtures/legacy-identity-context-magnet/0122_living_quasimodo.sql
 
-diff --git a/packages/db/drizzle/0132_zippy_reavers.sql b/packages/db/drizzle/0132_zippy_reavers.sql
+diff --git a/packages/db/drizzle/0142_zippy_reavers.sql b/packages/db/drizzle/0142_zippy_reavers.sql
 new file mode 100644
 index 0000000000000000000000000000000000000000..fe5ef2479889fe5fcf9fe3a6192ceceac4fe2110
 --- /dev/null
-+++ b/packages/db/drizzle/0132_zippy_reavers.sql
++++ b/packages/db/drizzle/0142_zippy_reavers.sql
 @@ -0,0 +1,186 @@
 +CREATE TABLE IF NOT EXISTS `context_magnet_contribution_trace_receipts` (
 +	`contribution_id` text NOT NULL,
@@ -216,116 +217,27 @@ index 0000000000000000000000000000000000000000..fe5ef2479889fe5fcf9fe3a6192cecea
 +);
 +--> statement-breakpoint
 +CREATE INDEX IF NOT EXISTS `thread_facet_snapshots_generation_thread_idx` ON `thread_facet_snapshots` (`type_scope`,`type_owner`,`local_name`,`assignment_scope`,`owner_generation`,`thread_id`);
-diff --git a/packages/db/drizzle/meta/0116_snapshot.json b/packages/db/drizzle/meta/0116_snapshot.json
-index f9684f6546ad27de1ab47bd11ce8b5c386295d47..fa7e75ecafc2a93cf9b7cb760ef0a3b08dca7066 100644
---- a/packages/db/drizzle/meta/0116_snapshot.json
-+++ b/packages/db/drizzle/meta/0116_snapshot.json
-@@ -4064,4 +4064,4 @@
-   "internal": {
-     "indexes": {}
-   }
--}
-+}
-\ No newline at end of file
 diff --git a/packages/db/drizzle/meta/_journal.json b/packages/db/drizzle/meta/_journal.json
-index 438d00753bac8c4d433485cbb354035aa062ae70..3a9c5a83c4c90fad0acb2098c16f64f37caf49dc 100644
+index 0d36bcca665163f3cbc39f431990e1fe04c0b76d..8941cc5ffdf278787a044f9dd594d21c95135c88 100644
 --- a/packages/db/drizzle/meta/_journal.json
 +++ b/packages/db/drizzle/meta/_journal.json
-@@ -927,25 +927,11 @@
+@@ -995,6 +995,13 @@
+       "when": 1791414564985,
+       "tag": "0141_moaning_vector",
        "breakpoints": true
-     },
-     {
--      "idx": 120,
--      "version": "6",
--      "when": 1789920055084,
--      "tag": "0120_early_virginia_dare",
--      "breakpoints": true
--    },
--    {
--      "idx": 121,
--      "version": "6",
--      "when": 1789922567893,
--      "tag": "0121_sticky_king_bedlam",
--      "breakpoints": true
--    },
--    {
--      "idx": 122,
-+      "idx": 132,
-       "version": "6",
--      "when": 1789936012627,
--      "tag": "0122_living_quasimodo",
-+      "when": 1790230932026,
-+      "tag": "0132_zippy_reavers",
-       "breakpoints": true
++    },
++    {
++      "idx": 142,
++      "version": "6",
++      "when": 1791422663905,
++      "tag": "0142_zippy_reavers",
++      "breakpoints": true
      }
    ]
--}
+ }
 \ No newline at end of file
-+}
-diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
-index 3661eaebd19577b7bba1aaf7e63d70963bb41621..e854156e9ad61fc23d4a5969878fee4e0c4bff88 100644
---- a/packages/db/src/data/events.ts
-+++ b/packages/db/src/data/events.ts
-@@ -333,6 +333,10 @@ export interface StoredTurnRequestEventRow {
-   type: ThreadEventType;
- }
- 
-+export interface ListLastStoredTurnRequestEventsByThreadIdsArgs {
-+  threadIds: readonly string[];
-+}
-+
- export interface DeleteThreadEventSuffixArgs {
-   cutoffSequence: number;
-   oldMaxSequence: number;
-@@ -3907,6 +3911,46 @@ export function listThreadIdsWithLatestHostDaemonRestartInterruption(
-     .map((row) => row.threadId);
- }
- 
-+export function listLastStoredTurnRequestEventsByThreadIds(
-+  db: DbQueryConnection,
-+  args: ListLastStoredTurnRequestEventsByThreadIdsArgs,
-+): StoredTurnRequestEventRow[] {
-+  return queryInSqliteVariableBatches({
-+    dedupeKey: (threadId) => threadId,
-+    fixedVariableCount: 3,
-+    queryBatch: (threadIds) =>
-+      db.all<StoredTurnRequestEventRow>(sql`
-+      WITH execution_request_candidates AS (
-+        SELECT ${events.threadId} AS thread_id, MAX(${events.sequence}) AS sequence
-+        FROM ${events} INDEXED BY events_thread_type_sequence_idx
-+        WHERE ${inArray(events.threadId, [...threadIds])}
-+          AND ${events.type} = 'client/turn/requested'
-+        GROUP BY ${events.threadId}
-+        UNION ALL
-+        SELECT ${events.threadId} AS thread_id, MAX(${events.sequence}) AS sequence
-+        FROM ${events} INDEXED BY events_thread_type_sequence_idx
-+        WHERE ${inArray(events.threadId, [...threadIds])}
-+          AND ${inArray(events.type, ["client/thread/start", "client/turn/start"])}
-+          AND json_valid(${events.data})
-+          AND json_type(${events.data}, '$.input') IS NOT NULL
-+        GROUP BY ${events.threadId}
-+      ), latest_execution_request AS (
-+        SELECT thread_id, MAX(sequence) AS sequence
-+        FROM execution_request_candidates
-+        GROUP BY thread_id
-+      )
-+      SELECT event.data AS data, event.sequence AS sequence,
-+        event.thread_id AS threadId, event.type AS type
-+      FROM latest_execution_request latest
-+      JOIN events event ON event.thread_id = latest.thread_id
-+        AND event.sequence = latest.sequence
-+      ORDER BY event.thread_id
-+    `),
-+    values: args.threadIds,
-+    variableCountPerValue: 2,
-+  });
-+}
-+
- export function getLastStoredTurnRequestEvent(
-   db: DbQueryConnection,
-   threadId: string,
 diff --git a/packages/db/src/migrate.ts b/packages/db/src/migrate.ts
-index 116fa356c757bde2df5064ad9fb6d31be18d3386..7dfbd5e7630595e9cfa1652964958333eb029e16 100644
+index f59d3a2d5760bca1779df1a85661983e55df51cb..2c9830ff830bae9a51824e30486c6e0e8d02382a 100644
 --- a/packages/db/src/migrate.ts
 +++ b/packages/db/src/migrate.ts
 @@ -14,10 +14,12 @@ export interface ResolveMigrationsFolderForModuleDirArgs {
@@ -354,9 +266,9 @@ index 116fa356c757bde2df5064ad9fb6d31be18d3386..7dfbd5e7630595e9cfa1652964958333
  interface MigrationJournalEntry {
    tag: string;
    when: number;
-@@ -99,6 +107,12 @@ export interface MigrationWarningLogger {
+@@ -98,6 +106,12 @@ export interface MigrationWarningLogger {
+ 
  export interface MigrateOptions {
-   deferDestructiveLegacyCleanup?: boolean;
    logger?: MigrationWarningLogger;
 +  /** Test-only failure injection for the durable identity/context bridge. */
 +  identityContextBridgeTestHooks?: {
@@ -367,7 +279,7 @@ index 116fa356c757bde2df5064ad9fb6d31be18d3386..7dfbd5e7630595e9cfa1652964958333
  }
  
  interface AppliedMigrationRow {
-@@ -131,6 +145,11 @@ interface AppliedMigrationCountRow {
+@@ -130,6 +144,11 @@ interface AppliedMigrationCountRow {
    count: number;
  }
  
@@ -379,10 +291,10 @@ index 116fa356c757bde2df5064ad9fb6d31be18d3386..7dfbd5e7630595e9cfa1652964958333
  interface PendingInteractionProviderRequestDuplicateRow {
    duplicateCount: number;
    providerId: string;
-@@ -165,6 +184,44 @@ const branchLocalThreadSearchMigrationCreatedAts = [
-   1781403656070, 1781403656071,
- ] as const;
- const branchLocalThreadTabsMigrationCreatedAts = [1783633750817] as const;
+@@ -160,6 +179,44 @@ const reorderedCleanupMigrationTags = [
+   "0034_drop_stop_requested_at",
+   "0035_warm_kingpin",
+ ] as const satisfies readonly ReorderedCleanupMigrationTag[];
 +const legacyIdentityAndContextMagnetMigrationCreatedAts = [
 +  1789068314079, 1789920055084, 1789922567893, 1789936012627,
 +] as const;
@@ -424,7 +336,7 @@ index 116fa356c757bde2df5064ad9fb6d31be18d3386..7dfbd5e7630595e9cfa1652964958333
  const pendingInteractionColumns: ExpectedColumn[] = [
    { name: "id", type: "text", notNull: true, primaryKey: true },
    { name: "thread_id", type: "text", notNull: true, primaryKey: false },
-@@ -278,20 +335,24 @@ function parseTableInfoColumn(value: unknown): SqliteTableInfoColumn {
+@@ -273,20 +330,24 @@ function parseTableInfoColumn(value: unknown): SqliteTableInfoColumn {
    const type = value.type;
    const notNull = value.notnull;
    const primaryKey = value.pk;
@@ -450,7 +362,7 @@ index 116fa356c757bde2df5064ad9fb6d31be18d3386..7dfbd5e7630595e9cfa1652964958333
    };
  }
  
-@@ -503,6 +564,30 @@ function readAppliedMigrationCreatedAts(db: DbConnection): Set<number> {
+@@ -498,6 +559,30 @@ function readAppliedMigrationCreatedAts(db: DbConnection): Set<number> {
    return new Set(rows.map((row) => row.createdAt));
  }
  
@@ -481,7 +393,7 @@ index 116fa356c757bde2df5064ad9fb6d31be18d3386..7dfbd5e7630595e9cfa1652964958333
  export function countAppliedMigrations(db: DbConnection): number {
    if (!tableExists(db, "__drizzle_migrations")) {
      return 0;
-@@ -1186,6 +1271,840 @@ function applyQueuedMessageGroupingSchema(db: DbConnection): void {
+@@ -1181,6 +1266,840 @@ function applyQueuedMessageGroupingSchema(db: DbConnection): void {
      .run();
  }
  
@@ -564,7 +476,7 @@ index 116fa356c757bde2df5064ad9fb6d31be18d3386..7dfbd5e7630595e9cfa1652964958333
 +    legacyPrefixLength,
 +    expectedMigrations.some(
 +      (migration) =>
-+        migration.tag === "0132_zippy_reavers" &&
++        migration.tag === "0142_zippy_reavers" &&
 +        appliedMigrations.some(
 +          (appliedMigration) =>
 +            appliedMigration.createdAt === migration.createdAt &&
@@ -1035,13 +947,13 @@ index 116fa356c757bde2df5064ad9fb6d31be18d3386..7dfbd5e7630595e9cfa1652964958333
 +  }
 +  const migration = requireExpectedAppliedMigration(
 +    readExpectedAppliedMigrations(resolveMigrationsFolder()),
-+    "0132_zippy_reavers",
++    "0142_zippy_reavers",
 +  );
 +  const contracts = migration.sql
 +    .map(parseCanonicalTableContract)
 +    .filter((contract): contract is CanonicalTableContract => contract !== null);
 +  if (contracts.length !== identityContextRequiredTables.length) {
-+    throw new Error("Canonical 0131 identity/context table contract is incomplete.");
++    throw new Error("Canonical 0142 identity/context table contract is incomplete.");
 +  }
 +  identityContextCanonicalTableContracts = contracts;
 +  return contracts;
@@ -1319,18 +1231,18 @@ index 116fa356c757bde2df5064ad9fb6d31be18d3386..7dfbd5e7630595e9cfa1652964958333
 +  assertIdentityAndContextMagnetSchema(db);
 +}
 +
- function applyInitialThreadSectionSchema(db: DbConnection): void {
-   if (!tableExists(db, "thread_folders")) {
-     db.$client
-@@ -1564,6 +2483,7 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
+ const STAGED_CONNECT_MACHINE_ID_COLUMN = "_bb_connect_machine_id_pending";
+ const STAGED_THREAD_STORAGE_DELETED_AT_COLUMN =
+   "_bb_thread_storage_deleted_at_pending";
+@@ -1430,6 +2349,7 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
    }
    sqlite.pragma("foreign_keys = OFF");
    try {
 +    assertAppliedMigrationTimestampsAreUnique(db);
      assertNoDuplicatePendingInteractionProviderRequests(db);
-     if (options.deferDestructiveLegacyCleanup === true) {
-       applyDeferredDestructiveLegacyCleanup(db, migrationsFolder);
-@@ -1584,6 +2504,7 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
+     applyDeferredDestructiveLegacyCleanup(db, migrationsFolder);
+     skipEventLargeValuesRoundTripForInlineEvents(db, migrationsFolder);
+@@ -1439,6 +2359,7 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
      );
      const stagedThreadStorageDeletedAt =
        stageExistingThreadStorageDeletedAtColumn(db, migrationsFolder);
@@ -1338,7 +1250,7 @@ index 116fa356c757bde2df5064ad9fb6d31be18d3386..7dfbd5e7630595e9cfa1652964958333
      try {
        drizzleMigrate(db, { migrationsFolder });
      } finally {
-@@ -1591,6 +2512,8 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
+@@ -1446,6 +2367,8 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
        if (stagedThreadStorageDeletedAt)
          restoreStagedThreadStorageDeletedAtColumn(db);
      }
@@ -1347,42 +1259,17 @@ index 116fa356c757bde2df5064ad9fb6d31be18d3386..7dfbd5e7630595e9cfa1652964958333
      applyReorderedCleanupMigrations(db, migrationsFolder);
      applyQueuedMessageGroupingSchema(db);
      seedKeepAwakePluginConfiguration(db);
-@@ -1601,4 +2524,5 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
+@@ -1456,4 +2379,5 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
    warnAboutFutureAppliedMigrations(db, options);
    validateAppliedMigrationHistory(db, migrationsFolder);
    validatePendingInteractionsSchema(db);
 +  assertForeignKeyIntegrity(db);
  }
-diff --git a/packages/db/src/migration-history.ts b/packages/db/src/migration-history.ts
-index 1bab29a971c473ce027a47ab3b95b6f63e936387..dbd4e5896b567ea4031e43e26f8224832b32a326 100644
---- a/packages/db/src/migration-history.ts
-+++ b/packages/db/src/migration-history.ts
-@@ -13,7 +13,6 @@ export const publishedMigrationWhens = [
-   { tag: "0000_baseline", when: 1778891867195 },
-   { tag: "0001_terminal_session_user_input", when: 1779139400000 },
-   { tag: "0002_closed_session_prune_indexes", when: 1779139400001 },
--  { tag: "0119_soft_pandemic", when: 1789068314079 },
- ] as const satisfies readonly PublishedMigrationWhen[];
- 
- export const compatibleMigrationHashes = [
-diff --git a/packages/db/src/schema.ts b/packages/db/src/schema.ts
-index 5b84a35b162ad4a60e8aee238e54c169a4e707ab..e6876d52f87780fbdaa5019a6ecf48afa7b22f41 100644
---- a/packages/db/src/schema.ts
-+++ b/packages/db/src/schema.ts
-@@ -983,7 +983,7 @@ export const threadFacetPrincipalProfiles = sqliteTable(
-     assignmentScope: text("assignment_scope").$type<ThreadFacetAssignmentScope>().notNull(),
-     threadId: text("thread_id").notNull().references(() => threads.id, { onDelete: "cascade" }),
-     principalKey: text("principal_key").notNull(),
--    identityKind: text("identity_kind").$type<"external" | "person">().notNull().default("person"),
-+    identityKind: text("identity_kind").$type<"external" | "machine" | "person">().notNull().default("person"),
-     memberPosition: integer("member_position").notNull(),
-     displayName: text("display_name").notNull(),
-     imageUrl: text("image_url"),
 diff --git a/packages/db/test/data/events.test.ts b/packages/db/test/data/events.test.ts
-index 2261a37a499ca4261f02a1fd7a91610710114b10..dc0404c82e885735366ae9f828d58f0b76dee599 100644
+index c269300be968f1edab6178e9c953c2ef7b6e23d9..15ae8a376ca012589ff26bb8958a2a6b29f1c2cb 100644
 --- a/packages/db/test/data/events.test.ts
 +++ b/packages/db/test/data/events.test.ts
-@@ -1179,11 +1179,28 @@ describe("events", () => {
+@@ -1076,11 +1076,28 @@ describe("events", () => {
    it("indexes daemon-appended messages without parsing deltas or tool outputs", () => {
      const { db, thread } = setup();
      const inputs = searchNeedleDaemonEventInputs(thread.id);
@@ -1626,7 +1513,7 @@ index 0000000000000000000000000000000000000000..6eefd1d5f7654f90a07cb775bc82641c
 +ALTER TABLE `context_magnet_contribution_trace_snapshots` ADD `admission_attempt_high_water_sequence` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
 +ALTER TABLE `context_magnet_contribution_trace_snapshots` ADD `admission_retention_high_water_sequence` integer DEFAULT 0 NOT NULL;
 diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
-index 23f0299397439046d141306a50c17fc21ee7321c..1d6c2c659dc066006e77178cc80f5f730d33329f 100644
+index 0feda50adb1b4ec8bf28123f9af3ddb57697f19f..9ef74acf7d5a60b56d05bd8bb58673ba300d57a9 100644
 --- a/packages/db/test/migrate.test.ts
 +++ b/packages/db/test/migrate.test.ts
 @@ -1,7 +1,9 @@
@@ -1639,9 +1526,9 @@ index 23f0299397439046d141306a50c17fc21ee7321c..1d6c2c659dc066006e77178cc80f5f73
 +import { tmpdir } from "node:os";
 +import { readMigrationFiles } from "drizzle-orm/migrator";
  import { publishedMigrationWhensByTag } from "../src/migration-history.js";
- import { defaultAppSettings } from "@bb/domain";
  import {
-@@ -23,6 +25,7 @@ import {
+   dropPluginEnabledFollowsDefaultColumn,
+@@ -29,6 +31,7 @@ import {
  } from "./helpers/migrated-connection.js";
  
  type InsertMigrationParameters = [string, number];
@@ -1649,7 +1536,7 @@ index 23f0299397439046d141306a50c17fc21ee7321c..1d6c2c659dc066006e77178cc80f5f73
  type DeleteMigrationParameters = [number];
  type DeleteMigrationsParameters = [number, number, number, number];
  type TableNameParameters = [string];
-@@ -272,6 +275,138 @@ const latestMigrationWhen = Math.max(
+@@ -252,6 +255,138 @@ const latestMigrationWhen = Math.max(
    ).entries.map((entry) => entry.when),
  );
  
@@ -1788,7 +1675,7 @@ index 23f0299397439046d141306a50c17fc21ee7321c..1d6c2c659dc066006e77178cc80f5f73
  function restoreWideExperimentsTable(db: DbConnection): void {
    const columns = db.$client
      .prepare<[], TableInfoRow>("PRAGMA table_info(system_experiments)")
-@@ -725,8 +860,15 @@ function dropMarketplaceStatsColumn(db: DbConnection): void {
+@@ -703,8 +838,15 @@ function dropMarketplaceStatsColumn(db: DbConnection): void {
  
  /** Undo the downstream identity migrations that follow the queue rework. */
  function dropIdentityKernelSchema(db: DbConnection): void {
@@ -1806,7 +1693,7 @@ index 23f0299397439046d141306a50c17fc21ee7321c..1d6c2c659dc066006e77178cc80f5f73
    }
    for (const table of [
      "thread_facet_reconciliation_targets",
-@@ -5744,6 +5886,527 @@ describe("migrate", () => {
+@@ -4645,6 +4787,527 @@ describe("migrate", () => {
    });
  });
  

@@ -1,0 +1,284 @@
+From 67a3ccfe525cdde74b4dd41ccef877b78850e876 Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Wed, 7 Oct 2026 20:30:21 +0200
+Subject: [PATCH 51/51] perf(server): extend the timeline ordering context
+ incrementally
+
+getTimelineGroupingContext reuses a cached context only when no
+grouping-relevant rows were appended since the cached maxSeq. On an
+active thread new turns always add such rows. Every miss therefore
+re-ran listTimelineOrderingContext over the whole history from the
+epoch start, which reads five json_extract values per row. On an
+84k-event thread that is ~137 ms (20,922 rows) on every timeline build,
+and the route cache is keyed by maxSeq.
+
+The newest cache entry per key now retains its ordering-context rows.
+A miss that finds a retained entry below the requested maxSeq, with the
+same rewrite generation and data version, reads only
+(cachedMaxSeq, maxSeq] and folds the concatenated rows. The parented
+boundary query still runs on every fold. The result is exact: the
+rows are sequence ordered, and every path that deletes or rewrites
+events bumps the rewrite generation (suffix delete, thread and
+rate-limit pruning, output migration). Writes from another connection
+change data_version.
+
+Retained rows cost ~230 bytes each (4.8 MB for 20,922 rows). They are
+capped at 120,000 across the per-process cache, ~28 MB. The oldest
+keys lose their rows first, and a context over the cap is not retained,
+so it falls back to the full read.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ .../threads/timeline-context-order.ts         |  51 +++++-
+ .../timeline-context-order-cache.test.ts      | 145 ++++++++++++++++++
+ 2 files changed, 191 insertions(+), 5 deletions(-)
+
+diff --git a/apps/server/src/services/threads/timeline-context-order.ts b/apps/server/src/services/threads/timeline-context-order.ts
+index a7dff4ce6cb79d1f6b2b084104b60642c45725ac..0e656dfcf53ba0a76e448135346734205b0ae7ca 100644
+--- a/apps/server/src/services/threads/timeline-context-order.ts
++++ b/apps/server/src/services/threads/timeline-context-order.ts
+@@ -24,16 +24,20 @@ interface TimelineGroupingContextArgs {
+   threadId: string;
+ }
+ 
++type TimelineOrderingContextRows = ReturnType<typeof listTimelineOrderingContext>;
++
+ interface TimelineGroupingContextEntry {
+   context: TimelineGroupingContext;
+   dataVersion: number;
+   generation: number;
+   maxSeq: number;
++  rows: TimelineOrderingContextRows | null;
+ }
+ 
+ const GROUPING_CONTEXT_KEY_LIMIT = 128;
+ const GROUPING_CONTEXT_ENTRIES_PER_KEY = 4;
+ const GROUPING_CONTEXT_REUSE_SEQUENCE_SPAN = 1024;
++const MAX_RETAINED_ORDERING_CONTEXT_ROWS = 120_000;
+ 
+ const orderingContexts = new WeakMap<
+   DbConnection,
+@@ -123,22 +127,59 @@ export function getTimelineGroupingContext(
+     ]);
+     return reusable.context;
+   }
+-  const context = computeTimelineGroupingContext(db, args);
++  const base = entries
++    .filter((entry) => entry.rows !== null && entry.maxSeq < args.maxSeq)
++    .sort((left, right) => right.maxSeq - left.maxSeq)[0];
++  const rows =
++    base?.rows == null
++      ? listTimelineOrderingContext(db, args)
++      : [
++          ...base.rows,
++          ...listTimelineOrderingContext(db, {
++            ...args,
++            sequenceStart: base.maxSeq + 1,
++          }),
++        ];
++  const context = foldTimelineGroupingContext(db, args, rows);
+   cache.set(key, [
+-    { context, dataVersion, generation, maxSeq: args.maxSeq },
+-    ...entries.slice(0, GROUPING_CONTEXT_ENTRIES_PER_KEY - 1),
++    {
++      context,
++      dataVersion,
++      generation,
++      maxSeq: args.maxSeq,
++      rows: rows.length <= MAX_RETAINED_ORDERING_CONTEXT_ROWS ? rows : null,
++    },
++    ...entries
++      .slice(0, GROUPING_CONTEXT_ENTRIES_PER_KEY - 1)
++      .map((entry) => ({ ...entry, rows: null })),
+   ]);
+   if (cache.size > GROUPING_CONTEXT_KEY_LIMIT) {
+     cache.delete(cache.keys().next().value!);
+   }
++  trimRetainedOrderingContextRows(cache);
+   return context;
+ }
+ 
+-function computeTimelineGroupingContext(
++function trimRetainedOrderingContextRows(
++  cache: Map<string, TimelineGroupingContextEntry[]>,
++): void {
++  let retained = 0;
++  for (const entries of cache.values())
++    for (const entry of entries) retained += entry.rows?.length ?? 0;
++  for (const entries of cache.values()) {
++    if (retained <= MAX_RETAINED_ORDERING_CONTEXT_ROWS) return;
++    for (const entry of entries) {
++      retained -= entry.rows?.length ?? 0;
++      entry.rows = null;
++    }
++  }
++}
++
++function foldTimelineGroupingContext(
+   db: DbConnection,
+   args: TimelineGroupingContextArgs,
++  context: TimelineOrderingContextRows,
+ ): TimelineGroupingContext {
+-  const context = listTimelineOrderingContext(db, args);
+   const spans = new Map<string, ExternalUserBoundaryTurnSpan>();
+   const accepted = new Map<string, { sequence: number; turnId: string }>();
+   for (const row of context) {
+diff --git a/apps/server/test/services/threads/timeline-context-order-cache.test.ts b/apps/server/test/services/threads/timeline-context-order-cache.test.ts
+index 8e12ed8985914ad3cfacd96f7d3d6d27d2bc674e..9e47304e92243a44447f90fb59ab1d6940c486f0 100644
+--- a/apps/server/test/services/threads/timeline-context-order-cache.test.ts
++++ b/apps/server/test/services/threads/timeline-context-order-cache.test.ts
+@@ -378,6 +378,151 @@ describe("timeline grouping context cache", () => {
+   }, 60_000);
+ });
+ 
++function orderingContextReadStarts(
++  testThread: TestThread,
++  run: () => void,
++): number[] {
++  const starts: number[] = [];
++  const raw = testThread.db.$client;
++  const originalPrepare = raw.prepare.bind(raw);
++  Object.defineProperty(raw, "prepare", {
++    configurable: true,
++    writable: true,
++    value: (source: string) => {
++      const statement = originalPrepare(source);
++      if (!source.includes("'$.target.expectedTurnId'")) return statement;
++      const originalAll = statement.all.bind(statement);
++      statement.all = (...params: unknown[]) => {
++        const threadIndex = params.indexOf(testThread.thread.id);
++        starts.push(params[threadIndex + 1] as number);
++        return originalAll(...params);
++      };
++      return statement;
++    },
++  });
++  try {
++    run();
++  } finally {
++    Object.defineProperty(raw, "prepare", {
++      configurable: true,
++      writable: true,
++      value: originalPrepare,
++    });
++  }
++  return starts;
++}
++
++describe("incremental timeline ordering context", () => {
++  it("extends a cached context with only the rows after its maxSeq", () => {
++    withTestThread((testThread) => {
++      const warmMaxSeq = appendRows(testThread, [
++        turnStarted("turn-1"),
++        userRequest("request-1"),
++        accepted("request-1", "turn-1"),
++        turnCompleted("turn-1"),
++      ]);
++      expectCachedEqualsCold(testThread, warmMaxSeq);
++      const maxSeq = appendRows(testThread, [
++        userRequest("request-2"),
++        turnStarted("turn-2"),
++        accepted("request-2", "turn-2"),
++        delta("turn-2", "streamed"),
++      ]);
++      const starts = orderingContextReadStarts(testThread, () => {
++        expectCachedEqualsCold(testThread, maxSeq);
++      });
++      expect(starts).toEqual([warmMaxSeq + 1]);
++    });
++  });
++
++  it("recomputes from the start after an edit-message suffix delete and reprojecting append", () => {
++    withTestThread((testThread) => {
++      const threadId = testThread.thread.id;
++      appendRows(testThread, [turnStarted("turn-1"), userRequest("request-1")]);
++      const editedMaxSeq = appendRows(testThread, [
++        accepted("request-1", "turn-1"),
++        turnCompleted("turn-1"),
++        userRequest("request-2"),
++      ]);
++      expectCachedEqualsCold(testThread, editedMaxSeq);
++      testThread.db.transaction((tx) => {
++        deleteThreadEventSuffixInTransaction(tx, {
++          cutoffSequence: editedMaxSeq,
++          oldMaxSequence: editedMaxSeq,
++          threadId,
++        });
++      });
++      const maxSeq = appendRows(testThread, [
++        userRequest("request-2-edited"),
++        turnStarted("turn-2"),
++      ]);
++      const starts = orderingContextReadStarts(testThread, () => {
++        expectCachedEqualsCold(testThread, maxSeq);
++      });
++      expect(starts).toEqual([0]);
++    });
++  });
++
++  it("recomputes from the start after a pruning sweep removes rows", () => {
++    withTestThread((testThread) => {
++      const threadId = testThread.thread.id;
++      const warmMaxSeq = appendRows(testThread, [
++        turnStarted("turn-1"),
++        userRequest("request-1"),
++        { data: {}, turnId: "turn-1", type: "turn/diff/updated" },
++        { data: {}, turnId: "turn-1", type: "turn/diff/updated" },
++        { data: {}, turnId: "turn-1", type: "turn/diff/updated" },
++        turnCompleted("turn-1"),
++        turnStarted("turn-2"),
++        { data: {}, turnId: "turn-2", type: "turn/diff/updated" },
++      ]);
++      expectCachedEqualsCold(testThread, warmMaxSeq);
++      let removed = 0;
++      for (let pass = 0; pass < 10; pass += 1)
++        removed += advanceThreadPruning(testThread.db, { threadId }).removed;
++      expect(removed).toBeGreaterThan(0);
++      const maxSeq = appendRows(testThread, [userRequest("request-2")]);
++      const starts = orderingContextReadStarts(testThread, () => {
++        expectCachedEqualsCold(testThread, maxSeq);
++      });
++      expect(starts).toEqual([0]);
++    });
++  });
++
++  it("recomputes from the start when another connection changes the data version", () => {
++    withTestThread((testThread) => {
++      const warmMaxSeq = appendRows(testThread, [
++        turnStarted("turn-1"),
++        userRequest("request-1"),
++      ]);
++      expectCachedEqualsCold(testThread, warmMaxSeq);
++      const maxSeq = appendRows(
++        { db: testThread.coldDb, thread: testThread.thread },
++        [accepted("request-1", "turn-1"), turnCompleted("turn-1")],
++      );
++      const starts = orderingContextReadStarts(testThread, () => {
++        expectCachedEqualsCold(testThread, maxSeq);
++      });
++      expect(starts).toEqual([0]);
++    });
++  });
++
++  it("does not retain a context larger than the row cap", () => {
++    withTestThread((testThread) => {
++      const rows = Array.from({ length: 120_001 }, (_, index) =>
++        turnStarted(`turn-${index}`),
++      );
++      const warmMaxSeq = appendRows(testThread, rows);
++      expectCachedEqualsCold(testThread, warmMaxSeq);
++      const maxSeq = appendRows(testThread, [userRequest("request-1")]);
++      const starts = orderingContextReadStarts(testThread, () => {
++        expectCachedEqualsCold(testThread, maxSeq);
++      });
++      expect(starts).toEqual([0]);
++    });
++  }, 120_000);
++});
++
+ const RANDOM_TURN_IDS = ["turn-a", "turn-b", "turn-c"] as const;
+ const RANDOM_CALL_IDS = ["call-a", "call-b"] as const;
+ const RANDOM_REQUEST_IDS = ["request-a", "request-b", "request-c"] as const;
+-- 
+2.53.0
+

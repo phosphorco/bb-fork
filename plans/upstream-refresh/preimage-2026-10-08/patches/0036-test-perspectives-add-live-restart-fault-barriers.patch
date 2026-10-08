@@ -1,0 +1,687 @@
+From 5b96f0412a53c2dedcabc898a80a57e1ebc04eb5 Mon Sep 17 00:00:00 2001
+From: BB Fault Barrier <bb-fault-barrier@invalid.local>
+Date: Fri, 25 Sep 2026 03:39:46 +0200
+Subject: [PATCH] test(perspectives): add restart fault barriers
+
+---
+ .../threads/child-thread-notifications.ts     |  17 +-
+ .../src/services/threads/queued-messages.ts   |  34 +-
+ .../server/src/testing/test-fault-barriers.ts | 142 ++++++
+ .../threads/test-fault-barriers.test.ts       | 409 ++++++++++++++++++
+ 4 files changed, 597 insertions(+), 5 deletions(-)
+ create mode 100644 apps/server/src/testing/test-fault-barriers.ts
+ create mode 100644 apps/server/test/services/threads/test-fault-barriers.test.ts
+
+diff --git a/apps/server/src/services/threads/child-thread-notifications.ts b/apps/server/src/services/threads/child-thread-notifications.ts
+index f76e7e3365a4510f67d531a9fc28cefc4a8e2f03..5f8f38c6ca91dc54a5175ffe59a1d90336754250 100644
+--- a/apps/server/src/services/threads/child-thread-notifications.ts
++++ b/apps/server/src/services/threads/child-thread-notifications.ts
+@@ -6,6 +6,10 @@ import type {
+ import { listActiveBackgroundTaskCountsByThreadIds } from "@bb/db";
+ import { renderTemplate } from "@bb/templates";
+ import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
++import {
++  waitAtSelectedTestFaultBarrier,
++  testFaultBarrierPoints,
++} from "../../testing/test-fault-barriers.js";
+ import {
+   buildParentSystemInputFromTemplateSlot,
+   buildParentSystemThreadMention,
+@@ -363,9 +367,19 @@ async function flushChildThreadTurnNotificationBatch(
+   if (!batch) {
+     return;
+   }
+-  childThreadTurnNotificationBatches.delete(parentThreadId);
+ 
+   try {
++    const notificationBarrier = waitAtSelectedTestFaultBarrier({
++      context: {
++        childThreadIds: batch.items.map((item) => item.childThread.id),
++        parentThreadId,
++        turnStatuses: batch.items.map((item) => item.turnStatus),
++      },
++      dataDir: deps.config.dataDir,
++      point: testFaultBarrierPoints.childOutputBeforeParentNotice,
++    });
++    if (notificationBarrier) await notificationBarrier;
++    childThreadTurnNotificationBatches.delete(parentThreadId);
+     await queueParentSystemMessage(deps, {
+       input: buildChildThreadTurnStatusBatchInput({
+         items: batch.items,
+@@ -374,6 +388,7 @@ async function flushChildThreadTurnNotificationBatch(
+       ...childThreadTurnStatusBatchTaxonomy(batch.items),
+     });
+   } catch (error) {
++    childThreadTurnNotificationBatches.delete(parentThreadId);
+     deps.logger.error(
+       {
+         err: error,
+diff --git a/apps/server/src/services/threads/queued-messages.ts b/apps/server/src/services/threads/queued-messages.ts
+index 6cdf4f064f207b9a298fcb10493b7b6669e30b59..cbfa639bc8a99be5207cd5c3c1cb41767da276cc 100644
+--- a/apps/server/src/services/threads/queued-messages.ts
++++ b/apps/server/src/services/threads/queued-messages.ts
+@@ -50,6 +50,10 @@ import type {
+   AppDeps,
+   LoggedPendingInteractionWorkSessionDeps,
+ } from "../../types.js";
++import {
++  waitAtSelectedTestFaultBarrier,
++  testFaultBarrierPoints,
++} from "../../testing/test-fault-barriers.js";
+ import { ApiError } from "../../errors.js";
+ import { ensureHostSessionReadyForWork } from "../hosts/host-lifecycle.js";
+ import {
+@@ -694,6 +698,15 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
+       ...buildThreadStatusChangeMetadata(deps, activeThread),
+     },
+   );
++  const requestBarrier = waitAtSelectedTestFaultBarrier({
++    context: {
++      queuedMessageIds: args.queuedMessages.map(({ id }) => id),
++      threadId: thread.id,
++    },
++    dataDir: deps.config.dataDir,
++    point: testFaultBarrierPoints.queueRequestCommitBeforeCommand,
++  });
++  if (requestBarrier) await requestBarrier;
+   startLiveHostCommand(deps, {
+     command,
+     hostId: environment.hostId,
+@@ -980,14 +993,27 @@ export async function sendQueuedMessage(
+     return toThreadQueuedMessage(queuedMessages[0]!);
+   }
+   try {
+-    return await withActiveQueuedMessageClaims(queuedMessages, () =>
+-      sendClaimedQueuedMessage(deps, {
++    return await withActiveQueuedMessageClaims(queuedMessages, async () => {
++      const lead = queuedMessages[0]!;
++      const claimBarrier =
++        lead.systemNotice === null
++          ? waitAtSelectedTestFaultBarrier({
++              context: {
++                queuedMessageIds: queuedMessages.map(({ id }) => id),
++                threadId: args.threadId,
++              },
++              dataDir: deps.config.dataDir,
++              point: testFaultBarrierPoints.queueClaimBeforeRequest,
++            })
++          : undefined;
++      if (claimBarrier) await claimBarrier;
++      return sendClaimedQueuedMessage(deps, {
+         mode: args.mode,
+         queuedMessages,
+         sendNow,
+         threadId: args.threadId,
+-      }),
+-    );
++      });
++    });
+   } catch (error) {
+     releaseQueuedMessageClaims(deps, queuedMessages);
+     if (
+diff --git a/apps/server/src/testing/test-fault-barriers.ts b/apps/server/src/testing/test-fault-barriers.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d806145e2458411b36421d24d8f29961a561c699
+--- /dev/null
++++ b/apps/server/src/testing/test-fault-barriers.ts
+@@ -0,0 +1,142 @@
++import { randomUUID } from "node:crypto";
++import { existsSync, realpathSync, statSync } from "node:fs";
++import { mkdir, readFile, writeFile } from "node:fs/promises";
++import { isAbsolute, join, relative, sep } from "node:path";
++
++export const TEST_FAULT_BARRIER_TOKEN_ENV = "BB_TEST_FAULT_BARRIER_TOKEN";
++export const TEST_FAULT_BARRIER_POINT_ENV = "BB_TEST_FAULT_BARRIER_POINT";
++export const TEST_FAULT_BARRIER_DATA_DIR_TOKEN_MARKER_FILE =
++  ".bb-test-fault-barrier-token";
++export const TEST_FAULT_BARRIER_CONTROL_DIRECTORY = ".bb-test-fault-barriers";
++
++export const testFaultBarrierPoints = {
++  childOutputBeforeParentNotice: "child-output-before-parent-notice",
++  queueClaimBeforeRequest: "queue-claim-before-request",
++  queueRequestCommitBeforeCommand: "queue-request-commit-before-command",
++} as const;
++
++export type TestFaultBarrierPoint =
++  (typeof testFaultBarrierPoints)[keyof typeof testFaultBarrierPoints];
++
++export type TestFaultBarrierContext = Readonly<
++  Record<string, string | number | readonly string[]>
++>;
++
++interface SelectedTestFaultBarrierWaitArgs {
++  context: TestFaultBarrierContext;
++  dataDir: string;
++  point: TestFaultBarrierPoint;
++}
++
++interface TestFaultBarrierObservation {
++  context: TestFaultBarrierContext;
++  invocationId: string;
++  observedAt: string;
++  pid: number;
++  point: TestFaultBarrierPoint;
++}
++
++export function waitAtSelectedTestFaultBarrier(
++  args: SelectedTestFaultBarrierWaitArgs,
++): Promise<void> | undefined {
++  const token = process.env[TEST_FAULT_BARRIER_TOKEN_ENV];
++  const selectedPoint = process.env[TEST_FAULT_BARRIER_POINT_ENV];
++  if (token === undefined && selectedPoint === undefined) return undefined;
++  if (token === undefined || selectedPoint === undefined) {
++    throw new Error(
++      `${TEST_FAULT_BARRIER_TOKEN_ENV} and ${TEST_FAULT_BARRIER_POINT_ENV} must be set together`,
++    );
++  }
++  if (!/^[a-f0-9]{64}$/.test(token)) {
++    throw new Error(
++      `${TEST_FAULT_BARRIER_TOKEN_ENV} must be 64 lowercase hex characters`,
++    );
++  }
++  if (
++    !Object.values(testFaultBarrierPoints).includes(
++      selectedPoint as TestFaultBarrierPoint,
++    )
++  ) {
++    throw new Error(
++      `${TEST_FAULT_BARRIER_POINT_ENV} is not a supported test barrier point`,
++    );
++  }
++  if (selectedPoint !== args.point) return undefined;
++  return waitForTestFaultBarrierRelease({ ...args, token });
++}
++
++export function testFaultBarrierControlDirectory(
++  dataDir: string,
++  token: string,
++  point: TestFaultBarrierPoint,
++): string {
++  return join(dataDir, TEST_FAULT_BARRIER_CONTROL_DIRECTORY, token, point);
++}
++
++export function testFaultBarrierWaitingFilePath(
++  directory: string,
++  invocationId: string,
++): string {
++  return join(directory, `waiting.${invocationId}.json`);
++}
++
++export function testFaultBarrierReleaseFilePath(
++  directory: string,
++  invocationId: string,
++): string {
++  return join(directory, `release.${invocationId}`);
++}
++
++async function waitForTestFaultBarrierRelease(
++  args: SelectedTestFaultBarrierWaitArgs & { token: string },
++): Promise<void> {
++  const dataDir = realpathSync(args.dataDir);
++  const dataDirRelativeToTmp = relative("/tmp", dataDir);
++  if (
++    dataDirRelativeToTmp === "" ||
++    dataDirRelativeToTmp === ".." ||
++    dataDirRelativeToTmp.startsWith(`..${sep}`) ||
++    isAbsolute(dataDirRelativeToTmp)
++  ) {
++    throw new Error("Test fault barriers require a data directory below /tmp");
++  }
++  if ((statSync(dataDir).mode & 0o077) !== 0) {
++    throw new Error(
++      "Test fault barrier data directory must be private to its owner",
++    );
++  }
++  const marker = await readFile(
++    join(dataDir, TEST_FAULT_BARRIER_DATA_DIR_TOKEN_MARKER_FILE),
++    "utf8",
++  );
++  if (marker.trim() !== args.token) {
++    throw new Error(
++      "Test fault barrier token does not match the data directory marker",
++    );
++  }
++
++  const directory = testFaultBarrierControlDirectory(
++    dataDir,
++    args.token,
++    args.point,
++  );
++  const invocationId = randomUUID();
++  const observation: TestFaultBarrierObservation = {
++    context: args.context,
++    invocationId,
++    observedAt: new Date().toISOString(),
++    pid: process.pid,
++    point: args.point,
++  };
++  await mkdir(directory, { recursive: true, mode: 0o700 });
++  await writeFile(
++    testFaultBarrierWaitingFilePath(directory, invocationId),
++    `${JSON.stringify(observation)}\n`,
++    { flag: "wx", mode: 0o600 },
++  );
++
++  const releasePath = testFaultBarrierReleaseFilePath(directory, invocationId);
++  while (!existsSync(releasePath)) {
++    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
++  }
++}
+diff --git a/apps/server/test/services/threads/test-fault-barriers.test.ts b/apps/server/test/services/threads/test-fault-barriers.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..75df2135f0652b38551f60612e218f71ae337b0c
+--- /dev/null
++++ b/apps/server/test/services/threads/test-fault-barriers.test.ts
+@@ -0,0 +1,409 @@
++import { randomBytes } from "node:crypto";
++import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import {
++  getQueuedThreadMessage,
++  listEvents,
++  listQueuedThreadMessages,
++  type DbConnection,
++} from "@bb/db";
++import { turnScope } from "@bb/domain";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { getLastThreadOutput } from "../../../src/services/threads/thread-data.js";
++import { queueChildThreadTurnNotificationBestEffort } from "../../../src/services/threads/child-thread-notifications.js";
++import { sendQueuedMessage } from "../../../src/services/threads/queued-messages.js";
++import {
++  waitAtSelectedTestFaultBarrier,
++  TEST_FAULT_BARRIER_POINT_ENV,
++  TEST_FAULT_BARRIER_TOKEN_ENV,
++  TEST_FAULT_BARRIER_DATA_DIR_TOKEN_MARKER_FILE,
++  testFaultBarrierControlDirectory,
++  testFaultBarrierWaitingFilePath,
++  testFaultBarrierPoints,
++  testFaultBarrierReleaseFilePath,
++  type TestFaultBarrierPoint,
++} from "../../../src/testing/test-fault-barriers.js";
++import {
++  seedEnvironment,
++  seedHostSession,
++  seedProjectWithSource,
++  seedQueuedMessage,
++  seedStoredEvent,
++  seedThread,
++  seedThreadRuntimeState,
++} from "../../helpers/seed.js";
++import { listQueuedThreadCommands } from "../../helpers/commands.js";
++import { withTestHarness } from "../../helpers/test-app.js";
++import { textInput } from "../../helpers/prompt-input.js";
++
++interface FaultBarrierObservation {
++  context: Record<string, unknown>;
++  invocationId: string;
++  observedAt: string;
++  pid: number;
++  point: TestFaultBarrierPoint;
++}
++
++async function armFaultBarrier(
++  dataDir: string,
++  point: TestFaultBarrierPoint,
++): Promise<string> {
++  const token = randomBytes(32).toString("hex");
++  await writeFile(
++    join(dataDir, TEST_FAULT_BARRIER_DATA_DIR_TOKEN_MARKER_FILE),
++    `${token}\n`,
++    { mode: 0o600 },
++  );
++  vi.stubEnv(TEST_FAULT_BARRIER_TOKEN_ENV, token);
++  vi.stubEnv(TEST_FAULT_BARRIER_POINT_ENV, point);
++  return token;
++}
++
++async function waitForFaultBarrier(
++  dataDir: string,
++  token: string,
++  point: TestFaultBarrierPoint,
++  timeoutMs = 5_000,
++): Promise<FaultBarrierObservation> {
++  const directory = testFaultBarrierControlDirectory(dataDir, token, point);
++  const deadline = Date.now() + timeoutMs;
++  while (Date.now() < deadline) {
++    try {
++      const names = await readdir(directory);
++      const waitingFile = names.find(
++        (name) => name.startsWith("waiting.") && name.endsWith(".json"),
++      );
++      if (waitingFile) {
++        return JSON.parse(
++          await readFile(
++            testFaultBarrierWaitingFilePath(
++              directory,
++              waitingFile.slice("waiting.".length, -".json".length),
++            ),
++            "utf8",
++          ),
++        ) as FaultBarrierObservation;
++      }
++    } catch (error) {
++      if (
++        !(error instanceof Error && "code" in error && error.code === "ENOENT")
++      ) {
++        throw error;
++      }
++    }
++    await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
++  }
++  throw new Error(`Timed out waiting for test fault barrier ${point}`);
++}
++
++async function releaseFaultBarrier(
++  dataDir: string,
++  token: string,
++  observation: FaultBarrierObservation,
++): Promise<void> {
++  const directory = testFaultBarrierControlDirectory(
++    dataDir,
++    token,
++    observation.point,
++  );
++  await writeFile(
++    testFaultBarrierReleaseFilePath(directory, observation.invocationId),
++    "released\n",
++    { flag: "a", mode: 0o600 },
++  );
++}
++
++async function releaseAllFaultBarriers(
++  dataDir: string,
++  token: string,
++): Promise<void> {
++  for (const point of Object.values(testFaultBarrierPoints)) {
++    const directory = testFaultBarrierControlDirectory(dataDir, token, point);
++    try {
++      const names = await readdir(directory);
++      for (const name of names) {
++        if (!name.startsWith("waiting.") || !name.endsWith(".json")) continue;
++        const invocationId = name.slice("waiting.".length, -".json".length);
++        await writeFile(
++          testFaultBarrierReleaseFilePath(directory, invocationId),
++          "released\n",
++          { flag: "a", mode: 0o600 },
++        );
++      }
++    } catch (error) {
++      if (
++        !(error instanceof Error && "code" in error && error.code === "ENOENT")
++      ) {
++        throw error;
++      }
++    }
++  }
++}
++
++function requestEvents(db: DbConnection, threadId: string) {
++  return listEvents(db, { threadId }).filter(
++    (event) => event.type === "client/turn/requested",
++  );
++}
++
++afterEach(() => {
++  vi.unstubAllEnvs();
++});
++
++describe("test-only BB fault barriers", () => {
++  it("is a synchronous no-op when the opt-in variables are absent", () => {
++    expect(
++      waitAtSelectedTestFaultBarrier({
++        context: {},
++        dataDir: "/not-a-real-data-directory",
++        point: testFaultBarrierPoints.queueClaimBeforeRequest,
++      }),
++    ).toBeUndefined();
++  });
++
++  it("observes an armed point and resumes only after its token-bound release", async () => {
++    const dataDir = await mkdtemp(join(tmpdir(), "bb-test-fault-barrier-"));
++    let token: string | undefined;
++    try {
++      token = await armFaultBarrier(
++        dataDir,
++        testFaultBarrierPoints.queueClaimBeforeRequest,
++      );
++      const pending = waitAtSelectedTestFaultBarrier({
++        context: { threadId: "thr_test", queuedMessageIds: ["qmsg_test"] },
++        dataDir,
++        point: testFaultBarrierPoints.queueClaimBeforeRequest,
++      });
++      expect(pending).toBeDefined();
++      const observation = await waitForFaultBarrier(
++        dataDir,
++        token,
++        testFaultBarrierPoints.queueClaimBeforeRequest,
++      );
++      expect(observation.context).toEqual({
++        threadId: "thr_test",
++        queuedMessageIds: ["qmsg_test"],
++      });
++      let resumed = false;
++      const completion = pending!.then(() => {
++        resumed = true;
++      });
++      await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
++      expect(resumed).toBe(false);
++      await releaseFaultBarrier(dataDir, token, observation);
++      await completion;
++      expect(resumed).toBe(true);
++    } finally {
++      if (token) {
++        vi.unstubAllEnvs();
++        await releaseAllFaultBarriers(dataDir, token);
++      }
++      await rm(dataDir, { recursive: true, force: true });
++    }
++  });
++
++  it("holds queue claim and committed request-event cuts before dispatch", async () => {
++    await withTestHarness(async (harness) => {
++      const token = await armFaultBarrier(
++        harness.config.dataDir,
++        testFaultBarrierPoints.queueClaimBeforeRequest,
++      );
++      const { host } = seedHostSession(harness.deps, {
++        id: "host-test-fault-barrier-queue",
++      });
++      const { project } = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/test-fault-barrier-queue",
++      });
++      const environment = seedEnvironment(harness.deps, {
++        hostId: host.id,
++        projectId: project.id,
++        path: "/tmp/test-fault-barrier-queue",
++      });
++      const thread = seedThread(harness.deps, {
++        environmentId: environment.id,
++        projectId: project.id,
++        status: "idle",
++      });
++      seedThreadRuntimeState(harness.deps, {
++        environmentId: environment.id,
++        providerThreadId: "provider-test-fault-barrier-queue",
++        threadId: thread.id,
++      });
++      const requestCountBefore = requestEvents(harness.db, thread.id).length;
++      const queued = seedQueuedMessage(harness.deps, {
++        content: textInput("fault barrier queue probe"),
++        threadId: thread.id,
++      });
++
++      try {
++        const dispatch = sendQueuedMessage(harness.deps, {
++          claimPolicy: { kind: "explicit-send" },
++          mode: "auto",
++          queuedMessageId: queued.id,
++          threadId: thread.id,
++        });
++        const claimObservation = await waitForFaultBarrier(
++          harness.config.dataDir,
++          token,
++          testFaultBarrierPoints.queueClaimBeforeRequest,
++        );
++        const claimedRow = getQueuedThreadMessage(harness.db, queued.id);
++        expect(claimedRow?.claimedAt).toEqual(expect.any(Number));
++        expect(requestEvents(harness.db, thread.id)).toHaveLength(
++          requestCountBefore,
++        );
++
++        vi.stubEnv(
++          TEST_FAULT_BARRIER_POINT_ENV,
++          testFaultBarrierPoints.queueRequestCommitBeforeCommand,
++        );
++        await releaseFaultBarrier(
++          harness.config.dataDir,
++          token,
++          claimObservation,
++        );
++        const commitObservation = await waitForFaultBarrier(
++          harness.config.dataDir,
++          token,
++          testFaultBarrierPoints.queueRequestCommitBeforeCommand,
++        );
++        const requests = requestEvents(harness.db, thread.id);
++        expect(listQueuedThreadMessages(harness.db, thread.id)).toHaveLength(0);
++        expect(requests).toHaveLength(requestCountBefore + 1);
++        expect(commitObservation.context).toMatchObject({
++          queuedMessageIds: [queued.id],
++          threadId: thread.id,
++        });
++        expect(
++          listQueuedThreadCommands(harness, "turn.submit", thread.id),
++        ).toHaveLength(0);
++
++        await releaseFaultBarrier(
++          harness.config.dataDir,
++          token,
++          commitObservation,
++        );
++        await dispatch;
++        expect(
++          listQueuedThreadCommands(harness, "turn.submit", thread.id),
++        ).toHaveLength(1);
++      } finally {
++        vi.unstubAllEnvs();
++        await releaseAllFaultBarriers(harness.config.dataDir, token);
++      }
++    });
++  }, 20_000);
++
++  it("holds persisted child output before the parent notice is queued", async () => {
++    await withTestHarness(async (harness) => {
++      const token = await armFaultBarrier(
++        harness.config.dataDir,
++        testFaultBarrierPoints.childOutputBeforeParentNotice,
++      );
++      const { host } = seedHostSession(harness.deps, {
++        id: "host-test-fault-barrier-child",
++      });
++      const { project } = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/test-fault-barrier-child",
++      });
++      const environment = seedEnvironment(harness.deps, {
++        hostId: host.id,
++        projectId: project.id,
++        path: "/tmp/test-fault-barrier-child",
++      });
++      const parent = seedThread(harness.deps, {
++        environmentId: environment.id,
++        projectId: project.id,
++        title: "Coordinator",
++      });
++      seedThreadRuntimeState(harness.deps, {
++        environmentId: environment.id,
++        providerThreadId: "provider-test-fault-barrier-child",
++        threadId: parent.id,
++      });
++      const child = seedThread(harness.deps, {
++        parentThreadId: parent.id,
++        projectId: project.id,
++        title: "Worker",
++      });
++      seedStoredEvent(harness.deps, {
++        data: {
++          item: {
++            id: "worker-final-output",
++            text: "Persisted worker output",
++            type: "agentMessage",
++          },
++        },
++        itemId: "worker-final-output",
++        itemKind: "agentMessage",
++        scope: turnScope("turn-worker"),
++        sequence: 1,
++        threadId: child.id,
++        type: "item/completed",
++        providerThreadId: "provider-worker",
++      });
++      expect(getLastThreadOutput(harness.db, child.id)).toBe(
++        "Persisted worker output",
++      );
++      const parentRequestsBefore = requestEvents(harness.db, parent.id).length;
++
++      await queueChildThreadTurnNotificationBestEffort(harness.deps, {
++        childThread: child,
++        parentThreadId: parent.id,
++        turnStatus: "completed",
++      });
++      try {
++        const observation = await waitForFaultBarrier(
++          harness.config.dataDir,
++          token,
++          testFaultBarrierPoints.childOutputBeforeParentNotice,
++        );
++        expect(getLastThreadOutput(harness.db, child.id)).toBe(
++          "Persisted worker output",
++        );
++        expect(listQueuedThreadMessages(harness.db, parent.id)).toHaveLength(0);
++        expect(requestEvents(harness.db, parent.id)).toHaveLength(
++          parentRequestsBefore,
++        );
++        expect(observation.context).toMatchObject({
++          childThreadIds: [child.id],
++          parentThreadId: parent.id,
++          turnStatuses: ["completed"],
++        });
++
++        await releaseFaultBarrier(harness.config.dataDir, token, observation);
++        const deadline = Date.now() + 5_000;
++        while (
++          Date.now() < deadline &&
++          requestEvents(harness.db, parent.id).length === parentRequestsBefore
++        ) {
++          await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
++        }
++        expect(requestEvents(harness.db, parent.id)).toHaveLength(
++          parentRequestsBefore + 1,
++        );
++      } finally {
++        vi.unstubAllEnvs();
++        await releaseAllFaultBarriers(harness.config.dataDir, token);
++      }
++    });
++  }, 20_000);
++
++  it("rejects an armed barrier outside the private /tmp data-dir boundary", async () => {
++    vi.stubEnv(TEST_FAULT_BARRIER_TOKEN_ENV, randomBytes(32).toString("hex"));
++    vi.stubEnv(
++      TEST_FAULT_BARRIER_POINT_ENV,
++      testFaultBarrierPoints.queueClaimBeforeRequest,
++    );
++    await expect(
++      waitAtSelectedTestFaultBarrier({
++        context: {},
++        dataDir: "/etc",
++        point: testFaultBarrierPoints.queueClaimBeforeRequest,
++      }),
++    ).rejects.toThrow("below /tmp");
++  });
++});
+-- 
+2.53.0
+

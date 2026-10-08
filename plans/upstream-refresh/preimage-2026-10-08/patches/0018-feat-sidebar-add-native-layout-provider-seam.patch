@@ -1,0 +1,634 @@
+From dcd39e65f6be08f1474179bd07d66d6775631087 Mon Sep 17 00:00:00 2001
+From: Phosphor <engineering@phosphor.co>
+Date: Sun, 13 Sep 2026 16:00:00 -0400
+Subject: [PATCH] feat(sidebar): add native layout provider seam
+
+Keep native sidebar rendering while an optional plugin provides layout data.
+---
+ .../sidebar/NavigationPlugin.test.tsx         |  43 +++++++
+ .../sidebar/SidebarNavigationModel.tsx        | 111 +++++++++++++++++-
+ .../useSidebarNavigationArrangement.ts        |  32 +++--
+ apps/app/src/lib/plugin-slots.ts              |  10 ++
+ .../plugins/plugin-authoring-docs.test.ts     |   3 +
+ docs/api_to_audit.md                          |  22 ++++
+ packages/plugin-sdk/src/app-contract.ts       |  29 +++++
+ .../src/internal/plugin-app-collector.ts      |  13 ++
+ .../references/frontend-api-index.md          |   3 +
+ .../references/frontend-core-slots.md         |   6 +
+ plugins/plugin-api-docs/src/surfaces.ts       |   4 +
+ 11 files changed, 264 insertions(+), 12 deletions(-)
+
+diff --git a/apps/app/src/components/sidebar/NavigationPlugin.test.tsx b/apps/app/src/components/sidebar/NavigationPlugin.test.tsx
+index de3e8dcc9b1107544ff845f5929b3b8bd3644385..8cbd235125a61afead936ba76e7dea30cb5a4cac 100644
+--- a/apps/app/src/components/sidebar/NavigationPlugin.test.tsx
++++ b/apps/app/src/components/sidebar/NavigationPlugin.test.tsx
+@@ -9,6 +9,7 @@ import {
+   within,
+ } from "@testing-library/react";
+ import { useEffect, type ComponentType } from "react";
++import type { ExperimentalSidebarLayoutProviderProps } from "@get-bb/plugin-sdk";
+ import { createStore } from "jotai";
+ import {
+   afterEach,
+@@ -347,6 +348,48 @@ afterEach(() => {
+ });
+ 
+ describe("Navigation plugin in the sidebar navigation region", () => {
++  it("uses a layout provider with the bundled navigation and returns native reorders", async () => {
++    const onChange = vi.fn();
++    function LayoutProvider({
++      publish,
++      subscribeChanges,
++    }: ExperimentalSidebarLayoutProviderProps) {
++      useEffect(() => {
++        publish({ order: HOST_KEYS, visible: ["__bb__/skills", "__bb__/new-thread"] });
++        return subscribeChanges(onChange);
++      }, [publish, subscribeChanges]);
++      return null;
++    }
++    setPluginSlotRegistrations(
++      "sidebar-defaults",
++      registrationSet({
++        experimentalSidebarLayoutProviders: [
++          { id: "global-sidebar-sync", component: LayoutProvider },
++        ],
++      }),
++    );
++    const { store } = renderNavigation();
++    await waitFor(() =>
++      expect(visibleRowKeys()).toEqual(["__bb__/new-thread", "__bb__/skills"]),
++    );
++    reorderSidebar("__bb__/skills", "__bb__/new-thread");
++    expect(onChange).toHaveBeenCalledWith(
++      expect.objectContaining({
++        visible: ["__bb__/skills", "__bb__/new-thread"],
++      }),
++    );
++    const changedOrder: string[] = onChange.mock.lastCall?.[0]?.order ?? [];
++    expect(changedOrder.indexOf("__bb__/skills")).toBeLessThan(
++      changedOrder.indexOf("__bb__/new-thread"),
++    );
++    expect(store.get(pluginNavVisiblePanelKeysAtom)).toBeNull();
++
++    act(() => {
++      setPluginSlotRegistrations("sidebar-defaults", registrationSet());
++    });
++    await waitFor(() => expect(visibleRowKeys()).toEqual(DEFAULT_VISIBLE_HOST_KEYS));
++  });
++
+   it("keeps built-in actions visible without placeholders during startup", () => {
+     resetPluginFrontendBootStateForTest();
+     renderNavigation();
+diff --git a/apps/app/src/components/sidebar/SidebarNavigationModel.tsx b/apps/app/src/components/sidebar/SidebarNavigationModel.tsx
+index 35226cf32481688e13138b6116d06d91cf1ac577..680c506f70ba4de278749ede88b0928f089b2da1 100644
+--- a/apps/app/src/components/sidebar/SidebarNavigationModel.tsx
++++ b/apps/app/src/components/sidebar/SidebarNavigationModel.tsx
+@@ -1,9 +1,11 @@
+ import {
+   createContext,
++  useCallback,
+   useContext,
+   useLayoutEffect,
+   useMemo,
+   useRef,
++  useState,
+   type ComponentType,
+   type ReactNode,
+ } from "react";
+@@ -13,6 +15,7 @@ import type {
+   ExperimentalSidebarNavigationIconProps,
+   ExperimentalSidebarNavigationItem,
+   ExperimentalSidebarNavigationState,
++  ExperimentalSidebarLayout,
+ } from "@get-bb/plugin-sdk";
+ import { Icon, type IconName } from "@bb/shared-ui/icon";
+ import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
+@@ -30,7 +33,11 @@ import { appToast } from "@/components/ui/app-toast";
+ import { invalidatePluginList } from "@/hooks/cache-owners/plugin-cache-owner";
+ import { appQueryClient } from "@/lib/app-query-client";
+ import { usePluginNavPanelChrome } from "@/lib/plugin-nav-panel-chrome";
+-import type { PluginNavPanelSlot } from "@/lib/plugin-slots";
++import {
++  usePluginSlots,
++  type ExperimentalSidebarLayoutProviderSlot,
++  type PluginNavPanelSlot,
++} from "@/lib/plugin-slots";
+ import {
+   getPluginDetailRoutePath,
+   getPluginPanelRoutePath,
+@@ -71,6 +78,53 @@ export interface SidebarNavigationModel {
+ const SidebarNavigationModelContext =
+   createContext<SidebarNavigationModel | null>(null);
+ 
++const MAX_EXTERNAL_LAYOUT_ITEMS = 100;
++const MAX_EXTERNAL_LAYOUT_KEY_LENGTH = 256;
++
++function normalizeExternalLayout(
++  layout: ExperimentalSidebarLayout | null,
++): ExperimentalSidebarLayout | null {
++  if (layout === null) return null;
++  const copy = (keys: readonly unknown[]): string[] | null => {
++    if (!Array.isArray(keys) || keys.length > MAX_EXTERNAL_LAYOUT_ITEMS) return null;
++    const result: string[] = [];
++    for (const key of keys) {
++      if (
++        typeof key !== "string" ||
++        key.length === 0 ||
++        key.length > MAX_EXTERNAL_LAYOUT_KEY_LENGTH
++      ) return null;
++      if (!result.includes(key)) result.push(key);
++    }
++    return result;
++  };
++  const order = copy(layout.order);
++  const visible = copy(layout.visible);
++  return order === null || visible === null ? null : { order, visible };
++}
++
++function SidebarLayoutProviderMount({
++  slot,
++  publish,
++  subscribeChanges,
++}: {
++  slot: ExperimentalSidebarLayoutProviderSlot;
++  publish: (layout: ExperimentalSidebarLayout | null) => void;
++  subscribeChanges: (listener: (layout: ExperimentalSidebarLayout) => void) => () => void;
++}) {
++  const Component = slot.component;
++  return (
++    <PluginSlotMount
++      pluginId={slot.pluginId}
++      slotKind="sidebarLayoutProvider"
++      slotId={slot.id}
++      crashFallback={null}
++    >
++      <Component publish={publish} subscribeChanges={subscribeChanges} />
++    </PluginSlotMount>
++  );
++}
++
+ const HOST_ICON_NAMES: Record<
+   Extract<
+     ExperimentalSidebarNavigationIconProps["icon"],
+@@ -160,6 +214,51 @@ export function SidebarNavigationModelProvider({
+   children,
+   ...host
+ }: SidebarNavigationHostOptions & { children: ReactNode }) {
++  const { experimentalSidebarLayoutProviders } = usePluginSlots();
++  const layoutProvider = experimentalSidebarLayoutProviders[0] ?? null;
++  const providerKey = layoutProvider
++    ? `${layoutProvider.pluginId}:${layoutProvider.id}:${layoutProvider.generation}`
++    : null;
++  const [publishedLayout, setPublishedLayout] = useState<{
++    providerKey: string;
++    layout: ExperimentalSidebarLayout | null;
++  } | null>(null);
++  const listenerRef = useRef<{
++    providerKey: string;
++    listener: (layout: ExperimentalSidebarLayout) => void;
++  } | null>(null);
++  const externalLayout =
++    publishedLayout?.providerKey === providerKey
++      ? publishedLayout.layout
++      : null;
++  const publishLayout = useCallback(
++    (layout: ExperimentalSidebarLayout | null) => {
++      if (providerKey === null) return;
++      setPublishedLayout({ providerKey, layout: normalizeExternalLayout(layout) });
++    },
++    [providerKey],
++  );
++  const subscribeLayoutChanges = useCallback(
++    (listener: (layout: ExperimentalSidebarLayout) => void) => {
++      if (providerKey === null) return () => {};
++      listenerRef.current = { providerKey, listener };
++      return () => {
++        if (listenerRef.current?.listener === listener) listenerRef.current = null;
++      };
++    },
++    [providerKey],
++  );
++  const onExternalLayoutChange = useCallback(
++    (layout: ExperimentalSidebarLayout) => {
++      if (providerKey === null) return;
++      const normalized = normalizeExternalLayout(layout);
++      if (normalized === null) return;
++      setPublishedLayout({ providerKey, layout: normalized });
++      if (listenerRef.current?.providerKey === providerKey)
++        listenerRef.current.listener(normalized);
++    },
++    [providerKey],
++  );
+   const panelEntries = usePluginNavPanelChrome();
+   const rows = useMemo(
+     () => createSidebarNavigationRows(panelEntries),
+@@ -168,6 +267,8 @@ export function SidebarNavigationModelProvider({
+   const arrangement = useSidebarNavigationArrangement(
+     rows,
+     SIDEBAR_NAVIGATION_LEADING_KEYS,
++    externalLayout,
++    onExternalLayoutChange,
+   );
+   const rowsById = useMemo(
+     () => new Map(rows.map((row) => [getPluginNavPanelKey(row), row])),
+@@ -377,6 +478,14 @@ export function SidebarNavigationModelProvider({
+   );
+   return (
+     <SidebarNavigationModelContext.Provider value={model}>
++      {layoutProvider ? (
++        <SidebarLayoutProviderMount
++          key={providerKey}
++          slot={layoutProvider}
++          publish={publishLayout}
++          subscribeChanges={subscribeLayoutChanges}
++        />
++      ) : null}
+       {children}
+     </SidebarNavigationModelContext.Provider>
+   );
+diff --git a/apps/app/src/components/sidebar/useSidebarNavigationArrangement.ts b/apps/app/src/components/sidebar/useSidebarNavigationArrangement.ts
+index e3812f417febfba923a218d0e774d094aafff07c..af26181135a2ab414bd817c1e1ff4761f819ce3f 100644
+--- a/apps/app/src/components/sidebar/useSidebarNavigationArrangement.ts
++++ b/apps/app/src/components/sidebar/useSidebarNavigationArrangement.ts
+@@ -1,5 +1,6 @@
+ import { useCallback, useMemo } from "react";
+ import { useAtom } from "jotai";
++import type { ExperimentalSidebarLayout } from "@get-bb/plugin-sdk";
+ import {
+   pluginNavPanelOrderAtom,
+   pluginNavVisiblePanelKeysAtom,
+@@ -33,6 +34,8 @@ export interface SidebarNavigationArrangement<Row extends ArrangeableRow> {
+ export function useSidebarNavigationArrangement<Row extends ArrangeableRow>(
+   rows: readonly Row[],
+   leadingOrderKeys: readonly string[],
++  externalLayout: ExperimentalSidebarLayout | null = null,
++  onExternalLayoutChange?: (layout: ExperimentalSidebarLayout) => void,
+ ): SidebarNavigationArrangement<Row> {
+   const [storedOrder, setStoredOrder] = useAtom(pluginNavPanelOrderAtom);
+   const [storedVisibleKeys, setStoredVisibleKeys] = useAtom(
+@@ -42,10 +45,13 @@ export function useSidebarNavigationArrangement<Row extends ArrangeableRow>(
+     () => seedSkillsNavigationPreference(storedOrder, storedVisibleKeys),
+     [storedOrder, storedVisibleKeys],
+   );
++  const effectiveOrder = externalLayout?.order ?? seededPreferences.order;
++  const effectiveVisibleKeys =
++    externalLayout?.visible ?? seededPreferences.visibleKeys;
+   const newLeadingKeys = useMemo(
+     () =>
+-      leadingOrderKeys.filter((key) => !seededPreferences.order.includes(key)),
+-    [leadingOrderKeys, seededPreferences.order],
++      leadingOrderKeys.filter((key) => !effectiveOrder.includes(key)),
++    [effectiveOrder, leadingOrderKeys],
+   );
+   const newVisibleKeys = useMemo(
+     () =>
+@@ -53,12 +59,12 @@ export function useSidebarNavigationArrangement<Row extends ArrangeableRow>(
+         .map(getPluginNavPanelKey)
+         .filter(
+           (key) =>
+-            !seededPreferences.order.includes(key) &&
++            !effectiveOrder.includes(key) &&
+             !DEFAULT_HIDDEN_SIDEBAR_NAVIGATION_KEYS.some(
+               (hiddenKey) => hiddenKey === key,
+             ),
+         ),
+-    [rows, seededPreferences.order],
++    [effectiveOrder, rows],
+   );
+   const {
+     ordered,
+@@ -72,15 +78,15 @@ export function useSidebarNavigationArrangement<Row extends ArrangeableRow>(
+         panels: rows,
+         storedOrder:
+           newLeadingKeys.length === 0
+-            ? seededPreferences.order
+-            : [...newLeadingKeys, ...seededPreferences.order],
++            ? effectiveOrder
++            : [...newLeadingKeys, ...effectiveOrder],
+         storedVisibleKeys:
+-          seededPreferences.visibleKeys === null || newVisibleKeys.length === 0
+-            ? seededPreferences.visibleKeys
+-            : [...newVisibleKeys, ...seededPreferences.visibleKeys],
++          effectiveVisibleKeys === null || newVisibleKeys.length === 0
++            ? effectiveVisibleKeys
++            : [...newVisibleKeys, ...effectiveVisibleKeys],
+         defaultHiddenKeys: DEFAULT_HIDDEN_SIDEBAR_NAVIGATION_KEYS,
+       }),
+-    [newLeadingKeys, newVisibleKeys, rows, seededPreferences],
++    [effectiveOrder, effectiveVisibleKeys, newLeadingKeys, newVisibleKeys, rows],
+   );
+   const hidden = useMemo(() => {
+     const visibleSet = new Set(visibleKeys);
+@@ -93,6 +99,10 @@ export function useSidebarNavigationArrangement<Row extends ArrangeableRow>(
+ 
+   const persist = useCallback(
+     (order: string[], nextVisibleKeys: string[] | null) => {
++      if (externalLayout !== null && onExternalLayoutChange) {
++        onExternalLayoutChange({ order, visible: nextVisibleKeys ?? [] });
++        return;
++      }
+       if (!haveSameOrder(storedOrder, order)) setStoredOrder(order);
+       if (
+         storedVisibleKeys === nextVisibleKeys ||
+@@ -104,7 +114,7 @@ export function useSidebarNavigationArrangement<Row extends ArrangeableRow>(
+       }
+       setStoredVisibleKeys(nextVisibleKeys);
+     },
+-    [setStoredOrder, setStoredVisibleKeys, storedOrder, storedVisibleKeys],
++    [externalLayout, onExternalLayoutChange, setStoredOrder, setStoredVisibleKeys, storedOrder, storedVisibleKeys],
+   );
+ 
+   const setVisible = useCallback(
+diff --git a/apps/app/src/lib/plugin-slots.ts b/apps/app/src/lib/plugin-slots.ts
+index 181e28cd40635a39af4368e40b22f06466278b9b..df61b4408125f1d2e34113b2e10484e622cb1c1c 100644
+--- a/apps/app/src/lib/plugin-slots.ts
++++ b/apps/app/src/lib/plugin-slots.ts
+@@ -18,6 +18,7 @@ import type {
+   PluginSidebarFooterActionRegistration,
+   ExperimentalSidebarNavigationRegistration,
+   ExperimentalSidebarHeaderRegistration,
++  ExperimentalSidebarLayoutProviderRegistration,
+   PluginSourceCodeRendererRegistration,
+   PluginThreadHeaderActionRegistration,
+   ExperimentalPluginBrowserToolbarActionRegistration,
+@@ -48,6 +49,7 @@ export interface PluginRegistrationSet {
+   experimentalSidebarFooterItems?: readonly CollectedExperimentalSidebarFooterItem[];
+   experimentalSidebarNavigations?: readonly ExperimentalSidebarNavigationRegistration[];
+   experimentalSidebarHeaders?: readonly ExperimentalSidebarHeaderRegistration[];
++  experimentalSidebarLayoutProviders?: readonly ExperimentalSidebarLayoutProviderRegistration[];
+   threadLists?: readonly PluginThreadListRegistration[];
+   threadHeaderActions?: readonly PluginThreadHeaderActionRegistration[];
+   browserToolbarActions?: readonly ExperimentalPluginBrowserToolbarActionRegistration[];
+@@ -91,6 +93,8 @@ export interface ExperimentalSidebarNavigationSlot
+   extends ExperimentalSidebarNavigationRegistration, PluginSlotBase {}
+ export interface ExperimentalSidebarHeaderSlot
+   extends ExperimentalSidebarHeaderRegistration, PluginSlotBase {}
++export interface ExperimentalSidebarLayoutProviderSlot
++  extends ExperimentalSidebarLayoutProviderRegistration, PluginSlotBase {}
+ export interface PluginThreadListSlot
+   extends PluginThreadListRegistration, PluginSlotBase {}
+ interface PluginThreadHeaderActionSlot
+@@ -131,6 +135,7 @@ export interface PluginSlotSnapshot {
+   sidebarFooterItems: readonly PluginSidebarFooterItemSlot[];
+   experimentalSidebarNavigations: readonly ExperimentalSidebarNavigationSlot[];
+   experimentalSidebarHeaders: readonly ExperimentalSidebarHeaderSlot[];
++  experimentalSidebarLayoutProviders: readonly ExperimentalSidebarLayoutProviderSlot[];
+   threadLists: readonly PluginThreadListSlot[];
+   threadHeaderActions: readonly PluginThreadHeaderActionSlot[];
+   browserToolbarActions: readonly PluginBrowserToolbarActionSlot[];
+@@ -159,6 +164,7 @@ export const EMPTY_PLUGIN_SLOT_SNAPSHOT: PluginSlotSnapshot = {
+   sidebarFooterItems: [],
+   experimentalSidebarNavigations: [],
+   experimentalSidebarHeaders: [],
++  experimentalSidebarLayoutProviders: [],
+   threadLists: [],
+   threadHeaderActions: [],
+   browserToolbarActions: [],
+@@ -194,6 +200,7 @@ const SLOT_KINDS: readonly SlotKind[] = [
+   "sidebarFooterItems",
+   "experimentalSidebarNavigations",
+   "experimentalSidebarHeaders",
++  "experimentalSidebarLayoutProviders",
+   "threadLists",
+   "threadHeaderActions",
+   "browserToolbarActions",
+@@ -253,6 +260,9 @@ function flattenRegistrations(
+     sidebarFooterItems: stamp<CollectedSidebarFooterItem>(sidebarFooterItems),
+     experimentalSidebarNavigations: stamp(set.experimentalSidebarNavigations),
+     experimentalSidebarHeaders: stamp(set.experimentalSidebarHeaders),
++    experimentalSidebarLayoutProviders: stamp(
++      set.experimentalSidebarLayoutProviders,
++    ),
+     threadLists: stamp(set.threadLists),
+     threadHeaderActions: stamp(set.threadHeaderActions),
+     browserToolbarActions: stamp(set.browserToolbarActions),
+diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
+index 2e5f9810fda2610ee7ef6504c464d4978a7780f4..798ed463b2cf9122885781b97f7d5407169322ff 100644
+--- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
++++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
+@@ -7,6 +7,7 @@ import * as pluginSdkApp from "@get-bb/plugin-sdk/app";
+ import {
+   type BbPluginApi,
+   type ExperimentalAppOverlayProps,
++  type ExperimentalSidebarLayoutProviderProps,
+   type PluginAppBuilder,
+   type PluginAppSlots,
+   type PluginContentScriptContext,
+@@ -269,6 +270,7 @@ type SlotPropsByName = {
+   sidebarFooterAction: PluginSidebarFooterActionProps;
+   experimental_sidebarNavigation: ExperimentalSidebarNavigationProps;
+   experimental_sidebarHeader: ExperimentalSidebarHeaderProps;
++  experimental_sidebarLayoutProvider: ExperimentalSidebarLayoutProviderProps;
+   experimental_threadList: PluginThreadListProps;
+   experimental_threadHeaderAction: PluginThreadHeaderActionProps;
+   experimental_browserToolbarAction: ExperimentalPluginBrowserToolbarActionProps;
+@@ -350,6 +352,7 @@ const FRONTEND_SLOT_PROP_FIELDS = {
+     "experimental_Original",
+   ],
+   experimental_sidebarHeader: ["width", "controlSize", "isCompactViewport"],
++  experimental_sidebarLayoutProvider: ["publish", "subscribeChanges"],
+   experimental_threadList: [
+     "activeThreadId",
+     "activeProjectId",
+diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
+index 4ad7f00ca573d283fb08f387551954f339360b4a..059ff5b2d8e2533977199b6b756dcf31fd073599 100644
+--- a/docs/api_to_audit.md
++++ b/docs/api_to_audit.md
+@@ -2417,6 +2417,28 @@ and navigation from `bb.onInstall`; later choices are the user's.
+ 5. **Drag regions.** Confirm the interactive-descendant no-drag rule covers
+    real plugin markup, including custom elements and menus.
+ 
++## `app.slots.experimental_sidebarLayoutProvider` (`@get-bb/plugin-sdk/app`)
++
++**What it does.** Supplies ordering and visibility data for BB's native sidebar
++navigation. The provider publishes an `ExperimentalSidebarLayout` and receives
++native customization changes through a subscription. BB retains rendering,
++activation, accessibility, split behavior, and all other sidebar ownership.
++The first provider in deterministic plugin-slot order wins.
++
++**Audit before stabilizing.**
++
++1. **Persistence ownership.** Decide whether plugins or BB should persist the
++   resolved layout and how conflicts between clients are reconciled.
++2. **Provider arbitration.** Validate deterministic first-provider selection,
++   reload replacement, disablement, and fallback to BB preferences.
++3. **Round trips.** Confirm publish and subscription updates do not loop or
++   lose native reorder and visibility changes.
++4. **Validation.** Review bounds, duplicate handling, unknown keys, and behavior
++   when built-in or plugin navigation destinations appear or disappear.
++5. **Compatibility.** Verify providers can coexist with
++   `experimental_sidebarNavigation` without acquiring native DOM or activation
++   ownership.
++
+ ## `app.slots.experimental_threadList` (`@get-bb/plugin-sdk/app`)
+ 
+ **Kept experimental (2026-08-22).** examples only; no shipped consumer has tested the arbitration/fallback model or the accessibility contract.
+diff --git a/packages/plugin-sdk/src/app-contract.ts b/packages/plugin-sdk/src/app-contract.ts
+index b7ba767d8dfe2dacce211071e5757dfccb45d96f..d6562c363b03551ba7e24765cb8888f1d7562e39 100644
+--- a/packages/plugin-sdk/src/app-contract.ts
++++ b/packages/plugin-sdk/src/app-contract.ts
+@@ -338,6 +338,26 @@ export interface ExperimentalSidebarNavigationProps {
+   experimental_Original: ComponentType;
+ }
+ 
++/** A declarative layout for BB's native sidebar navigation. */
++export interface ExperimentalSidebarLayout {
++  readonly order: readonly string[];
++  readonly visible: readonly string[];
++}
++
++/**
++ * An experimental provider may supply a resolved layout and receive native
++ * customization changes. BB remains the sole sidebar renderer and interaction
++ * owner; a provider never receives navigation actions or DOM ownership. This
++ * is an exclusive slot: when more than one provider is active, the first one
++ * in BB's deterministic plugin-slot order wins.
++ */
++export interface ExperimentalSidebarLayoutProviderProps {
++  publish(layout: ExperimentalSidebarLayout | null): void;
++  subscribeChanges(
++    listener: (layout: ExperimentalSidebarLayout) => void,
++  ): () => void;
++}
++
+ /**
+  * Props passed to an `experimental_sidebarHeader` component, rendered in the
+  * sidebar's header row between the sidebar toggle (and the macOS window
+@@ -1609,6 +1629,12 @@ export interface ExperimentalSidebarNavigationRegistration {
+   component: ComponentType<ExperimentalSidebarNavigationProps>;
+ }
+ 
++/** Supply data to BB's native sidebar layout resolver. One active provider is selected by slot order. */
++export interface ExperimentalSidebarLayoutProviderRegistration {
++  id: string;
++  component: ComponentType<ExperimentalSidebarLayoutProviderProps>;
++}
++
+ /**
+  * Render a component in the sidebar's header row, between the sidebar toggle
+  * and bb's back and forward buttons. Exclusive: the user picks at most one
+@@ -2045,6 +2071,9 @@ export interface PluginAppSlots {
+   experimental_sidebarNavigation(
+     registration: ExperimentalSidebarNavigationRegistration,
+   ): void;
++  experimental_sidebarLayoutProvider(
++    registration: ExperimentalSidebarLayoutProviderRegistration,
++  ): void;
+   /**
+    * Render a component in the sidebar header row (see
+    * {@link ExperimentalSidebarHeaderRegistration}). Experimental: see
+diff --git a/packages/plugin-sdk/src/internal/plugin-app-collector.ts b/packages/plugin-sdk/src/internal/plugin-app-collector.ts
+index b5fccf5a9e376c9f2cc2b49448b11576bcfe1782..de47d4c15f0c9ad1539a6a2734bca266560f2e5c 100644
+--- a/packages/plugin-sdk/src/internal/plugin-app-collector.ts
++++ b/packages/plugin-sdk/src/internal/plugin-app-collector.ts
+@@ -27,6 +27,7 @@ import type {
+   PluginSidebarFooterActionRegistration,
+   ExperimentalSidebarNavigationRegistration,
+   ExperimentalSidebarHeaderRegistration,
++  ExperimentalSidebarLayoutProviderRegistration,
+   PluginSourceCodeRendererRegistration,
+   PluginThreadHeaderActionRegistration,
+   ExperimentalPluginBrowserToolbarActionRegistration,
+@@ -349,6 +350,7 @@ export interface CollectedPluginAppRegistrations {
+   experimentalSidebarFooterItems: CollectedExperimentalSidebarFooterItem[];
+   experimentalSidebarNavigations: ExperimentalSidebarNavigationRegistration[];
+   experimentalSidebarHeaders: ExperimentalSidebarHeaderRegistration[];
++  experimentalSidebarLayoutProviders: ExperimentalSidebarLayoutProviderRegistration[];
+   threadLists: PluginThreadListRegistration[];
+   threadHeaderActions: PluginThreadHeaderActionRegistration[];
+   browserToolbarActions: ExperimentalPluginBrowserToolbarActionRegistration[];
+@@ -475,6 +477,7 @@ export function collectPluginAppRegistrations(
+     experimentalSidebarFooterItems: [],
+     experimentalSidebarNavigations: [],
+     experimentalSidebarHeaders: [],
++    experimentalSidebarLayoutProviders: [],
+     threadLists: [],
+     threadHeaderActions: [],
+     browserToolbarActions: [],
+@@ -504,6 +507,7 @@ export function collectPluginAppRegistrations(
+     sidebarFooterItem: new Set<string>(),
+     sidebarNavigation: new Set<string>(),
+     sidebarHeader: new Set<string>(),
++    sidebarLayoutProvider: new Set<string>(),
+     threadList: new Set<string>(),
+     threadHeaderAction: new Set<string>(),
+     browserToolbarAction: new Set<string>(),
+@@ -758,6 +762,15 @@ export function collectPluginAppRegistrations(
+           ),
+         );
+       },
++      experimental_sidebarLayoutProvider(registration) {
++        const kind = "slots.experimental_sidebarLayoutProvider";
++        const id = requireSlotId(kind, registration?.id);
++        requireUniqueId(kind, seenIds.sidebarLayoutProvider, id);
++        collected.experimentalSidebarLayoutProviders.push({
++          id,
++          component: requireComponent(kind, registration.component),
++        });
++      },
+       experimental_threadList(registration) {
+         collected.threadLists.push(
+           collectTitledComponent(
+diff --git a/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-api-index.md b/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-api-index.md
+index 6bcec41e18fc3e9cccafb4edaa74fe19e80ea58c..bcea6184741765aa3217843e0550d857e242ba50 100644
+--- a/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-api-index.md
++++ b/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-api-index.md
+@@ -115,6 +115,8 @@ Read the installed SDK declarations for the exact current signatures.
+ - `ExperimentalSidebarNavigationIconProps`
+ - `ExperimentalSidebarNavigationProps`
+ - `ExperimentalSidebarHeaderProps`
++- `ExperimentalSidebarLayout`
++- `ExperimentalSidebarLayoutProviderProps`
+ - `PluginThreadListProps`
+ - `PluginThreadHeaderActionProps`
+ - `ExperimentalPluginBrowserToolbarActionProps`
+@@ -160,6 +162,7 @@ Read the installed SDK declarations for the exact current signatures.
+ - `ExperimentalSidebarFooter`
+ - `ExperimentalSidebarNavigationRegistration`
+ - `ExperimentalSidebarHeaderRegistration`
++- `ExperimentalSidebarLayoutProviderRegistration`
+ - `PluginSidebarThreadIndicator`
+ - `PluginSidebarThreadActivity`
+ - `PluginSidebarThread`
+diff --git a/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-core-slots.md b/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-core-slots.md
+index 4b4ea1385b4cd10634b7bdba874ffa4957b57261..2f90eec9e6fc897a8b87279faf07b24079047e48 100644
+--- a/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-core-slots.md
++++ b/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-core-slots.md
+@@ -245,6 +245,12 @@ target? })`. Inside the fixed-tab component,
+   one under Settings → Appearance → Header, and the default is bb's controls
+   only. Content is clipped to the row. Experimental: see
+   `docs/api_to_audit.md`.
++- `experimental_sidebarLayoutProvider` → supplies an
++  `ExperimentalSidebarLayout` to BB's bundled Navigation plugin without taking
++  over its renderer or actions. The component receives `publish(layout)` and
++  `subscribeChanges(listener)`. BB selects the first provider in deterministic
++  slot order, clears stale provider state on reload, and sends native reorder
++  and visibility changes back through the subscription.
+ - `fileOpener` → `{ path: string, source, experimental_lineRange?, Original }` — register as a viewer/editor
+   for file extensions: `{ id, title, extensions: ["md"], component }`.
+   Matching files use the first applicable opener in deterministic slot order
+diff --git a/plugins/plugin-api-docs/src/surfaces.ts b/plugins/plugin-api-docs/src/surfaces.ts
+index ef967daf540262aa79c07461a1f29515c935e230..009c8ff2e7ff35f29291d8fdeb4c6df5ca287597 100644
+--- a/plugins/plugin-api-docs/src/surfaces.ts
++++ b/plugins/plugin-api-docs/src/surfaces.ts
+@@ -56,6 +56,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+           "Draw bb's icons and plugin branding, and each panel's live sidebar accessory",
+           "Put controls, such as navigation icons, in the header row beside the sidebar toggle with experimental_sidebarHeader, and have the navigation slot render nothing while that header is mounted",
+           "Start from bb's own rows: they ship as the bundled Navigation plugin, which uses only this API",
++          "Supply ordering and visibility data to bb's bundled Navigation plugin without taking over its controls",
+           "Leave the thread list, footer, drawer, and resize handle under bb's control",
+         ],
+         apiSymbols: [
+@@ -76,6 +77,9 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+           "ExperimentalSidebarNavigationSplitOptions",
+           "ExperimentalSidebarHeaderRegistration",
+           "ExperimentalSidebarHeaderProps",
++          "ExperimentalSidebarLayout",
++          "ExperimentalSidebarLayoutProviderProps",
++          "ExperimentalSidebarLayoutProviderRegistration",
+         ],
+         firstParty: ["Navigation"],
+         experimental: true,
+-- 
+2.53.0
+

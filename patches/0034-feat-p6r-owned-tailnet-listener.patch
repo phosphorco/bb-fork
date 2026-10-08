@@ -1,4 +1,4 @@
-From 1b0b3c7ec9e05627b41ad8c88190293afb785ccb Mon Sep 17 00:00:00 2001
+From 2a406d7dd9e8952cfa2438b90a0f4b7d0dd2f019 Mon Sep 17 00:00:00 2001
 From: bb-fork <bb-fork@invalid.local>
 Date: Wed, 23 Sep 2026 15:57:33 +0200
 Subject: [PATCH] feat(p6r): serve owned Tailnet ingress with machine fallback
@@ -54,10 +54,10 @@ index e49ad91253e3677f15be9e6c442c1db1021c4447..5b61e1b1177119bbbe2082f66fc8af09
      };
      return context.json(result);
 diff --git a/apps/server/src/start-server.ts b/apps/server/src/start-server.ts
-index f4766bec64643ea278a2b34635efc922fd827291..18a88a14b40a55f7f509aa9c1f219d249062a4b6 100644
+index de39a7711c87068ca5cce044d14b14713c49521a..847d3a97023d5684090f53481a95487a569af0aa 100644
 --- a/apps/server/src/start-server.ts
 +++ b/apps/server/src/start-server.ts
-@@ -319,11 +319,6 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+@@ -375,11 +375,6 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
      pendingServerMove === null
        ? installProviderModelCatalogPrewarm(sweepDeps)
        : null;
@@ -69,7 +69,7 @@ index f4766bec64643ea278a2b34635efc922fd827291..18a88a14b40a55f7f509aa9c1f219d24
  
    if (!isLoopbackHostname(serverConfig.BB_SERVER_BIND_HOST)) {
      logger.warn(
-@@ -338,6 +333,31 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+@@ -394,6 +389,31 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
    });
    injectWebSocket(server);
  
@@ -101,7 +101,7 @@ index f4766bec64643ea278a2b34635efc922fd827291..18a88a14b40a55f7f509aa9c1f219d24
    logger.info(
      {
        bindHost: serverConfig.BB_SERVER_BIND_HOST,
-@@ -369,6 +389,11 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+@@ -425,6 +445,11 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
        });
      }
      pluginCatalogService.startPeriodicRefresh();
@@ -113,7 +113,7 @@ index f4766bec64643ea278a2b34635efc922fd827291..18a88a14b40a55f7f509aa9c1f219d24
      sweepInterval = setInterval(() => {
        if (!isServerMoveFrozen(db)) {
          void runPeriodicSweeps(sweepDeps);
-@@ -411,8 +436,17 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+@@ -469,8 +494,17 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
            resolve();
          });
        });
@@ -133,10 +133,10 @@ index f4766bec64643ea278a2b34635efc922fd827291..18a88a14b40a55f7f509aa9c1f219d24
      return shutdownPromise;
    };
 diff --git a/apps/server/test/services/p6r/native-message-authorship.test.ts b/apps/server/test/services/p6r/native-message-authorship.test.ts
-index ff77545f38f539916374d5214b9c7e4512ab6ab5..5268fb8b27682cb714f91d8dc538be76b8152bad 100644
+index b935cc19af60e125bee15a76bdd08977c5c5958d..f95dceaf3126e88207c5b0c51047a9aee3aeff4e 100644
 --- a/apps/server/test/services/p6r/native-message-authorship.test.ts
 +++ b/apps/server/test/services/p6r/native-message-authorship.test.ts
-@@ -99,6 +99,7 @@ async function fixture() {
+@@ -101,6 +101,7 @@ async function fixture() {
    expect(registry.publish(prepared.value).ok).toBe(true);
    const requestFacts = new WeakMap<object, P6rAdmissionRequestFacts>();
    const admission = createP6rProviderAdmission({
@@ -144,7 +144,7 @@ index ff77545f38f539916374d5214b9c7e4512ab6ab5..5268fb8b27682cb714f91d8dc538be76
      now: Date.now,
      instanceId: "native-proof",
      machineName: "test-server",
-@@ -136,6 +137,8 @@ async function fixture() {
+@@ -138,6 +139,8 @@ async function fixture() {
        : context.json({ error: String(error) }, 500),
    );
    installP6rNativeRequestRoutes(api, admission, "people");
@@ -153,7 +153,7 @@ index ff77545f38f539916374d5214b9c7e4512ab6ab5..5268fb8b27682cb714f91d8dc538be76
    api.use("*", async (_context, next) => {
      if (retireAfterAdmission) prepared.value.registration.dispose();
      await next();
-@@ -573,14 +576,17 @@ it("uses machine attribution when provider enrichment is unavailable, untrusted,
+@@ -575,14 +578,17 @@ it("uses machine attribution when provider enrichment is unavailable, untrusted,
        ...execution,
      });
      expect(outage.status, await outage.clone().text()).toBe(200);
@@ -173,7 +173,7 @@ index ff77545f38f539916374d5214b9c7e4512ab6ab5..5268fb8b27682cb714f91d8dc538be76
      expect(
        listCoreParticipantProfilePage(f.harness.db, {
          threadId: thread.id,
-@@ -633,6 +639,24 @@ it("uses machine attribution when provider enrichment is unavailable, untrusted,
+@@ -635,6 +641,24 @@ it("uses machine attribution when provider enrichment is unavailable, untrusted,
    }
  });
  
@@ -199,10 +199,10 @@ index ff77545f38f539916374d5214b9c7e4512ab6ab5..5268fb8b27682cb714f91d8dc538be76
    const f = await fixture();
    try {
 diff --git a/packages/templates/src/templates/bb-guide-customization.md b/packages/templates/src/templates/bb-guide-customization.md
-index 081b0045d66b3f9e72957b10de54bca54444b049..2a4936062271b671158942754602a7746c1c7caa 100644
+index c5117c0c0234345132343c0e089b83c7e0ca4962..070cdfa667920f9e57cfa2a5b0d7eda809ad97e0 100644
 --- a/packages/templates/src/templates/bb-guide-customization.md
 +++ b/packages/templates/src/templates/bb-guide-customization.md
-@@ -157,18 +157,20 @@ when they do. `test` runs a sample title or commit message through the current
+@@ -204,18 +204,20 @@ when they do. `test` runs a sample title or commit message through the current
  choice. Settings → AI services has the same controls. Each plugin chooses its
  own model.
  
@@ -229,10 +229,10 @@ index 081b0045d66b3f9e72957b10de54bca54444b049..2a4936062271b671158942754602a774
  New browser sends retain their verified author separately from message text,
  including queued sends and retries. Older unattributed messages remain unknown.
 diff --git a/plugins/bb-guide/skills/bb-cli/SKILL.md b/plugins/bb-guide/skills/bb-cli/SKILL.md
-index a99089a02e4e2d8a1681c7f0e9bd121eb51050c0..d88fec976915208dc9e6358d454c500af9386bce 100644
+index 183c127cac81b075dadd7d78d097160fe2dfaf26..47ea80ec11d24e9093943d95627270152209b2b7 100644
 --- a/plugins/bb-guide/skills/bb-cli/SKILL.md
 +++ b/plugins/bb-guide/skills/bb-cli/SKILL.md
-@@ -143,8 +143,10 @@ list`, `get`, `set`, and `reset`.
+@@ -147,8 +147,10 @@ list`, `get`, `set`, and `reset`.
  On Tailscale Serve deployments, an existing `BB_TAILNET_IDENTITY_OWNED_HOST`
  automatically selects the installed Identity Boundaries provider. Do not add a
  second boundary opt-in unless custom ingress or another provider requires it.

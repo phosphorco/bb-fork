@@ -1,0 +1,2028 @@
+From 72159b78ccc9789575647d2b0dbdb8d4e8367eea Mon Sep 17 00:00:00 2001
+From: BB fork integration <bb-fork@invalid.local>
+Date: Mon, 5 Oct 2026 22:04:38 +0200
+Subject: [PATCH 47/47] feat(p6r): adapt owned runtime and message prompt
+ producers
+
+---
+ apps/server/src/services/ai/commit-message.ts |   4 +-
+ .../src/services/plugins/plugin-mentions.ts   |   9 +-
+ .../prompts/render-instruction-prompts.ts     |  21 +
+ .../services/prompts/render-tool-prompts.ts   |  98 +++++
+ .../threads/child-thread-notifications.ts     |  31 +-
+ .../threads/parent-system-messages.ts         | 117 +++++-
+ .../src/services/threads/thread-ownership.ts  |   5 +
+ .../services/threads/thread-runtime-config.ts |  80 +++-
+ .../src/services/threads/thread-send.ts       |  67 ++-
+ .../src/services/threads/title-generation.ts  |  28 +-
+ .../test/prompts/render-tool-prompts.test.ts  | 236 +++++++++++
+ .../prompts/producer-adapters.test.ts         |  87 ++++
+ .../threads/prompt-message-rendering.test.ts  | 397 ++++++++++++++++++
+ .../threads/thread-ownership-debounce.test.ts |  53 +++
+ .../threads/thread-runtime-config.test.ts     | 276 +++++++++++-
+ .../test/threads/thread-send-dispatch.test.ts |  80 ++++
+ 16 files changed, 1502 insertions(+), 87 deletions(-)
+ create mode 100644 apps/server/src/services/prompts/render-instruction-prompts.ts
+ create mode 100644 apps/server/src/services/prompts/render-tool-prompts.ts
+ create mode 100644 apps/server/test/prompts/render-tool-prompts.test.ts
+ create mode 100644 apps/server/test/services/prompts/producer-adapters.test.ts
+ create mode 100644 apps/server/test/threads/prompt-message-rendering.test.ts
+
+diff --git a/apps/server/src/services/ai/commit-message.ts b/apps/server/src/services/ai/commit-message.ts
+index a028bae18e3db01c334bffa2921772a46d402585..e00cbae50a67fba5f4af74b0fc5eacd26b84dd0d 100644
+--- a/apps/server/src/services/ai/commit-message.ts
++++ b/apps/server/src/services/ai/commit-message.ts
+@@ -1,4 +1,4 @@
+-import { renderTemplate } from "@bb/templates";
++import { renderPromptTemplate } from "../prompts/render-prompt.js";
+ import { truncateToWidthAtWordBoundary } from "@bb/text-utils";
+ import type { LoggedWorkSessionDeps } from "../../types.js";
+ import { runTextAiTask } from "./ai-tasks.js";
+@@ -15,7 +15,7 @@ export interface GenerateCommitMessageArgs {
+ export function buildCommitMessagePrompt(
+   args: GenerateCommitMessageArgs,
+ ): string {
+-  return renderTemplate("generateCommitMessage", {
++  return renderPromptTemplate("generateCommitMessage", {
+     diffDescription: args.diffDescription,
+     shortstat: args.shortstat,
+     files: args.files,
+diff --git a/apps/server/src/services/plugins/plugin-mentions.ts b/apps/server/src/services/plugins/plugin-mentions.ts
+index d587e68fe223edfc33e1f6ec682e7366f46b085b..a06a788b20a89fb716bc61b492a52120ad3cd744 100644
+--- a/apps/server/src/services/plugins/plugin-mentions.ts
++++ b/apps/server/src/services/plugins/plugin-mentions.ts
+@@ -1,3 +1,4 @@
++import { renderPrompt } from "../prompts/render-prompt.js";
+ import type { P6rMentionTarget, PromptInput } from "@bb/domain";
+ import { ApiError } from "../../errors.js";
+ import { resolvePluginMention } from "./plugin-agent-contributions.js";
+@@ -50,7 +51,13 @@ async function resolvePluginMentionResources(
+     const contextInputs: PromptInput[] = [
+       {
+         type: "text",
+-        text: `Context for @${resource.label} (resolved by plugin "${resource.pluginId}"):\n\n${result.context}`,
++        text: `${renderPrompt({
++          id: "bb.mention.context-header",
++          kind: "message",
++          text: `Context for @${resource.label} (resolved by plugin "${resource.pluginId}"):\n\n`,
++          inputs: { label: resource.label, pluginId: resource.pluginId },
++          context: { sourcePluginId: resource.pluginId },
++        })}${result.context}`,
+         mentions: [],
+         visibility: "agent-only",
+       },
+diff --git a/apps/server/src/services/prompts/render-instruction-prompts.ts b/apps/server/src/services/prompts/render-instruction-prompts.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..056108399bf4d05c812c259877ca9d7310609cec
+--- /dev/null
++++ b/apps/server/src/services/prompts/render-instruction-prompts.ts
+@@ -0,0 +1,21 @@
++import type { P6rPromptContext } from "@get-bb/plugin-sdk";
++import { renderPrompt } from "./render-prompt.js";
++
++export function renderInstructionPrompt(
++  id: string,
++  text: string,
++  context: P6rPromptContext,
++): string {
++  return renderPrompt({ id, kind: "instruction", text, context });
++}
++
++export function renderInstructionAssembly(
++  sections: readonly string[],
++  context: P6rPromptContext,
++): string {
++  return renderInstructionPrompt(
++    "bb.instructions.assembly",
++    sections.join("\n\n"),
++    context,
++  );
++}
+diff --git a/apps/server/src/services/prompts/render-tool-prompts.ts b/apps/server/src/services/prompts/render-tool-prompts.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..796bdce8bf51eb98cf0e1c33ea831e47aaa78e93
+--- /dev/null
++++ b/apps/server/src/services/prompts/render-tool-prompts.ts
+@@ -0,0 +1,98 @@
++import type { DynamicTool } from "@bb/domain";
++import type { P6rPromptContext } from "@get-bb/plugin-sdk";
++import { renderPrompt } from "./render-prompt.js";
++
++const schemaMaps = new Set([
++  "properties",
++  "patternProperties",
++  "$defs",
++  "definitions",
++  "dependentSchemas",
++]);
++const schemaSingles = new Set([
++  "additionalProperties",
++  "unevaluatedProperties",
++  "propertyNames",
++  "contains",
++  "additionalItems",
++  "unevaluatedItems",
++  "not",
++  "if",
++  "then",
++  "else",
++  "contentSchema",
++]);
++const schemaArrays = new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
++
++function isObject(value: unknown): value is Record<string, unknown> {
++  return typeof value === "object" && value !== null && !Array.isArray(value);
++}
++
++function pointerSegment(value: string): string {
++  return value.replaceAll("~", "~0").replaceAll("/", "~1");
++}
++
++function renderSchema(
++  schema: unknown,
++  toolName: string,
++  pointer: string,
++  context: P6rPromptContext,
++): void {
++  if (!isObject(schema)) return;
++  for (const [key, value] of Object.entries(schema)) {
++    const childPointer = `${pointer}/${pointerSegment(key)}`;
++    if (key === "description" && typeof value === "string") {
++      schema[key] = renderPrompt({
++        id: `bb.tool.${toolName}.schema${pointer}/description`,
++        kind: "schema-description",
++        text: value,
++        context,
++      });
++    } else if (schemaMaps.has(key) && isObject(value)) {
++      for (const [name, child] of Object.entries(value)) {
++        renderSchema(
++          child,
++          toolName,
++          `${childPointer}/${pointerSegment(name)}`,
++          context,
++        );
++      }
++    } else if (schemaSingles.has(key)) {
++      renderSchema(value, toolName, childPointer, context);
++    } else if (schemaArrays.has(key) || key === "items") {
++      if (Array.isArray(value)) {
++        value.forEach((child, index) => {
++          renderSchema(child, toolName, `${childPointer}/${index}`, context);
++        });
++      } else if (key === "items") {
++        renderSchema(value, toolName, childPointer, context);
++      }
++    } else if (key === "dependencies" && isObject(value)) {
++      for (const [name, child] of Object.entries(value)) {
++        if (isObject(child)) {
++          renderSchema(
++            child,
++            toolName,
++            `${childPointer}/${pointerSegment(name)}`,
++            context,
++          );
++        }
++      }
++    }
++  }
++}
++
++export function renderToolPrompts(
++  tool: DynamicTool,
++  context: P6rPromptContext,
++): DynamicTool {
++  const inputSchema = structuredClone(tool.inputSchema);
++  const description = renderPrompt({
++    id: `bb.tool.${tool.name}.description`,
++    kind: "tool-description",
++    text: tool.description,
++    context,
++  });
++  renderSchema(inputSchema, tool.name, "", context);
++  return { ...tool, description, inputSchema };
++}
+diff --git a/apps/server/src/services/threads/child-thread-notifications.ts b/apps/server/src/services/threads/child-thread-notifications.ts
+index 5f8f38c6ca91dc54a5175ffe59a1d90336754250..6354c916d5df51255b206c054757776f55fcf4ce 100644
+--- a/apps/server/src/services/threads/child-thread-notifications.ts
++++ b/apps/server/src/services/threads/child-thread-notifications.ts
+@@ -1,3 +1,4 @@
++import type { P6rPromptContext } from "@get-bb/plugin-sdk";
+ import type {
+   PromptInput,
+   SystemMessageSubject,
+@@ -12,6 +13,7 @@ import {
+ } from "../../testing/test-fault-barriers.js";
+ import {
+   buildParentSystemInputFromTemplateSlot,
++  buildParentSystemInputFromSegments,
+   buildParentSystemThreadMention,
+   parentSystemThreadLabel,
+   queueParentSystemMessage,
+@@ -54,10 +56,12 @@ interface FormatChildThreadTurnStatusLineArgs {
+ }
+ 
+ interface BuildChildThreadTurnStatusBatchInputArgs {
++  context?: P6rPromptContext;
+   items: ChildThreadTurnNotificationBatchItem[];
+ }
+ 
+ interface BuildChildThreadNeedsAttentionInputArgs {
++  context?: P6rPromptContext;
+   blockerSummary: string | null;
+   childThread: ChildThreadNotificationSource;
+ }
+@@ -77,7 +81,6 @@ interface QueueChildThreadNeedsAttentionNotificationArgs {
+ const CHILD_THREAD_TURN_NOTIFICATION_BATCH_DELAY_MS = 2_000;
+ const CHILD_THREAD_OUTCOME_BATCH_UPDATES_SLOT =
+   "__BB_CHILD_THREAD_OUTCOME_BATCH_UPDATES__";
+-const CHILD_THREAD_MENTION_SLOT = "__BB_CHILD_THREAD_MENTION__";
+ const CHILD_THREAD_TERMINAL_OUTPUT_EXCERPT_CHAR_LIMIT = 4_000;
+ const CHILD_THREAD_OUTPUT_TRUNCATION_MARKER = "\n\n[... output truncated ...]";
+ const CHILD_THREAD_INSPECTION_GUIDANCE =
+@@ -314,6 +317,8 @@ export function buildChildThreadTurnStatusBatchInput(
+     updates: CHILD_THREAD_OUTCOME_BATCH_UPDATES_SLOT,
+   });
+   return buildParentSystemInputFromTemplateSlot({
++    id: "systemMessageChildThreadOutcomeBatch",
++    ...(args.context ? { context: args.context } : {}),
+     renderedText,
+     slot: CHILD_THREAD_OUTCOME_BATCH_UPDATES_SLOT,
+     segments: buildChildThreadTurnStatusBatchSegments({ lines }),
+@@ -326,19 +331,19 @@ export function buildChildThreadNeedsAttentionInput(
+   const mention = buildParentSystemThreadMention({
+     thread: args.childThread,
+   });
+-  const renderedText = renderTemplate(
+-    "systemMessageChildThreadNeedsAttention",
+-    {
+-      blockerSummary: formatChildThreadNeedsAttentionSummary(
+-        args.blockerSummary,
+-      ),
+-      threadMention: CHILD_THREAD_MENTION_SLOT,
+-    },
++  const blockerSummary = formatChildThreadNeedsAttentionSummary(
++    args.blockerSummary,
+   );
+-  return buildParentSystemInputFromTemplateSlot({
+-    renderedText,
+-    slot: CHILD_THREAD_MENTION_SLOT,
++  return buildParentSystemInputFromSegments({
++    id: "systemMessageChildThreadNeedsAttention",
++    ...(args.context ? { context: args.context } : {}),
++    collisionTexts: [blockerSummary],
+     segments: [{ kind: "mention", mention }],
++    buildText: (threadMention) =>
++      renderTemplate("systemMessageChildThreadNeedsAttention", {
++        blockerSummary,
++        threadMention,
++      }),
+   });
+ }
+ 
+@@ -383,6 +388,7 @@ async function flushChildThreadTurnNotificationBatch(
+     await queueParentSystemMessage(deps, {
+       input: buildChildThreadTurnStatusBatchInput({
+         items: batch.items,
++        context: { threadId: parentThreadId },
+       }),
+       parentThreadId,
+       ...childThreadTurnStatusBatchTaxonomy(batch.items),
+@@ -479,6 +485,7 @@ export async function queueChildThreadNeedsAttentionNotificationBestEffort(
+       input: buildChildThreadNeedsAttentionInput({
+         blockerSummary: args.blockerSummary,
+         childThread: args.childThread,
++        context: { threadId: args.parentThreadId },
+       }),
+       parentThreadId: args.parentThreadId,
+       systemMessageKind: systemMessageKindForTemplate(
+diff --git a/apps/server/src/services/threads/parent-system-messages.ts b/apps/server/src/services/threads/parent-system-messages.ts
+index 51a1c000cea85fa785b180c416e06aa88ab3f3e1..6acda8b2cb075a3b1626f41f64363d2ffa53e1bf 100644
+--- a/apps/server/src/services/threads/parent-system-messages.ts
++++ b/apps/server/src/services/threads/parent-system-messages.ts
+@@ -1,3 +1,6 @@
++import { randomUUID } from "node:crypto";
++import type { P6rPromptContext } from "@get-bb/plugin-sdk";
++import { renderPrompt } from "../prompts/render-prompt.js";
+ import {
+   getEnvironment,
+   getThread,
+@@ -91,10 +94,16 @@ export type ParentSystemInputSegment =
+   | ParentSystemMentionSegment;
+ 
+ interface BuildParentSystemInputFromSegmentsArgs {
++  id: string;
++  context?: P6rPromptContext;
++  buildText?: (text: string) => string;
++  collisionTexts?: readonly string[];
+   segments: readonly ParentSystemInputSegment[];
+ }
+ 
+ interface BuildParentSystemInputFromTemplateSlotArgs {
++  id: string;
++  context?: P6rPromptContext;
+   renderedText: string;
+   segments: readonly ParentSystemInputSegment[];
+   slot: string;
+@@ -156,30 +165,108 @@ function splitRenderedParentSystemSlot(
+   };
+ }
+ 
+-function buildParentSystemInputFromSegments(
+-  args: BuildParentSystemInputFromSegmentsArgs,
+-): PromptInput[] {
+-  let text = "";
+-  const mentions: PromptTextMention[] = [];
++export function parentSystemSegmentsFromText(
++  input: Extract<PromptInput, { type: "text" }>,
++  options?: { trimEnd: boolean },
++): ParentSystemInputSegment[] {
++  const text = options?.trimEnd ? input.text.trimEnd() : input.text;
++  const segments: ParentSystemInputSegment[] = [];
++  let end = 0;
++  let previousMentionEnd = 0;
++  for (const mention of [...input.mentions].sort((a, b) => a.start - b.start)) {
++    if (
++      !Number.isInteger(mention.start) ||
++      !Number.isInteger(mention.end) ||
++      mention.start < previousMentionEnd ||
++      mention.end <= mention.start ||
++      mention.end > input.text.length
++    ) {
++      throw new Error("Invalid structured prompt mention range");
++    }
++    previousMentionEnd = mention.end;
++    const visibleEnd = Math.min(mention.end, text.length);
++    if (mention.start >= visibleEnd) {
++      throw new Error(
++        "Structured prompt mention was removed by trailing whitespace trimming",
++      );
++    }
++    segments.push({ kind: "text", text: text.slice(end, mention.start) });
++    segments.push({
++      kind: "mention",
++      mention: {
++        resource: mention.resource,
++        serializedText: text.slice(mention.start, visibleEnd),
++      },
++    });
++    end = visibleEnd;
++  }
++  segments.push({ kind: "text", text: text.slice(end) });
++  return segments;
++}
+ 
++export function buildParentSystemInputFromSegments(
++  args: BuildParentSystemInputFromSegmentsArgs,
++): Extract<PromptInput, { type: "text" }>[] {
++  const inputTexts = args.segments
++    .map((segment) =>
++      segment.kind === "text" ? segment.text : segment.mention.serializedText,
++    )
++    .concat(args.collisionTexts ?? []);
++  inputTexts.push(inputTexts.join(""));
++  const nonce = randomUUID();
++  let attempt = 0;
++  let prefix: string;
++  do {
++    prefix = `__BB_PROMPT_MENTION_${nonce}_${attempt++}_`;
++  } while (inputTexts.some((text) => text.includes(prefix)));
++  const protectedMentions: {
++    token: string;
++    mention: ParentSystemRenderedMention;
++  }[] = [];
++  let maskedText = "";
+   for (const segment of args.segments) {
+     if (segment.kind === "text") {
+-      text += segment.text;
+-      continue;
+-    }
+-
+-    if (segment.mention.serializedText.length === 0) {
+-      throw new Error("Parent system mention text must not be empty");
++      maskedText += segment.text;
++    } else {
++      if (segment.mention.serializedText.length === 0) {
++        throw new Error("Parent system mention text must not be empty");
++      }
++      const token = `${prefix}${protectedMentions.length}__`;
++      protectedMentions.push({ token, mention: segment.mention });
++      maskedText += token;
+     }
++  }
++  const renderedText = renderPrompt({
++    id: args.id,
++    kind: "message",
++    text: args.buildText ? args.buildText(maskedText) : maskedText,
++    ...(args.context ? { context: args.context } : {}),
++    slots: protectedMentions.map(({ token, mention }) => ({
++      token,
++      text: mention.serializedText,
++    })),
++  });
++  const ordered = protectedMentions
++    .map((entry) => ({
++      ...entry,
++      start: renderedText.indexOf(entry.token),
++    }))
++    .sort((a, b) => a.start - b.start);
++  let text = "";
++  let cursor = 0;
++  const mentions: PromptTextMention[] = [];
++  for (const entry of ordered) {
++    text += renderedText.slice(cursor, entry.start);
+     const start = text.length;
+-    text += segment.mention.serializedText;
++    text += entry.mention.serializedText;
+     mentions.push({
+       start,
+       end: text.length,
+-      resource: segment.mention.resource,
++      resource: entry.mention.resource,
+     });
++    cursor = entry.start + entry.token.length;
+   }
+-
++  text += renderedText.slice(cursor);
+   return [{ type: "text", text, mentions }];
+ }
+ 
+@@ -188,6 +275,8 @@ export function buildParentSystemInputFromTemplateSlot(
+ ): PromptInput[] {
+   const parts = splitRenderedParentSystemSlot(args);
+   return buildParentSystemInputFromSegments({
++    id: args.id,
++    ...(args.context ? { context: args.context } : {}),
+     segments: [
+       { kind: "text", text: parts.prefix },
+       ...args.segments,
+diff --git a/apps/server/src/services/threads/thread-ownership.ts b/apps/server/src/services/threads/thread-ownership.ts
+index 60ab25785507071f1747f4a15eee351b7db6e4d8..ce4865d2c8a498c917c7a817a1795e34d583472c 100644
+--- a/apps/server/src/services/threads/thread-ownership.ts
++++ b/apps/server/src/services/threads/thread-ownership.ts
+@@ -105,12 +105,15 @@ async function queueParentSystemMessageBestEffort(
+ function buildThreadOwnershipSystemInput(
+   templateId: ThreadOwnershipTemplateId,
+   thread: ThreadLabelSource,
++  parentThreadId: string,
+ ): PromptInput[] {
+   const mention = buildParentSystemThreadMention({ thread });
+   const renderedText = renderTemplate(templateId, {
+     threadMention: THREAD_OWNERSHIP_MENTION_SLOT,
+   });
+   return buildParentSystemInputFromTemplateSlot({
++    id: templateId,
++    context: { threadId: parentThreadId },
+     renderedText,
+     slot: THREAD_OWNERSHIP_MENTION_SLOT,
+     segments: [{ kind: "mention", mention }],
+@@ -186,6 +189,7 @@ async function sendThreadOwnershipNotices(
+       input: buildThreadOwnershipSystemInput(
+         "systemMessageThreadOwnershipAssigned",
+         thread,
++        thread.parentThreadId,
+       ),
+       reason: "assigned",
+       templateId: "systemMessageThreadOwnershipAssigned",
+@@ -199,6 +203,7 @@ async function sendThreadOwnershipNotices(
+       input: buildThreadOwnershipSystemInput(
+         "systemMessageThreadOwnershipRemoved",
+         thread,
++        previousParentThreadId,
+       ),
+       reason: "removed",
+       templateId: "systemMessageThreadOwnershipRemoved",
+diff --git a/apps/server/src/services/threads/thread-runtime-config.ts b/apps/server/src/services/threads/thread-runtime-config.ts
+index 1b3d95fe99f8eb13dda9e597e21991bcfddb4922..17f3715674cc25f2680cef1edde67484baf30b2b 100644
+--- a/apps/server/src/services/threads/thread-runtime-config.ts
++++ b/apps/server/src/services/threads/thread-runtime-config.ts
+@@ -38,6 +38,11 @@ import {
+   readWorkspaceAgentInstructions,
+ } from "./workspace-agent-instructions.js";
+ import { resolveDeprecatedWorkspaceProvisionType } from "../environments/environment-response.js";
++import { renderToolPrompts } from "../prompts/render-tool-prompts.js";
++import {
++  renderInstructionPrompt,
++  renderInstructionAssembly,
++} from "../prompts/render-instruction-prompts.js";
+ 
+ const UPDATE_ENVIRONMENT_DIRECTORY_INSTRUCTIONS =
+   "If the user asks you to move this thread to another checkout, worktree, or directory, make sure the target directory exists, then call `update_environment_directory` with its absolute path. After it succeeds, stop work in the current turn; future turns will run in the updated environment.";
+@@ -221,18 +226,42 @@ export async function resolveThreadRuntimeCommandConfig(
+   const dynamicToolContributions = resolveDynamicTools(
+     conditionalConfiguration.tools,
+   );
+-  const dynamicTools = dynamicToolContributions.map(
+-    (contribution) => contribution.tool,
++  const promptContext = {
++    threadId: args.thread.id,
++    projectId: project.id,
++    providerId: args.thread.providerId,
++  };
++  const dynamicTools = dynamicToolContributions.map((contribution) =>
++    renderToolPrompts(contribution.tool, {
++      ...promptContext,
++      ...(contribution.pluginId === null
++        ? {}
++        : { sourcePluginId: contribution.pluginId }),
++    }),
+   );
+   const instructionSections: string[] = [];
+   for (const contribution of dynamicToolContributions) {
+     if (!contribution.instructions) continue;
+     if (contribution.pluginId === null) {
+-      instructionSections.push(contribution.instructions);
++      instructionSections.push(
++        renderInstructionPrompt(
++          `bb.tool.${contribution.tool.name}.instructions`,
++          contribution.instructions,
++          promptContext,
++        ),
++      );
+     } else {
+       instructionSections.push(
+-        `The following instructions come from the BB plugin "${contribution.pluginId}" for its tool "${contribution.tool.name}":`,
+-        contribution.instructions,
++        renderInstructionPrompt(
++          `bb.tool.${contribution.tool.name}.instructions.attribution`,
++          `The following instructions come from the BB plugin "${contribution.pluginId}" for its tool "${contribution.tool.name}":`,
++          { ...promptContext, sourcePluginId: contribution.pluginId },
++        ),
++        renderInstructionPrompt(
++          `bb.tool.${contribution.tool.name}.instructions`,
++          contribution.instructions,
++          { ...promptContext, sourcePluginId: contribution.pluginId },
++        ),
+       );
+     }
+   }
+@@ -259,29 +288,56 @@ export async function resolveThreadRuntimeCommandConfig(
+       text = text.slice(0, PLUGIN_INSTRUCTION_CONTRIBUTION_MAX_CHARS);
+     }
+     instructionSections.push(
+-      `The following instructions come from the BB plugin "${contribution.pluginId}":`,
+-      text,
++      renderInstructionPrompt(
++        `bb.plugin.${contribution.pluginId}.instructions.attribution`,
++        `The following instructions come from the BB plugin "${contribution.pluginId}":`,
++        { ...promptContext, sourcePluginId: contribution.pluginId },
++      ),
++      renderInstructionPrompt(
++        `bb.plugin.${contribution.pluginId}.instructions`,
++        text,
++        { ...promptContext, sourcePluginId: contribution.pluginId },
++      ),
+     );
+   }
+   for (const contribution of conditionalConfiguration.dynamicInstructions) {
+     instructionSections.push(
+-      `The following dynamic instructions come from the BB plugin "${contribution.pluginId}":`,
+-      contribution.text,
++      renderInstructionPrompt(
++        `bb.plugin.${contribution.pluginId}.dynamic-instructions.attribution`,
++        `The following dynamic instructions come from the BB plugin "${contribution.pluginId}":`,
++        { ...promptContext, sourcePluginId: contribution.pluginId },
++      ),
++      renderInstructionPrompt(
++        `bb.plugin.${contribution.pluginId}.dynamic-instructions`,
++        contribution.text,
++        { ...promptContext, sourcePluginId: contribution.pluginId },
++      ),
+     );
+   }
+   if (dataDirAgentInstructions) {
+     instructionSections.push(
+-      `The following user instructions come from <dataDir>/${DATA_DIR_AGENT_INSTRUCTIONS_RELATIVE_PATH}:`,
++      renderInstructionPrompt(
++        "bb.instructions.data-dir.attribution",
++        `The following user instructions come from <dataDir>/${DATA_DIR_AGENT_INSTRUCTIONS_RELATIVE_PATH}:`,
++        promptContext,
++      ),
+       dataDirAgentInstructions,
+     );
+   }
+   if (workspaceAgentInstructions) {
+     instructionSections.push(
+-      `The following workspace instructions come from ${WORKSPACE_AGENT_INSTRUCTIONS_RELATIVE_PATH}:`,
++      renderInstructionPrompt(
++        "bb.instructions.workspace.attribution",
++        `The following workspace instructions come from ${WORKSPACE_AGENT_INSTRUCTIONS_RELATIVE_PATH}:`,
++        promptContext,
++      ),
+       workspaceAgentInstructions,
+     );
+   }
+-  const instructions = instructionSections.join("\n\n");
++  const instructions = renderInstructionAssembly(
++    instructionSections,
++    promptContext,
++  );
+   const threadStoragePath = await requireLiveThreadStoragePath(deps, {
+     hostId: args.environment.hostId,
+     threadId: args.thread.id,
+diff --git a/apps/server/src/services/threads/thread-send.ts b/apps/server/src/services/threads/thread-send.ts
+index b85535281a4cfdd911abe255a7b6e8b784258207..434a78302fc5abb5e5d7b7d0e0599698ff4425cc 100644
+--- a/apps/server/src/services/threads/thread-send.ts
++++ b/apps/server/src/services/threads/thread-send.ts
+@@ -1,3 +1,8 @@
++import {
++  buildParentSystemInputFromSegments,
++  parentSystemSegmentsFromText,
++} from "./parent-system-messages.js";
++import type { P6rPromptContext } from "@get-bb/plugin-sdk";
+ import {
+   readP6rNativeAttribution,
+   withP6rNativeAuthorContext,
+@@ -122,15 +127,11 @@ interface ResolveMessageSenderArgs {
+ }
+ 
+ interface FormatAgentThreadInputArgs {
++  context?: P6rPromptContext;
+   input: PromptInput[];
+   senderThreadId: string;
+ }
+ 
+-interface BuildAgentThreadMessageTextArgs {
+-  messageText: string;
+-  senderThreadId: string;
+-}
+-
+ interface SendThreadMessageTransactionPreflightArgs {
+   tx: DbTransaction;
+ }
+@@ -328,43 +329,30 @@ export function resolveMessageSenderThreadId(
+   return senderThread.id;
+ }
+ 
+-function buildAgentThreadMessageText(
+-  args: BuildAgentThreadMessageTextArgs,
+-): string {
+-  return renderTemplate("agentThreadMessage", {
+-    messageText: args.messageText,
+-    senderThreadId: args.senderThreadId,
+-  });
+-}
+-
+ export function formatAgentThreadInput(
+   args: FormatAgentThreadInputArgs,
+ ): PromptInput[] {
+   const firstTextIndex = args.input.findIndex((item) => item.type === "text");
++  const wrap = (item: TextPromptInput): TextPromptInput => ({
++    ...item,
++    ...buildParentSystemInputFromSegments({
++      id: "agentThreadMessage",
++      ...(args.context ? { context: args.context } : {}),
++      segments: parentSystemSegmentsFromText(item, { trimEnd: true }),
++      collisionTexts: [args.senderThreadId],
++      buildText: (messageText) =>
++        renderTemplate("agentThreadMessage", {
++          messageText,
++          senderThreadId: args.senderThreadId,
++        }),
++    })[0]!,
++  });
+   if (firstTextIndex === -1) {
+-    const textItem: TextPromptInput = {
+-      type: "text",
+-      text: buildAgentThreadMessageText({
+-        messageText: "",
+-        senderThreadId: args.senderThreadId,
+-      }),
+-      mentions: [],
+-    };
+-    return [textItem, ...args.input];
++    return [wrap({ type: "text", text: "", mentions: [] }), ...args.input];
+   }
+-
+-  return args.input.map((item, index) => {
+-    if (index !== firstTextIndex || item.type !== "text") {
+-      return item;
+-    }
+-    return {
+-      ...item,
+-      text: buildAgentThreadMessageText({
+-        messageText: item.text,
+-        senderThreadId: args.senderThreadId,
+-      }),
+-    };
+-  });
++  return args.input.map((item, index) =>
++    index === firstTextIndex && item.type === "text" ? wrap(item) : item,
++  );
+ }
+ 
+ type UserMessageSentProperties = Extract<
+@@ -521,12 +509,18 @@ async function sendThreadMessageWithoutContextClear(
+     senderThreadId: payload.senderThreadId,
+     targetThread: thread,
+   });
++  const context = {
++    threadId: thread.id,
++    projectId: thread.projectId,
++    providerId: thread.providerId,
++  };
+   let inputGroups = payload.inputGroups
+     ? payload.inputGroups.map((inputGroup) =>
+         senderThreadId
+           ? formatAgentThreadInput({
+               input: inputGroup,
+               senderThreadId,
++              context,
+             })
+           : inputGroup,
+       )
+@@ -538,6 +532,7 @@ async function sendThreadMessageWithoutContextClear(
+         ? formatAgentThreadInput({
+             input: payload.input,
+             senderThreadId,
++            context,
+           })
+         : payload.input;
+   let p6rMentionedTargets: P6rMentionTarget[];
+diff --git a/apps/server/src/services/threads/title-generation.ts b/apps/server/src/services/threads/title-generation.ts
+index 4a55871a4c8c08b314ed65001cb630719513529d..ad50c045799764b13ae196c3f0459d3e07413be1 100644
+--- a/apps/server/src/services/threads/title-generation.ts
++++ b/apps/server/src/services/threads/title-generation.ts
+@@ -1,4 +1,5 @@
+-import { renderTemplate } from "@bb/templates";
++import type { P6rPromptContext } from "@get-bb/plugin-sdk";
++import { renderPromptTemplate } from "../prompts/render-prompt.js";
+ import { getThread, updateThread } from "@bb/db";
+ import {
+   removeCommandMentionsFromPromptInput,
+@@ -156,19 +157,26 @@ export function sanitizeGeneratedBranchSlug(value: string): string | null {
+   return slug.length > 0 ? slug : null;
+ }
+ 
+-export function buildThreadTitlePrompt(input: PromptInput[]): string | null {
++export function buildThreadTitlePrompt(
++  input: PromptInput[],
++  context?: P6rPromptContext,
++): string | null {
+   const fallback = deriveTitleFallback(input);
+   if (!fallback) {
+     return null;
+   }
+   const commands = collectInvokedPromptCommands(input);
+   const body = promptTextWithoutCommands(input, commands);
+-  return renderTemplate("generateThreadMetadata", {
+-    cleanedPrompt: body.length > 0 ? clampPromptText(body) : fallback,
+-    ...(commands.length > 0
+-      ? { invokedCommands: formatInvokedCommands(commands) }
+-      : {}),
+-  });
++  return renderPromptTemplate(
++    "generateThreadMetadata",
++    {
++      cleanedPrompt: body.length > 0 ? clampPromptText(body) : fallback,
++      ...(commands.length > 0
++        ? { invokedCommands: formatInvokedCommands(commands) }
++        : {}),
++    },
++    context,
++  );
+ }
+ 
+ export async function generateThreadMetadataWithOutcome(
+@@ -185,7 +193,9 @@ export async function generateThreadMetadataWithOutcome(
+     ...(reason ? { reason } : {}),
+   });
+ 
+-  const prompt = buildThreadTitlePrompt(args.input);
++  const prompt = buildThreadTitlePrompt(args.input, {
++    threadId: args.threadId,
++  });
+   if (prompt === null) {
+     return complete(null, "empty-input");
+   }
+diff --git a/apps/server/test/prompts/render-tool-prompts.test.ts b/apps/server/test/prompts/render-tool-prompts.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..43fd9c18d6b8980263d8003efd491ab8f5eb9711
+--- /dev/null
++++ b/apps/server/test/prompts/render-tool-prompts.test.ts
+@@ -0,0 +1,236 @@
++import { afterEach, describe, expect, it } from "vitest";
++import type { DynamicTool } from "@bb/domain";
++import type { P6rPromptRequest } from "@get-bb/plugin-sdk";
++import { setPromptProvider } from "../../src/services/prompts/render-prompt.js";
++import { renderToolPrompts } from "../../src/services/prompts/render-tool-prompts.js";
++
++const context = {
++  threadId: "thread",
++  projectId: "project",
++  providerId: "provider",
++  sourcePluginId: "demo",
++};
++
++function freeze(value: unknown): void {
++  if (value === null || typeof value !== "object") return;
++  Object.values(value).forEach(freeze);
++  Object.freeze(value);
++}
++
++function rewriteDescriptions(requests: P6rPromptRequest[]): void {
++  setPromptProvider({
++    middleware: () => [
++      {
++        pluginId: "test",
++        name: "descriptions",
++        middleware: (request, next) => {
++          requests.push(request);
++          return next(`rendered:${request.text}`);
++        },
++      },
++    ],
++    observers: () => [],
++    warn: () => {
++      throw new Error("Unexpected fallback");
++    },
++  });
++}
++
++afterEach(() => setPromptProvider(undefined));
++
++describe("runtime tool prompt schema traversal", () => {
++  const schemaCases: Array<[string, unknown, string]> = [
++    [
++      "properties",
++      { "a~/b": { description: "leaf" } },
++      "/properties/a~0~1b/description",
++    ],
++    [
++      "patternProperties",
++      { "^x": { description: "leaf" } },
++      "/patternProperties/^x/description",
++    ],
++    ["$defs", { node: { description: "leaf" } }, "/$defs/node/description"],
++    [
++      "definitions",
++      { node: { description: "leaf" } },
++      "/definitions/node/description",
++    ],
++    [
++      "dependentSchemas",
++      { node: { description: "leaf" } },
++      "/dependentSchemas/node/description",
++    ],
++    [
++      "dependencies",
++      { node: { description: "leaf" }, required: ["description"] },
++      "/dependencies/node/description",
++    ],
++    ["items", { description: "leaf" }, "/items/description"],
++    ["items", [{ description: "leaf" }, false], "/items/0/description"],
++    ...["allOf", "anyOf", "oneOf", "prefixItems"].map(
++      (key): [string, unknown, string] => [
++        key,
++        [{ description: "leaf" }, true],
++        `/${key}/0/description`,
++      ],
++    ),
++    ...[
++      "additionalProperties",
++      "unevaluatedProperties",
++      "propertyNames",
++      "contains",
++      "additionalItems",
++      "unevaluatedItems",
++      "not",
++      "if",
++      "then",
++      "else",
++      "contentSchema",
++    ].map((key): [string, unknown, string] => [
++      key,
++      { description: "leaf" },
++      `/${key}/description`,
++    ]),
++  ];
++  it.each(schemaCases)(
++    "renders schema nodes under %s",
++    (key, value, pointer) => {
++      const requests: P6rPromptRequest[] = [];
++      rewriteDescriptions(requests);
++      const tool = {
++        name: "lookup",
++        description: "tool",
++        inputSchema: { [key]: value },
++      };
++      const original = structuredClone(tool);
++      freeze(tool);
++      const rendered = renderToolPrompts(tool, context);
++      expect(rendered.description).toBe("rendered:tool");
++      expect(requests).toEqual([
++        {
++          id: "bb.tool.lookup.description",
++          kind: "tool-description",
++          text: "tool",
++          context,
++        },
++        {
++          id: `bb.tool.lookup.schema${pointer}`,
++          kind: "schema-description",
++          text: "leaf",
++          context,
++        },
++      ]);
++      expect(JSON.stringify(rendered.inputSchema)).toBe(
++        JSON.stringify(original.inputSchema).replace(
++          '"description":"leaf"',
++          '"description":"rendered:leaf"',
++        ),
++      );
++      expect(tool).toEqual(original);
++    },
++  );
++
++  it("recurses through nested schema annotations while preserving arbitrary fields and literal description data", () => {
++    const requests: P6rPromptRequest[] = [];
++    rewriteDescriptions(requests);
++    const schema = {
++      $id: "https://example.test/schema",
++      $ref: "#/$defs/value",
++      description: "root",
++      properties: {
++        description: {
++          description: "property named description",
++          items: {
++            anyOf: [
++              {
++                description: "nested",
++                additionalProperties: { description: "extra" },
++              },
++            ],
++          },
++          enum: [
++            {
++              description: "enum",
++              properties: { description: "enum properties" },
++            },
++          ],
++          const: { description: "constant" },
++          default: { description: "default" },
++          examples: [{ description: "example" }],
++          "x-extension": { description: "extension" },
++          title: "title",
++          format: "opaque",
++          required: ["description"],
++        },
++      },
++      $defs: { value: { type: "string", description: "reference body" } },
++      enum: [{ description: "root enum" }],
++      "x-arbitrary": { properties: { field: { description: "unknown data" } } },
++    };
++    const original = structuredClone(schema);
++    const tool: DynamicTool = {
++      name: "lookup",
++      description: "tool",
++      inputSchema: schema,
++      presentation: {
++        label: { pending: "pending", completed: "done" },
++        icon: { glyph: "Search" },
++      },
++    };
++    freeze(tool);
++    const rendered = renderToolPrompts(tool, context);
++    expect(rendered.inputSchema).toEqual({
++      ...original,
++      description: "rendered:root",
++      properties: {
++        description: {
++          ...original.properties.description,
++          description: "rendered:property named description",
++          items: {
++            anyOf: [
++              {
++                description: "rendered:nested",
++                additionalProperties: { description: "rendered:extra" },
++              },
++            ],
++          },
++        },
++      },
++      $defs: {
++        value: { type: "string", description: "rendered:reference body" },
++      },
++    });
++    expect(requests.map((request) => request.id)).toEqual([
++      "bb.tool.lookup.description",
++      "bb.tool.lookup.schema/description",
++      "bb.tool.lookup.schema/properties/description/description",
++      "bb.tool.lookup.schema/properties/description/items/anyOf/0/description",
++      "bb.tool.lookup.schema/properties/description/items/anyOf/0/additionalProperties/description",
++      "bb.tool.lookup.schema/$defs/value/description",
++    ]);
++    expect(schema).toEqual(original);
++    expect(rendered.name).toBe(tool.name);
++    expect(rendered.presentation).toEqual(tool.presentation);
++  });
++
++  it.each([
++    true,
++    false,
++    {
++      type: "object",
++      properties: { a: true, b: false },
++      additionalProperties: false,
++      description: 123,
++      default: { description: "data" },
++    },
++  ])("preserves defaults without customization", (inputSchema) => {
++    setPromptProvider(undefined);
++    const tool = {
++      name: "lookup",
++      description: "  Tool description\n",
++      inputSchema,
++    };
++    expect(renderToolPrompts(tool, context)).toEqual(tool);
++  });
++});
+diff --git a/apps/server/test/services/prompts/producer-adapters.test.ts b/apps/server/test/services/prompts/producer-adapters.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..a9575e55281ae4e16a0b573b0236c7be986b25a5
+--- /dev/null
++++ b/apps/server/test/services/prompts/producer-adapters.test.ts
+@@ -0,0 +1,87 @@
++import { afterEach, describe, expect, it, vi } from "vitest";
++import type { PromptInput } from "@bb/domain";
++import * as contributions from "../../../src/services/plugins/plugin-agent-contributions.js";
++import { resolvePluginMentionContextInputs } from "../../../src/services/plugins/plugin-mentions.js";
++import { setPromptProvider } from "../../../src/services/prompts/render-prompt.js";
++
++afterEach(() => {
++  setPromptProvider(undefined);
++  vi.restoreAllMocks();
++});
++
++describe("prompt producer adapters", () => {
++  it("changes the mention header while preserving resolved text, images and agent-only visibility", async () => {
++    const payload = "Untrusted payload {{description}} stays verbatim.";
++    vi.spyOn(contributions, "resolvePluginMention").mockResolvedValue({
++      ok: true,
++      context: payload,
++      images: [
++        {
++          type: "image",
++          url: "https://example.test/image.png",
++          context: "Image context",
++        },
++      ],
++    });
++    const input: PromptInput[] = [
++      {
++        type: "text",
++        text: "@report",
++        mentions: [
++          {
++            start: 0,
++            end: 7,
++            resource: {
++              kind: "plugin",
++              pluginId: "notes",
++              itemId: "report",
++              label: "report",
++            },
++          },
++        ],
++      },
++    ];
++    const original = await resolvePluginMentionContextInputs(input);
++    const contextIds: string[] = [];
++    setPromptProvider({
++      middleware: () => [
++        {
++          pluginId: "wording",
++          name: "header",
++          middleware: (request, next) => {
++            if (request.id !== "bb.mention.context-header") return next();
++            contextIds.push(request.context?.sourcePluginId ?? "missing");
++            return "Referenced material:\n\n";
++          },
++        },
++      ],
++      observers: () => [],
++      warn: () => {},
++    });
++    const customized = await resolvePluginMentionContextInputs(input);
++    expect(customized[0]).toEqual({
++      type: "text",
++      text: `Referenced material:\n\n${payload}`,
++      mentions: [],
++      visibility: "agent-only",
++    });
++    expect(customized.slice(1)).toEqual(original.slice(1));
++    expect(contextIds).toEqual(["notes"]);
++    expect(input[0]).toEqual({
++      type: "text",
++      text: "@report",
++      mentions: [
++        {
++          start: 0,
++          end: 7,
++          resource: {
++            kind: "plugin",
++            pluginId: "notes",
++            itemId: "report",
++            label: "report",
++          },
++        },
++      ],
++    });
++  });
++});
+diff --git a/apps/server/test/threads/prompt-message-rendering.test.ts b/apps/server/test/threads/prompt-message-rendering.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..457e23322740a8a8df39a716e6bfe2b91d846ee0
+--- /dev/null
++++ b/apps/server/test/threads/prompt-message-rendering.test.ts
+@@ -0,0 +1,397 @@
++import { randomUUID } from "node:crypto";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import type {
++  P6rPromptMiddleware,
++  P6rPromptObservation,
++} from "@get-bb/plugin-sdk";
++import { renderTemplate } from "@bb/templates";
++import { setPromptProvider } from "../../src/services/prompts/render-prompt.js";
++import { buildCommitMessagePrompt } from "../../src/services/ai/commit-message.js";
++import { buildThreadTitlePrompt } from "../../src/services/threads/title-generation.js";
++import { formatAgentThreadInput } from "../../src/services/threads/thread-send.js";
++import {
++  buildParentSystemInputFromSegments,
++  buildParentSystemThreadMention,
++} from "../../src/services/threads/parent-system-messages.js";
++import {
++  buildChildThreadNeedsAttentionInput,
++  buildChildThreadTurnStatusBatchInput,
++} from "../../src/services/threads/child-thread-notifications.js";
++
++vi.mock("node:crypto", async (importOriginal) => {
++  const actual = await importOriginal<typeof import("node:crypto")>();
++  return { ...actual, randomUUID: vi.fn(actual.randomUUID) };
++});
++
++const child = { id: "child", title: "Unicode 🦉", projectId: "project" };
++const mention = buildParentSystemThreadMention({ thread: child });
++const commitArgs = {
++  diffDescription: "changes",
++  shortstat: "1 file",
++  files: "file.ts",
++  patch: "+flag",
++};
++
++function customize(middleware: P6rPromptMiddleware) {
++  const samples: P6rPromptObservation[] = [];
++  const warnings: string[] = [];
++  setPromptProvider({
++    middleware: () => [{ pluginId: "test", name: "rewrite", middleware }],
++    observers: () => [
++      {
++        pluginId: "test",
++        name: "capture",
++        observer: (sample) => samples.push(sample),
++      },
++    ],
++    warn: (message) => warnings.push(message),
++  });
++  return { samples, warnings };
++}
++
++afterEach(() => {
++  setPromptProvider(undefined);
++  vi.mocked(randomUUID).mockClear();
++});
++
++describe("message prompt adapters", () => {
++  it("preserves stock helper prompts and agent text, rebasing existing UTF-16 mentions without mutating inputs", () => {
++    expect(buildCommitMessagePrompt(commitArgs)).toBe(
++      renderTemplate("generateCommitMessage", commitArgs),
++    );
++    expect(
++      buildThreadTitlePrompt([
++        { type: "text", text: "Build a feature", mentions: [] },
++      ]),
++    ).toBe(
++      renderTemplate("generateThreadMetadata", {
++        cleanedPrompt: "Build a feature",
++      }),
++    );
++    const original = {
++      type: "text" as const,
++      text: "🦉 @thread:child\n\n",
++      mentions: [{ start: 3, end: 16, resource: mention.resource }],
++    };
++    const copy = structuredClone(original);
++    const [output] = formatAgentThreadInput({
++      input: [original],
++      senderThreadId: "sender",
++    });
++    expect(output?.type).toBe("text");
++    if (output?.type !== "text") throw new Error("Expected text");
++    expect(output.text).toBe(
++      renderTemplate("agentThreadMessage", {
++        senderThreadId: "sender",
++        messageText: original.text,
++      }),
++    );
++    expect(
++      output.text.slice(output.mentions[0]!.start, output.mentions[0]!.end),
++    ).toBe("@thread:child");
++    const prefixLength = "[bb message from thread:sender]\n\n".length;
++    expect(output.mentions[0]).toEqual({
++      start: prefixLength + 3,
++      end: prefixLength + 16,
++      resource: mention.resource,
++    });
++    expect(original).toEqual(copy);
++  });
++
++  it.each(["\n", "\r\n\t ", "\u00a0"])(
++    "preserves visible stock text and clips a final mention containing trailing %j",
++    (whitespace) => {
++      const original = {
++        type: "text" as const,
++        text: `🦉 @thread:child${whitespace}`,
++        mentions: [
++          { start: 3, end: 16 + whitespace.length, resource: mention.resource },
++        ],
++      };
++      const saved = structuredClone(original);
++      const [output] = formatAgentThreadInput({
++        input: [original],
++        senderThreadId: "sender",
++      });
++      if (output?.type !== "text") throw new Error("Expected text");
++      const stock = renderTemplate("agentThreadMessage", {
++        messageText: original.text,
++        senderThreadId: "sender",
++      });
++      expect(output.text).toBe(stock);
++      expect(output.mentions).toEqual([
++        { start: 36, end: 49, resource: mention.resource },
++      ]);
++      expect(
++        output.text.slice(output.mentions[0]!.start, output.mentions[0]!.end),
++      ).toBe("@thread:child");
++      const { samples } = customize((_request, next) => next());
++      expect(
++        formatAgentThreadInput({ input: [original], senderThreadId: "sender" }),
++      ).toEqual([output]);
++      expect(samples[0]?.defaultText).toBe(stock);
++      expect(samples[0]?.request.slots?.[0]?.text).toBe("@thread:child");
++      expect(original).toEqual(saved);
++    },
++  );
++
++  it("rejects a structured mention entirely removed by stock trailing whitespace trimming", () => {
++    const input = {
++      type: "text" as const,
++      text: "body\n\t ",
++      mentions: [{ start: 4, end: 7, resource: mention.resource }],
++    };
++    expect(() =>
++      formatAgentThreadInput({ input: [input], senderThreadId: "sender" }),
++    ).toThrow(
++      "Structured prompt mention was removed by trailing whitespace trimming",
++    );
++  });
++
++  it.each([
++    [
++      { start: 0, end: 5 },
++      { start: 4, end: 8 },
++    ],
++    [{ start: -1, end: 5 }],
++    [{ start: 0, end: 20 }],
++    [{ start: 0.5, end: 5 }],
++  ])(
++    "rejects invalid original mention ranges before clipping %j",
++    (...ranges) => {
++      const input = {
++        type: "text" as const,
++        text: "@thread:child\n",
++        mentions: ranges.map((range) => ({
++          ...range,
++          resource: mention.resource,
++        })),
++      };
++      expect(() =>
++        formatAgentThreadInput({ input: [input], senderThreadId: "sender" }),
++      ).toThrow("Invalid structured prompt mention range");
++    },
++  );
++
++  it("rewrites helper prompts and invokes each final ID once", () => {
++    const { samples } = customize((request, next) =>
++      request.id === "generateCommitMessage" ||
++      request.id === "generateThreadMetadata"
++        ? `Custom ${request.id}`
++        : next(),
++    );
++    expect(buildCommitMessagePrompt(commitArgs)).toBe(
++      "Custom generateCommitMessage",
++    );
++    expect(
++      buildThreadTitlePrompt([{ type: "text", text: "Feature", mentions: [] }]),
++    ).toBe("Custom generateThreadMetadata");
++    expect(samples.map((sample) => sample.request.id)).toEqual([
++      "generateCommitMessage",
++      "generateThreadMetadata",
++    ]);
++    expect(samples[0]?.request.template).toContain("{{patch}}");
++    expect(samples[0]?.request.inputs).toEqual(commitArgs);
++  });
++
++  it("customizes full completion prose and workflow guidance and observes expanded complete messages", () => {
++    const { samples } = customize((request, next) =>
++      next(
++        request.text
++          .replace(" completed,", " delivered,")
++          .replace("Original output", "Rewritten output")
++          .replace("A workflow it started is still running", "Work continues"),
++      ),
++    );
++    const [output] = buildChildThreadTurnStatusBatchInput({
++      items: [
++        {
++          childThread: child,
++          activeWorkflowCount: 1,
++          terminalOutput: "Original output",
++          turnStatus: "completed",
++        },
++      ],
++    });
++    if (output?.type !== "text") throw new Error("Expected text");
++    expect(output.text).toContain(
++      "@thread:child delivered, with 1 workflow still running:",
++    );
++    expect(output.text).toContain("Rewritten output");
++    expect(output.text).toContain("Work continues");
++    expect(samples).toHaveLength(1);
++    expect(samples[0]?.request.id).toBe("systemMessageChildThreadOutcomeBatch");
++    expect(samples[0]?.request.text).toContain("Original output");
++    expect(samples[0]?.request.text).not.toContain(
++      "__BB_CHILD_THREAD_OUTCOME_BATCH_UPDATES__",
++    );
++    expect(samples[0]?.defaultText).toContain("@thread:child completed");
++    expect(samples[0]?.finalText).toBe(output.text);
++    expect(samples[0]?.request.template).toBeUndefined();
++    expect(output.mentions[0]?.resource).toEqual(mention.resource);
++  });
++
++  it("rewrites agent prose and reconstructs reordered multiple mentions after Unicode", () => {
++    const other = buildParentSystemThreadMention({
++      thread: { ...child, id: "other", title: "Other" },
++    });
++    const original = {
++      type: "text" as const,
++      text: `🦉 ${mention.serializedText} then ${other.serializedText}`,
++      mentions: [
++        { start: 3, end: 16, resource: mention.resource },
++        { start: 22, end: 35, resource: other.resource },
++      ],
++    };
++    const saved = structuredClone(original);
++    const { samples } = customize(
++      (request) =>
++        `😀 rewritten ${request.slots![1]!.token} before ${request.slots![0]!.token}`,
++    );
++    const [output] = formatAgentThreadInput({
++      input: [original],
++      senderThreadId: "sender",
++      context: {
++        threadId: "target",
++        projectId: "project",
++        providerId: "provider",
++      },
++    });
++    if (output?.type !== "text") throw new Error("Expected text");
++    expect(output.text).toBe("😀 rewritten @thread:other before @thread:child");
++    expect(output.mentions.map((entry) => entry.resource)).toEqual([
++      other.resource,
++      mention.resource,
++    ]);
++    expect(
++      output.mentions.map((entry) => output.text.slice(entry.start, entry.end)),
++    ).toEqual([other.serializedText, mention.serializedText]);
++    expect(output.mentions[0]?.start).toBe("😀 rewritten ".length);
++    expect(original).toEqual(saved);
++    expect(samples[0]?.request.context?.threadId).toBe("target");
++    expect(samples[0]?.finalText).toBe(output.text);
++  });
++
++  it("rewrites assembled failed/interrupted guidance and reorders notification batch identities", () => {
++    const { samples } = customize((request, next) => {
++      if (request.slots?.length === 2) {
++        return `🦉 Outcomes: ${request.slots[1]!.token}; ${request.slots[0]!.token}`;
++      }
++      return next(
++        request.text.replace(
++          "Review the thread before deciding next steps.",
++          "Inspect and resolve.",
++        ),
++      );
++    });
++    const [failed] = buildChildThreadTurnStatusBatchInput({
++      items: [
++        {
++          childThread: child,
++          activeWorkflowCount: 0,
++          terminalOutput: null,
++          turnStatus: "failed",
++        },
++      ],
++    });
++    expect(failed?.type === "text" ? failed.text : "").toBe(
++      "[bb system]\n\n@thread:child failed.\n\nInspect and resolve.",
++    );
++    const [batch] = buildChildThreadTurnStatusBatchInput({
++      items: [
++        {
++          childThread: child,
++          activeWorkflowCount: 0,
++          terminalOutput: null,
++          turnStatus: "failed",
++        },
++        {
++          childThread: { ...child, id: "other" },
++          activeWorkflowCount: 0,
++          terminalOutput: null,
++          turnStatus: "interrupted",
++        },
++      ],
++    });
++    if (batch?.type !== "text") throw new Error("Expected text");
++    expect(batch.text).toBe("🦉 Outcomes: @thread:other; @thread:child");
++    expect(batch.mentions.map((entry) => entry.resource)).toEqual([
++      buildParentSystemThreadMention({ thread: { ...child, id: "other" } })
++        .resource,
++      mention.resource,
++    ]);
++    expect(
++      batch.mentions.map((entry) => batch.text.slice(entry.start, entry.end)),
++    ).toEqual(["@thread:other", "@thread:child"]);
++    expect(samples[1]?.defaultText).toContain("@thread:other was interrupted");
++    expect(samples[1]?.finalText).toBe(batch.text);
++  });
++
++  it.each(["missing", "duplicate", "changed"])(
++    "falls back to original complete notification for %s protected token",
++    (attack) => {
++      const original = buildChildThreadNeedsAttentionInput({
++        childThread: child,
++        blockerSummary: "Choose an option",
++      });
++      const { samples, warnings } = customize((request) => {
++        const token = request.slots![0]!.token;
++        if (attack === "missing") return "Dropped identity";
++        if (attack === "duplicate") return `${request.text}${token}`;
++        return request.text.replace(token, "@thread:attacker");
++      });
++      expect(
++        buildChildThreadNeedsAttentionInput({
++          childThread: child,
++          blockerSummary: "Choose an option",
++        }),
++      ).toEqual(original);
++      expect(warnings).toHaveLength(1);
++      expect(samples[0]?.fallback).toMatchObject({
++        pluginId: "test",
++        name: "rewrite",
++      });
++      expect(samples[0]?.finalText).toBe(samples[0]?.defaultText);
++    },
++  );
++
++  it("avoids nonce token collisions in prose and leaves unstructured mentions editable", () => {
++    vi.mocked(randomUUID).mockReturnValueOnce(
++      "00000000-0000-0000-0000-000000000000",
++    );
++    const collision =
++      "__BB_PROMPT_MENTION_00000000-0000-0000-0000-000000000000_0_0__";
++    const { samples } = customize((request, next) =>
++      next(request.text.replace("@thread:literal", "literal text")),
++    );
++    const [output] = buildParentSystemInputFromSegments({
++      id: "test-message",
++      segments: [
++        { kind: "text", text: `${collision} 🦉 @thread:literal ` },
++        { kind: "mention", mention },
++      ],
++    });
++    expect(samples[0]?.request.slots?.[0]?.token).not.toBe(collision);
++    expect(output?.text).toBe(`${collision} 🦉 literal text @thread:child`);
++    expect(output?.mentions).toHaveLength(1);
++    expect(samples[0]?.finalText).toBe(output?.text);
++  });
++
++  it("accepts old outer sentinel text as blocker prose and renders the final attention ID once", () => {
++    const { samples } = customize((request, next) =>
++      next(request.text.replace("needs your attention", "requests review")),
++    );
++    const [output] = buildChildThreadNeedsAttentionInput({
++      childThread: child,
++      blockerSummary: "literal __BB_CHILD_THREAD_MENTION__",
++    });
++    if (output?.type !== "text") throw new Error("Expected text");
++    expect(output.text).toContain("literal __BB_CHILD_THREAD_MENTION__");
++    expect(output.mentions).toHaveLength(1);
++    expect(samples).toHaveLength(1);
++    expect(samples[0]?.request.id).toBe(
++      "systemMessageChildThreadNeedsAttention",
++    );
++    expect(samples[0]?.finalText).toBe(output.text);
++  });
++});
+diff --git a/apps/server/test/threads/thread-ownership-debounce.test.ts b/apps/server/test/threads/thread-ownership-debounce.test.ts
+index 839a2795af881e7bda3dcc8d939feb8e7b4337f8..1790a7776e657a9b233ee84c874788db9aa21c7a 100644
+--- a/apps/server/test/threads/thread-ownership-debounce.test.ts
++++ b/apps/server/test/threads/thread-ownership-debounce.test.ts
+@@ -1,6 +1,8 @@
+ import { archiveThread, getThread, updateThread } from "@bb/db";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+ import { queueParentSystemMessage } from "../../src/services/threads/parent-system-messages.js";
++import { setPromptProvider } from "../../src/services/prompts/render-prompt.js";
++import type { P6rPromptObservation } from "@get-bb/plugin-sdk";
+ import { handleThreadOwnershipChange } from "../../src/services/threads/thread-ownership.js";
+ import {
+   seedHostSession,
+@@ -20,6 +22,7 @@ vi.mock(
+ );
+ 
+ afterEach(() => {
++  setPromptProvider(undefined);
+   vi.useRealTimers();
+   vi.clearAllMocks();
+ });
+@@ -94,6 +97,56 @@ function notices() {
+ }
+ 
+ describe("ownership notice debounce", () => {
++  it("customizes both assembled ownership notices once with protected thread resources", async () => {
++    await withOwnershipFixture(async ({ childId, parents: [, b], move }) => {
++      const samples: P6rPromptObservation[] = [];
++      setPromptProvider({
++        middleware: () => [
++          {
++            pluginId: "test",
++            name: "ownership",
++            middleware: (request, next) =>
++              request.id.startsWith("systemMessageThreadOwnership")
++                ? `Customized notice 🦉 ${request.slots![0]!.token}`
++                : next(),
++          },
++        ],
++        observers: () => [
++          {
++            pluginId: "test",
++            name: "capture",
++            observer: (sample) => samples.push(sample),
++          },
++        ],
++        warn: () => {},
++      });
++      await move(childId, b);
++      await vi.advanceTimersByTimeAsync(2_000);
++      expect(samples.map((sample) => sample.request.id)).toEqual([
++        "systemMessageThreadOwnershipAssigned",
++        "systemMessageThreadOwnershipRemoved",
++      ]);
++      const inputs = vi
++        .mocked(queueParentSystemMessage)
++        .mock.calls.map(([, args]) => args.input[0]);
++      for (const input of inputs) {
++        if (input?.type !== "text") throw new Error("Expected text");
++        expect(input.text).toBe(`Customized notice 🦉 @thread:${childId}`);
++        expect(input.mentions).toHaveLength(1);
++        expect(input.mentions[0]?.resource).toMatchObject({
++          kind: "thread",
++          threadId: childId,
++        });
++        expect(
++          input.text.slice(input.mentions[0]!.start, input.mentions[0]!.end),
++        ).toBe(`@thread:${childId}`);
++      }
++      expect(samples[0]?.finalText).toBe(
++        inputs[0]?.type === "text" ? inputs[0].text : "",
++      );
++    });
++  });
++
+   it("waits two seconds before notifying the original and final parents", async () => {
+     await withOwnershipFixture(async ({ childId, parents: [a, b], move }) => {
+       await move(childId, b);
+diff --git a/apps/server/test/threads/thread-runtime-config.test.ts b/apps/server/test/threads/thread-runtime-config.test.ts
+index 50f5baa63ca8c3edb213244c4f2e3733c9a1d333..2779d7d9e9e78747ddc8fe3a351d295493ed6fd5 100644
+--- a/apps/server/test/threads/thread-runtime-config.test.ts
++++ b/apps/server/test/threads/thread-runtime-config.test.ts
+@@ -12,12 +12,17 @@ import {
+   encodeClientTurnRequestIdNumber,
+ } from "@bb/domain";
+ import { validatePluginProviderDeclaration } from "@get-bb/plugin-sdk/internal/host-policy";
+-import type { PluginAgentConfigurationContext } from "@get-bb/plugin-sdk";
++import type {
++  P6rPromptRequest,
++  PluginAgentConfigurationContext,
++} from "@get-bb/plugin-sdk";
+ import { buildPluginProviderRegistration } from "../../src/services/providers/plugin-provider-registration.js";
+ import type { DiscoveredSkill } from "@bb/host-daemon-contract";
+ import { setPluginAgentContributions } from "../../src/services/plugins/plugin-agent-contributions.js";
+ import { readSkillTreeManifest } from "../../src/services/skills/injected-skills.js";
+ import type { PluginAgentToolContribution } from "../../src/services/plugins/plugin-service.js";
++import { setPromptProvider } from "../../src/services/prompts/render-prompt.js";
++import { UPDATE_ENVIRONMENT_DIRECTORY_TOOL } from "../../src/services/threads/thread-environment-directory.js";
+ import { resolveThreadRuntimeCommandConfig } from "../../src/services/threads/thread-runtime-config.js";
+ import {
+   buildExecutionOptions,
+@@ -1610,10 +1615,13 @@ describe("thread runtime config", () => {
+   describe("plugin contributeInstructions assembly", () => {
+     afterEach(() => {
+       setPluginAgentContributions(undefined);
++      setPromptProvider(undefined);
+     });
+ 
+     function stubContributions(args: {
+       tools?: PluginAgentToolContribution[];
++      selectedTools?: PluginAgentToolContribution[];
++      dynamicInstructions?: Array<{ pluginId: string; text: string }>;
+       instructions?: Array<{
+         pluginId: string;
+         provider: (ctx: {
+@@ -1625,6 +1633,11 @@ describe("thread runtime config", () => {
+       setPluginAgentContributions({
+         listSkillRootContributions: () => [],
+         listAgentTools: () => args.tools ?? [],
++        resolveAgentConfiguration: async () => ({
++          tools: args.selectedTools ?? args.tools ?? [],
++          selectedSkillIdsByPlugin: new Map(),
++          dynamicInstructions: args.dynamicInstructions ?? [],
++        }),
+         listInstructionContributions: () => args.instructions ?? [],
+         findAgentTool: () => undefined,
+         invokeAgentTool: async () => ({
+@@ -1638,6 +1651,267 @@ describe("thread runtime config", () => {
+       });
+     }
+ 
++    it("renders selected runtime tool and instruction prompts with context without changing registrations", async () => {
++      await withTestHarness(async (harness) => {
++        const hostId = "host-runtime-prompt-rendering";
++        seedHostSession(harness.deps, { id: hostId });
++        const workspacePath = path.join(
++          harness.config.dataDir,
++          "prompt-rendering",
++        );
++        const { project } = seedProjectWithSource(harness.deps, {
++          hostId,
++          path: workspacePath,
++        });
++        const environment = seedEnvironment(harness.deps, {
++          hostId,
++          projectId: project.id,
++          path: workspacePath,
++        });
++        const thread = seedThread(harness.deps, {
++          projectId: project.id,
++          environmentId: environment.id,
++          providerId: "codex",
++        });
++        const selected: PluginAgentToolContribution = {
++          pluginId: "demo",
++          tool: {
++            name: "demo_lookup",
++            description: "Lookup",
++            inputSchema: {
++              type: "object",
++              properties: {
++                query: {
++                  type: "string",
++                  description: "Query",
++                  default: { description: "literal default" },
++                  enum: [{ description: "literal enum" }],
++                },
++              },
++            },
++          },
++          instructions: "Use lookup.",
++        };
++        const registered: PluginAgentToolContribution = {
++          ...selected,
++          tool: {
++            ...selected.tool,
++            inputSchema: { description: "unselected registered schema" },
++          },
++        };
++        stubContributions({
++          tools: [
++            registered,
++            { ...registered, tool: { ...registered.tool, name: "excluded" } },
++          ],
++          selectedTools: [selected],
++          instructions: [
++            { pluginId: "demo", provider: () => "x".repeat(5000) },
++          ],
++          dynamicInstructions: [{ pluginId: "demo", text: "Dynamic body" }],
++        });
++        await writeDataDirAgentInstructions({
++          dataDir: harness.config.dataDir,
++          content: "Opaque user rules\n",
++        });
++        await writeWorkspaceAgentInstructions({
++          workspacePath,
++          content: "Opaque workspace rules\n",
++        });
++        const original = structuredClone(selected);
++        const coreOriginal = structuredClone(UPDATE_ENVIRONMENT_DIRECTORY_TOOL);
++        const requests: P6rPromptRequest[] = [];
++        setPromptProvider({
++          middleware: () => [
++            {
++              pluginId: "customizer",
++              name: "rewrite",
++              middleware: (request, next) => {
++                requests.push(request);
++                return next(
++                  request.id === "bb.instructions.assembly"
++                    ? request.text + "\nAggregate suffix"
++                    : `changed:${request.id}`,
++                );
++              },
++            },
++          ],
++          observers: () => [],
++          warn: () => {
++            throw new Error("Unexpected rendering fallback");
++          },
++        });
++        const config = await resolveThreadRuntimeCommandConfig(harness.deps, {
++          thread,
++          environment,
++          model: "test-model",
++        });
++        expect(config.dynamicTools.map((tool) => tool.name)).toEqual([
++          "update_environment_directory",
++          "demo_lookup",
++        ]);
++        expect(config.dynamicTools[0]?.description).toBe(
++          "changed:bb.tool.update_environment_directory.description",
++        );
++        expect(config.dynamicTools[1]).toEqual({
++          ...selected.tool,
++          description: "changed:bb.tool.demo_lookup.description",
++          inputSchema: {
++            type: "object",
++            properties: {
++              query: {
++                type: "string",
++                description:
++                  "changed:bb.tool.demo_lookup.schema/properties/query/description",
++                default: { description: "literal default" },
++                enum: [{ description: "literal enum" }],
++              },
++            },
++          },
++        });
++        expect(selected).toEqual(original);
++        expect(UPDATE_ENVIRONMENT_DIRECTORY_TOOL).toEqual(coreOriginal);
++        expect(config.instructions).toBe(
++          [
++            "changed:bb.tool.update_environment_directory.instructions",
++            "changed:bb.tool.demo_lookup.instructions.attribution",
++            "changed:bb.tool.demo_lookup.instructions",
++            "changed:bb.plugin.demo.instructions.attribution",
++            "changed:bb.plugin.demo.instructions",
++            "changed:bb.plugin.demo.dynamic-instructions.attribution",
++            "changed:bb.plugin.demo.dynamic-instructions",
++            "changed:bb.instructions.data-dir.attribution",
++            "Opaque user rules",
++            "changed:bb.instructions.workspace.attribution",
++            "Opaque workspace rules",
++          ].join("\n\n") + "\nAggregate suffix",
++        );
++        expect(
++          requests.find(
++            (request) => request.id === "bb.plugin.demo.instructions",
++          )?.text,
++        ).toBe("x".repeat(4096));
++        for (const request of requests) {
++          expect(request.context).toMatchObject({
++            threadId: thread.id,
++            projectId: project.id,
++            providerId: "codex",
++          });
++          if (request.id.includes("demo"))
++            expect(request.context?.sourcePluginId).toBe("demo");
++        }
++        expect(
++          requests.some(
++            (request) =>
++              request.text === "Opaque user rules" ||
++              request.text === "Opaque workspace rules",
++          ),
++        ).toBe(false);
++        expect(
++          requests.some((request) => request.id.includes("excluded")),
++        ).toBe(false);
++        setPromptProvider({
++          middleware: () => [
++            {
++              pluginId: "customizer",
++              name: "aggregate",
++              middleware: (request, next) =>
++                request.id === "bb.instructions.assembly"
++                  ? "Entire replacement"
++                  : next(),
++            },
++          ],
++          observers: () => [],
++          warn: () => {},
++        });
++        expect(
++          (
++            await resolveThreadRuntimeCommandConfig(harness.deps, {
++              thread,
++              environment,
++              model: "test-model",
++            })
++          ).instructions,
++        ).toBe("Entire replacement");
++      });
++    });
++
++    it("preserves exact default instruction bytes and selected tools without a customizer", async () => {
++      await withTestHarness(async (harness) => {
++        const hostId = "host-runtime-prompt-defaults";
++        seedHostSession(harness.deps, { id: hostId });
++        const workspacePath = path.join(
++          harness.config.dataDir,
++          "prompt-defaults",
++        );
++        const { project } = seedProjectWithSource(harness.deps, {
++          hostId,
++          path: workspacePath,
++        });
++        const environment = seedEnvironment(harness.deps, {
++          hostId,
++          projectId: project.id,
++          path: workspacePath,
++        });
++        const thread = seedThread(harness.deps, {
++          projectId: project.id,
++          environmentId: environment.id,
++        });
++        const tool: PluginAgentToolContribution = {
++          pluginId: "demo",
++          tool: {
++            name: "demo_lookup",
++            description: " Lookup ",
++            inputSchema: {
++              description: " Schema ",
++              default: { description: "data" },
++            },
++          },
++          instructions: " Tool body \n",
++        };
++        stubContributions({
++          tools: [tool],
++          instructions: [
++            { pluginId: "demo", provider: () => " Plugin body \n" },
++          ],
++          dynamicInstructions: [{ pluginId: "demo", text: " Dynamic body \n" }],
++        });
++        await writeDataDirAgentInstructions({
++          dataDir: harness.config.dataDir,
++          content: " User rules \n",
++        });
++        await writeWorkspaceAgentInstructions({
++          workspacePath,
++          content: " Workspace rules \n",
++        });
++        setPromptProvider(undefined);
++        const config = await resolveThreadRuntimeCommandConfig(harness.deps, {
++          thread,
++          environment,
++          model: "test-model",
++        });
++        expect(config.dynamicTools).toEqual([
++          UPDATE_ENVIRONMENT_DIRECTORY_TOOL,
++          tool.tool,
++        ]);
++        expect(config.instructions).toBe(
++          [
++            "If the user asks you to move this thread to another checkout, worktree, or directory, make sure the target directory exists, then call `update_environment_directory` with its absolute path. After it succeeds, stop work in the current turn; future turns will run in the updated environment.",
++            'The following instructions come from the BB plugin "demo" for its tool "demo_lookup":',
++            " Tool body \n",
++            'The following instructions come from the BB plugin "demo":',
++            " Plugin body \n",
++            'The following dynamic instructions come from the BB plugin "demo":',
++            " Dynamic body \n",
++            "The following user instructions come from <dataDir>/AGENTS.md:",
++            "User rules",
++            "The following workspace instructions come from .bb/AGENTS.md:",
++            "Workspace rules",
++          ].join("\n\n"),
++        );
++      });
++    });
++
+     it("appends attributed plugin instructions after tool snippets and before data-dir instructions", async () => {
+       await withTestHarness(async (harness) => {
+         const hostId = "host-runtime-plugin-instr";
+diff --git a/apps/server/test/threads/thread-send-dispatch.test.ts b/apps/server/test/threads/thread-send-dispatch.test.ts
+index 7c6097577b9899413e28992c649f969c99144743..d6de7e19091595538cd95d338b5ddaca57069c0f 100644
+--- a/apps/server/test/threads/thread-send-dispatch.test.ts
++++ b/apps/server/test/threads/thread-send-dispatch.test.ts
+@@ -19,6 +19,7 @@ import {
+ } from "@bb/domain";
+ import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
+ import { afterEach, describe, expect, it, vi } from "vitest";
++import { setPromptProvider } from "../../src/services/prompts/render-prompt.js";
+ import type { TelemetryService } from "../../src/services/system/telemetry.js";
+ import * as queuedDispatch from "../../src/services/threads/queued-message-dispatch.js";
+ import * as threadEvents from "../../src/services/threads/thread-events.js";
+@@ -1735,3 +1736,82 @@ describe("competing turn refusals", () => {
+     });
+   });
+ });
++
++describe("agent prompt rendering retry", () => {
++  it("reuses already assembled input without invoking the message adapter a second time", async () => {
++    await withTestHarness(async (harness) => {
++      const { environment, thread } = seedProviderThreadFixture({
++        harness,
++        value: 4510,
++      });
++      const sender = seedThread(harness.deps, {
++        environmentId: environment.id,
++        projectId: thread.projectId,
++      });
++      const originalInput = textInput(
++        `[bb message from thread:${sender.id}]\n\nPreviously customized prose 🦉`,
++      );
++      const savedInput = structuredClone(originalInput);
++      const originalRequestId = threadEvents.createClientTurnRequestId();
++      seedStoredEvent(harness.deps, {
++        threadId: thread.id,
++        environmentId: environment.id,
++        providerThreadId: "provider-send-dispatch-4510",
++        sequence: 100,
++        type: "client/turn/requested",
++        scope: { kind: "thread" },
++        data: {
++          ...JSON.parse(
++            listEvents(harness.db, { threadId: thread.id }).find(
++              (event) => event.type === "client/turn/requested",
++            )!.data,
++          ),
++          requestId: originalRequestId,
++          input: savedInput,
++          p6rMentionedTargets: [],
++        },
++      });
++      const seen: string[] = [];
++      setPromptProvider({
++        middleware: () => [
++          {
++            pluginId: "test",
++            name: "retry",
++            middleware: (request, next) => {
++              if (request.id === "agentThreadMessage") seen.push(request.id);
++              return next();
++            },
++          },
++        ],
++        observers: () => [],
++        warn: () => {},
++      });
++      try {
++        await sendThreadMessage(harness.deps, {
++          environment,
++          thread,
++          trigger: "user",
++          retryOf: {
++            requestId: originalRequestId,
++            attempt: 2,
++          },
++          payload: {
++            mode: "start",
++            input: originalInput,
++          },
++        });
++        expect(seen).toEqual([]);
++        expect(originalInput).toEqual(savedInput);
++        const requests = listEvents(harness.db, { threadId: thread.id }).filter(
++          (event) => event.type === "client/turn/requested",
++        );
++        expect(JSON.parse(requests.at(-1)!.data)).toMatchObject({
++          input: savedInput,
++          retryAttempt: 2,
++        });
++      } finally {
++        setPromptProvider(undefined);
++      }
++    });
++  });
++});
+-- 
+2.53.0
+

@@ -1,4 +1,4 @@
-From dcd39e65f6be08f1474179bd07d66d6775631087 Mon Sep 17 00:00:00 2001
+From bf0a3caf0cb4f519da9eb8c6b2dc191e97108df0 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Sun, 13 Sep 2026 16:00:00 -0400
 Subject: [PATCH] feat(sidebar): add native layout provider seam
@@ -15,11 +15,11 @@ Keep native sidebar rendering while an optional plugin provides layout data.
  .../src/internal/plugin-app-collector.ts      |  13 ++
  .../references/frontend-api-index.md          |   3 +
  .../references/frontend-core-slots.md         |   6 +
- plugins/plugin-api-docs/src/surfaces.ts       |   4 +
- 11 files changed, 264 insertions(+), 12 deletions(-)
+ plugins/plugin-api-docs/src/surfaces.ts       |   5 +-
+ 11 files changed, 264 insertions(+), 13 deletions(-)
 
 diff --git a/apps/app/src/components/sidebar/NavigationPlugin.test.tsx b/apps/app/src/components/sidebar/NavigationPlugin.test.tsx
-index de3e8dcc9b1107544ff845f5929b3b8bd3644385..8cbd235125a61afead936ba76e7dea30cb5a4cac 100644
+index 0a9eb4d121011ba9590457f7402ad492431fa88f..1e9c2d093b63d71f9868e30594b94a8f226ae21c 100644
 --- a/apps/app/src/components/sidebar/NavigationPlugin.test.tsx
 +++ b/apps/app/src/components/sidebar/NavigationPlugin.test.tsx
 @@ -9,6 +9,7 @@ import {
@@ -30,7 +30,7 @@ index de3e8dcc9b1107544ff845f5929b3b8bd3644385..8cbd235125a61afead936ba76e7dea30
  import { createStore } from "jotai";
  import {
    afterEach,
-@@ -347,6 +348,48 @@ afterEach(() => {
+@@ -334,6 +335,48 @@ afterEach(() => {
  });
  
  describe("Navigation plugin in the sidebar navigation region", () => {
@@ -80,7 +80,7 @@ index de3e8dcc9b1107544ff845f5929b3b8bd3644385..8cbd235125a61afead936ba76e7dea30
      resetPluginFrontendBootStateForTest();
      renderNavigation();
 diff --git a/apps/app/src/components/sidebar/SidebarNavigationModel.tsx b/apps/app/src/components/sidebar/SidebarNavigationModel.tsx
-index 35226cf32481688e13138b6116d06d91cf1ac577..680c506f70ba4de278749ede88b0928f089b2da1 100644
+index f1db581fa39776806ee08932410bf067ecbe8bd9..df62840561f43622c5de4de70cde5a3e7f954162 100644
 --- a/apps/app/src/components/sidebar/SidebarNavigationModel.tsx
 +++ b/apps/app/src/components/sidebar/SidebarNavigationModel.tsx
 @@ -1,9 +1,11 @@
@@ -340,7 +340,7 @@ index e3812f417febfba923a218d0e774d094aafff07c..af26181135a2ab414bd817c1e1ff4761
  
    const setVisible = useCallback(
 diff --git a/apps/app/src/lib/plugin-slots.ts b/apps/app/src/lib/plugin-slots.ts
-index 181e28cd40635a39af4368e40b22f06466278b9b..df61b4408125f1d2e34113b2e10484e622cb1c1c 100644
+index 76a58c7a2bc05bb2617ab98b8e5d8a4a6f69b330..5ce047afa5eb7b4b4afc16da7529f1204263d592 100644
 --- a/apps/app/src/lib/plugin-slots.ts
 +++ b/apps/app/src/lib/plugin-slots.ts
 @@ -18,6 +18,7 @@ import type {
@@ -403,7 +403,7 @@ index 181e28cd40635a39af4368e40b22f06466278b9b..df61b4408125f1d2e34113b2e10484e6
      threadHeaderActions: stamp(set.threadHeaderActions),
      browserToolbarActions: stamp(set.browserToolbarActions),
 diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-index 2e5f9810fda2610ee7ef6504c464d4978a7780f4..798ed463b2cf9122885781b97f7d5407169322ff 100644
+index 911ac87d2e2a67db0ae47d47851fabb4f7e0e43f..51008315d166aeeeae952f101e2c568d03e0f730 100644
 --- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
 +++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
 @@ -7,6 +7,7 @@ import * as pluginSdkApp from "@get-bb/plugin-sdk/app";
@@ -414,7 +414,7 @@ index 2e5f9810fda2610ee7ef6504c464d4978a7780f4..798ed463b2cf9122885781b97f7d5407
    type PluginAppBuilder,
    type PluginAppSlots,
    type PluginContentScriptContext,
-@@ -269,6 +270,7 @@ type SlotPropsByName = {
+@@ -276,6 +277,7 @@ type SlotPropsByName = {
    sidebarFooterAction: PluginSidebarFooterActionProps;
    experimental_sidebarNavigation: ExperimentalSidebarNavigationProps;
    experimental_sidebarHeader: ExperimentalSidebarHeaderProps;
@@ -422,7 +422,7 @@ index 2e5f9810fda2610ee7ef6504c464d4978a7780f4..798ed463b2cf9122885781b97f7d5407
    experimental_threadList: PluginThreadListProps;
    experimental_threadHeaderAction: PluginThreadHeaderActionProps;
    experimental_browserToolbarAction: ExperimentalPluginBrowserToolbarActionProps;
-@@ -350,6 +352,7 @@ const FRONTEND_SLOT_PROP_FIELDS = {
+@@ -357,6 +359,7 @@ const FRONTEND_SLOT_PROP_FIELDS = {
      "experimental_Original",
    ],
    experimental_sidebarHeader: ["width", "controlSize", "isCompactViewport"],
@@ -431,10 +431,10 @@ index 2e5f9810fda2610ee7ef6504c464d4978a7780f4..798ed463b2cf9122885781b97f7d5407
      "activeThreadId",
      "activeProjectId",
 diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
-index 4ad7f00ca573d283fb08f387551954f339360b4a..059ff5b2d8e2533977199b6b756dcf31fd073599 100644
+index 7eef927faa72eb661503f4dc05c702c85ef67678..4881643cd8c8f8914e0f60b1665d304bddce09f3 100644
 --- a/docs/api_to_audit.md
 +++ b/docs/api_to_audit.md
-@@ -2417,6 +2417,28 @@ and navigation from `bb.onInstall`; later choices are the user's.
+@@ -2608,6 +2608,28 @@ and navigation from `bb.onInstall`; later choices are the user's.
  5. **Drag regions.** Confirm the interactive-descendant no-drag rule covers
     real plugin markup, including custom elements and menus.
  
@@ -464,10 +464,10 @@ index 4ad7f00ca573d283fb08f387551954f339360b4a..059ff5b2d8e2533977199b6b756dcf31
  
  **Kept experimental (2026-08-22).** examples only; no shipped consumer has tested the arbitration/fallback model or the accessibility contract.
 diff --git a/packages/plugin-sdk/src/app-contract.ts b/packages/plugin-sdk/src/app-contract.ts
-index b7ba767d8dfe2dacce211071e5757dfccb45d96f..d6562c363b03551ba7e24765cb8888f1d7562e39 100644
+index 6cdee81cc0263ef6e9a42ec73c2a96700cd202a1..99dce80fc65b077c4b923af833d22e996158cf36 100644
 --- a/packages/plugin-sdk/src/app-contract.ts
 +++ b/packages/plugin-sdk/src/app-contract.ts
-@@ -338,6 +338,26 @@ export interface ExperimentalSidebarNavigationProps {
+@@ -364,6 +364,26 @@ export interface ExperimentalSidebarNavigationProps {
    experimental_Original: ComponentType;
  }
  
@@ -494,7 +494,7 @@ index b7ba767d8dfe2dacce211071e5757dfccb45d96f..d6562c363b03551ba7e24765cb8888f1
  /**
   * Props passed to an `experimental_sidebarHeader` component, rendered in the
   * sidebar's header row between the sidebar toggle (and the macOS window
-@@ -1609,6 +1629,12 @@ export interface ExperimentalSidebarNavigationRegistration {
+@@ -1658,6 +1678,12 @@ export interface ExperimentalSidebarNavigationRegistration {
    component: ComponentType<ExperimentalSidebarNavigationProps>;
  }
  
@@ -507,7 +507,7 @@ index b7ba767d8dfe2dacce211071e5757dfccb45d96f..d6562c363b03551ba7e24765cb8888f1
  /**
   * Render a component in the sidebar's header row, between the sidebar toggle
   * and bb's back and forward buttons. Exclusive: the user picks at most one
-@@ -2045,6 +2071,9 @@ export interface PluginAppSlots {
+@@ -2132,6 +2158,9 @@ export interface PluginAppSlots {
    experimental_sidebarNavigation(
      registration: ExperimentalSidebarNavigationRegistration,
    ): void;
@@ -518,10 +518,10 @@ index b7ba767d8dfe2dacce211071e5757dfccb45d96f..d6562c363b03551ba7e24765cb8888f1
     * Render a component in the sidebar header row (see
     * {@link ExperimentalSidebarHeaderRegistration}). Experimental: see
 diff --git a/packages/plugin-sdk/src/internal/plugin-app-collector.ts b/packages/plugin-sdk/src/internal/plugin-app-collector.ts
-index b5fccf5a9e376c9f2cc2b49448b11576bcfe1782..de47d4c15f0c9ad1539a6a2734bca266560f2e5c 100644
+index 20aa032813cb8a8ad54711e38a5cbab797cd27c0..6347219019bb72c2ac1fe3167a60ceaa70cad373 100644
 --- a/packages/plugin-sdk/src/internal/plugin-app-collector.ts
 +++ b/packages/plugin-sdk/src/internal/plugin-app-collector.ts
-@@ -27,6 +27,7 @@ import type {
+@@ -28,6 +28,7 @@ import type {
    PluginSidebarFooterActionRegistration,
    ExperimentalSidebarNavigationRegistration,
    ExperimentalSidebarHeaderRegistration,
@@ -529,7 +529,7 @@ index b5fccf5a9e376c9f2cc2b49448b11576bcfe1782..de47d4c15f0c9ad1539a6a2734bca266
    PluginSourceCodeRendererRegistration,
    PluginThreadHeaderActionRegistration,
    ExperimentalPluginBrowserToolbarActionRegistration,
-@@ -349,6 +350,7 @@ export interface CollectedPluginAppRegistrations {
+@@ -355,6 +356,7 @@ export interface CollectedPluginAppRegistrations {
    experimentalSidebarFooterItems: CollectedExperimentalSidebarFooterItem[];
    experimentalSidebarNavigations: ExperimentalSidebarNavigationRegistration[];
    experimentalSidebarHeaders: ExperimentalSidebarHeaderRegistration[];
@@ -537,7 +537,7 @@ index b5fccf5a9e376c9f2cc2b49448b11576bcfe1782..de47d4c15f0c9ad1539a6a2734bca266
    threadLists: PluginThreadListRegistration[];
    threadHeaderActions: PluginThreadHeaderActionRegistration[];
    browserToolbarActions: ExperimentalPluginBrowserToolbarActionRegistration[];
-@@ -475,6 +477,7 @@ export function collectPluginAppRegistrations(
+@@ -481,6 +483,7 @@ export function collectPluginAppRegistrations(
      experimentalSidebarFooterItems: [],
      experimentalSidebarNavigations: [],
      experimentalSidebarHeaders: [],
@@ -545,7 +545,7 @@ index b5fccf5a9e376c9f2cc2b49448b11576bcfe1782..de47d4c15f0c9ad1539a6a2734bca266
      threadLists: [],
      threadHeaderActions: [],
      browserToolbarActions: [],
-@@ -504,6 +507,7 @@ export function collectPluginAppRegistrations(
+@@ -511,6 +514,7 @@ export function collectPluginAppRegistrations(
      sidebarFooterItem: new Set<string>(),
      sidebarNavigation: new Set<string>(),
      sidebarHeader: new Set<string>(),
@@ -553,7 +553,7 @@ index b5fccf5a9e376c9f2cc2b49448b11576bcfe1782..de47d4c15f0c9ad1539a6a2734bca266
      threadList: new Set<string>(),
      threadHeaderAction: new Set<string>(),
      browserToolbarAction: new Set<string>(),
-@@ -758,6 +762,15 @@ export function collectPluginAppRegistrations(
+@@ -793,6 +797,15 @@ export function collectPluginAppRegistrations(
            ),
          );
        },
@@ -570,10 +570,10 @@ index b5fccf5a9e376c9f2cc2b49448b11576bcfe1782..de47d4c15f0c9ad1539a6a2734bca266
          collected.threadLists.push(
            collectTitledComponent(
 diff --git a/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-api-index.md b/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-api-index.md
-index 6bcec41e18fc3e9cccafb4edaa74fe19e80ea58c..bcea6184741765aa3217843e0550d857e242ba50 100644
+index 358fd20a78c30d02d06d98b47cbcf730fb651e9b..c5871097f87fb867bf6c2f2154bd262de9d58e37 100644
 --- a/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-api-index.md
 +++ b/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-api-index.md
-@@ -115,6 +115,8 @@ Read the installed SDK declarations for the exact current signatures.
+@@ -118,6 +118,8 @@ Read the installed SDK declarations for the exact current signatures.
  - `ExperimentalSidebarNavigationIconProps`
  - `ExperimentalSidebarNavigationProps`
  - `ExperimentalSidebarHeaderProps`
@@ -582,7 +582,7 @@ index 6bcec41e18fc3e9cccafb4edaa74fe19e80ea58c..bcea6184741765aa3217843e0550d857
  - `PluginThreadListProps`
  - `PluginThreadHeaderActionProps`
  - `ExperimentalPluginBrowserToolbarActionProps`
-@@ -160,6 +162,7 @@ Read the installed SDK declarations for the exact current signatures.
+@@ -163,6 +165,7 @@ Read the installed SDK declarations for the exact current signatures.
  - `ExperimentalSidebarFooter`
  - `ExperimentalSidebarNavigationRegistration`
  - `ExperimentalSidebarHeaderRegistration`
@@ -591,10 +591,10 @@ index 6bcec41e18fc3e9cccafb4edaa74fe19e80ea58c..bcea6184741765aa3217843e0550d857
  - `PluginSidebarThreadActivity`
  - `PluginSidebarThread`
 diff --git a/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-core-slots.md b/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-core-slots.md
-index 4b4ea1385b4cd10634b7bdba874ffa4957b57261..2f90eec9e6fc897a8b87279faf07b24079047e48 100644
+index 8e0a63f293f8cfcc6646b284280917f51207624b..edae8910a9298753a339f4da73d8608f7879d312 100644
 --- a/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-core-slots.md
 +++ b/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-core-slots.md
-@@ -245,6 +245,12 @@ target? })`. Inside the fixed-tab component,
+@@ -246,6 +246,12 @@ target? })`. Inside the fixed-tab component,
    one under Settings → Appearance → Header, and the default is bb's controls
    only. Content is clipped to the row. Experimental: see
    `docs/api_to_audit.md`.
@@ -608,18 +608,19 @@ index 4b4ea1385b4cd10634b7bdba874ffa4957b57261..2f90eec9e6fc897a8b87279faf07b240
    for file extensions: `{ id, title, extensions: ["md"], component }`.
    Matching files use the first applicable opener in deterministic slot order
 diff --git a/plugins/plugin-api-docs/src/surfaces.ts b/plugins/plugin-api-docs/src/surfaces.ts
-index ef967daf540262aa79c07461a1f29515c935e230..009c8ff2e7ff35f29291d8fdeb4c6df5ca287597 100644
+index 28f6b92ce1a894b1dbc81a927bc76dc1b8f23e2a..4df73c02910c60382f27507143cee19c9883e647 100644
 --- a/plugins/plugin-api-docs/src/surfaces.ts
 +++ b/plugins/plugin-api-docs/src/surfaces.ts
-@@ -56,6 +56,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
-           "Draw bb's icons and plugin branding, and each panel's live sidebar accessory",
-           "Put controls, such as navigation icons, in the header row beside the sidebar toggle with experimental_sidebarHeader, and have the navigation slot render nothing while that header is mounted",
-           "Start from bb's own rows: they ship as the bundled Navigation plugin, which uses only this API",
-+          "Supply ordering and visibility data to bb's bundled Navigation plugin without taking over its controls",
-           "Leave the thread list, footer, drawer, and resize handle under bb's control",
+@@ -53,7 +53,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+           "Arrange New thread, Search, Plugins, Skills, and plugin pages in any layout",
+           "Keep the user's saved order, hidden items, and split-view behavior",
+           "Add controls to the header row beside the sidebar toggle",
+-          "Start from the bundled Navigation plugin, which uses only this API",
++          "Start from the bundled Navigation plugin (uses only this API) or feed it order and visibility",
          ],
          apiSymbols: [
-@@ -76,6 +77,9 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+           "ExperimentalSidebarNavigationRegistration",
+@@ -73,6 +73,9 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
            "ExperimentalSidebarNavigationSplitOptions",
            "ExperimentalSidebarHeaderRegistration",
            "ExperimentalSidebarHeaderProps",

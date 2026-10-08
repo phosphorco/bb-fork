@@ -1,4 +1,4 @@
-From 13b1933e505404897a1fd98a099274c67bc997f8 Mon Sep 17 00:00:00 2001
+From d2075524405801937b2f5a7780a4c9c61a575bb0 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
 Subject: [PATCH] fix(agent-connect): retain pending call history
@@ -10,7 +10,7 @@ Subject: [PATCH] fix(agent-connect): retain pending call history
  3 files changed, 310 insertions(+), 4 deletions(-)
 
 diff --git a/apps/server/src/services/p6r/identity-protocol.ts b/apps/server/src/services/p6r/identity-protocol.ts
-index 8ba2bcaff79b8eef666531fbe76bb39168bbca2c..9e9a71b5b2253d84326277d9094e63c08af8cd12 100644
+index 0d761d24f45db7d19264bbdce3cd6d82b158e113..1a1465f914079493907e41a9f636e122c5045ce6 100644
 --- a/apps/server/src/services/p6r/identity-protocol.ts
 +++ b/apps/server/src/services/p6r/identity-protocol.ts
 @@ -7,6 +7,7 @@ import { p6rOutcomeFromStoredReceipt } from "./receipt-outcome.js";
@@ -21,7 +21,7 @@ index 8ba2bcaff79b8eef666531fbe76bb39168bbca2c..9e9a71b5b2253d84326277d9094e63c0
    listP6rAttempts,
    listP6rAttemptsForNativeTurn,
    listP6rContributions,
-@@ -326,7 +327,10 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
+@@ -327,7 +328,10 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
            return { ok: true, value: { status: missing.length === 0 ? "known" : "partial", items: page.value.items, missing, nextCursor: page.value.nextCursor, traversal: page.value.nextCursor === null ? "complete" : "continued" } };
          },
          historyAttempts: async (query) => {
@@ -33,7 +33,7 @@ index 8ba2bcaff79b8eef666531fbe76bb39168bbca2c..9e9a71b5b2253d84326277d9094e63c0
              return { ok: true, value: { status: "unavailable", reason: "missing-history" } };
            }
            const attempts = listP6rAttempts(root.db, operationNamespace(root.instanceId, identityGeneration.pluginId), query.kind === "operation" ? { operationId: query.operationId } : { contributionId: query.reference.contributionId });
-@@ -335,6 +339,27 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
+@@ -336,6 +340,27 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
            const fingerprint = queryFingerprint(query.kind === "operation" ? { kind: query.kind, operationId: query.operationId } : { kind: query.kind, reference: query.reference });
            const page = historyPage(entries, query, fingerprint, revision);
            if (!page.ok) return page;

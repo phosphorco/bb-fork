@@ -1,8 +1,7 @@
-From 72159b78ccc9789575647d2b0dbdb8d4e8367eea Mon Sep 17 00:00:00 2001
+From 7dafd8540c3cb75c05dfc952073112dc56c99a03 Mon Sep 17 00:00:00 2001
 From: BB fork integration <bb-fork@invalid.local>
 Date: Mon, 5 Oct 2026 22:04:38 +0200
-Subject: [PATCH 47/47] feat(p6r): adapt owned runtime and message prompt
- producers
+Subject: [PATCH] feat(p6r): adapt owned runtime and message prompt producers
 
 ---
  apps/server/src/services/ai/commit-message.ts |   4 +-
@@ -14,14 +13,14 @@ Subject: [PATCH 47/47] feat(p6r): adapt owned runtime and message prompt
  .../src/services/threads/thread-ownership.ts  |   5 +
  .../services/threads/thread-runtime-config.ts |  80 +++-
  .../src/services/threads/thread-send.ts       |  67 ++-
- .../src/services/threads/title-generation.ts  |  28 +-
+ .../src/services/threads/title-generation.ts  |  34 +-
  .../test/prompts/render-tool-prompts.test.ts  | 236 +++++++++++
  .../prompts/producer-adapters.test.ts         |  87 ++++
  .../threads/prompt-message-rendering.test.ts  | 397 ++++++++++++++++++
  .../threads/thread-ownership-debounce.test.ts |  53 +++
  .../threads/thread-runtime-config.test.ts     | 276 +++++++++++-
  .../test/threads/thread-send-dispatch.test.ts |  80 ++++
- 16 files changed, 1502 insertions(+), 87 deletions(-)
+ 16 files changed, 1505 insertions(+), 90 deletions(-)
  create mode 100644 apps/server/src/services/prompts/render-instruction-prompts.ts
  create mode 100644 apps/server/src/services/prompts/render-tool-prompts.ts
  create mode 100644 apps/server/test/prompts/render-tool-prompts.test.ts
@@ -203,7 +202,7 @@ index 0000000000000000000000000000000000000000..796bdce8bf51eb98cf0e1c33ea831e47
 +  return { ...tool, description, inputSchema };
 +}
 diff --git a/apps/server/src/services/threads/child-thread-notifications.ts b/apps/server/src/services/threads/child-thread-notifications.ts
-index 5f8f38c6ca91dc54a5175ffe59a1d90336754250..6354c916d5df51255b206c054757776f55fcf4ce 100644
+index 37ed0a267954f0a2f6b0f2b47eb0e499a977c179..750db2a6bfd5721daea08a30cd66defda433e917 100644
 --- a/apps/server/src/services/threads/child-thread-notifications.ts
 +++ b/apps/server/src/services/threads/child-thread-notifications.ts
 @@ -1,3 +1,4 @@
@@ -211,7 +210,7 @@ index 5f8f38c6ca91dc54a5175ffe59a1d90336754250..6354c916d5df51255b206c054757776f
  import type {
    PromptInput,
    SystemMessageSubject,
-@@ -12,6 +13,7 @@ import {
+@@ -13,6 +14,7 @@ import {
  } from "../../testing/test-fault-barriers.js";
  import {
    buildParentSystemInputFromTemplateSlot,
@@ -219,7 +218,7 @@ index 5f8f38c6ca91dc54a5175ffe59a1d90336754250..6354c916d5df51255b206c054757776f
    buildParentSystemThreadMention,
    parentSystemThreadLabel,
    queueParentSystemMessage,
-@@ -54,10 +56,12 @@ interface FormatChildThreadTurnStatusLineArgs {
+@@ -57,10 +59,12 @@ interface FormatChildThreadTurnStatusLineArgs {
  }
  
  interface BuildChildThreadTurnStatusBatchInputArgs {
@@ -232,7 +231,7 @@ index 5f8f38c6ca91dc54a5175ffe59a1d90336754250..6354c916d5df51255b206c054757776f
    blockerSummary: string | null;
    childThread: ChildThreadNotificationSource;
  }
-@@ -77,7 +81,6 @@ interface QueueChildThreadNeedsAttentionNotificationArgs {
+@@ -82,7 +86,6 @@ interface QueueChildThreadNeedsAttentionNotificationArgs {
  const CHILD_THREAD_TURN_NOTIFICATION_BATCH_DELAY_MS = 2_000;
  const CHILD_THREAD_OUTCOME_BATCH_UPDATES_SLOT =
    "__BB_CHILD_THREAD_OUTCOME_BATCH_UPDATES__";
@@ -240,7 +239,7 @@ index 5f8f38c6ca91dc54a5175ffe59a1d90336754250..6354c916d5df51255b206c054757776f
  const CHILD_THREAD_TERMINAL_OUTPUT_EXCERPT_CHAR_LIMIT = 4_000;
  const CHILD_THREAD_OUTPUT_TRUNCATION_MARKER = "\n\n[... output truncated ...]";
  const CHILD_THREAD_INSPECTION_GUIDANCE =
-@@ -314,6 +317,8 @@ export function buildChildThreadTurnStatusBatchInput(
+@@ -345,6 +348,8 @@ export function buildChildThreadTurnStatusBatchInput(
      updates: CHILD_THREAD_OUTCOME_BATCH_UPDATES_SLOT,
    });
    return buildParentSystemInputFromTemplateSlot({
@@ -249,7 +248,7 @@ index 5f8f38c6ca91dc54a5175ffe59a1d90336754250..6354c916d5df51255b206c054757776f
      renderedText,
      slot: CHILD_THREAD_OUTCOME_BATCH_UPDATES_SLOT,
      segments: buildChildThreadTurnStatusBatchSegments({ lines }),
-@@ -326,19 +331,19 @@ export function buildChildThreadNeedsAttentionInput(
+@@ -357,19 +362,19 @@ export function buildChildThreadNeedsAttentionInput(
    const mention = buildParentSystemThreadMention({
      thread: args.childThread,
    });
@@ -280,7 +279,7 @@ index 5f8f38c6ca91dc54a5175ffe59a1d90336754250..6354c916d5df51255b206c054757776f
    });
  }
  
-@@ -383,6 +388,7 @@ async function flushChildThreadTurnNotificationBatch(
+@@ -414,6 +419,7 @@ async function flushChildThreadTurnNotificationBatch(
      await queueParentSystemMessage(deps, {
        input: buildChildThreadTurnStatusBatchInput({
          items: batch.items,
@@ -288,7 +287,7 @@ index 5f8f38c6ca91dc54a5175ffe59a1d90336754250..6354c916d5df51255b206c054757776f
        }),
        parentThreadId,
        ...childThreadTurnStatusBatchTaxonomy(batch.items),
-@@ -479,6 +485,7 @@ export async function queueChildThreadNeedsAttentionNotificationBestEffort(
+@@ -521,6 +527,7 @@ export async function queueChildThreadNeedsAttentionNotificationBestEffort(
        input: buildChildThreadNeedsAttentionInput({
          blockerSummary: args.blockerSummary,
          childThread: args.childThread,
@@ -297,7 +296,7 @@ index 5f8f38c6ca91dc54a5175ffe59a1d90336754250..6354c916d5df51255b206c054757776f
        parentThreadId: args.parentThreadId,
        systemMessageKind: systemMessageKindForTemplate(
 diff --git a/apps/server/src/services/threads/parent-system-messages.ts b/apps/server/src/services/threads/parent-system-messages.ts
-index 51a1c000cea85fa785b180c416e06aa88ab3f3e1..6acda8b2cb075a3b1626f41f64363d2ffa53e1bf 100644
+index d44f295eb371f7db54bf6bf70d034993d44163cf..36b363f558e0537746a0976cf6f381dce851c4d2 100644
 --- a/apps/server/src/services/threads/parent-system-messages.ts
 +++ b/apps/server/src/services/threads/parent-system-messages.ts
 @@ -1,3 +1,6 @@
@@ -305,9 +304,9 @@ index 51a1c000cea85fa785b180c416e06aa88ab3f3e1..6acda8b2cb075a3b1626f41f64363d2f
 +import type { P6rPromptContext } from "@get-bb/plugin-sdk";
 +import { renderPrompt } from "../prompts/render-prompt.js";
  import {
+   getLatestThreadSequence,
    getEnvironment,
-   getThread,
-@@ -91,10 +94,16 @@ export type ParentSystemInputSegment =
+@@ -94,10 +97,16 @@ export type ParentSystemInputSegment =
    | ParentSystemMentionSegment;
  
  interface BuildParentSystemInputFromSegmentsArgs {
@@ -324,7 +323,7 @@ index 51a1c000cea85fa785b180c416e06aa88ab3f3e1..6acda8b2cb075a3b1626f41f64363d2f
    renderedText: string;
    segments: readonly ParentSystemInputSegment[];
    slot: string;
-@@ -156,30 +165,108 @@ function splitRenderedParentSystemSlot(
+@@ -159,30 +168,108 @@ function splitRenderedParentSystemSlot(
    };
  }
  
@@ -447,7 +446,7 @@ index 51a1c000cea85fa785b180c416e06aa88ab3f3e1..6acda8b2cb075a3b1626f41f64363d2f
    return [{ type: "text", text, mentions }];
  }
  
-@@ -188,6 +275,8 @@ export function buildParentSystemInputFromTemplateSlot(
+@@ -191,6 +278,8 @@ export function buildParentSystemInputFromTemplateSlot(
  ): PromptInput[] {
    const parts = splitRenderedParentSystemSlot(args);
    return buildParentSystemInputFromSegments({
@@ -621,7 +620,7 @@ index 1b3d95fe99f8eb13dda9e597e21991bcfddb4922..17f3715674cc25f2680cef1edde67484
      hostId: args.environment.hostId,
      threadId: args.thread.id,
 diff --git a/apps/server/src/services/threads/thread-send.ts b/apps/server/src/services/threads/thread-send.ts
-index b85535281a4cfdd911abe255a7b6e8b784258207..434a78302fc5abb5e5d7b7d0e0599698ff4425cc 100644
+index ae966990ada2d3b21cbbab3986144c21dac2b91f..c2c51c90cf060d4822b9714da6f06239922dbdd9 100644
 --- a/apps/server/src/services/threads/thread-send.ts
 +++ b/apps/server/src/services/threads/thread-send.ts
 @@ -1,3 +1,8 @@
@@ -633,7 +632,7 @@ index b85535281a4cfdd911abe255a7b6e8b784258207..434a78302fc5abb5e5d7b7d0e0599698
  import {
    readP6rNativeAttribution,
    withP6rNativeAuthorContext,
-@@ -122,15 +127,11 @@ interface ResolveMessageSenderArgs {
+@@ -123,15 +128,11 @@ interface ResolveMessageSenderArgs {
  }
  
  interface FormatAgentThreadInputArgs {
@@ -650,7 +649,7 @@ index b85535281a4cfdd911abe255a7b6e8b784258207..434a78302fc5abb5e5d7b7d0e0599698
  interface SendThreadMessageTransactionPreflightArgs {
    tx: DbTransaction;
  }
-@@ -328,43 +329,30 @@ export function resolveMessageSenderThreadId(
+@@ -329,43 +330,30 @@ export function resolveMessageSenderThreadId(
    return senderThread.id;
  }
  
@@ -712,7 +711,7 @@ index b85535281a4cfdd911abe255a7b6e8b784258207..434a78302fc5abb5e5d7b7d0e0599698
  }
  
  type UserMessageSentProperties = Extract<
-@@ -521,12 +509,18 @@ async function sendThreadMessageWithoutContextClear(
+@@ -522,12 +510,18 @@ async function sendThreadMessageWithoutContextClear(
      senderThreadId: payload.senderThreadId,
      targetThread: thread,
    });
@@ -731,7 +730,7 @@ index b85535281a4cfdd911abe255a7b6e8b784258207..434a78302fc5abb5e5d7b7d0e0599698
              })
            : inputGroup,
        )
-@@ -538,6 +532,7 @@ async function sendThreadMessageWithoutContextClear(
+@@ -539,6 +533,7 @@ async function sendThreadMessageWithoutContextClear(
          ? formatAgentThreadInput({
              input: payload.input,
              senderThreadId,
@@ -740,7 +739,7 @@ index b85535281a4cfdd911abe255a7b6e8b784258207..434a78302fc5abb5e5d7b7d0e0599698
          : payload.input;
    let p6rMentionedTargets: P6rMentionTarget[];
 diff --git a/apps/server/src/services/threads/title-generation.ts b/apps/server/src/services/threads/title-generation.ts
-index 4a55871a4c8c08b314ed65001cb630719513529d..ad50c045799764b13ae196c3f0459d3e07413be1 100644
+index 62b5012737765ad18beb1aba53f338cc0e9516d3..38a005be976ec42c0e4dca134c0ba0f70e4b2022 100644
 --- a/apps/server/src/services/threads/title-generation.ts
 +++ b/apps/server/src/services/threads/title-generation.ts
 @@ -1,4 +1,5 @@
@@ -750,7 +749,7 @@ index 4a55871a4c8c08b314ed65001cb630719513529d..ad50c045799764b13ae196c3f0459d3e
  import { getThread, updateThread } from "@bb/db";
  import {
    removeCommandMentionsFromPromptInput,
-@@ -156,19 +157,26 @@ export function sanitizeGeneratedBranchSlug(value: string): string | null {
+@@ -171,22 +172,29 @@ export function sanitizeGeneratedBranchSlug(value: string): string | null {
    return slug.length > 0 ? slug : null;
  }
  
@@ -759,14 +758,17 @@ index 4a55871a4c8c08b314ed65001cb630719513529d..ad50c045799764b13ae196c3f0459d3e
 +  input: PromptInput[],
 +  context?: P6rPromptContext,
 +): string | null {
-   const fallback = deriveTitleFallback(input);
-   if (!fallback) {
+   const text = cleanPromptText(input);
+   if (!text) {
      return null;
    }
    const commands = collectInvokedPromptCommands(input);
    const body = promptTextWithoutCommands(input, commands);
 -  return renderTemplate("generateThreadMetadata", {
--    cleanedPrompt: body.length > 0 ? clampPromptText(body) : fallback,
+-    cleanedPrompt: clampToWidth(
+-      body.length > 0 ? body : text,
+-      MAX_TITLE_PROMPT_WIDTH,
+-    ),
 -    ...(commands.length > 0
 -      ? { invokedCommands: formatInvokedCommands(commands) }
 -      : {}),
@@ -774,7 +776,10 @@ index 4a55871a4c8c08b314ed65001cb630719513529d..ad50c045799764b13ae196c3f0459d3e
 +  return renderPromptTemplate(
 +    "generateThreadMetadata",
 +    {
-+      cleanedPrompt: body.length > 0 ? clampPromptText(body) : fallback,
++      cleanedPrompt: clampToWidth(
++        body.length > 0 ? body : text,
++        MAX_TITLE_PROMPT_WIDTH,
++      ),
 +      ...(commands.length > 0
 +        ? { invokedCommands: formatInvokedCommands(commands) }
 +        : {}),
@@ -784,7 +789,7 @@ index 4a55871a4c8c08b314ed65001cb630719513529d..ad50c045799764b13ae196c3f0459d3e
  }
  
  export async function generateThreadMetadataWithOutcome(
-@@ -185,7 +193,9 @@ export async function generateThreadMetadataWithOutcome(
+@@ -203,7 +211,9 @@ export async function generateThreadMetadataWithOutcome(
      ...(reason ? { reason } : {}),
    });
  
@@ -1612,7 +1617,7 @@ index 839a2795af881e7bda3dcc8d939feb8e7b4337f8..1790a7776e657a9b233ee84c874788db
      await withOwnershipFixture(async ({ childId, parents: [a, b], move }) => {
        await move(childId, b);
 diff --git a/apps/server/test/threads/thread-runtime-config.test.ts b/apps/server/test/threads/thread-runtime-config.test.ts
-index 50f5baa63ca8c3edb213244c4f2e3733c9a1d333..2779d7d9e9e78747ddc8fe3a351d295493ed6fd5 100644
+index 188a85c403ec6f38b74d6de4bd5c22c7cfc9943e..c3cf244adeb07c465ab05197c4ecdf0fd9287048 100644
 --- a/apps/server/test/threads/thread-runtime-config.test.ts
 +++ b/apps/server/test/threads/thread-runtime-config.test.ts
 @@ -12,12 +12,17 @@ import {
@@ -1634,7 +1639,7 @@ index 50f5baa63ca8c3edb213244c4f2e3733c9a1d333..2779d7d9e9e78747ddc8fe3a351d2954
  import { resolveThreadRuntimeCommandConfig } from "../../src/services/threads/thread-runtime-config.js";
  import {
    buildExecutionOptions,
-@@ -1610,10 +1615,13 @@ describe("thread runtime config", () => {
+@@ -1557,10 +1562,13 @@ describe("thread runtime config", () => {
    describe("plugin contributeInstructions assembly", () => {
      afterEach(() => {
        setPluginAgentContributions(undefined);
@@ -1648,7 +1653,7 @@ index 50f5baa63ca8c3edb213244c4f2e3733c9a1d333..2779d7d9e9e78747ddc8fe3a351d2954
        instructions?: Array<{
          pluginId: string;
          provider: (ctx: {
-@@ -1625,6 +1633,11 @@ describe("thread runtime config", () => {
+@@ -1572,6 +1580,11 @@ describe("thread runtime config", () => {
        setPluginAgentContributions({
          listSkillRootContributions: () => [],
          listAgentTools: () => args.tools ?? [],
@@ -1660,7 +1665,7 @@ index 50f5baa63ca8c3edb213244c4f2e3733c9a1d333..2779d7d9e9e78747ddc8fe3a351d2954
          listInstructionContributions: () => args.instructions ?? [],
          findAgentTool: () => undefined,
          invokeAgentTool: async () => ({
-@@ -1638,6 +1651,267 @@ describe("thread runtime config", () => {
+@@ -1585,6 +1598,267 @@ describe("thread runtime config", () => {
        });
      }
  
@@ -1929,10 +1934,10 @@ index 50f5baa63ca8c3edb213244c4f2e3733c9a1d333..2779d7d9e9e78747ddc8fe3a351d2954
        await withTestHarness(async (harness) => {
          const hostId = "host-runtime-plugin-instr";
 diff --git a/apps/server/test/threads/thread-send-dispatch.test.ts b/apps/server/test/threads/thread-send-dispatch.test.ts
-index 7c6097577b9899413e28992c649f969c99144743..d6de7e19091595538cd95d338b5ddaca57069c0f 100644
+index 238213128d7b0709599a0646aeba74e6da0d5042..d846f620f8e2c50efd074f9fc0df75a0b5fa0774 100644
 --- a/apps/server/test/threads/thread-send-dispatch.test.ts
 +++ b/apps/server/test/threads/thread-send-dispatch.test.ts
-@@ -19,6 +19,7 @@ import {
+@@ -21,6 +21,7 @@ import {
  } from "@bb/domain";
  import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
  import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1940,7 +1945,7 @@ index 7c6097577b9899413e28992c649f969c99144743..d6de7e19091595538cd95d338b5ddaca
  import type { TelemetryService } from "../../src/services/system/telemetry.js";
  import * as queuedDispatch from "../../src/services/threads/queued-message-dispatch.js";
  import * as threadEvents from "../../src/services/threads/thread-events.js";
-@@ -1735,3 +1736,82 @@ describe("competing turn refusals", () => {
+@@ -1781,3 +1782,82 @@ describe("competing turn refusals", () => {
      });
    });
  });

@@ -1,0 +1,195 @@
+From abc1b46867f01ab5de081edfe39a91f4bf8f8bb6 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Thu, 10 Sep 2026 13:42:08 -0400
+Subject: [PATCH] fix: activate Tailnet identity from configured Serve host
+
+---
+ docs/configuration.md                         | 14 +++++
+ packages/config/src/server.ts                 |  3 +-
+ packages/config/src/tailnet-default.ts        | 27 +++++++++
+ packages/config/test/tailnet-default.test.ts  | 57 +++++++++++++++++++
+ .../src/templates/bb-guide-customization.md   |  6 ++
+ plugins/bb-guide/skills/bb-cli/SKILL.md       |  6 ++
+ 6 files changed, 112 insertions(+), 1 deletion(-)
+ create mode 100644 packages/config/src/tailnet-default.ts
+ create mode 100644 packages/config/test/tailnet-default.test.ts
+
+diff --git a/docs/configuration.md b/docs/configuration.md
+index 36ee8e2a612307e64dc492797bef7a30d4623836..8bc66d3645b121b3fd1e09362dafa45c067f2de0 100644
+--- a/docs/configuration.md
++++ b/docs/configuration.md
+@@ -4,6 +4,20 @@ Launcher status output is plain when stdout is redirected, including in CI.
+ Set `FORCE_COLOR=1` to request color or `NO_COLOR=1` to disable it; `NO_COLOR`
+ takes precedence. In-place progress updates require a stdout TTY.
+ 
++## Tailnet identity
++
++An installed Identity Boundaries plugin is selected automatically when the server
++has `BB_TAILNET_IDENTITY_OWNED_HOST` set to its Tailscale Serve authority. BB derives
++the standard loopback Serve ingress and identity-header mapping; no second
++`BB_P6R_IDENTITY_BOUNDARY` opt-in is required. An explicitly supplied boundary
++still takes precedence for custom providers or ingress mappings.
++
++The plugin checks the request authority and resolves Serve's login against its
++Tailnet directory. Requests without usable person evidence retain machine
++attribution. This is attribution, not a replacement for access controls. A local
++or tagged-machine CLI request cannot verify which person is using a browser.
++Changing the server environment requires a restart.
++
+ The packaged `npx bb-app` flow stores persistent package settings under
+ `~/.bb/config.json`, provider environment values under `~/.bb/env.json`, and
+ client SSH target mappings under `~/.bb/client.json`.
+diff --git a/packages/config/src/server.ts b/packages/config/src/server.ts
+index 574e1ab3e483ebe1a7a685c198849523025bd1af..1f82d3b159055f68e6eea8db95bfde9bed80776c 100644
+--- a/packages/config/src/server.ts
++++ b/packages/config/src/server.ts
+@@ -41,6 +41,7 @@ import { loadFeatureFlags } from "./feature-flags.js";
+ import { assignIfDefined } from "./objects.js";
+ import { loadHostDaemonPortValue } from "./ports.js";
+ import { loadServerPortConfig, type ServerPortConfig } from "./server-port.js";
++import { defaultTailnetIdentityBoundary } from "./tailnet-default.js";
+ 
+ export interface ServerConfig
+   extends CommonConfig, DatabaseConfig, ServerPortConfig {
+@@ -165,7 +166,7 @@ export function loadServerConfig(
+     }),
+     BB_P6R_IDENTITY_BOUNDARY: readEnvVarWithDefault({
+       context: loader.context,
+-      defaultValue: null,
++      defaultValue: defaultTailnetIdentityBoundary(loader.env.BB_TAILNET_IDENTITY_OWNED_HOST),
+       definition: BB_P6R_IDENTITY_BOUNDARY_ENV,
+       env: loader.env,
+     }),
+diff --git a/packages/config/src/tailnet-default.ts b/packages/config/src/tailnet-default.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..a936199426984c963c32f5f4ce0d3580e1974c63
+--- /dev/null
++++ b/packages/config/src/tailnet-default.ts
+@@ -0,0 +1,27 @@
++import type { P6rIdentityBoundaryConfig } from "./server.js";
++
++export function defaultTailnetIdentityBoundary(
++  ownedHost: string | undefined,
++): P6rIdentityBoundaryConfig | null {
++  if (!ownedHost?.trim()) return null;
++  return {
++    configuration: {
++      version: 1,
++      boundaryId: "tailnet",
++      pluginId: "identity-boundaries",
++      ingressIds: ["tailscale-serve"],
++      credentials: [
++        { name: "tailnet-login", source: "header", field: "tailscale-user-login" },
++        { name: "tailnet-name", source: "header", field: "tailscale-user-name" },
++        { name: "tailnet-avatar", source: "header", field: "tailscale-user-profile-pic" },
++      ],
++      resolver: { timeoutMs: 5000 },
++    },
++    trustedIngresses: [{
++      id: "tailscale-serve",
++      kind: "owned-proxy",
++      remoteAddresses: ["127.0.0.1", "::1", "::ffff:127.0.0.1"],
++      authenticatedPeer: null,
++    }],
++  };
++}
+diff --git a/packages/config/test/tailnet-default.test.ts b/packages/config/test/tailnet-default.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f826993fe84bc010a2dfa837b601c500b41fdfc0
+--- /dev/null
++++ b/packages/config/test/tailnet-default.test.ts
+@@ -0,0 +1,57 @@
++import { describe, expect, it } from "vitest";
++import { loadServerConfig } from "../src/server.js";
++
++function config(env: NodeJS.ProcessEnv = {}) {
++  return loadServerConfig({
++    env: { NODE_ENV: "production", BB_DATA_DIR: "/tmp/tailnet-config-test", ...env },
++  }).BB_P6R_IDENTITY_BOUNDARY;
++}
++
++describe("Tailnet deployment identity defaults", () => {
++  it("activates the provider from the existing owned Serve host without a second opt-in", () => {
++    expect(config({ BB_TAILNET_IDENTITY_OWNED_HOST: "bb.example.ts.net" }))
++      .toMatchObject({
++        configuration: {
++          pluginId: "identity-boundaries",
++          ingressIds: ["tailscale-serve"],
++          credentials: expect.arrayContaining([
++            { name: "tailnet-login", source: "header", field: "tailscale-user-login" },
++          ]),
++        },
++        trustedIngresses: [{
++          id: "tailscale-serve", kind: "owned-proxy", authenticatedPeer: null,
++          remoteAddresses: ["127.0.0.1", "::1", "::ffff:127.0.0.1"],
++        }],
++      });
++  });
++
++  it("does not invent a provider on deployments without an owned host", () => {
++    expect(config()).toBeNull();
++    expect(config({ BB_TAILNET_IDENTITY_OWNED_HOST: "  " })).toBeNull();
++  });
++
++  it("preserves explicit custom provider selection", () => {
++    const custom = {
++      configuration: {
++        version: 1, boundaryId: "custom", pluginId: "custom-idp",
++        ingressIds: ["gateway"], credentials: [],
++        resolver: { timeoutMs: 1000 },
++      },
++      trustedIngresses: [{
++        id: "gateway", kind: "owned-proxy", remoteAddresses: ["192.0.2.1"],
++        authenticatedPeer: null,
++      }],
++    };
++    expect(config({
++      BB_TAILNET_IDENTITY_OWNED_HOST: "bb.example.ts.net",
++      BB_P6R_IDENTITY_BOUNDARY: JSON.stringify(custom),
++    })).toEqual(custom);
++  });
++
++  it("reports invalid explicit configuration instead of silently replacing it", () => {
++    expect(() => config({
++      BB_TAILNET_IDENTITY_OWNED_HOST: "bb.example.ts.net",
++      BB_P6R_IDENTITY_BOUNDARY: "broken-json",
++    })).toThrow("must be valid JSON");
++  });
++});
+diff --git a/packages/templates/src/templates/bb-guide-customization.md b/packages/templates/src/templates/bb-guide-customization.md
+index a23343746524d5448fe3dd4a6b69023bdb0f9bf9..081b0045d66b3f9e72957b10de54bca54444b049 100644
+--- a/packages/templates/src/templates/bb-guide-customization.md
++++ b/packages/templates/src/templates/bb-guide-customization.md
+@@ -164,6 +164,12 @@ connection need not resolve to the same person as a browser behind a trusted
+ proxy. An unconfigured instance retains native local behavior. An unavailable
+ configured provider does not fall back to a claimed name.
+ 
++For Tailscale Serve deployments, `BB_TAILNET_IDENTITY_OWNED_HOST` automatically
++selects the installed Identity Boundaries provider and standard loopback ingress.
++No separate `BB_P6R_IDENTITY_BOUNDARY` opt-in is needed; an explicit custom boundary
++still takes precedence. Requests without verified person evidence use machine
++attribution. Validate your own identity through your browser connection.
++
+ New browser sends retain their verified author separately from message text,
+ including queued sends and retries. Older unattributed messages remain unknown.
+ Native `/compact` handling is preserved. The Appearance setting is currently
+diff --git a/plugins/bb-guide/skills/bb-cli/SKILL.md b/plugins/bb-guide/skills/bb-cli/SKILL.md
+index b0c9edf49c7fa071b32e6ebeff4c10bae94d29a9..a99089a02e4e2d8a1681c7f0e9bd121eb51050c0 100644
+--- a/plugins/bb-guide/skills/bb-cli/SKILL.md
++++ b/plugins/bb-guide/skills/bb-cli/SKILL.md
+@@ -140,6 +140,12 @@ list`, `get`, `set`, and `reset`.
+ 
+ ## Common checks
+ 
++On Tailscale Serve deployments, an existing `BB_TAILNET_IDENTITY_OWNED_HOST`
++automatically selects the installed Identity Boundaries provider. Do not add a
++second boundary opt-in unless custom ingress or another provider requires it.
++`bb settings p6r-identity --json` reports this CLI connection's identity; a local
++machine result does not prove that a person's browser resolves the same way.
++
+ ```sh
+ bb project list --json
+ bb machine list --json
+-- 
+2.53.0
+

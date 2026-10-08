@@ -1,0 +1,29 @@
+From 22c29a603ae8c45186461dca9808de18d504ce99 Mon Sep 17 00:00:00 2001
+From: bb-fork <bb-fork@invalid.local>
+Date: Sat, 26 Sep 2026 03:08:36 +0200
+Subject: [PATCH] test(cli): read packaged plugin app from versioned artifact
+
+---
+ apps/cli/src/__tests__/packaged-plugin-build.test.ts | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/apps/cli/src/__tests__/packaged-plugin-build.test.ts b/apps/cli/src/__tests__/packaged-plugin-build.test.ts
+index 90713ae126ff9d400f45acf2774d4bad6b2b3349..bd78df850199a1e1e4d6cd8e343a2045695aa8ae 100644
+--- a/apps/cli/src/__tests__/packaged-plugin-build.test.ts
++++ b/apps/cli/src/__tests__/packaged-plugin-build.test.ts
+@@ -114,8 +114,11 @@ describe("packaged CLI plugin build", () => {
+       { cwd: workspaceRoot, env: childEnv },
+     );
+ 
++    const meta = JSON.parse(
++      await readFile(join(pluginRoot, "dist", "app.meta.json"), "utf8"),
++    ) as { appArtifact: { generation: string } };
+     const appBundle = await readFile(
+-      join(pluginRoot, "dist", "app.js"),
++      join(pluginRoot, "dist", ".bb-artifacts", meta.appArtifact.generation, "app.js"),
+       "utf8",
+     );
+     expect(appBundle).toContain("experimental_useBranches");
+-- 
+2.53.0
+

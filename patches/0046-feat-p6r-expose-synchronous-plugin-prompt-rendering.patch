@@ -1,7 +1,7 @@
-From a6db20bfd9b881cb28910fdcfa714006e83e421c Mon Sep 17 00:00:00 2001
+From 2572426ea59f564ffcb36ed37e21f636c06969a4 Mon Sep 17 00:00:00 2001
 From: BB fork integration <bb-fork@invalid.local>
 Date: Mon, 5 Oct 2026 22:04:38 +0200
-Subject: [PATCH 46/47] feat(p6r): expose synchronous plugin prompt rendering
+Subject: [PATCH] feat(p6r): expose synchronous plugin prompt rendering
 
 ---
  apps/server/src/server.ts                     |   2 +
@@ -23,22 +23,24 @@ Subject: [PATCH 46/47] feat(p6r): expose synchronous plugin prompt rendering
  packages/templates/src/render-template.ts     |  11 +
  packages/templates/test/templates.test.ts     |  11 +
  .../references/backend-api-index.md           |  17 ++
- plugins/plugin-api-docs/src/surfaces.ts       |  24 ++
- 20 files changed, 1034 insertions(+), 1 deletion(-)
+ plugins/plugin-api-docs/src/surfaces.ts       |  22 ++
+ 20 files changed, 1032 insertions(+), 1 deletion(-)
  create mode 100644 apps/server/src/services/prompts/render-prompt.test.ts
  create mode 100644 apps/server/src/services/prompts/render-prompt.ts
  create mode 100644 packages/plugin-sdk/src/internal/p6r-prompt-rendering.ts
 
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
-index a809d549f03c7cecb4664dce289f4cc0d3a7a866..c09c560cd0a604752ce8019a92b450235914b99c 100644
+index 58c3577304d1d004c3ad6465b1bf65c7084cc4c4..1a3666598b18de9f155815d54a9ab5f43c3c4e4e 100644
 --- a/apps/server/src/server.ts
 +++ b/apps/server/src/server.ts
-@@ -1,3 +1,4 @@
+@@ -1,5 +1,6 @@
+ import { createPluginUpdateJobs } from "./services/plugins/plugin-update-jobs.js";
+ import { registerPluginUpdateJobRoutes } from "./routes/plugin-update-jobs.js";
 +import { setPromptProvider } from "./services/prompts/render-prompt.js";
  import { recheckEnvironmentProvisioning } from "./services/threads/thread-environment-providers.js";
- import { enrolledInstallerScript } from "./services/machines/manual-enrollment-command.js";
- import { reconnectBootstrapForCredential } from "./services/machines/reconnect.js";
-@@ -850,6 +851,7 @@ export function createApp(
+ import {
+   enrolledInstallerScript,
+@@ -917,6 +918,7 @@ export function createApp(
        threadId,
      });
    });
@@ -47,7 +49,7 @@ index a809d549f03c7cecb4664dce289f4cc0d3a7a866..c09c560cd0a604752ce8019a92b45023
    // Bridge the dispatch pipeline to this service's hooks. Until this runs
    // there are no hooks, which is exactly the zero-overhead path.
 diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
-index b4b2cab4e6856bd5103f387731b95bdef24951cf..21c96cf09bc1bb268efeac1476171fbb18b16616 100644
+index 36f9b47a3828a1ce21f2f923036598891c779d88..ce4e793c23289138232ec591d8607115549f8c21 100644
 --- a/apps/server/src/services/plugins/plugin-api.ts
 +++ b/apps/server/src/services/plugins/plugin-api.ts
 @@ -1,3 +1,8 @@
@@ -59,7 +61,7 @@ index b4b2cab4e6856bd5103f387731b95bdef24951cf..21c96cf09bc1bb268efeac1476171fbb
  import {
    environmentCompositionSchema,
    validateServerAccessProviderDeclaration,
-@@ -259,6 +264,13 @@ type PluginSettingsListener = (
+@@ -267,6 +272,13 @@ type PluginSettingsListener = (
  ) => void;
  
  export interface PluginApiHandle {
@@ -73,7 +75,7 @@ index b4b2cab4e6856bd5103f387731b95bdef24951cf..21c96cf09bc1bb268efeac1476171fbb
    api: BbPluginApi;
    disposeHooks: Array<() => void | Promise<void>>;
    /** Handlers recorded by `bb.onInstall`; run once after a fresh install. */
-@@ -1504,6 +1516,30 @@ export function createPluginApi(options: {
+@@ -1518,6 +1530,30 @@ export function createPluginApi(options: {
      register: aiServiceRegistrations.register,
    };
  
@@ -104,7 +106,7 @@ index b4b2cab4e6856bd5103f387731b95bdef24951cf..21c96cf09bc1bb268efeac1476171fbb
    const api: BbPluginApi = {
      pluginId,
      log,
-@@ -1526,6 +1562,24 @@ export function createPluginApi(options: {
+@@ -1540,6 +1576,24 @@ export function createPluginApi(options: {
      server,
      hosts,
      experimental_aiServices,
@@ -129,7 +131,7 @@ index b4b2cab4e6856bd5103f387731b95bdef24951cf..21c96cf09bc1bb268efeac1476171fbb
      experimental_facets,
      experimental_p6rRoutes: experimentalRoutes,
      ...(p6rIdentity === undefined
-@@ -1558,6 +1612,7 @@ export function createPluginApi(options: {
+@@ -1581,6 +1635,7 @@ export function createPluginApi(options: {
  
    return {
      api,
@@ -138,7 +140,7 @@ index b4b2cab4e6856bd5103f387731b95bdef24951cf..21c96cf09bc1bb268efeac1476171fbb
      installHandlers,
      settings: settingsRecord,
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index 72a7b6037ad2c0ef756c29043faa19c2ca51cc8c..11b3d94457bbabfd118b237173cecd41a214b310 100644
+index 4a34f08506cbe310ea2375af8e109edf6f4bfb40..ea3138b4a30cbc0d8f90dd63d0272bd0b366e0af 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
 @@ -1,3 +1,4 @@
@@ -146,7 +148,7 @@ index 72a7b6037ad2c0ef756c29043faa19c2ca51cc8c..11b3d94457bbabfd118b237173cecd41
  import type {
    PluginRpcDiscoveryQuery,
    PublishedPluginRpcMethod,
-@@ -234,6 +235,7 @@ export interface PluginStartOptions {
+@@ -244,6 +245,7 @@ export interface PluginStartOptions {
  }
  
  export interface PluginService {
@@ -154,7 +156,7 @@ index 72a7b6037ad2c0ef756c29043faa19c2ca51cc8c..11b3d94457bbabfd118b237173cecd41
    isBuiltin(id: string): boolean;
    events: PluginThreadEventEmitter;
    /** The hook chain the dispatch pipeline consults; registered in createApp. */
-@@ -1269,6 +1271,29 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1325,6 +1327,29 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
    }
  
    return {
@@ -516,10 +518,10 @@ index 0000000000000000000000000000000000000000..b2bd61fe090e2aa1b28f4499c266912e
 +  });
 +}
 diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-index 798ed463b2cf9122885781b97f7d5407169322ff..65b0fcdcfec76397db44f29aba1a59995f515494 100644
+index 51008315d166aeeeae952f101e2c568d03e0f730..eba4942f962a9f174108ed9bd1a2e29e83823dd2 100644
 --- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
 +++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-@@ -166,6 +166,7 @@ const BB_PLUGIN_API_KEYS = [
+@@ -172,6 +172,7 @@ const BB_PLUGIN_API_KEYS = [
    "status",
    "server",
    "hosts",
@@ -528,7 +530,7 @@ index 798ed463b2cf9122885781b97f7d5407169322ff..65b0fcdcfec76397db44f29aba1a5999
    "experimental_facets",
    "experimental_hooks",
 diff --git a/apps/server/test/services/plugins/plugin-service.test.ts b/apps/server/test/services/plugins/plugin-service.test.ts
-index f13b15187b9e89ef7a330aa89fbc020f57c9ff0c..54cff0c0850305f7b9cccd330369e0e8b1fbd13f 100644
+index 82d192577907c440629a2ce303425b3c36727fca..6b02734e817ad0ccd6af635c5a8faebf676a0447 100644
 --- a/apps/server/test/services/plugins/plugin-service.test.ts
 +++ b/apps/server/test/services/plugins/plugin-service.test.ts
 @@ -1,3 +1,7 @@
@@ -539,7 +541,7 @@ index f13b15187b9e89ef7a330aa89fbc020f57c9ff0c..54cff0c0850305f7b9cccd330369e0e8
  import {
    cp,
    mkdtemp,
-@@ -158,6 +162,7 @@ describe("plugin service", () => {
+@@ -159,6 +163,7 @@ describe("plugin service", () => {
  
    afterEach(async () => {
      try {
@@ -547,7 +549,7 @@ index f13b15187b9e89ef7a330aa89fbc020f57c9ff0c..54cff0c0850305f7b9cccd330369e0e8
        await service.stop();
        await rm(workDir, { recursive: true, force: true });
      } finally {
-@@ -331,6 +336,78 @@ describe("plugin service", () => {
+@@ -315,6 +320,78 @@ describe("plugin service", () => {
      ).toEqual(["skill", "skill", "theme"]);
    });
  
@@ -627,10 +629,10 @@ index f13b15187b9e89ef7a330aa89fbc020f57c9ff0c..54cff0c0850305f7b9cccd330369e0e8
      const bad = await writePlugin(workDir, {
        name: "bb-plugin-bad",
 diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
-index f65816be5d091eeb793656b378aee691b4dfb89e..ce5a4c77cf700f143c60b34252cc0cc59f4d6879 100644
+index 0ec9b66cd86b14f17267500c1c36490a1cda9c4b..ea4bbca52a807f4d2cad5be703498f5a3de976d8 100644
 --- a/docs/api_to_audit.md
 +++ b/docs/api_to_audit.md
-@@ -3492,3 +3492,11 @@ loads these in one batch; plugin rows do not query a directory. Mention targets
+@@ -3914,3 +3914,11 @@ loads these in one batch; plugin rows do not query a directory. Mention targets
  and admitted contribution authors can be participants without being the current
  viewer or a claimed message author. Audit canonical source and mapper retention
  when changing the thread-list contract.
@@ -643,10 +645,10 @@ index f65816be5d091eeb793656b378aee691b4dfb89e..ce5a4c77cf700f143c60b34252cc0cc5
 +
 +Stabilization requires auditing synchronous/reentrant behavior, stable prompt IDs and adapters across server, host/file, client/local and provider-owned content; verifying protected-resource reconstruction; documenting coverage/freshness and sample replay limits; and deciding observer privacy and retention policy. Prototype coverage is limited to implemented server adapters. SDK fake-host template rendering requires `experimental_p6rRenderPromptTemplate` injection and throws clearly when absent.
 diff --git a/packages/plugin-sdk/package.json b/packages/plugin-sdk/package.json
-index 706a6f1c37441e6fa6c975a4a0c922418c749cd9..809da424b936f628a414fe550d7114dce956cbd3 100644
+index 86d162b6399d7914b9ef8b797ab376c0ef92a459..3300a3a5ec17f7e9fcb27caa54431904613ea350 100644
 --- a/packages/plugin-sdk/package.json
 +++ b/packages/plugin-sdk/package.json
-@@ -115,6 +115,12 @@
+@@ -121,6 +121,12 @@
        "types": "./bundled-types/bb-plugin-sdk-testing-host.d.ts",
        "import": "./dist/testing/host.js",
        "default": "./dist/testing/host.js"
@@ -660,10 +662,10 @@ index 706a6f1c37441e6fa6c975a4a0c922418c749cd9..809da424b936f628a414fe550d7114dc
    },
    "types": "./bundled-types/bb-plugin-sdk.d.ts",
 diff --git a/packages/plugin-sdk/src/__tests__/package-exports.test.ts b/packages/plugin-sdk/src/__tests__/package-exports.test.ts
-index 09c9c238f729e1f2a06e2ca33aa811e9f6711568..72316c06db2c3363c23aae0feb686bfaeb7f01b4 100644
+index eed09db7ed06af5cbb04b84785cdade324a45a6f..bf6ed03077255fc8ce6c7250dc990f987ca87847 100644
 --- a/packages/plugin-sdk/src/__tests__/package-exports.test.ts
 +++ b/packages/plugin-sdk/src/__tests__/package-exports.test.ts
-@@ -42,11 +42,15 @@ describe("packed plugin SDK exports", () => {
+@@ -43,11 +43,15 @@ describe("packed plugin SDK exports", () => {
        "./testing",
        "./testing/app",
        "./testing/host",
@@ -680,10 +682,10 @@ index 09c9c238f729e1f2a06e2ca33aa811e9f6711568..72316c06db2c3363c23aae0feb686bfa
        await expect(
          access(new URL(entry.types.slice(2), packageRoot)),
 diff --git a/packages/plugin-sdk/src/__tests__/public-types.test.ts b/packages/plugin-sdk/src/__tests__/public-types.test.ts
-index 87da2dcc49bb3a73ee368149855109dd5026b4bc..9c7b6d47069d81246bc8f4da48dcf9d1d2be87da 100644
+index de155f9a59fb6ee5e26803772c030f7937654ecc..34cfcbdfcb1703e075c9e50f346184d4ce0762ac 100644
 --- a/packages/plugin-sdk/src/__tests__/public-types.test.ts
 +++ b/packages/plugin-sdk/src/__tests__/public-types.test.ts
-@@ -21,6 +21,7 @@ type ExpectedBbPluginApiKey =
+@@ -26,6 +26,7 @@ type ExpectedBbPluginApiKey =
    | "background"
    | "cli"
    | "events"
@@ -691,7 +693,7 @@ index 87da2dcc49bb3a73ee368149855109dd5026b4bc..9c7b6d47069d81246bc8f4da48dcf9d1
    | "experimental_aiServices"
    | "experimental_environments"
    | "experimental_facets"
-@@ -46,6 +47,12 @@ type ExpectedBbPluginApiKey =
+@@ -51,6 +52,12 @@ type ExpectedBbPluginApiKey =
    | "ui";
  
  const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
@@ -705,10 +707,10 @@ index 87da2dcc49bb3a73ee368149855109dd5026b4bc..9c7b6d47069d81246bc8f4da48dcf9d1
    "MessageDispatchHookContext",
    "MessageDispatchHookDecision",
 diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
-index 42da6bc3381708f28740848e8bd5bea5126bd1b0..1ff80a1e320e76924a6acb7390bcda3ce992c2d5 100644
+index 33b94de430d92c1507710004f7c2b02b73c9854b..ab5041c04e99f0dd4160f65517bc9b47a192449e 100644
 --- a/packages/plugin-sdk/src/backend-contract.ts
 +++ b/packages/plugin-sdk/src/backend-contract.ts
-@@ -2129,12 +2129,71 @@ export type PluginBbSdk = Omit<BbSdk, "threads"> & {
+@@ -2137,12 +2137,71 @@ export type PluginBbSdk = Omit<BbSdk, "threads"> & {
    };
  };
  
@@ -1030,10 +1032,10 @@ index 0000000000000000000000000000000000000000..13e1580cae205392a5e69e28bcc14895
 +  };
 +}
 diff --git a/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts b/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
-index 328d0c4d0b409c1877d96dbeb4c29f738dea68d3..c9b30463164d3c0e8fa8e6b6d5549d81c3fad88c 100644
+index c3dceafe1b8b209ace2d917b36f5b0d45e533453..f299b37914b302e28d23e058c15926f313c1ac3c 100644
 --- a/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
 +++ b/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
-@@ -2596,3 +2596,87 @@ describe("environment targets", () => {
+@@ -2550,3 +2550,87 @@ describe("environment targets", () => {
      expect(seen).toEqual(["qm_1"]);
    });
  });
@@ -1122,7 +1124,7 @@ index 328d0c4d0b409c1877d96dbeb4c29f738dea68d3..c9b30463164d3c0e8fa8e6b6d5549d81
 +  });
 +});
 diff --git a/packages/plugin-sdk/src/testing/fake-plugin-host.ts b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
-index b25467cfb1a1bdb9b47d97d6972f1a15538f63e5..1fa9108a0ca7b84528b8277efced1c381ce12e49 100644
+index b048b0daaa35c57d42f91c7b918de18bd3ccc174..5f736259c3d3f0bab10194d5b0126a354c4a682d 100644
 --- a/packages/plugin-sdk/src/testing/fake-plugin-host.ts
 +++ b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
 @@ -1,3 +1,11 @@
@@ -1137,7 +1139,7 @@ index b25467cfb1a1bdb9b47d97d6972f1a15538f63e5..1fa9108a0ca7b84528b8277efced1c38
  import {
    environmentCompositionSchema,
    validateServerAccessProviderDeclaration,
-@@ -499,6 +507,11 @@ export interface FakePluginHarness
+@@ -508,6 +516,11 @@ export interface FakePluginHarness
  }
  
  export interface CreateFakePluginHostOptions {
@@ -1149,7 +1151,7 @@ index b25467cfb1a1bdb9b47d97d6972f1a15538f63e5..1fa9108a0ca7b84528b8277efced1c38
    machineBootstrap?: MachineBootstrapApi;
    machineResource?: (hostId: string) => Promise<JsonValue | null>;
    /** Defaults to "test-plugin". */
-@@ -1516,6 +1529,47 @@ function createFakePluginHostInternal(
+@@ -1529,6 +1542,47 @@ function createFakePluginHostInternal(
      },
    };
  
@@ -1197,7 +1199,7 @@ index b25467cfb1a1bdb9b47d97d6972f1a15538f63e5..1fa9108a0ca7b84528b8277efced1c38
    const bb: BbPluginApi = {
      pluginId,
      log,
-@@ -1552,6 +1606,28 @@ function createFakePluginHostInternal(
+@@ -1565,6 +1619,28 @@ function createFakePluginHostInternal(
      server,
      hosts,
      experimental_aiServices,
@@ -1263,7 +1265,7 @@ index 543406bc5e35e0179399e724c97f4ee572526155..00a1ea7336d876998fe4489ee236390c
    templateId: TTemplateId,
    variables: TemplateVariables[TTemplateId],
 diff --git a/packages/templates/test/templates.test.ts b/packages/templates/test/templates.test.ts
-index 2f47542574fdccd4f67ade1ece803ef02c88572a..88056111896a1445c921777320a9f8d1de1294a4 100644
+index 039cded9f733e1c526a6b045afa5667fe8e2e508..1b2a922a259cc1e8da8a39c2b37e4787b2ebdbf8 100644
 --- a/packages/templates/test/templates.test.ts
 +++ b/packages/templates/test/templates.test.ts
 @@ -1,12 +1,23 @@
@@ -1291,7 +1293,7 @@ index 2f47542574fdccd4f67ade1ece803ef02c88572a..88056111896a1445c921777320a9f8d1
      const guide = renderTemplate("bbGuideProjects", {});
  
 diff --git a/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md b/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
-index a5ff6921104fe90bb594a266098aae45a0ab7556..f88b3be76c6068d61d3407daf9fd5226b2d1f22b 100644
+index aa19e8afc72a758be807e3b97454f2ee4284932a..fdf3011f040873b2ac99131831c68d8e1cffba14 100644
 --- a/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
 +++ b/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
 @@ -15,6 +15,12 @@ Read the installed declarations for exact current signatures.
@@ -1307,7 +1309,7 @@ index a5ff6921104fe90bb594a266098aae45a0ab7556..f88b3be76c6068d61d3407daf9fd5226
  - `CodeOverflowMode`
  - `ComposerCustomization`
  - `ComposerPlusMenuItem`
-@@ -426,6 +432,17 @@ Read the installed declarations for exact current signatures.
+@@ -438,6 +444,17 @@ Read the installed declarations for exact current signatures.
  - `ExperimentalHostEntryHarness`
  - `ExperimentalHostHarnessSignal`
  
@@ -1326,10 +1328,10 @@ index a5ff6921104fe90bb594a266098aae45a0ab7556..f88b3be76c6068d61d3407daf9fd5226
  
  `bb.experimental_p6rIdentity` is an optional host capability consumed through
 diff --git a/plugins/plugin-api-docs/src/surfaces.ts b/plugins/plugin-api-docs/src/surfaces.ts
-index 68d911b8e73a3efd17dab61c905b1b12e864ea7d..e89cbc050fcb33742f8f19afa9d37205476486f6 100644
+index 6a2b7940d3b8b027fc48e197d645434800b40ad3..167ce4b1ed32cb4e942a2969a66c72084082c618 100644
 --- a/plugins/plugin-api-docs/src/surfaces.ts
 +++ b/plugins/plugin-api-docs/src/surfaces.ts
-@@ -694,6 +694,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+@@ -740,6 +740,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
        {
          title: "Running & reacting",
          surfaceIds: [
@@ -1337,7 +1339,7 @@ index 68d911b8e73a3efd17dab61c905b1b12e864ea7d..e89cbc050fcb33742f8f19afa9d37205
            "background",
            "wire",
            "thread-events",
-@@ -784,6 +785,29 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+@@ -858,6 +859,27 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
            "Workflows",
          ],
        },
@@ -1345,15 +1347,13 @@ index 68d911b8e73a3efd17dab61c905b1b12e864ea7d..e89cbc050fcb33742f8f19afa9d37205
 +        id: "prompt-rendering",
 +        title: "Prompt rendering",
 +        summary:
-+          "Customizes selected server-owned prompt text and reports completed render samples. With this, a plugin can:",
++          "Replace selected server-owned prompt text and observe completed renders. With this, a plugin can:",
 +        experimental: true,
 +        bullets: [
-+          "Register named middleware on bb.experimental_p6rPrompts; next() continues with current text and next(text) continues with replacement text",
-+          "Use stable prompt IDs, original template inputs and thread/project/provider context; request copies are recursively frozen",
-+          "Preserve each protected mention token exactly once; invalid results or exceptions use the original default with a logged fallback record",
-+          "Observe visible default/final text once per render, with the attempted execution chain and explicit fallback; samples do not prove provider consumption",
-+          "Dispose registrations immediately; unload, reload and failed plugin loads cannot leave live middleware",
-+          "Render arbitrary templates with pure Handlebars noEscape and trim semantics; the fake host requires an explicit experimental_p6rRenderPromptTemplate injection for this method",
++          "Register named middleware that keeps or replaces each prompt's current text",
++          "Use stable prompt IDs, template inputs, and thread, project, and provider context",
++          "Keep protected mention tokens intact; failed renders fall back to the default",
++          "Observe each render's default and final text, then dispose registrations on unload",
 +        ],
 +        apiSymbols: [
 +          "ExperimentalP6rPrompts",

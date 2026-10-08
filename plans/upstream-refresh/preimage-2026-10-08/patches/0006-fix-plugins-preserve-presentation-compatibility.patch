@@ -1,0 +1,461 @@
+From 8011088552fcc19f3e2b3fcba02f90082418b836 Mon Sep 17 00:00:00 2001
+From: Phosphor <engineering@phosphor.co>
+Date: Tue, 8 Sep 2026 17:35:56 +0200
+Subject: [PATCH] fix(plugins): preserve presentation compatibility
+
+---
+ apps/server/package.json                      |   1 +
+ .../server/src/services/plugins/plugin-api.ts |  17 ++-
+ .../src/services/plugins/plugin-service.ts    |  24 ++++-
+ .../plugins/plugin-authoring-docs.test.ts     |   1 +
+ .../plugin-presentation-context.test.ts       | 101 ++++++++++++++++++
+ packages/plugin-sdk/package.json              |   1 +
+ .../src/__tests__/public-types.test.ts        |  15 +++
+ packages/plugin-sdk/src/backend-contract.ts   |  21 ++++
+ .../src/testing/fake-plugin-host.ts           |  20 +++-
+ pnpm-lock.yaml                                |   9 +-
+ 10 files changed, 203 insertions(+), 7 deletions(-)
+ create mode 100644 apps/server/test/services/plugins/plugin-presentation-context.test.ts
+
+diff --git a/apps/server/package.json b/apps/server/package.json
+index df919e43bb5781fa9aa855a96908bd4298d4ee3c..d80eaa715d119ec4b7413efa630c6aa017f79fab 100644
+--- a/apps/server/package.json
++++ b/apps/server/package.json
+@@ -15,6 +15,7 @@
+     "test:provider-corpus": "vitest run --config vitest.config.ts test/provider-corpus"
+   },
+   "dependencies": {
++    "@bb/client-core": "workspace:*",
+     "@bb/config": "workspace:*",
+     "@bb/core-ui": "workspace:*",
+     "@bb/db": "workspace:*",
+diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
+index 14c9e150c6951d8cfd9bf3926357c2b2d1412a6d..5b40d3583eb8240223f39be7ed05317871828142 100644
+--- a/apps/server/src/services/plugins/plugin-api.ts
++++ b/apps/server/src/services/plugins/plugin-api.ts
+@@ -28,7 +28,13 @@ import {
+   setPluginKvValue,
+   type DbConnection,
+ } from "@bb/db";
+-import type { ThreadEventItemPresentation } from "@bb/domain";
++import {
++  PLUGIN_INTERACTION_MAX_PAYLOAD_BYTES,
++  PLUGIN_INTERACTION_MAX_TITLE_LENGTH,
++  type JsonValue,
++  type ThreadEventItemPresentation,
++} from "@bb/domain";
++import { getThreadRoutePath } from "@bb/client-core";
+ import type {
+   BbPluginApi,
+   PluginAgentConfiguration,
+@@ -77,6 +83,7 @@ import type {
+   PluginRealtime,
+   PluginRpc,
+   PluginServerApi,
++  P6rExperimentalPluginRoutes,
+   PluginSettingDescriptors,
+   PluginSettingValue,
+   PluginSettings,
+@@ -1175,6 +1182,13 @@ export function createPluginApi(options: {
+     },
+   };
+ 
++  const experimentalRoutes: P6rExperimentalPluginRoutes = {
++    p6rThreadPath(args) {
++      assertLive();
++      return getThreadRoutePath(args);
++    },
++  };
++
+   const server: PluginServerApi = {
+     get experimental_appUrl(): string | null {
+       assertLive();
+@@ -1518,6 +1532,7 @@ export function createPluginApi(options: {
+     hosts,
+     experimental_aiServices,
+     experimental_facets,
++    experimental_p6rRoutes: experimentalRoutes,
+     ...(p6rIdentity === undefined
+       ? {}
+       : { experimental_p6rIdentity: p6rIdentity.protocol }),
+diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
+index fc4f2026b939ee9098b02e3c7c196ffd27c3f4eb..9ea290e44f410bd838fa602bc6d6c17b9d1774f3 100644
+--- a/apps/server/src/services/plugins/plugin-service.ts
++++ b/apps/server/src/services/plugins/plugin-service.ts
+@@ -561,6 +561,18 @@ function normalizeMentionSearchItems(
+   });
+ }
+ 
++const GENERIC_AGENT_TOOL_GLYPH = "Toolbox";
++
++function pluginHttpExternalOrigin(
++  getAppUrl: (() => string | null) | undefined,
++  context: Context,
++): string {
++  const configured = getAppUrl?.();
++  return configured === null || configured === undefined
++    ? new URL(context.req.url).origin
++    : new URL(configured).origin;
++}
++
+ export function createPluginService(deps: PluginServiceDeps): PluginService {
+   const logger = deps.logger;
+   const installHandlerTimeoutMs = deps.installHandlerTimeoutMs ?? 30_000;
+@@ -1934,10 +1946,18 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+         id,
+         `http ${route.method} ${route.path}`,
+         async () => {
++          const p6rRequestContext = {
++            experimental_p6rExternalOrigin: pluginHttpExternalOrigin(
++              deps.getAppUrl,
++              context,
++            ),
++          };
+           const dispatch = deps.p6rDispatch;
+           const binding = dispatch?.bindingFor(route.handler);
+           if (binding === undefined) {
+-            return adoptHttpRouteResponse(await route.handler(context));
++            return adoptHttpRouteResponse(
++              await route.handler(context, p6rRequestContext),
++            );
+           }
+           if (
+             binding.pluginId !== id ||
+@@ -1973,7 +1993,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+             const response = await dispatch.runWithInvocation(
+               route.handler,
+               { request: context, scope: capture.scope },
+-              () => route.handler(context),
++              () => route.handler(context, p6rRequestContext),
+             );
+             return retainP6rHttpResponse(
+               adoptHttpRouteResponse(response),
+diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
+index 88a4ae3ce458061d4a72ac11212cea8a167e47b0..2e5f9810fda2610ee7ef6504c464d4978a7780f4 100644
+--- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
++++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
+@@ -172,6 +172,7 @@ const BB_PLUGIN_API_KEYS = [
+   "experimental_machines",
+   "experimental_serverAccess",
+   "experimental_p6rIdentity",
++  "experimental_p6rRoutes",
+   "sdk",
+   "onDispose",
+   "onInstall",
+diff --git a/apps/server/test/services/plugins/plugin-presentation-context.test.ts b/apps/server/test/services/plugins/plugin-presentation-context.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..31045a90a15310d48e9ab7e5b8b6d0e667d63f79
+--- /dev/null
++++ b/apps/server/test/services/plugins/plugin-presentation-context.test.ts
+@@ -0,0 +1,101 @@
++import { mkdir, writeFile } from "node:fs/promises";
++import { join } from "node:path";
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import {
++  createTestAppHarness,
++  type TestAppHarness,
++} from "../../helpers/test-app.js";
++
++const BASE = "http://127.0.0.1:3334";
++
++const PLUGIN_SOURCE = `
++  import type { BbPluginApi } from "@get-bb/plugin-sdk";
++
++  export default function plugin(bb: BbPluginApi) {
++    const routes = bb.experimental_p6rRoutes;
++    if (routes === undefined) throw new Error("selected host route paths missing");
++    bb.http.route("GET", "/presentation", (context, requestContext) => {
++      const origin = requestContext?.experimental_p6rExternalOrigin;
++      if (origin === undefined) {
++        throw new Error("selected host presentation context missing");
++      }
++      return context.json({
++        origin,
++        projectPath: routes.p6rThreadPath({
++          projectId: "project-1",
++          threadId: "thread-1",
++        }),
++        personalPath: routes.p6rThreadPath({
++          projectId: "proj_personal",
++          threadId: "thread-personal",
++        }),
++      });
++    });
++  }
++`;
++
++async function writePlugin(dir: string): Promise<string> {
++  const rootDir = join(dir, "bb-plugin-presentation-context");
++  await mkdir(rootDir, { recursive: true });
++  await writeFile(
++    join(rootDir, "package.json"),
++    JSON.stringify({
++      name: "bb-plugin-presentation-context",
++      version: "0.1.0",
++      bb: {
++        name: "Presentation context fixture",
++        description: "Exercises server-authored presentation facts.",
++        branding: { icon: "Link" },
++        server: "./server.ts",
++      },
++    }),
++  );
++  await writeFile(join(rootDir, "server.ts"), PLUGIN_SOURCE);
++  return rootDir;
++}
++
++describe("plugin HTTP presentation context", () => {
++  let harness: TestAppHarness;
++
++  beforeEach(async () => {
++    harness = await createTestAppHarness({ devAppPort: 5173 });
++    const entry = await harness.pluginService.installPath(
++      await writePlugin(join(harness.config.dataDir, "fixtures")),
++    );
++    expect(entry.status).toBe("running");
++  });
++
++  afterEach(async () => {
++    await harness.pluginService.stop();
++    await harness.cleanup();
++  });
++
++  it("uses configured BB_APP_URL origin and server-owned project-aware paths", async () => {
++    harness.config.appUrl = "https://public.example.test:8443/nested/path";
++
++    const response = await harness.app.request(
++      `${BASE}/api/v1/plugins/presentation-context/http/presentation`,
++    );
++
++    expect(response.status).toBe(200);
++    expect(await response.json()).toEqual({
++      origin: "https://public.example.test:8443",
++      projectPath: "/projects/project-1/threads/thread-1",
++      personalPath: "/threads/thread-personal",
++    });
++  });
++
++  it("falls back only to the direct request origin when BB_APP_URL is absent", async () => {
++    harness.config.appUrl = undefined;
++
++    const response = await harness.app.request(
++      "https://direct.example.test:9443/api/v1/plugins/presentation-context/http/presentation",
++      { headers: { "x-forwarded-host": "forged.example.test" } },
++    );
++
++    expect(response.status).toBe(200);
++    expect(await response.json()).toMatchObject({
++      origin: "https://direct.example.test:9443",
++    });
++  });
++});
+diff --git a/packages/plugin-sdk/package.json b/packages/plugin-sdk/package.json
+index 2fc2b65d659199676212b190fe74023329798dd6..706a6f1c37441e6fa6c975a4a0c922418c749cd9 100644
+--- a/packages/plugin-sdk/package.json
++++ b/packages/plugin-sdk/package.json
+@@ -132,6 +132,7 @@
+     "zod": "^4.3.6"
+   },
+   "devDependencies": {
++    "@bb/client-core": "workspace:*",
+     "@bb/domain": "workspace:*",
+     "@bb/process-utils": "workspace:*",
+     "@bb/provider-bridge-acp": "workspace:*",
+diff --git a/packages/plugin-sdk/src/__tests__/public-types.test.ts b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+index 71293a0d0e11fa25b8585faf1449a7f087627f89..7f89926f602df8cf3888c229c3ad45b6cbdb15fe 100644
+--- a/packages/plugin-sdk/src/__tests__/public-types.test.ts
++++ b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+@@ -11,6 +11,8 @@ import type {
+   ExperimentalP6rIdentityProtocol,
+   ExperimentalP6rInvocationContext,
+   ExperimentalP6rInvocationScope,
++  P6rExperimentalPluginRoutes,
++  P6rPluginRequestContext,
+ } from "../index.js";
+ import type { PluginProviderIconRegistration } from "../app-contract.js";
+ 
+@@ -27,6 +29,7 @@ type ExpectedBbPluginApiKey =
+   | "onInstall"
+   | "experimental_serverAccess"
+   | "experimental_p6rIdentity"
++  | "experimental_p6rRoutes"
+   | "hosts"
+   | "http"
+   | "log"
+@@ -87,6 +90,7 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
+   "PluginDispatchExecutionSources",
+   "PluginDispatchInput",
+   "PluginEvents",
++  "ExperimentalPluginMentionTargetSelector",
+   "ExperimentalPluginWebSocket",
+   "ExperimentalPluginWebSocketContext",
+   "ExperimentalPluginWebSocketHandler",
+@@ -99,6 +103,8 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
+   "PluginHttp",
+   "PluginHttpAuthMode",
+   "PluginHttpHandler",
++  "P6rExperimentalPluginRoutes",
++  "P6rPluginRequestContext",
+   "PluginInteractionCancelReason",
+   "PluginInteractionDescription",
+   "PluginInteractionRequest",
+@@ -270,6 +276,15 @@ describe("backend plugin SDK public surface", () => {
+     expectTypeOf(borrowNestedValue).toBeFunction();
+   });
+ 
++  it("keeps presentation routes and HTTP context optional for baseline hosts", () => {
++    expectTypeOf<BbPluginApi["experimental_p6rRoutes"]>().toEqualTypeOf<
++      P6rExperimentalPluginRoutes | undefined
++    >();
++    expectTypeOf<P6rPluginRequestContext["experimental_p6rExternalOrigin"]>().toEqualTypeOf<
++      string | undefined
++    >();
++  });
++
+   it("exposes the optional enhanced identity protocol without product models", () => {
+     expectTypeOf<
+       BbPluginApi["experimental_p6rIdentity"]
+diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
+index eeefdbae72aec9f55cb534e488fe3bb137e51258..c5483abd94f864f1366407d1171629417030afbd 100644
+--- a/packages/plugin-sdk/src/backend-contract.ts
++++ b/packages/plugin-sdk/src/backend-contract.ts
+@@ -791,8 +791,22 @@ export interface PluginHooks {
+ 
+ export type PluginHttpAuthMode = "local" | "token" | "none";
+ 
++/**
++ * Server-authored presentation facts for a plugin HTTP invocation.
++ *
++ * When supplied, `experimental_p6rExternalOrigin` is the configured
++ * `BB_APP_URL` origin when one is available; otherwise it is the direct
++ * request URL origin. It exists only for token-free links. It carries no
++ * actor, principal, credential, or forwarded-header authority. Baseline hosts
++ * may omit the whole context or this optional presentation field.
++ */
++export interface P6rPluginRequestContext {
++  readonly experimental_p6rExternalOrigin?: string;
++}
++
+ export type PluginHttpHandler = (
+   context: Context,
++  p6rRequestContext?: P6rPluginRequestContext,
+ ) => Response | Promise<Response>;
+ 
+ export interface ExperimentalPluginWebSocket {
+@@ -1858,6 +1872,11 @@ export interface PluginEvents {
+ // Server info.
+ // ---------------------------------------------------------------------------
+ 
++/** Pure, server-owned route construction for existing plugin presentation links. */
++export interface P6rExperimentalPluginRoutes {
++  p6rThreadPath(args: { projectId: string; threadId: string }): string;
++}
++
+ export interface PluginServerApi {
+   /**
+    * The operator-configured public app URL from `BB_APP_URL`, or `null` when
+@@ -2107,6 +2126,8 @@ export type PluginBbSdk = Omit<BbSdk, "threads"> & {
+  * against.
+  */
+ export interface BbPluginApi {
++  /** Server-owned, identity-free route paths for existing presentation links. */
++  readonly experimental_p6rRoutes?: P6rExperimentalPluginRoutes;
+   readonly experimental_p6rIdentity?: ExperimentalP6rIdentityProtocol;
+   /** The plugin's own id (namespaces storage, routes, commands). */
+   readonly pluginId: string;
+diff --git a/packages/plugin-sdk/src/testing/fake-plugin-host.ts b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+index 6718a10161d56b9f497a500af10374ddfbb51bd2..ec068731b5af727be1131b213323444be2e575eb 100644
+--- a/packages/plugin-sdk/src/testing/fake-plugin-host.ts
++++ b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+@@ -11,6 +11,8 @@ import Database from "better-sqlite3";
+ import { CronExpressionParser } from "cron-parser";
+ import { Hono } from "hono";
+ import { deepFreezePluginMetadata, validatePluginMetadata } from "@bb/domain";
++import { PLUGIN_INTERACTION_MAX_TITLE_LENGTH } from "@bb/domain/plugin-interaction-limits";
++import { getThreadRoutePath } from "@bb/client-core";
+ import {
+   adoptHttpRouteResponse,
+   aiServiceAlreadyRegisteredMessage,
+@@ -103,6 +105,7 @@ import type {
+   PluginRealtime,
+   PluginRpc,
+   PluginServerApi,
++  P6rExperimentalPluginRoutes,
+   PluginSettingDescriptors,
+   PluginSettingValue,
+   PluginSettings,
+@@ -1507,6 +1510,13 @@ function createFakePluginHostInternal(
+     },
+   };
+ 
++  const experimentalRoutes: P6rExperimentalPluginRoutes = {
++    p6rThreadPath(args) {
++      assertLive();
++      return getThreadRoutePath(args);
++    },
++  };
++
+   const bb: BbPluginApi = {
+     pluginId,
+     log,
+@@ -1544,6 +1554,7 @@ function createFakePluginHostInternal(
+     hosts,
+     experimental_aiServices,
+     experimental_facets,
++    experimental_p6rRoutes: experimentalRoutes,
+     get sdk() {
+       assertLive();
+       return sdk;
+@@ -1871,7 +1882,14 @@ function createFakePluginHostInternal(
+       const app = new Hono();
+       app.on(route.method, route.path, async (context) => {
+         try {
+-          return adoptHttpRouteResponse(await route.handler(context));
++          return adoptHttpRouteResponse(
++            await route.handler(context, {
++              experimental_p6rExternalOrigin:
++                appUrl === null
++                  ? new URL(context.req.url).origin
++                  : new URL(appUrl).origin,
++            }),
++          );
+         } catch (error) {
+           const message = errorMessage(error);
+           emitLog(
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index a5ac5f1fbaf426482bd114451dc4d3fd00ad0999..e3d9e76911c641f8a73a793f1fd6357df978a6c1 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -957,6 +957,9 @@ importers:
+ 
+   apps/server:
+     dependencies:
++      '@bb/client-core':
++        specifier: workspace:*
++        version: link:../../packages/client-core
+       '@bb/config':
+         specifier: workspace:*
+         version: link:../../packages/config
+@@ -1069,9 +1072,6 @@ importers:
+       '@bb/agent-runtime':
+         specifier: workspace:*
+         version: link:../../packages/agent-runtime
+-      '@bb/client-core':
+-        specifier: workspace:*
+-        version: link:../../packages/client-core
+       '@bb/scripts':
+         specifier: workspace:*
+         version: link:../../packages/scripts
+@@ -2229,6 +2229,9 @@ importers:
+         specifier: 4.3.6
+         version: 4.3.6
+     devDependencies:
++      '@bb/client-core':
++        specifier: workspace:*
++        version: link:../client-core
+       '@bb/domain':
+         specifier: workspace:*
+         version: link:../domain
+-- 
+2.53.0
+

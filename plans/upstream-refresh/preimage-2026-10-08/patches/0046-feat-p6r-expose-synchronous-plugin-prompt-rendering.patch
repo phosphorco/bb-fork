@@ -1,0 +1,1372 @@
+From a6db20bfd9b881cb28910fdcfa714006e83e421c Mon Sep 17 00:00:00 2001
+From: BB fork integration <bb-fork@invalid.local>
+Date: Mon, 5 Oct 2026 22:04:38 +0200
+Subject: [PATCH 46/47] feat(p6r): expose synchronous plugin prompt rendering
+
+---
+ apps/server/src/server.ts                     |   2 +
+ .../server/src/services/plugins/plugin-api.ts |  55 ++++
+ .../src/services/plugins/plugin-service.ts    |  25 ++
+ .../services/prompts/render-prompt.test.ts    | 283 ++++++++++++++++++
+ .../src/services/prompts/render-prompt.ts     |  36 +++
+ .../plugins/plugin-authoring-docs.test.ts     |   1 +
+ .../services/plugins/plugin-service.test.ts   |  77 +++++
+ docs/api_to_audit.md                          |   8 +
+ packages/plugin-sdk/package.json              |   6 +
+ .../src/__tests__/package-exports.test.ts     |   4 +
+ .../src/__tests__/public-types.test.ts        |   7 +
+ packages/plugin-sdk/src/backend-contract.ts   |  59 ++++
+ .../src/internal/p6r-prompt-rendering.ts      | 243 +++++++++++++++
+ .../__tests__/fake-plugin-host.test.ts        |  84 ++++++
+ .../src/testing/fake-plugin-host.ts           |  76 +++++
+ packages/templates/src/index.ts               |   6 +-
+ packages/templates/src/render-template.ts     |  11 +
+ packages/templates/test/templates.test.ts     |  11 +
+ .../references/backend-api-index.md           |  17 ++
+ plugins/plugin-api-docs/src/surfaces.ts       |  24 ++
+ 20 files changed, 1034 insertions(+), 1 deletion(-)
+ create mode 100644 apps/server/src/services/prompts/render-prompt.test.ts
+ create mode 100644 apps/server/src/services/prompts/render-prompt.ts
+ create mode 100644 packages/plugin-sdk/src/internal/p6r-prompt-rendering.ts
+
+diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
+index a809d549f03c7cecb4664dce289f4cc0d3a7a866..c09c560cd0a604752ce8019a92b450235914b99c 100644
+--- a/apps/server/src/server.ts
++++ b/apps/server/src/server.ts
+@@ -1,3 +1,4 @@
++import { setPromptProvider } from "./services/prompts/render-prompt.js";
+ import { recheckEnvironmentProvisioning } from "./services/threads/thread-environment-providers.js";
+ import { enrolledInstallerScript } from "./services/machines/manual-enrollment-command.js";
+ import { reconnectBootstrapForCredential } from "./services/machines/reconnect.js";
+@@ -850,6 +851,7 @@ export function createApp(
+       threadId,
+     });
+   });
++  setPromptProvider(pluginService.prompts);
+   setPluginThreadEventEmitter(pluginService.events);
+   // Bridge the dispatch pipeline to this service's hooks. Until this runs
+   // there are no hooks, which is exactly the zero-overhead path.
+diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
+index b4b2cab4e6856bd5103f387731b95bdef24951cf..21c96cf09bc1bb268efeac1476171fbb18b16616 100644
+--- a/apps/server/src/services/plugins/plugin-api.ts
++++ b/apps/server/src/services/plugins/plugin-api.ts
+@@ -1,3 +1,8 @@
++import {
++  renderPrompt,
++  validateP6rPromptRequest,
++} from "../prompts/render-prompt.js";
++import { renderTemplateText } from "@bb/templates";
+ import {
+   environmentCompositionSchema,
+   validateServerAccessProviderDeclaration,
+@@ -259,6 +264,13 @@ type PluginSettingsListener = (
+ ) => void;
+ 
+ export interface PluginApiHandle {
++  prompts: {
++    middleware: Map<string, import("@get-bb/plugin-sdk").P6rPromptMiddleware>;
++    observers: Map<
++      string,
++      (sample: import("@get-bb/plugin-sdk").P6rPromptObservation) => void
++    >;
++  };
+   api: BbPluginApi;
+   disposeHooks: Array<() => void | Promise<void>>;
+   /** Handlers recorded by `bb.onInstall`; run once after a fresh install. */
+@@ -1504,6 +1516,30 @@ export function createPluginApi(options: {
+     register: aiServiceRegistrations.register,
+   };
+ 
++  const prompts: PluginApiHandle["prompts"] = {
++    middleware: new Map(),
++    observers: new Map(),
++  };
++  function registerPrompt<T>(
++    entries: Map<string, T>,
++    name: string,
++    callback: T,
++  ): { dispose(): void } {
++    assertLive();
++    if (!name.trim() || typeof callback !== "function")
++      throw new Error("Prompt registration requires a name and function");
++    if (entries.has(name))
++      throw new Error(`Prompt registration "${name}" already exists`);
++    entries.set(name, callback);
++    let disposed = false;
++    const dispose = (): void => {
++      if (disposed) return;
++      disposed = true;
++      entries.delete(name);
++    };
++    disposeHooks.push(dispose);
++    return { dispose };
++  }
+   const api: BbPluginApi = {
+     pluginId,
+     log,
+@@ -1526,6 +1562,24 @@ export function createPluginApi(options: {
+     server,
+     hosts,
+     experimental_aiServices,
++    experimental_p6rPrompts: {
++      registerMiddleware: (name, middleware) =>
++        registerPrompt(prompts.middleware, name, middleware),
++      observe: (name, observer) =>
++        registerPrompt(prompts.observers, name, observer),
++      render(request) {
++        assertLive();
++        validateP6rPromptRequest(request);
++        return renderPrompt({
++          ...request,
++          context: { ...request.context, sourcePluginId: pluginId },
++        });
++      },
++      renderTemplate(template, inputs) {
++        assertLive();
++        return renderTemplateText(template, inputs);
++      },
++    },
+     experimental_facets,
+     experimental_p6rRoutes: experimentalRoutes,
+     ...(p6rIdentity === undefined
+@@ -1558,6 +1612,7 @@ export function createPluginApi(options: {
+ 
+   return {
+     api,
++    prompts,
+     disposeHooks,
+     installHandlers,
+     settings: settingsRecord,
+diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
+index 72a7b6037ad2c0ef756c29043faa19c2ca51cc8c..11b3d94457bbabfd118b237173cecd41a214b310 100644
+--- a/apps/server/src/services/plugins/plugin-service.ts
++++ b/apps/server/src/services/plugins/plugin-service.ts
+@@ -1,3 +1,4 @@
++import type { P6rPromptProvider } from "../prompts/render-prompt.js";
+ import type {
+   PluginRpcDiscoveryQuery,
+   PublishedPluginRpcMethod,
+@@ -234,6 +235,7 @@ export interface PluginStartOptions {
+ }
+ 
+ export interface PluginService {
++  prompts: P6rPromptProvider;
+   isBuiltin(id: string): boolean;
+   events: PluginThreadEventEmitter;
+   /** The hook chain the dispatch pipeline consults; registered in createApp. */
+@@ -1269,6 +1271,29 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+   }
+ 
+   return {
++    prompts: {
++      middleware: () =>
++        [...loaded.entries()]
++          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
++          .flatMap(([pluginId, plugin]) =>
++            [...plugin.handle.prompts.middleware].map(([name, middleware]) => ({
++              pluginId,
++              name,
++              middleware,
++            })),
++          ),
++      observers: () =>
++        [...loaded.entries()]
++          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
++          .flatMap(([pluginId, plugin]) =>
++            [...plugin.handle.prompts.observers].map(([name, observer]) => ({
++              pluginId,
++              name,
++              observer,
++            })),
++          ),
++      warn: (message) => logger.warn(message),
++    },
+     isBuiltin: isBuiltinPluginId,
+ 
+     listThemes() {
+diff --git a/apps/server/src/services/prompts/render-prompt.test.ts b/apps/server/src/services/prompts/render-prompt.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..6eb81a22f9ef40bc20444c06b5c717b7b6c85e63
+--- /dev/null
++++ b/apps/server/src/services/prompts/render-prompt.test.ts
+@@ -0,0 +1,283 @@
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { renderTemplate, getTemplateBody } from "@bb/templates";
++import type {
++  P6rPromptMiddleware,
++  P6rPromptObservation,
++  P6rPromptRequest,
++} from "@get-bb/plugin-sdk";
++import {
++  renderPrompt,
++  renderPromptTemplate,
++  setPromptProvider,
++} from "./render-prompt.js";
++
++const request: P6rPromptRequest = {
++  id: "selected",
++  kind: "instruction",
++  text: " default \n",
++};
++afterEach(() => setPromptProvider(undefined));
++function setup(
++  middleware: P6rPromptMiddleware[],
++  observers: ((sample: P6rPromptObservation) => void)[] = [],
++) {
++  const warn = vi.fn();
++  setPromptProvider({
++    middleware: () =>
++      middleware.map((middleware, index) => ({
++        pluginId: `p${index}`,
++        name: "rewrite",
++        middleware,
++      })),
++    observers: () =>
++      observers.map((observer, index) => ({
++        pluginId: `o${index}`,
++        name: "sample",
++        observer,
++      })),
++    warn,
++  });
++  return warn;
++}
++
++describe("prompt rendering", () => {
++  it("preserves bytes and original template provenance", () => {
++    expect(renderPrompt(request)).toBe(request.text);
++    const sample = vi.fn();
++    setup([], [sample]);
++    const inputs = { senderThreadId: "thr_sender", messageText: "<literal>" };
++    expect(
++      renderPromptTemplate("agentThreadMessage", inputs, {
++        threadId: "thr_target",
++      }),
++    ).toBe(renderTemplate("agentThreadMessage", inputs));
++    expect(sample.mock.calls[0]?.[0].request).toEqual({
++      id: "agentThreadMessage",
++      kind: "template",
++      text: renderTemplate("agentThreadMessage", inputs),
++      template: getTemplateBody("agentThreadMessage"),
++      inputs,
++      context: { threadId: "thr_target" },
++    });
++  });
++  it("composes text-only continuation with fixed immutable provenance", () => {
++    const sample = vi.fn();
++    setup(
++      [
++        (received, next) => {
++          expect(received.text).toBe(request.text);
++          return next("first");
++        },
++        (received, next) => {
++          expect(received.text).toBe("first");
++          expect(received.inputs).toEqual({ value: "source" });
++          expect(Object.isFrozen(received.inputs)).toBe(true);
++          expect(Object.isFrozen(received.context)).toBe(true);
++          expect(Object.isFrozen(received.slots)).toBe(true);
++          return next(`${received.text} second`);
++        },
++      ],
++      [sample],
++    );
++    const inputs = { value: "source" };
++    expect(
++      renderPrompt({
++        ...request,
++        inputs,
++        context: { threadId: "t" },
++        slots: [],
++      }),
++    ).toBe("first second");
++    expect(Object.isFrozen(inputs)).toBe(false);
++    expect(sample.mock.calls[0]?.[0].middleware).toEqual([
++      { pluginId: "p0", name: "rewrite" },
++      { pluginId: "p1", name: "rewrite" },
++    ]);
++  });
++  it("supports selected rewrite, passthrough and short-circuiting", () => {
++    const skipped = vi.fn();
++    setup([
++      (received, next) => (received.id === "selected" ? "replacement" : next()),
++      skipped,
++    ]);
++    expect(renderPrompt(request)).toBe("replacement");
++    expect(skipped).not.toHaveBeenCalled();
++    setup([
++      (received, next) => (received.id === "selected" ? "replacement" : next()),
++    ]);
++    expect(renderPrompt({ ...request, id: "other" })).toBe(request.text);
++  });
++  it.each([
++    [
++      "throw",
++      () => {
++        throw new Error("failed");
++      },
++    ],
++    ["non-string", () => 4],
++    ["promise", () => Promise.reject(new Error("async"))],
++    [
++      "double next",
++      (_: unknown, next: () => string) => {
++        next();
++        try {
++          next();
++        } catch {}
++        return "ignored";
++      },
++    ],
++    [
++      "invalid continuation",
++      (_: unknown, next: (text?: unknown) => string) => next(3),
++    ],
++  ])(
++    "falls back and observes rejected %s middleware",
++    async (_, middleware) => {
++      const sample = vi.fn();
++      const warn = setup([middleware as P6rPromptMiddleware], [sample]);
++      expect(renderPrompt(request)).toBe(request.text);
++      expect(sample.mock.calls[0]?.[0].fallback).toMatchObject({
++        pluginId: "p0",
++        name: "rewrite",
++      });
++      expect(warn).toHaveBeenCalledWith(
++        expect.stringContaining(
++          'Prompt "selected" middleware p0/rewrite failed; using default',
++        ),
++      );
++      await Promise.resolve();
++    },
++  );
++  it("falls back across enclosing middleware even when it rewrites the downstream fallback", () => {
++    setup([
++      (_, next) => next() + "outer",
++      () => {
++        throw new Error("inner");
++      },
++    ]);
++    expect(renderPrompt(request)).toBe(request.text);
++  });
++  it("expands protected slots in observations and isolates observers", () => {
++    const samples: P6rPromptObservation[] = [];
++    const warn = setup(
++      [(_, next) => next("after TOKEN before")],
++      [
++        (sample) => {
++          expect(Object.isFrozen(sample.request.slots?.[0])).toBe(true);
++          throw new Error("observer");
++        },
++        (sample) => samples.push(sample),
++      ],
++    );
++    const original = {
++      ...request,
++      text: "before TOKEN after",
++      slots: [{ token: "TOKEN", text: "@thread" }],
++    };
++    expect(renderPrompt(original)).toBe("after TOKEN before");
++    expect(samples[0]).toMatchObject({
++      defaultText: "before @thread after",
++      finalText: "after @thread before",
++    });
++    expect(warn).toHaveBeenCalledWith(
++      expect.stringContaining("observer o0/sample failed"),
++    );
++    expect(original.slots[0]?.text).toBe("@thread");
++  });
++  it.each(["missing", "TOKEN TOKEN"])(
++    "falls back on protected output %s",
++    (output) => {
++      const sample = vi.fn();
++      setup([() => output], [sample]);
++      expect(
++        renderPrompt({
++          ...request,
++          text: "TOKEN",
++          slots: [{ token: "TOKEN", text: "@thread" }],
++        }),
++      ).toBe("TOKEN");
++      expect(sample.mock.calls[0]?.[0]).toMatchObject({
++        defaultText: "@thread",
++        finalText: "@thread",
++        fallback: { pluginId: "p0" },
++      });
++    },
++  );
++  it("rejects malformed caller slots even without plugins", () => {
++    expect(() =>
++      renderPrompt({
++        ...request,
++        slots: [{ token: "absent", text: "visible" }],
++      }),
++    ).toThrow("Protected slot");
++  });
++  it("rejects late continuation without running more middleware", () => {
++    let continuation: (() => string) | undefined;
++    const later = vi.fn((_: unknown, next: () => string) => next());
++    setup([
++      (_, next) => {
++        continuation = next;
++        return "complete";
++      },
++      later,
++    ]);
++    expect(renderPrompt(request)).toBe("complete");
++    expect(() => continuation?.()).toThrow("no longer active");
++    expect(later).not.toHaveBeenCalled();
++  });
++
++  it("treats replacement syntax in visible slot text literally", () => {
++    const sample = vi.fn();
++    setup([], [sample]);
++    const text = "$& $` $' $$";
++    expect(
++      renderPrompt({
++        ...request,
++        text: "before TOKEN after",
++        slots: [{ token: "TOKEN", text }],
++      }),
++    ).toBe("before TOKEN after");
++    expect(sample.mock.calls[0]?.[0]).toMatchObject({
++      defaultText: `before ${text} after`,
++      finalText: `before ${text} after`,
++    });
++  });
++  it.each([
++    { id: 7 },
++    { id: "" },
++    { kind: "unknown" },
++    { inputs: { value: 7 } },
++    { inputs: [] },
++    { context: { threadId: 7 } },
++    { context: null },
++    { slots: [{ token: "TOKEN", text: 7 }] },
++    { slots: "invalid" },
++    { template: 7 },
++  ])("rejects malformed public request %j", (invalid) => {
++    expect(() =>
++      renderPrompt({ ...request, ...invalid } as P6rPromptRequest),
++    ).toThrow();
++  });
++  it("falls back and reports reentrant rendering by the same prompt ID", () => {
++    const sample = vi.fn();
++    setup([(received) => renderPrompt(received)], [sample]);
++    expect(renderPrompt(request)).toBe(request.text);
++    expect(sample.mock.calls[0]?.[0].fallback.reason).toContain(
++      "Recursive prompt rendering",
++    );
++    setup([(_, next) => next()]);
++    expect(renderPrompt(request)).toBe(request.text);
++  });
++
++  it("logs rejected asynchronous observers without changing output", async () => {
++    const warn = setup([], [() => Promise.reject(new Error("async observer"))]);
++    expect(renderPrompt(request)).toBe(request.text);
++    await Promise.resolve();
++    expect(warn).toHaveBeenCalledWith(
++      expect.stringContaining("observer o0/sample must be synchronous"),
++    );
++    expect(warn).toHaveBeenCalledWith(
++      expect.stringContaining("observer o0/sample rejected: async observer"),
++    );
++  });
++});
+diff --git a/apps/server/src/services/prompts/render-prompt.ts b/apps/server/src/services/prompts/render-prompt.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b2bd61fe090e2aa1b28f4499c266912e557737f7
+--- /dev/null
++++ b/apps/server/src/services/prompts/render-prompt.ts
+@@ -0,0 +1,36 @@
++import type { P6rPromptContext } from "@get-bb/plugin-sdk";
++import {
++  createP6rPromptRenderer,
++  type P6rPromptProvider,
++} from "@get-bb/plugin-sdk/internal/p6r-prompt-rendering";
++import {
++  getTemplateBody,
++  renderTemplate,
++  type TemplateId,
++  type TemplateVariables,
++} from "@bb/templates";
++export {
++  validateP6rPromptRequest,
++  type P6rPromptProvider,
++} from "@get-bb/plugin-sdk/internal/p6r-prompt-rendering";
++
++let provider: P6rPromptProvider | undefined;
++export function setPromptProvider(value: P6rPromptProvider | undefined): void {
++  provider = value;
++}
++export const renderPrompt = createP6rPromptRenderer(() => provider);
++
++export function renderPromptTemplate<T extends TemplateId>(
++  id: T,
++  variables: TemplateVariables[T],
++  context?: P6rPromptContext,
++): string {
++  return renderPrompt({
++    id,
++    kind: "template",
++    text: renderTemplate(id, variables),
++    template: getTemplateBody(id),
++    inputs: variables,
++    ...(context ? { context } : {}),
++  });
++}
+diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
+index 798ed463b2cf9122885781b97f7d5407169322ff..65b0fcdcfec76397db44f29aba1a59995f515494 100644
+--- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
++++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
+@@ -166,6 +166,7 @@ const BB_PLUGIN_API_KEYS = [
+   "status",
+   "server",
+   "hosts",
++  "experimental_p6rPrompts",
+   "experimental_aiServices",
+   "experimental_facets",
+   "experimental_hooks",
+diff --git a/apps/server/test/services/plugins/plugin-service.test.ts b/apps/server/test/services/plugins/plugin-service.test.ts
+index f13b15187b9e89ef7a330aa89fbc020f57c9ff0c..54cff0c0850305f7b9cccd330369e0e8b1fbd13f 100644
+--- a/apps/server/test/services/plugins/plugin-service.test.ts
++++ b/apps/server/test/services/plugins/plugin-service.test.ts
+@@ -1,3 +1,7 @@
++import {
++  renderPrompt,
++  setPromptProvider,
++} from "../../../src/services/prompts/render-prompt.js";
+ import {
+   cp,
+   mkdtemp,
+@@ -158,6 +162,7 @@ describe("plugin service", () => {
+ 
+   afterEach(async () => {
+     try {
++      setPromptProvider(undefined);
+       await service.stop();
+       await rm(workDir, { recursive: true, force: true });
+     } finally {
+@@ -331,6 +336,78 @@ describe("plugin service", () => {
+     ).toEqual(["skill", "skill", "theme"]);
+   });
+ 
++  it("commits prompt registrations only for live plugins and removes them on disposal, reload and failed load", async () => {
++    const source = (label: string) => `export default function plugin(bb: any) {
++      bb.experimental_p6rPrompts.registerMiddleware("rewrite", (_: any, next: any) => next() + "${label}");
++      bb.experimental_p6rPrompts.observe("sample", () => {});
++    }`;
++    const z = await writePlugin(workDir, {
++      name: "bb-plugin-z",
++      serverSource: source("z"),
++    });
++    const a = await writePlugin(workDir, {
++      name: "bb-plugin-a",
++      serverSource: source("a"),
++    });
++    const bad = await writePlugin(workDir, {
++      name: "bb-plugin-failed-prompt",
++      serverSource: source("bad").replace(
++        "\n    }",
++        '\n      throw new Error("failed load");\n    }',
++      ),
++    });
++    await service.installPath(z);
++    await service.installPath(a);
++    await service.installPath(bad);
++    setPromptProvider(service.prompts);
++    const request = {
++      id: "test",
++      kind: "instruction" as const,
++      text: "default",
++    };
++    expect(renderPrompt(request)).toBe("defaultza");
++    expect(service.prompts.middleware().map((entry) => entry.pluginId)).toEqual(
++      ["a", "z"],
++    );
++    expect(service.prompts.observers()).toHaveLength(2);
++    const api = service.getApi("a")!;
++    expect(() =>
++      api.experimental_p6rPrompts.registerMiddleware("rewrite", (_, next) =>
++        next(),
++      ),
++    ).toThrow("already exists");
++    const disposer = api.experimental_p6rPrompts.registerMiddleware(
++      "temporary",
++      (_, next) => next() + "temp",
++    );
++    expect(service.prompts.middleware()).toHaveLength(3);
++    disposer.dispose();
++    disposer.dispose();
++    expect(service.prompts.middleware()).toHaveLength(2);
++    await writeFile(join(a, "server.ts"), source("A"));
++    await service.reload("a");
++    expect(renderPrompt(request)).toBe("defaultzA");
++    expect(service.prompts.middleware()).toHaveLength(2);
++    await writeFile(
++      join(a, "server.ts"),
++      source("bad-reload").replace(
++        "\n    }",
++        '\n      throw new Error("failed reload");\n    }',
++      ),
++    );
++    await service.reload("a");
++    expect(renderPrompt(request)).toBe("defaultzA");
++    expect(service.prompts.middleware()).toHaveLength(2);
++    expect(service.prompts.observers()).toHaveLength(2);
++    expect(() => api.experimental_p6rPrompts.render(request)).toThrow();
++    await service.setEnabled("z", false);
++    expect(renderPrompt(request)).toBe("defaultA");
++    await service.stop();
++    expect(service.prompts.middleware()).toEqual([]);
++    expect(service.prompts.observers()).toEqual([]);
++    expect(renderPrompt(request)).toBe("default");
++  });
++
+   it("marks a throwing factory as error without affecting others", async () => {
+     const bad = await writePlugin(workDir, {
+       name: "bb-plugin-bad",
+diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
+index f65816be5d091eeb793656b378aee691b4dfb89e..ce5a4c77cf700f143c60b34252cc0cc59f4d6879 100644
+--- a/docs/api_to_audit.md
++++ b/docs/api_to_audit.md
+@@ -3492,3 +3492,11 @@ loads these in one batch; plugin rows do not query a directory. Mention targets
+ and admitted contribution authors can be participants without being the current
+ viewer or a claimed message author. Audit canonical source and mapper retention
+ when changing the thread-list contract.
++
++## `bb.experimental_p6rPrompts`
++
++Synchronous server-owned string middleware and completed render observations. Registrations live on loaded plugin handles, ordered by lexical plugin ID then registration order, with duplicate names rejected per surface. `next()` keeps current text; `next(text)` continues with modified text once. ID, provenance, context and protected slot metadata stay fixed. Plugins receive recursive immutable copies. Templates expose original body/inputs; arbitrary replacement templates use pure Handlebars with `noEscape` and trimmed output.
++
++Invalid middleware return types, exceptions, repeated continuation calls or missing/duplicate protected tokens fall back to the original default, with named logger diagnostics and an explicit observation fallback record. Observation middleware entries describe attempted execution, not successful overrides when fallback is present. Observers receive independent frozen samples with expanded visible default/final text; observer errors are logged. Promises are rejected as customization and rejection handlers prevent unhandled failures. Samples are render evidence, not proof of provider consumption. No core persistence or daemon protocol change is included.
++
++Stabilization requires auditing synchronous/reentrant behavior, stable prompt IDs and adapters across server, host/file, client/local and provider-owned content; verifying protected-resource reconstruction; documenting coverage/freshness and sample replay limits; and deciding observer privacy and retention policy. Prototype coverage is limited to implemented server adapters. SDK fake-host template rendering requires `experimental_p6rRenderPromptTemplate` injection and throws clearly when absent.
+diff --git a/packages/plugin-sdk/package.json b/packages/plugin-sdk/package.json
+index 706a6f1c37441e6fa6c975a4a0c922418c749cd9..809da424b936f628a414fe550d7114dce956cbd3 100644
+--- a/packages/plugin-sdk/package.json
++++ b/packages/plugin-sdk/package.json
+@@ -115,6 +115,12 @@
+       "types": "./bundled-types/bb-plugin-sdk-testing-host.d.ts",
+       "import": "./dist/testing/host.js",
+       "default": "./dist/testing/host.js"
++    },
++    "./internal/p6r-prompt-rendering": {
++      "source": "./src/internal/p6r-prompt-rendering.ts",
++      "types": "./bundled-types/bb-plugin-sdk-internal-p6r-prompt-rendering.d.ts",
++      "import": "./dist/internal/p6r-prompt-rendering.js",
++      "default": "./dist/internal/p6r-prompt-rendering.js"
+     }
+   },
+   "types": "./bundled-types/bb-plugin-sdk.d.ts",
+diff --git a/packages/plugin-sdk/src/__tests__/package-exports.test.ts b/packages/plugin-sdk/src/__tests__/package-exports.test.ts
+index 09c9c238f729e1f2a06e2ca33aa811e9f6711568..72316c06db2c3363c23aae0feb686bfaeb7f01b4 100644
+--- a/packages/plugin-sdk/src/__tests__/package-exports.test.ts
++++ b/packages/plugin-sdk/src/__tests__/package-exports.test.ts
+@@ -42,11 +42,15 @@ describe("packed plugin SDK exports", () => {
+       "./testing",
+       "./testing/app",
+       "./testing/host",
++      "./internal/p6r-prompt-rendering",
+     ]);
+ 
+     for (const entry of Object.values(packageJson.exports)) {
+       expect(entry.import).toMatch(/^\.\/dist\/.*\.js$/u);
+       expect(entry.default).toBe(entry.import);
++      await expect(
++        access(new URL(entry.import.slice(2), packageRoot)),
++      ).resolves.toBeUndefined();
+       expect(entry.types).toMatch(/^\.\/bundled-types\/.*\.d\.ts$/u);
+       await expect(
+         access(new URL(entry.types.slice(2), packageRoot)),
+diff --git a/packages/plugin-sdk/src/__tests__/public-types.test.ts b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+index 87da2dcc49bb3a73ee368149855109dd5026b4bc..9c7b6d47069d81246bc8f4da48dcf9d1d2be87da 100644
+--- a/packages/plugin-sdk/src/__tests__/public-types.test.ts
++++ b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+@@ -21,6 +21,7 @@ type ExpectedBbPluginApiKey =
+   | "background"
+   | "cli"
+   | "events"
++  | "experimental_p6rPrompts"
+   | "experimental_aiServices"
+   | "experimental_environments"
+   | "experimental_facets"
+@@ -46,6 +47,12 @@ type ExpectedBbPluginApiKey =
+   | "ui";
+ 
+ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
++  "P6rPromptContext",
++  "P6rPromptSlot",
++  "P6rPromptRequest",
++  "P6rPromptMiddleware",
++  "P6rPromptObservation",
++  "ExperimentalP6rPrompts",
+   "BbPluginApi",
+   "MessageDispatchHookContext",
+   "MessageDispatchHookDecision",
+diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
+index 42da6bc3381708f28740848e8bd5bea5126bd1b0..1ff80a1e320e76924a6acb7390bcda3ce992c2d5 100644
+--- a/packages/plugin-sdk/src/backend-contract.ts
++++ b/packages/plugin-sdk/src/backend-contract.ts
+@@ -2129,12 +2129,71 @@ export type PluginBbSdk = Omit<BbSdk, "threads"> & {
+   };
+ };
+ 
++export interface P6rPromptContext {
++  threadId?: string;
++  projectId?: string;
++  providerId?: string;
++  sourcePluginId?: string;
++}
++export interface P6rPromptSlot {
++  token: string;
++  text: string;
++}
++export interface P6rPromptRequest {
++  id: string;
++  kind:
++    | "template"
++    | "instruction"
++    | "tool-description"
++    | "schema-description"
++    | "message"
++    | "skill"
++    | "guide"
++    | "tool-result";
++  text: string;
++  template?: string;
++  inputs?: Readonly<Record<string, string>>;
++  context?: P6rPromptContext;
++  slots?: readonly P6rPromptSlot[];
++}
++export type P6rPromptMiddleware = (
++  request: Readonly<P6rPromptRequest>,
++  next: (text?: string) => string,
++) => string;
++export interface P6rPromptObservation {
++  request: Readonly<P6rPromptRequest>;
++  defaultText: string;
++  finalText: string;
++  middleware: readonly { pluginId: string; name: string }[];
++  fallback?: { pluginId: string; name: string; reason: string };
++}
++/** Synchronous server prompt rendering; observations do not prove provider consumption. */
++export interface ExperimentalP6rPrompts {
++  /** Names are unique per plugin/surface. Disposal and unload remove registrations. */
++  registerMiddleware(
++    name: string,
++    middleware: P6rPromptMiddleware,
++  ): { dispose(): void };
++  observe(
++    name: string,
++    observer: (sample: P6rPromptObservation) => void,
++  ): { dispose(): void };
++  /** Failures fall back to the default text with logged diagnostics. Preserve protected slot tokens. */
++  render(request: P6rPromptRequest): string;
++  /** Pure Handlebars rendering with noEscape and trimmed output. */
++  renderTemplate(
++    template: string,
++    inputs: Readonly<Record<string, string>>,
++  ): string;
++}
++
+ /**
+  * The API object handed to a plugin's factory (design §4). Implemented by
+  * the BB server; this contract is what plugin `server.ts` files compile
+  * against.
+  */
+ export interface BbPluginApi {
++  readonly experimental_p6rPrompts: ExperimentalP6rPrompts;
+   /** Server-owned, identity-free route paths for existing presentation links. */
+   readonly experimental_p6rRoutes?: P6rExperimentalPluginRoutes;
+   readonly experimental_p6rIdentity?: ExperimentalP6rIdentityProtocol;
+diff --git a/packages/plugin-sdk/src/internal/p6r-prompt-rendering.ts b/packages/plugin-sdk/src/internal/p6r-prompt-rendering.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..13e1580cae205392a5e69e28bcc14895ace0f3dd
+--- /dev/null
++++ b/packages/plugin-sdk/src/internal/p6r-prompt-rendering.ts
+@@ -0,0 +1,243 @@
++import type {
++  P6rPromptMiddleware,
++  P6rPromptObservation,
++  P6rPromptRequest,
++} from "../backend-contract.js";
++
++export interface P6rPromptProvider {
++  middleware(): readonly {
++    pluginId: string;
++    name: string;
++    middleware: P6rPromptMiddleware;
++  }[];
++  observers(): readonly {
++    pluginId: string;
++    name: string;
++    observer: (sample: P6rPromptObservation) => void;
++  }[];
++  warn(message: string): void;
++}
++function isPromptRecord(value: unknown): value is Record<string, unknown> {
++  return (
++    value !== null &&
++    typeof value === "object" &&
++    (Object.getPrototypeOf(value) === Object.prototype ||
++      Object.getPrototypeOf(value) === null)
++  );
++}
++
++export function validateP6rPromptRequest(
++  request: unknown,
++): asserts request is P6rPromptRequest {
++  if (
++    !isPromptRecord(request) ||
++    !("id" in request) ||
++    typeof request.id !== "string" ||
++    !request.id.trim() ||
++    !("kind" in request) ||
++    typeof request.kind !== "string" ||
++    ![
++      "template",
++      "instruction",
++      "tool-description",
++      "schema-description",
++      "message",
++      "skill",
++      "guide",
++      "tool-result",
++    ].includes(request.kind) ||
++    !("text" in request) ||
++    typeof request.text !== "string"
++  ) {
++    throw new Error("Invalid prompt id, kind or default text");
++  }
++  const keys = ["id", "kind", "text", "template", "inputs", "context", "slots"];
++  if (Object.keys(request).some((key) => !keys.includes(key)))
++    throw new Error("Invalid prompt request field");
++  if (
++    "template" in request &&
++    request.template !== undefined &&
++    typeof request.template !== "string"
++  )
++    throw new Error("Invalid prompt template");
++  if ("inputs" in request && request.inputs !== undefined) {
++    if (
++      !isPromptRecord(request.inputs) ||
++      Object.values(request.inputs).some((value) => typeof value !== "string")
++    )
++      throw new Error("Prompt inputs must be a string record");
++  }
++  if ("context" in request && request.context !== undefined) {
++    if (
++      !isPromptRecord(request.context) ||
++      Object.entries(request.context).some(
++        ([key, value]) =>
++          !["threadId", "projectId", "providerId", "sourcePluginId"].includes(
++            key,
++          ) ||
++          (value !== undefined && typeof value !== "string"),
++      )
++    )
++      throw new Error("Invalid prompt context");
++  }
++  if ("slots" in request && request.slots !== undefined) {
++    if (
++      !Array.isArray(request.slots) ||
++      request.slots.some(
++        (slot: unknown) =>
++          !isPromptRecord(slot) ||
++          typeof slot.token !== "string" ||
++          !slot.token ||
++          typeof slot.text !== "string" ||
++          Object.keys(slot).some((key) => key !== "token" && key !== "text"),
++      )
++    )
++      throw new Error("Invalid protected prompt slots");
++  }
++}
++
++function immutable<T>(value: T): T {
++  const copy = structuredClone(value);
++  function freeze(item: unknown): void {
++    if (item === null || typeof item !== "object") return;
++    for (const child of Object.values(item)) freeze(child);
++    Object.freeze(item);
++  }
++  freeze(copy);
++  return copy;
++}
++
++function validateSlots(request: P6rPromptRequest, text: string): void {
++  const seen = new Set<string>();
++  for (const slot of request.slots ?? []) {
++    if (!slot.token || seen.has(slot.token))
++      throw new Error("Invalid protected slot declaration");
++    seen.add(slot.token);
++    if (text.split(slot.token).length !== 2)
++      throw new Error("Protected slot must appear exactly once");
++  }
++}
++
++function visible(request: P6rPromptRequest, text: string): string {
++  for (const slot of request.slots ?? [])
++    text = text.replace(slot.token, () => slot.text);
++  return text;
++}
++
++export function createP6rPromptRenderer(
++  getProvider: () => P6rPromptProvider | undefined,
++): (request: P6rPromptRequest) => string {
++  const rendering = new Set<string>();
++  return function renderPrompt(request: P6rPromptRequest): string {
++    validateP6rPromptRequest(request);
++    const active = getProvider();
++    const registrations = active?.middleware() ?? [];
++    const observers = active?.observers() ?? [];
++    if (registrations.length === 0 && observers.length === 0) {
++      validateSlots(request, request.text);
++      return request.text;
++    }
++    if (rendering.has(request.id))
++      throw new Error(`Recursive prompt rendering "${request.id}"`);
++    rendering.add(request.id);
++    try {
++      const original = immutable(request);
++      validateSlots(original, original.text);
++      const attempted: { pluginId: string; name: string }[] = [];
++      let fallback: P6rPromptObservation["fallback"];
++      function dispatch(index: number, text: string): string {
++        const entry = registrations[index];
++        if (!entry) return text;
++        attempted.push({ pluginId: entry.pluginId, name: entry.name });
++        let called = false;
++        let running = true;
++        let violation: Error | undefined;
++        try {
++          const output: unknown = entry.middleware(
++            immutable({ ...original, text }),
++            (nextText = text) => {
++              if (!running)
++                throw new Error("Prompt continuation is no longer active");
++              if (called) {
++                violation = new Error("Prompt next() may only be called once");
++                throw violation;
++              }
++              called = true;
++              if (typeof nextText !== "string") {
++                violation = new Error("Prompt continuation must be a string");
++                throw violation;
++              }
++              return dispatch(index + 1, nextText);
++            },
++          );
++          if (violation) throw violation;
++          if (typeof output !== "string") {
++            if (
++              typeof output === "object" &&
++              output !== null &&
++              "then" in output &&
++              typeof output.then === "function"
++            ) {
++              void Promise.resolve(output).catch(() => {});
++            }
++            throw new Error(
++              "Prompt middleware must return a synchronous string",
++            );
++          }
++          validateSlots(original, output);
++          return output;
++        } catch (error) {
++          if (!fallback) {
++            fallback = {
++              pluginId: entry.pluginId,
++              name: entry.name,
++              reason: error instanceof Error ? error.message : String(error),
++            };
++            active?.warn(
++              `Prompt "${original.id}" middleware ${entry.pluginId}/${entry.name} failed; using default: ${fallback.reason}`,
++            );
++          }
++          return original.text;
++        } finally {
++          running = false;
++        }
++      }
++      const output = dispatch(0, original.text);
++      const finalText = fallback ? original.text : output;
++      const sample: P6rPromptObservation = {
++        request: original,
++        defaultText: visible(original, original.text),
++        finalText: visible(original, finalText),
++        middleware: attempted,
++        ...(fallback ? { fallback } : {}),
++      };
++      for (const entry of observers) {
++        try {
++          const result: unknown = entry.observer(immutable(sample));
++          if (
++            typeof result === "object" &&
++            result !== null &&
++            "then" in result &&
++            typeof result.then === "function"
++          ) {
++            void Promise.resolve(result).catch((error: unknown) =>
++              active?.warn(
++                `Prompt "${original.id}" observer ${entry.pluginId}/${entry.name} rejected: ${error instanceof Error ? error.message : String(error)}`,
++              ),
++            );
++            active?.warn(
++              `Prompt "${original.id}" observer ${entry.pluginId}/${entry.name} must be synchronous`,
++            );
++          }
++        } catch (error) {
++          active?.warn(
++            `Prompt "${original.id}" observer ${entry.pluginId}/${entry.name} failed: ${error instanceof Error ? error.message : String(error)}`,
++          );
++        }
++      }
++      return finalText;
++    } finally {
++      rendering.delete(request.id);
++    }
++  };
++}
+diff --git a/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts b/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
+index 328d0c4d0b409c1877d96dbeb4c29f738dea68d3..c9b30463164d3c0e8fa8e6b6d5549d81c3fad88c 100644
+--- a/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
++++ b/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
+@@ -2596,3 +2596,87 @@ describe("environment targets", () => {
+     expect(seen).toEqual(["qm_1"]);
+   });
+ });
++
++describe("experimental prompt fake host", () => {
++  it("composes, disposes and invalidates prompt registrations", async () => {
++    const { bb, harness } = createFakePluginHost();
++    const request = {
++      id: "selected",
++      kind: "instruction" as const,
++      text: "default",
++    };
++    const samples: import("../../backend-contract.js").P6rPromptObservation[] =
++      [];
++    const registration = bb.experimental_p6rPrompts.registerMiddleware(
++      "rewrite",
++      (request, next) => {
++        expect(request.context?.sourcePluginId).toBe("test-plugin");
++        expect(Object.isFrozen(request.context)).toBe(true);
++        return next("rewritten");
++      },
++    );
++    const observer = bb.experimental_p6rPrompts.observe("sample", (sample) =>
++      samples.push(sample),
++    );
++    expect(() =>
++      bb.experimental_p6rPrompts.registerMiddleware("rewrite", (_, next) =>
++        next(),
++      ),
++    ).toThrow("already exists");
++    expect(bb.experimental_p6rPrompts.render(request)).toBe("rewritten");
++    expect(samples[0]?.finalText).toBe("rewritten");
++    registration.dispose();
++    observer.dispose();
++    expect(bb.experimental_p6rPrompts.render(request)).toBe("default");
++    expect(samples).toHaveLength(1);
++    await harness.dispose();
++    expect(() => bb.experimental_p6rPrompts.render(request)).toThrow("stale");
++  });
++  it("falls back for invalid protected slots and logs the rejected middleware", async () => {
++    const { bb, harness } = createFakePluginHost();
++    const samples: import("../../backend-contract.js").P6rPromptObservation[] =
++      [];
++    bb.experimental_p6rPrompts.registerMiddleware("drop", () => "missing");
++    bb.experimental_p6rPrompts.observe("sample", (sample) =>
++      samples.push(sample),
++    );
++    expect(
++      bb.experimental_p6rPrompts.render({
++        id: "mention",
++        kind: "message",
++        text: "TOKEN",
++        slots: [{ token: "TOKEN", text: "@thread" }],
++      }),
++    ).toBe("TOKEN");
++    expect(samples[0]).toMatchObject({
++      defaultText: "@thread",
++      finalText: "@thread",
++      fallback: { pluginId: "test-plugin", name: "drop" },
++    });
++    expect(
++      harness.logEntries.some((entry) =>
++        entry.message.includes("using default"),
++      ),
++    ).toBe(true);
++    await harness.dispose();
++  });
++  it("requires an explicit pure template renderer injection", async () => {
++    const missing = createFakePluginHost();
++    expect(() =>
++      missing.bb.experimental_p6rPrompts.renderTemplate("{{value}}", {
++        value: "text",
++      }),
++    ).toThrow("injection");
++    await missing.harness.dispose();
++    const configured = createFakePluginHost({
++      experimental_p6rRenderPromptTemplate: (template, inputs) =>
++        template.replace("{{value}}", inputs.value ?? "").trim(),
++    });
++    expect(
++      configured.bb.experimental_p6rPrompts.renderTemplate(" {{value}} ", {
++        value: "<text>",
++      }),
++    ).toBe("<text>");
++    await configured.harness.dispose();
++  });
++});
+diff --git a/packages/plugin-sdk/src/testing/fake-plugin-host.ts b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+index b25467cfb1a1bdb9b47d97d6972f1a15538f63e5..1fa9108a0ca7b84528b8277efced1c381ce12e49 100644
+--- a/packages/plugin-sdk/src/testing/fake-plugin-host.ts
++++ b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+@@ -1,3 +1,11 @@
++import {
++  createP6rPromptRenderer,
++  validateP6rPromptRequest,
++} from "../internal/p6r-prompt-rendering.js";
++import type {
++  P6rPromptMiddleware,
++  P6rPromptObservation,
++} from "../backend-contract.js";
+ import {
+   environmentCompositionSchema,
+   validateServerAccessProviderDeclaration,
+@@ -499,6 +507,11 @@ export interface FakePluginHarness
+ }
+ 
+ export interface CreateFakePluginHostOptions {
++  /** Inject the host's pure Handlebars renderer for renderTemplate tests; absent injection throws. */
++  experimental_p6rRenderPromptTemplate?: (
++    template: string,
++    inputs: Readonly<Record<string, string>>,
++  ) => string;
+   machineBootstrap?: MachineBootstrapApi;
+   machineResource?: (hostId: string) => Promise<JsonValue | null>;
+   /** Defaults to "test-plugin". */
+@@ -1516,6 +1529,47 @@ function createFakePluginHostInternal(
+     },
+   };
+ 
++  const promptMiddleware = new Map<string, P6rPromptMiddleware>();
++  const promptObservers = new Map<
++    string,
++    (sample: P6rPromptObservation) => void
++  >();
++  function registerPrompt<T>(
++    entries: Map<string, T>,
++    name: string,
++    callback: T,
++  ): { dispose(): void } {
++    assertLive();
++    if (!name.trim() || typeof callback !== "function")
++      throw new Error("Prompt registration requires a name and function");
++    if (entries.has(name))
++      throw new Error(`Prompt registration "${name}" already exists`);
++    entries.set(name, callback);
++    let removed = false;
++    const dispose = (): void => {
++      if (removed) return;
++      removed = true;
++      entries.delete(name);
++    };
++    disposeHooks.push(dispose);
++    return { dispose };
++  }
++  const renderFakePrompt = createP6rPromptRenderer(() => ({
++    middleware: () =>
++      [...promptMiddleware].map(([name, middleware]) => ({
++        pluginId,
++        name,
++        middleware,
++      })),
++    observers: () =>
++      [...promptObservers].map(([name, observer]) => ({
++        pluginId,
++        name,
++        observer,
++      })),
++    warn: (message) => emitLog("warn", message),
++  }));
++
+   const bb: BbPluginApi = {
+     pluginId,
+     log,
+@@ -1552,6 +1606,28 @@ function createFakePluginHostInternal(
+     server,
+     hosts,
+     experimental_aiServices,
++    experimental_p6rPrompts: {
++      registerMiddleware: (name, middleware) =>
++        registerPrompt(promptMiddleware, name, middleware),
++      observe: (name, observer) =>
++        registerPrompt(promptObservers, name, observer),
++      render(request) {
++        assertLive();
++        validateP6rPromptRequest(request);
++        return renderFakePrompt({
++          ...request,
++          context: { ...request.context, sourcePluginId: pluginId },
++        });
++      },
++      renderTemplate(template, inputs) {
++        assertLive();
++        if (!options.experimental_p6rRenderPromptTemplate)
++          throw new Error(
++            "Fake host renderTemplate requires experimental_p6rRenderPromptTemplate injection",
++          );
++        return options.experimental_p6rRenderPromptTemplate(template, inputs);
++      },
++    },
+     experimental_facets,
+     experimental_p6rRoutes: experimentalRoutes,
+     get sdk() {
+diff --git a/packages/templates/src/index.ts b/packages/templates/src/index.ts
+index a7c5b0e6f8bb71420554fb228c13bd469778d984..f126809beac535174cf8cc62a468a9de4f4e4c6a 100644
+--- a/packages/templates/src/index.ts
++++ b/packages/templates/src/index.ts
+@@ -1,4 +1,8 @@
+-export { renderTemplate } from "./render-template.js";
++export {
++  renderTemplate,
++  getTemplateBody,
++  renderTemplateText,
++} from "./render-template.js";
+ export type {
+   TemplateId,
+   TemplateVariables,
+diff --git a/packages/templates/src/render-template.ts b/packages/templates/src/render-template.ts
+index 543406bc5e35e0179399e724c97f4ee572526155..00a1ea7336d876998fe4489ee236390c44dacc8e 100644
+--- a/packages/templates/src/render-template.ts
++++ b/packages/templates/src/render-template.ts
+@@ -33,6 +33,17 @@ function getCompiledTemplate<TTemplateId extends TemplateId>(
+   return compiled;
+ }
+ 
++export function getTemplateBody(id: TemplateId): string {
++  return templateBodyById[id];
++}
++
++export function renderTemplateText(
++  template: string,
++  inputs: Readonly<Record<string, string>>,
++): string {
++  return Handlebars.compile(template, { noEscape: true })(inputs).trim();
++}
++
+ export function renderTemplate<TTemplateId extends TemplateId>(
+   templateId: TTemplateId,
+   variables: TemplateVariables[TTemplateId],
+diff --git a/packages/templates/test/templates.test.ts b/packages/templates/test/templates.test.ts
+index 2f47542574fdccd4f67ade1ece803ef02c88572a..88056111896a1445c921777320a9f8d1de1294a4 100644
+--- a/packages/templates/test/templates.test.ts
++++ b/packages/templates/test/templates.test.ts
+@@ -1,12 +1,23 @@
+ import { describe, expect, it } from "vitest";
+ import {
+   renderTemplate,
++  renderTemplateText,
++  getTemplateBody,
+   type TemplateId,
+   type TemplateVariables,
+ } from "../src/index.js";
+ import { templateDefinitions } from "../src/generated/templates.generated.js";
+ 
+ describe("@bb/templates", () => {
++  it("renders replacement templates with stock noEscape and trim semantics", () => {
++    const inputs = { senderThreadId: "thr_sender", messageText: "<literal>" };
++    expect(
++      renderTemplateText(getTemplateBody("agentThreadMessage"), inputs),
++    ).toBe(renderTemplate("agentThreadMessage", inputs));
++    expect(
++      renderTemplateText("  {{#if value}}{{value}}{{/if}}  ", { value: "<&>" }),
++    ).toBe("<&>");
++  });
+   it("documents project creation machine routing", () => {
+     const guide = renderTemplate("bbGuideProjects", {});
+ 
+diff --git a/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md b/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
+index a5ff6921104fe90bb594a266098aae45a0ab7556..f88b3be76c6068d61d3407daf9fd5226b2d1f22b 100644
+--- a/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
++++ b/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
+@@ -15,6 +15,12 @@ Read the installed declarations for exact current signatures.
+ - `BbContext`
+ - `BbNavigate`
+ - `BbPluginApi`
++- `ExperimentalP6rPrompts`
++- `P6rPromptContext`
++- `P6rPromptSlot`
++- `P6rPromptRequest`
++- `P6rPromptMiddleware`
++- `P6rPromptObservation`
+ - `CodeOverflowMode`
+ - `ComposerCustomization`
+ - `ComposerPlusMenuItem`
+@@ -426,6 +432,17 @@ Read the installed declarations for exact current signatures.
+ - `ExperimentalHostEntryHarness`
+ - `ExperimentalHostHarnessSignal`
+ 
++## Prompt customization
++
++`bb.experimental_p6rPrompts` registers synchronous named middleware and observers,
++renders plugin-owned prose, and renders replacement Handlebars templates.
++Middleware may call `next()` or `next(text)` once; invalid customization falls
++back to the default text. Observations describe rendering, not provider delivery.
++Registrations are removed on disposal or plugin unload; generated artifacts and
++existing provider sessions retain their content until their normal refresh.
++See the Plugin Guide prompt surface for the request, protected-slot, ordering and
++fallback contracts.
++
+ ## Enhanced identity capability
+ 
+ `bb.experimental_p6rIdentity` is an optional host capability consumed through
+diff --git a/plugins/plugin-api-docs/src/surfaces.ts b/plugins/plugin-api-docs/src/surfaces.ts
+index 68d911b8e73a3efd17dab61c905b1b12e864ea7d..e89cbc050fcb33742f8f19afa9d37205476486f6 100644
+--- a/plugins/plugin-api-docs/src/surfaces.ts
++++ b/plugins/plugin-api-docs/src/surfaces.ts
+@@ -694,6 +694,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+       {
+         title: "Running & reacting",
+         surfaceIds: [
++          "prompt-rendering",
+           "background",
+           "wire",
+           "thread-events",
+@@ -784,6 +785,29 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+           "Workflows",
+         ],
+       },
++      {
++        id: "prompt-rendering",
++        title: "Prompt rendering",
++        summary:
++          "Customizes selected server-owned prompt text and reports completed render samples. With this, a plugin can:",
++        experimental: true,
++        bullets: [
++          "Register named middleware on bb.experimental_p6rPrompts; next() continues with current text and next(text) continues with replacement text",
++          "Use stable prompt IDs, original template inputs and thread/project/provider context; request copies are recursively frozen",
++          "Preserve each protected mention token exactly once; invalid results or exceptions use the original default with a logged fallback record",
++          "Observe visible default/final text once per render, with the attempted execution chain and explicit fallback; samples do not prove provider consumption",
++          "Dispose registrations immediately; unload, reload and failed plugin loads cannot leave live middleware",
++          "Render arbitrary templates with pure Handlebars noEscape and trim semantics; the fake host requires an explicit experimental_p6rRenderPromptTemplate injection for this method",
++        ],
++        apiSymbols: [
++          "ExperimentalP6rPrompts",
++          "P6rPromptRequest",
++          "P6rPromptContext",
++          "P6rPromptSlot",
++          "P6rPromptMiddleware",
++          "P6rPromptObservation",
++        ],
++      },
+       {
+         id: "background",
+         tagline: "Supervised services and cron schedules",
+-- 
+2.53.0
+

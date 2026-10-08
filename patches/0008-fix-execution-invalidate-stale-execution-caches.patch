@@ -1,4 +1,4 @@
-From a864c05970f1ad7866223b245ae51ed2c923d3b9 Mon Sep 17 00:00:00 2001
+From 97fc4111e9136639a4a3e285138777ae5f74863f Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
 Subject: [PATCH] fix(execution): invalidate stale execution caches
@@ -6,13 +6,15 @@ Subject: [PATCH] fix(execution): invalidate stale execution caches
 ---
  .../cache-owners/realtime-cache-registry.ts   |  8 ++++++
  .../src/hooks/realtime-cache-effects.test.ts  | 26 +++++++++++++++++++
- 2 files changed, 34 insertions(+)
+ .../threads/thread-execution-batch.ts         |  5 ++++
+ packages/domain/src/change-kinds.ts           |  1 +
+ 4 files changed, 40 insertions(+)
 
 diff --git a/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts b/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts
-index 0cdb54118550f38d6b6afee5c841ee2550efb8ff..8ab6e0ec5951a9ed1393ff545cdb5f3d043ff545 100644
+index 2609ba5e01f38fa9ba08347f534abb72a87ffcf3..e3148f73ba6cb86e854d4661c8628092156eb07c 100644
 --- a/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts
 +++ b/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts
-@@ -416,6 +416,14 @@ export const REALTIME_THREAD_CHANGE_REGISTRY = {
+@@ -423,6 +423,14 @@ export const REALTIME_THREAD_CHANGE_REGISTRY = {
        dirtyThreadStorageQueriesForThread,
      ],
    },
@@ -28,10 +30,10 @@ index 0cdb54118550f38d6b6afee5c841ee2550efb8ff..8ab6e0ec5951a9ed1393ff545cdb5f3d
      flush: "debounced",
      dirty: [markThreadDetailQueryStale, markThreadListQueriesStale],
 diff --git a/apps/app/src/hooks/realtime-cache-effects.test.ts b/apps/app/src/hooks/realtime-cache-effects.test.ts
-index dcc2cba1852ee0465762bdb97249cf228d043d36..df902358c7ccc331080cf33b031c5361c38e4ac8 100644
+index 84eb10e6f5307caff7e4d6790def3408a30b468a..5c21f2c0ac2254535b73945e3da94850f12af37c 100644
 --- a/apps/app/src/hooks/realtime-cache-effects.test.ts
 +++ b/apps/app/src/hooks/realtime-cache-effects.test.ts
-@@ -1765,6 +1765,32 @@ describe("createRealtimeCacheEffects", () => {
+@@ -1632,6 +1632,32 @@ describe("createRealtimeCacheEffects", () => {
      effects.dispose();
    });
  
@@ -61,9 +63,37 @@ index dcc2cba1852ee0465762bdb97249cf228d043d36..df902358c7ccc331080cf33b031c5361
 +    effects.dispose();
 +  });
 +
-   it("does not invalidate timeline queries for status-only thread changes", () => {
+   it("keeps timeline invalidations debounced when status-changed rides the same publish", () => {
+     vi.useFakeTimers();
      const { effects, queryClient } = createRealtimeEffectsTestContext();
-     const timelineKey = threadTimelineQueryKey("thr_1");
+diff --git a/apps/server/src/services/threads/thread-execution-batch.ts b/apps/server/src/services/threads/thread-execution-batch.ts
+index 2b105f1681ff7f3b9e0496d9c82cb1ea19eb83a1..dc4998cdf997834a11b0cce06e1b9712a88d061f 100644
+--- a/apps/server/src/services/threads/thread-execution-batch.ts
++++ b/apps/server/src/services/threads/thread-execution-batch.ts
+@@ -463,6 +463,11 @@ export async function applyPreflightedThreadExecutionOverrides(
+       retryable: true,
+     }));
+   }
++  for (const [projectId, threadIds] of changedByProject)
++    for (const threadId of threadIds)
++      deps.hub.notifyThread(threadId, ["execution-options-changed"], {
++        projectId,
++      });
+   const byId = new Map(
+     transactional.map((result) => [result.threadId, result]),
+   );
+diff --git a/packages/domain/src/change-kinds.ts b/packages/domain/src/change-kinds.ts
+index 99d3023963547856c3f38e9b885405dfd00ccc6d..6018de6e2b5699f9e2cb1bd6da62e905fd1f684a 100644
+--- a/packages/domain/src/change-kinds.ts
++++ b/packages/domain/src/change-kinds.ts
+@@ -14,6 +14,7 @@ export const THREAD_CHANGE_KINDS = [
+   "thread-created",
+   "thread-deleted",
+   "events-appended",
++  "execution-options-changed",
+   "history-rewritten",
+   "history-compacted",
+   "interactions-changed",
 -- 
 2.53.0
 

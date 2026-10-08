@@ -1,19 +1,18 @@
-From 74c722a73136e5f36b25e76b965655ed21e228a3 Mon Sep 17 00:00:00 2001
+From af3261b75fbf9698845eb0b81e8886ff60f13252 Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Mon, 28 Sep 2026 19:26:18 +0200
 Subject: [PATCH] fix(runtime): allow full construction deadline for resume
 
 ---
  .../src/runtime.codex-topology.test.ts        | 19 +++++++++++++++++++
- packages/agent-runtime/src/runtime.ts         |  1 +
  .../src/bridge/fake-codex-app-server.mjs      |  2 ++
- 3 files changed, 22 insertions(+)
+ 2 files changed, 21 insertions(+)
 
 diff --git a/packages/agent-runtime/src/runtime.codex-topology.test.ts b/packages/agent-runtime/src/runtime.codex-topology.test.ts
-index 22caf70fb4b902c5b85680853dd839bac97b2e80..bd72652e0c861aa9050145038892af47cd8bc026 100644
+index 6ad41a8ac1b1ff44f4610eeac60ca7a71307b706..fd60ace78e08797eeec8fd3b995dac5070f993c7 100644
 --- a/packages/agent-runtime/src/runtime.codex-topology.test.ts
 +++ b/packages/agent-runtime/src/runtime.codex-topology.test.ts
-@@ -378,6 +378,25 @@ describe("codex process topology", () => {
+@@ -384,6 +384,25 @@ describe("codex process topology", () => {
      expect(topology.bridgeExits).toEqual([{ expected: true }]);
    }, 30_000);
  
@@ -39,23 +38,11 @@ index 22caf70fb4b902c5b85680853dd839bac97b2e80..bd72652e0c861aa9050145038892af47
    it("refuses to resume a provider thread that another hosted thread already owns", async () => {
      const topology = createCodexTopologyRuntime();
      const { runtime } = topology;
-diff --git a/packages/agent-runtime/src/runtime.ts b/packages/agent-runtime/src/runtime.ts
-index 129c9553cd06250310e449040f891499981aa355..7fd0fd14abde3024869bdfc7e28d9692dc64d3e1 100644
---- a/packages/agent-runtime/src/runtime.ts
-+++ b/packages/agent-runtime/src/runtime.ts
-@@ -1974,6 +1974,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
-               proc,
-               message: plan,
-               resultSchema: threadIdentityResultSchema,
-+              timeoutMs: threadCreationRequestTimeoutMs,
-               recovery: {
-                 providerId,
-                 providerThreadId: adapterCommand.providerThreadId,
 diff --git a/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs b/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
-index 2a29765f01366b1784a9cb78fb2050c0008b1b15..b6909731ee3eeb79c111c1a26e201f6d13dfa728 100644
+index 9376d7e8fd397f4e6109d50b0a1a67c153424551..86ee2a0950141b65e226033d796313eb154444e8 100644
 --- a/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
 +++ b/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
-@@ -214,6 +214,7 @@ const archivedThreadIds = new Set();
+@@ -219,6 +219,7 @@ const archivedThreadIds = new Set();
  
  const processLogPath = script?.processLogPath ?? null;
  const stallThreadStart = script?.stallThreadStart ?? false;
@@ -63,7 +50,7 @@ index 2a29765f01366b1784a9cb78fb2050c0008b1b15..b6909731ee3eeb79c111c1a26e201f6d
  const writerLockPath = script?.writerLockPath ?? null;
  const rejectThreadStart = script?.rejectThreadStart ?? false;
  const malformedThreadStart = script?.malformedThreadStart ?? false;
-@@ -472,6 +473,7 @@ async function handleRequest(message) {
+@@ -497,6 +498,7 @@ async function handleRequest(message) {
      }
      case "thread/resume": {
        servesThread = true;

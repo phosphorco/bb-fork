@@ -1,0 +1,123 @@
+From 43d8c6184c2b73d28310660ee55f0df8f9d40488 Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Wed, 7 Oct 2026 20:24:40 +0200
+Subject: [PATCH 50/51] perf(db): look up delegating item rows through their
+ partial index
+
+listStoredDelegatingItemRowsByItemIds filters on thread_id, item_id IN
+(...), item_kind IN ('toolCall', 'delegation') and the item lifecycle
+types, ordered by sequence. Without sqlite_stat1, SQLite avoids the
+sort by walking events_thread_sequence_idx (thread_id=?), so the cost
+grows with the thread's whole event history. It ignores the
+purpose-built partial index events_delegating_item_lookup_idx. On an
+84k-event thread one call took ~66 ms for 8 rows, about 89 ms per
+timeline build through ensureTimelineWindowParentedRows.
+
+Force the partial index with INDEXED BY, as the parented-row lookup
+and getFirstParentedTimelineBoundarySequence already do for their
+indexes. The query's item_kind IN ('toolCall', 'delegation') term
+matches the index predicate, so the index is usable. The selection
+moves to storedEventRowSqlFields, which a raw FROM needs. The call
+drops to ~0.01 ms; rows are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ packages/db/src/data/events.ts       |  6 +--
+ packages/db/test/query-plans.test.ts | 57 ++++++++++++++++++++++++++++
+ 2 files changed, 59 insertions(+), 4 deletions(-)
+
+diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
+index e854156e9ad61fc23d4a5969878fee4e0c4bff88..59dd3ad57ab9a87964a4e200bb64675c21d12680 100644
+--- a/packages/db/src/data/events.ts
++++ b/packages/db/src/data/events.ts
+@@ -1757,10 +1757,8 @@ export function listStoredDelegatingItemRowsByItemIds(
+   }
+ 
+   return db
+-    .select(
+-      storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars),
+-    )
+-    .from(events)
++    .select(storedEventRowSqlFields(args.maxInlineOutputChars))
++    .from(sql`${events} INDEXED BY events_delegating_item_lookup_idx`)
+     .where(
+       and(
+         eq(events.threadId, args.threadId),
+diff --git a/packages/db/test/query-plans.test.ts b/packages/db/test/query-plans.test.ts
+index 1f865653a8867a90965bfbf33931312b3746d8c9..1ea52e06e2d49faffe76bc111ba5e2871ee0a806 100644
+--- a/packages/db/test/query-plans.test.ts
++++ b/packages/db/test/query-plans.test.ts
+@@ -32,6 +32,7 @@ import {
+   listLatestOpenBackgroundTaskStateRowsForThread,
+   listStoredConversationOutlineEventRows,
+   listStoredEventRows,
++  listStoredDelegatingItemRowsByItemIds,
+   listStoredEventRowsByParentToolCallIds,
+   listStoredTurnCompletedKeys,
+   listTodoSnapshotEventRowsForThread,
+@@ -679,6 +680,62 @@ describe("slow query index plans", () => {
+     db.$client.close();
+   });
+ 
++  it("loads delegating item rows through the delegating partial index", () => {
++    const { db, project, thread } = setup();
++    const quiet = createThread(db, noopNotifier, {
++      projectId: project.id,
++      providerId: "codex",
++    });
++    const item = (
++      threadId: string,
++      sequence: number,
++      type: "item/started" | "item/completed",
++      itemId: string,
++      itemKind: Parameters<typeof insertEvents>[2][number]["itemKind"],
++    ) => ({
++      threadId,
++      sequence,
++      type,
++      scope: turnScope("turn-delegating"),
++      itemId,
++      itemKind,
++      parentToolCallId: null,
++      data: JSON.stringify({ item: { id: itemId, type: itemKind } }),
++    });
++    insertEvents(db, noopNotifier, [
++      item(thread.id, 1, "item/started", "tool-1", "toolCall"),
++      item(thread.id, 2, "item/started", "delegate-1", "delegation"),
++      item(thread.id, 3, "item/completed", "tool-1", "toolCall"),
++      item(thread.id, 4, "item/completed", "tool-1", "commandExecution"),
++      item(thread.id, 5, "item/completed", "delegate-1", "delegation"),
++      item(thread.id, 6, "item/completed", "other-1", "toolCall"),
++      item(quiet.id, 1, "item/completed", "message-1", "agentMessage"),
++    ]);
++
++    for (const threadId of [thread.id, quiet.id]) {
++      const [query] = captureStatements(db, () => {
++        listStoredDelegatingItemRowsByItemIds(db, {
++          itemIds: ["tool-1", "delegate-1", "message-1", "missing"],
++          maxInlineOutputChars: null,
++          threadId,
++        });
++      });
++      if (!query) throw new Error("Expected the delegating item lookup SQL");
++      expect(query.sql).toContain("INDEXED BY events_delegating_item_lookup_idx");
++      expect(
++        queryPlanDetails({ db, params: query.params, sql: query.sql }),
++      ).toMatch(/SEARCH events USING INDEX events_delegating_item_lookup_idx/u);
++      const forced = db.$client.prepare(query.sql).all(...query.params);
++      const plannerDefault = db.$client
++        .prepare(query.sql.replace(/\s+INDEXED BY events_delegating_item_lookup_idx/u, ""))
++        .all(...query.params);
++      expect(forced).toEqual(plannerDefault);
++      expect(forced).toHaveLength(threadId === thread.id ? 4 : 0);
++    }
++
++    db.$client.close();
++  });
++
+   it("scans background-task history once without a completed-set join", () => {
+     const { db, thread } = setup();
+ 
+-- 
+2.53.0
+

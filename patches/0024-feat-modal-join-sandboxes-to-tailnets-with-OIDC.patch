@@ -1,4 +1,4 @@
-From 89cd60152a091ae62a1229710d020ae3e850121b Mon Sep 17 00:00:00 2001
+From 04045386115a63ee9f6160e9a103b96343f675ca Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Fri, 18 Sep 2026 19:52:12 +0200
 Subject: [PATCH] feat(modal): join sandboxes to tailnets with OIDC
@@ -19,7 +19,7 @@ Subject: [PATCH] feat(modal): join sandboxes to tailnets with OIDC
  create mode 100644 plugins/environment-modal-sandbox/providers/modal/tailnet.ts
 
 diff --git a/plugins/environment-modal-sandbox/Dockerfile b/plugins/environment-modal-sandbox/Dockerfile
-index 3fdf15731255b37816c6f24af7fa60c4a601a358..e16e66b9a062b73f7a1a898ed6420e12b7888225 100644
+index 6ed920007a0e60ba19b3982ffd9b035aef6b7f0e..92f13ae5255f2fb90d1ab290f4385c2385bc0803 100644
 --- a/plugins/environment-modal-sandbox/Dockerfile
 +++ b/plugins/environment-modal-sandbox/Dockerfile
 @@ -10,12 +10,24 @@ RUN apt-get update \
@@ -48,7 +48,7 @@ index 3fdf15731255b37816c6f24af7fa60c4a601a358..e16e66b9a062b73f7a1a898ed6420e12
  RUN npm install -g \
          pnpm@9.15.0 \
 diff --git a/plugins/environment-modal-sandbox/README.md b/plugins/environment-modal-sandbox/README.md
-index bd58427b1a8bd256ae4811f8728de4d06161eb0f..6f40b8a855f2cf6c805c8de3afc4b17e0641afef 100644
+index d7136831757dd1272235a0325c87e76853043474..540da79098470f5ee1a9de40d4b4a260e9c5d0ee 100644
 --- a/plugins/environment-modal-sandbox/README.md
 +++ b/plugins/environment-modal-sandbox/README.md
 @@ -69,6 +69,8 @@ environment settings.
@@ -57,7 +57,7 @@ index bd58427b1a8bd256ae4811f8728de4d06161eb0f..6f40b8a855f2cf6c805c8de3afc4b17e
  | `idleMinutes`            | Pause after idle, default 15; 0 disables idle suspension. |
 +| `tailscaleClientId`      | Optional Modal workload identity client ID.               |
 +| `tailscaleTags`          | Tags for ephemeral sandbox nodes when Tailscale is on.     |
- | Sandbox size presets     | Named CPU and memory reservations for new machines.       |
+ | Sandbox size presets     | Named CPU and memory reservations; default 1 CPU, 2 GiB.  |
  | Images                   | Named Dockerfiles or existing Modal image IDs.            |
  
 @@ -82,6 +84,24 @@ chip. Account inspection is also available through the
@@ -167,7 +167,7 @@ index d3e5465c2b5ce98af759f46215e5b7fed5b83338..733b72f6ef6c6ef5921d22b4acacf08e
 +  });
 +});
 diff --git a/plugins/environment-modal-sandbox/configuration.ts b/plugins/environment-modal-sandbox/configuration.ts
-index fec00bd5b3481d2f69db794f309b474236e74828..6d417b7720dd88954a1c172503174527d09129bb 100644
+index 5e1178fdc4ecdb195af940a3d4502b33e44363b0..b65a4c6ed82fd838b10e63fb099d410f554af2e8 100644
 --- a/plugins/environment-modal-sandbox/configuration.ts
 +++ b/plugins/environment-modal-sandbox/configuration.ts
 @@ -25,13 +25,33 @@ export const SETTING_DESCRIPTORS = {
@@ -213,7 +213,7 @@ index fec00bd5b3481d2f69db794f309b474236e74828..6d417b7720dd88954a1c172503174527
  }
  
  export const SANDBOX_LIFETIME_MS = 24 * 60 * 60_000;
-@@ -74,6 +96,44 @@ export function resolveSettings(raw: RawSettings): SettingsResolution {
+@@ -75,6 +97,44 @@ export function resolveSettings(raw: RawSettings): SettingsResolution {
        message: `idleMinutes must be a whole number between 0 and ${MAX_IDLE_MINUTES}, not ${raw.idleMinutes}.`,
      };
    }
@@ -258,7 +258,7 @@ index fec00bd5b3481d2f69db794f309b474236e74828..6d417b7720dd88954a1c172503174527
    return {
      ok: true,
      settings: {
-@@ -81,6 +141,10 @@ export function resolveSettings(raw: RawSettings): SettingsResolution {
+@@ -82,6 +142,10 @@ export function resolveSettings(raw: RawSettings): SettingsResolution {
        tokenSecret,
        appName,
        idleMs: raw.idleMinutes === 0 ? null : raw.idleMinutes * 60_000,
@@ -314,10 +314,10 @@ index 899d4960552e86f66d271529c4bd7cc390d86fa0..041d21040e09fbef955b8a762e2f8739
            expiresAt,
          };
 diff --git a/plugins/environment-modal-sandbox/providers/modal/backend.ts b/plugins/environment-modal-sandbox/providers/modal/backend.ts
-index 33e29a888ad88f7ced9f6beb0177411194ede22f..d3aa45d34e05b78846f1d2c7da51516fb2ebf116 100644
+index d7e26afb38391c751b99fdec0244531c8a1436ad..4961e8215f6a2195e3dd0092d0f2e10841b6fc0a 100644
 --- a/plugins/environment-modal-sandbox/providers/modal/backend.ts
 +++ b/plugins/environment-modal-sandbox/providers/modal/backend.ts
-@@ -27,6 +27,7 @@ import type {
+@@ -28,6 +28,7 @@ import type {
    SandboxOperationContext,
    SandboxResourceContext,
  } from "../sandbox-backend.js";
@@ -325,15 +325,15 @@ index 33e29a888ad88f7ced9f6beb0177411194ede22f..d3aa45d34e05b78846f1d2c7da51516f
  
  export const modalMachineInputsSchema = z
    .object({
-@@ -273,6 +274,7 @@ export function createModalSandboxBackend(
-             cpu: selection.preset?.cpu ?? null,
-             memoryMiB: selection.preset?.memoryMiB ?? null,
+@@ -275,6 +276,7 @@ export function createModalSandboxBackend(
+             memoryMiB:
+               selection.preset?.memoryMiB ?? DEFAULT_SANDBOX_SIZE.memoryMiB,
              tags: { bbMachineKey: context.key },
 +            includeOidcIdentityToken: resolved.tailnet !== null,
            })
          );
        }, context.signal);
-@@ -293,7 +295,21 @@ export function createModalSandboxBackend(
+@@ -295,7 +297,21 @@ export function createModalSandboxBackend(
        };
        await context.checkpoint(resource);
        context.signal.throwIfAborted();
@@ -356,7 +356,7 @@ index 33e29a888ad88f7ced9f6beb0177411194ede22f..d3aa45d34e05b78846f1d2c7da51516f
      },
      async reconcileCleanup(context: SandboxOperationContext & { key: string }) {
        const resolved = await requireSettings();
-@@ -370,6 +386,7 @@ export function createModalSandboxBackend(
+@@ -372,6 +388,7 @@ export function createModalSandboxBackend(
            cpu: resource.cpu,
            memoryMiB: resource.memoryMiB,
            tags: { bbMachineKey: resource.key },
@@ -364,7 +364,7 @@ index 33e29a888ad88f7ced9f6beb0177411194ede22f..d3aa45d34e05b78846f1d2c7da51516f
          });
          context.report.log(
            `Restored Modal sandbox ${sandbox.sandboxId} from image ${snapshotImageId}\n`,
-@@ -377,7 +394,21 @@ export function createModalSandboxBackend(
+@@ -379,7 +396,21 @@ export function createModalSandboxBackend(
        }
        resource = { ...resource, sandboxId: sandbox.sandboxId };
        await context.checkpoint(resource);
@@ -438,7 +438,7 @@ index 8eabc7c077b17dc1452037a33f80c2e21527d901..68032580849fe3f4d07884b00f71904e
          ...(request.memoryMiB === null ? {} : { memoryMiB: request.memoryMiB }),
        });
 diff --git a/plugins/environment-modal-sandbox/providers/modal/image.test.ts b/plugins/environment-modal-sandbox/providers/modal/image.test.ts
-index 7478820da8610a3634ce981bbc24ca474c869577..db322fbd3717c9578957badfabec980f4635c67e 100644
+index 54df2faba482a68bd997e2f51c1343a5147f5145..784a82ea1ed00bb166ea2444957a77acdff0a7bb 100644
 --- a/plugins/environment-modal-sandbox/providers/modal/image.test.ts
 +++ b/plugins/environment-modal-sandbox/providers/modal/image.test.ts
 @@ -56,6 +56,8 @@ it("builds and publishes the bundled tools image without daemon or credentials",
@@ -448,7 +448,7 @@ index 7478820da8610a3634ce981bbc24ca474c869577..db322fbd3717c9578957badfabec980f
 +  expect(definition.commands.join("\n")).toContain("proxychains4");
 +  expect(definition.commands.join("\n")).toContain("tailscaled");
    expect(definition.commands.join("\n")).toContain(
-     "@earendil-works/pi-coding-agent@0.84.0",
+     "@earendil-works/pi-coding-agent@0.99.0",
    );
 @@ -64,7 +66,7 @@ it("builds and publishes the bundled tools image without daemon or credentials",
      "@anthropic-ai/claude-code@",
@@ -561,10 +561,10 @@ index 0000000000000000000000000000000000000000..52d3404279bc3e0ff086781a14c4ce47
 +  ];
 +}
 diff --git a/plugins/environment-modal-sandbox/server.test.ts b/plugins/environment-modal-sandbox/server.test.ts
-index d6d798793471853b995cd5ed36a980244cb7e9c7..b73c0df429c011352355811915874f24632c1c60 100644
+index f69e5a6f5bfcd85367c762dc771dfd51eae0b84d..348a7602a369e40ebc7a093741e97fc63d61fe61 100644
 --- a/plugins/environment-modal-sandbox/server.test.ts
 +++ b/plugins/environment-modal-sandbox/server.test.ts
-@@ -70,6 +70,7 @@ function createBackend(
+@@ -71,6 +71,7 @@ function createBackend(
    } = {},
  ) {
    const creates: ModalSandboxCreateRequest[] = [];
@@ -572,7 +572,7 @@ index d6d798793471853b995cd5ed36a980244cb7e9c7..b73c0df429c011352355811915874f24
    const states: FakeSandboxState[] = [];
    const deletedSnapshots: string[] = [];
    let nextSandbox = 0;
-@@ -81,6 +82,7 @@ function createBackend(
+@@ -82,6 +83,7 @@ function createBackend(
      return {
        sandboxId: state.id,
        async exec(command) {
@@ -580,7 +580,7 @@ index d6d798793471853b995cd5ed36a980244cb7e9c7..b73c0df429c011352355811915874f24
          if (command[0] === "bootstrap-test") state.connected = true;
          return { exitCode: 0, stdout: "ok", stderr: "" };
        },
-@@ -159,6 +161,7 @@ function createBackend(
+@@ -160,6 +162,7 @@ function createBackend(
      backend,
      image,
      creates,
@@ -588,7 +588,7 @@ index d6d798793471853b995cd5ed36a980244cb7e9c7..b73c0df429c011352355811915874f24
      states,
      deletedSnapshots,
      crashAfterNextTerminate() {
-@@ -284,6 +287,7 @@ describe("Modal machine provider", () => {
+@@ -285,6 +288,7 @@ describe("Modal machine provider", () => {
      });
      expect(second).toEqual(first);
      expect(harness.backend.creates).toHaveLength(1);
@@ -596,8 +596,8 @@ index d6d798793471853b995cd5ed36a980244cb7e9c7..b73c0df429c011352355811915874f24
      expect(harness.bootstrap).toHaveBeenCalledTimes(2);
      expect(harness.bootstrap).toHaveBeenLastCalledWith({
        key: "modal-machine-key",
-@@ -299,6 +303,45 @@ describe("Modal machine provider", () => {
-     );
+@@ -312,6 +316,45 @@ describe("Modal machine provider", () => {
+     expect(created.resource).toMatchObject({ cpu: 1, memoryMiB: 2048 });
    });
  
 +  it("joins an ephemeral Tailscale node before proxying machine bootstrap", async () => {
@@ -642,7 +642,7 @@ index d6d798793471853b995cd5ed36a980244cb7e9c7..b73c0df429c011352355811915874f24
    it("resolves configured preset and image names for validation and creation", async () => {
      const harness = await setup();
      const current = modalLaunchOptionsSchema.parse(
-@@ -1492,6 +1535,7 @@ describe("Modal allocation tracking", () => {
+@@ -1481,6 +1524,7 @@ describe("Modal allocation tracking", () => {
          timeoutMs: 60_000,
          cpu: null,
          memoryMiB: null,
@@ -650,7 +650,7 @@ index d6d798793471853b995cd5ed36a980244cb7e9c7..b73c0df429c011352355811915874f24
          tags: { bbMachineKey: "lost-response" },
        }),
      ).rejects.toThrow("lost allocation response");
-@@ -1516,6 +1560,7 @@ describe("Modal allocation tracking", () => {
+@@ -1505,6 +1549,7 @@ describe("Modal allocation tracking", () => {
        timeoutMs: 60_000,
        cpu: null,
        memoryMiB: null,
@@ -658,7 +658,7 @@ index d6d798793471853b995cd5ed36a980244cb7e9c7..b73c0df429c011352355811915874f24
        tags: { bbMachineKey: "other-bb" },
      });
      const allocations = modalAllocations(h.bb, Date.now);
-@@ -1556,6 +1601,7 @@ describe("Modal allocation tracking", () => {
+@@ -1545,6 +1590,7 @@ describe("Modal allocation tracking", () => {
          timeoutMs: 60_000,
          cpu: null,
          memoryMiB: null,
@@ -667,7 +667,7 @@ index d6d798793471853b995cd5ed36a980244cb7e9c7..b73c0df429c011352355811915874f24
        }),
      ).rejects.toThrow();
 diff --git a/plugins/environment-modal-sandbox/skills/modal-sandboxes/SKILL.md b/plugins/environment-modal-sandbox/skills/modal-sandboxes/SKILL.md
-index 9a3e01d99270f0a9dbbdef13c31ef722dc49793f..1b9fb236b6764f0ed48302a38eec39eff8d4537d 100644
+index fffc2841011a033ee8be4668f74ba8c722f57824..66d1d9a28d3ef63be5d468fdb98205d0cf8833f5 100644
 --- a/plugins/environment-modal-sandbox/skills/modal-sandboxes/SKILL.md
 +++ b/plugins/environment-modal-sandbox/skills/modal-sandboxes/SKILL.md
 @@ -15,6 +15,11 @@ description: Connect Modal and create reusable cloud machines with the bundled s
@@ -682,7 +682,7 @@ index 9a3e01d99270f0a9dbbdef13c31ef722dc49793f..1b9fb236b6764f0ed48302a38eec39ef
  4. Create a standalone machine with
     `bb machine create --provider modal-sandbox --json`.
     SDK: `hosts.experimental_create({machineProviderId:"modal-sandbox",key})`.
-@@ -52,6 +57,12 @@ both hooks. Configure runtime secrets through core Machine environment settings;
+@@ -54,6 +59,12 @@ both hooks. Configure runtime secrets through core Machine environment settings;
  never bake them into the image. There are no user recipes, context uploads, smoke
  verification records or promotion commands.
  
@@ -695,7 +695,7 @@ index 9a3e01d99270f0a9dbbdef13c31ef722dc49793f..1b9fb236b6764f0ed48302a38eec39ef
  Use `bb machine list --json` for core suspension state and
  `bb modal machine inspect HOST_ID --json` for Modal expiry and saved-image
  status. Idle pause defaults to 15 minutes; compute lifetime is fixed at Modal's
-@@ -101,7 +112,8 @@ streamed to the CLI. An already submitted build can finish after CLI cancellatio
+@@ -103,7 +114,8 @@ streamed to the CLI. An already submitted build can finish after CLI cancellatio
  Run builds or reuses that image and returns `sandboxId`, `imageId`, `expiresAt`
  and build `logs`. Debug sandboxes expire after 30 minutes, use Modal's default CPU
  and memory, and contain no injected BB credentials, daemon, project clone or setup

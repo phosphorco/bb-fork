@@ -1,0 +1,1182 @@
+From ba4ce81f2d1f5fbfee49e6914eff49b19e82d8f0 Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Wed, 7 Oct 2026 20:09:02 +0200
+Subject: [PATCH 49/51] perf(p6r): skip participant projection rebuilds for
+ unchanged threads
+
+executeThreadFacetQuery rebuilt the native participant projection for
+every thread on every result page. That meant reading and zod-parsing
+every qualifying client/turn/requested event of all 100 threads, then
+delete-and-reinserting their profile rows, even though every write
+that changes those inputs already reprojects inside its own
+transaction. On bb-machine the first page of active threads took
+~1.8 s, and a pass over all active threads ~3.2 s of reads, almost all
+for unchanged projections.
+
+Each projection now records a watermark in a new p6r sidecar table,
+p6r_participant_watermarks. The watermark is the latest request
+event's sequence and id, the contribution count and latest acceptance
+time, and a projector version. It is written in the same transaction
+as every replacement: the event-append, contribution-acceptance and
+queued admission/dispatch projections, and the read path. The read
+path computes current watermarks with one indexed query per page and
+rebuilds only threads whose watermark is missing or differs. The
+output of a rebuild is unchanged. The migration only creates the
+table; watermarks fill on first rebuild.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ .../drizzle/0003_participant_watermarks.sql   |   9 +
+ .../p6r/drizzle/meta/0003_snapshot.json       | 479 ++++++++++++++++++
+ .../services/p6r/drizzle/meta/_journal.json   |   9 +-
+ .../services/p6r/participant-projection.ts    | 102 +++-
+ .../server/src/services/p6r/sidecar-schema.ts |  13 +
+ .../services/threads/thread-facet-query.ts    |  45 +-
+ .../services/p6r/native-acceptance.test.ts    |  11 +
+ .../p6r/participant-watermarks.test.ts        | 296 +++++++++++
+ .../p6r/sidecar-built-artifact.test.ts        |   2 +
+ .../test/services/p6r/sidecar-store.test.ts   |   6 +-
+ 10 files changed, 962 insertions(+), 10 deletions(-)
+ create mode 100644 apps/server/src/services/p6r/drizzle/0003_participant_watermarks.sql
+ create mode 100644 apps/server/src/services/p6r/drizzle/meta/0003_snapshot.json
+ create mode 100644 apps/server/test/services/p6r/participant-watermarks.test.ts
+
+diff --git a/apps/server/src/services/p6r/drizzle/0003_participant_watermarks.sql b/apps/server/src/services/p6r/drizzle/0003_participant_watermarks.sql
+new file mode 100644
+index 0000000000000000000000000000000000000000..93b25c7bb6c85f2f581f164a4ece3be7506c3981
+--- /dev/null
++++ b/apps/server/src/services/p6r/drizzle/0003_participant_watermarks.sql
+@@ -0,0 +1,9 @@
++CREATE TABLE `p6r_participant_watermarks` (
++	`thread_id` text PRIMARY KEY NOT NULL,
++	`request_sequence` integer,
++	`request_event_id` text,
++	`contribution_count` integer NOT NULL,
++	`contribution_accepted_at` integer,
++	`projector_version` integer NOT NULL,
++	`updated_at` integer NOT NULL
++);
+diff --git a/apps/server/src/services/p6r/drizzle/meta/0003_snapshot.json b/apps/server/src/services/p6r/drizzle/meta/0003_snapshot.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..b474d0f249e1be6dc683b7c0de49d8782ba6ccab
+--- /dev/null
++++ b/apps/server/src/services/p6r/drizzle/meta/0003_snapshot.json
+@@ -0,0 +1,479 @@
++{
++  "version": "6",
++  "dialect": "sqlite",
++  "id": "5f0ebdae-250d-4ce9-acc0-d41d29dfa600",
++  "prevId": "edcc9bba-7fc3-4683-aefa-6ff23ea51847",
++  "tables": {
++    "p6r_attempt_inputs": {
++      "name": "p6r_attempt_inputs",
++      "columns": {
++        "attempt_id": {
++          "name": "attempt_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "group_index": {
++          "name": "group_index",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "source_index": {
++          "name": "source_index",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "source_kind": {
++          "name": "source_kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "contribution_id": {
++          "name": "contribution_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "snapshot": {
++          "name": "snapshot",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "p6r_attempt_inputs_attempt_group_source_idx": {
++          "name": "p6r_attempt_inputs_attempt_group_source_idx",
++          "columns": [
++            "attempt_id",
++            "group_index",
++            "source_index"
++          ],
++          "isUnique": true
++        },
++        "p6r_attempt_inputs_contribution_idx": {
++          "name": "p6r_attempt_inputs_contribution_idx",
++          "columns": [
++            "contribution_id"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "p6r_attempts": {
++      "name": "p6r_attempts",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "native_request_id": {
++          "name": "native_request_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "native_turn_id": {
++          "name": "native_turn_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "retry_of_attempt_id": {
++          "name": "retry_of_attempt_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "p6r_attempts_thread_created_idx": {
++          "name": "p6r_attempts_thread_created_idx",
++          "columns": [
++            "thread_id",
++            "created_at",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "p6r_attempts_native_request_idx": {
++          "name": "p6r_attempts_native_request_idx",
++          "columns": [
++            "native_request_id"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "p6r_contributions": {
++      "name": "p6r_contributions",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "accepted_at": {
++          "name": "accepted_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "accepted_authorship": {
++          "name": "accepted_authorship",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "initial_input": {
++          "name": "initial_input",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "current_projection": {
++          "name": "current_projection",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "latest_editor": {
++          "name": "latest_editor",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "copied_from_contribution_id": {
++          "name": "copied_from_contribution_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "replaces_contribution_id": {
++          "name": "replaces_contribution_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "native_request_id": {
++          "name": "native_request_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "p6r_contributions_thread_accepted_idx": {
++          "name": "p6r_contributions_thread_accepted_idx",
++          "columns": [
++            "thread_id",
++            "accepted_at",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "p6r_contributions_native_request_idx": {
++          "name": "p6r_contributions_native_request_idx",
++          "columns": [
++            "native_request_id"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "p6r_metadata": {
++      "name": "p6r_metadata",
++      "columns": {
++        "key": {
++          "name": "key",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "value": {
++          "name": "value",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "p6r_operation_receipts": {
++      "name": "p6r_operation_receipts",
++      "columns": {
++        "operation_id": {
++          "name": "operation_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "contribution_id": {
++          "name": "contribution_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "native_request_id": {
++          "name": "native_request_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "accepted_request_sequence": {
++          "name": "accepted_request_sequence",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "payload_hash": {
++          "name": "payload_hash",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "accepted_at": {
++          "name": "accepted_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "retention_deadline": {
++          "name": "retention_deadline",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "p6r_operation_receipts_operation_hash_idx": {
++          "name": "p6r_operation_receipts_operation_hash_idx",
++          "columns": [
++            "operation_id",
++            "payload_hash"
++          ],
++          "isUnique": true
++        },
++        "p6r_operation_receipts_thread_accepted_idx": {
++          "name": "p6r_operation_receipts_thread_accepted_idx",
++          "columns": [
++            "thread_id",
++            "accepted_at"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "p6r_participant_watermarks": {
++      "name": "p6r_participant_watermarks",
++      "columns": {
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "request_sequence": {
++          "name": "request_sequence",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "request_event_id": {
++          "name": "request_event_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "contribution_count": {
++          "name": "contribution_count",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "contribution_accepted_at": {
++          "name": "contribution_accepted_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "projector_version": {
++          "name": "projector_version",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "p6r_pending_queued_dispatches": {
++      "name": "p6r_pending_queued_dispatches",
++      "columns": {
++        "queued_message_id": {
++          "name": "queued_message_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "operation_id": {
++          "name": "operation_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "contribution_id": {
++          "name": "contribution_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "accepted_authorship": {
++          "name": "accepted_authorship",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "input": {
++          "name": "input",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "p6r_pending_queued_dispatches_operation_idx": {
++          "name": "p6r_pending_queued_dispatches_operation_idx",
++          "columns": [
++            "operation_id"
++          ],
++          "isUnique": true
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    }
++  },
++  "views": {},
++  "enums": {},
++  "_meta": {
++    "schemas": {},
++    "tables": {},
++    "columns": {}
++  },
++  "internal": {
++    "indexes": {}
++  }
++}
+\ No newline at end of file
+diff --git a/apps/server/src/services/p6r/drizzle/meta/_journal.json b/apps/server/src/services/p6r/drizzle/meta/_journal.json
+index 27587362ba247b6a8af721087d5ac2ad96588b46..dad5a2214d7aa1005600388964fef1a4d425a55a 100644
+--- a/apps/server/src/services/p6r/drizzle/meta/_journal.json
++++ b/apps/server/src/services/p6r/drizzle/meta/_journal.json
+@@ -22,6 +22,13 @@
+       "when": 1788708781766,
+       "tag": "0002_pending_queued_dispatch",
+       "breakpoints": true
++    },
++    {
++      "idx": 3,
++      "version": "6",
++      "when": 1791396273447,
++      "tag": "0003_participant_watermarks",
++      "breakpoints": true
+     }
+   ]
+-}
++}
+\ No newline at end of file
+diff --git a/apps/server/src/services/p6r/participant-projection.ts b/apps/server/src/services/p6r/participant-projection.ts
+index 1eadaea790bad78718b991e5553f400416aebb76..4f4349efcdf058185bded7d856fe2439214ef61b 100644
+--- a/apps/server/src/services/p6r/participant-projection.ts
++++ b/apps/server/src/services/p6r/participant-projection.ts
+@@ -13,7 +13,104 @@ import {
+ } from "@bb/domain";
+ import { and, eq, inArray, sql } from "drizzle-orm";
+ import { z } from "zod";
+-import { p6rContributions } from "./sidecar-schema.js";
++import {
++  p6rContributions,
++  p6rParticipantWatermarks,
++} from "./sidecar-schema.js";
++
++export const P6R_PARTICIPANT_PROJECTOR_VERSION = 1;
++
++export interface P6rParticipantWatermark {
++  contributionAcceptedAt: number | null;
++  contributionCount: number;
++  projectorVersion: number;
++  requestEventId: string | null;
++  requestSequence: number | null;
++}
++
++export function readP6rParticipantInputWatermarks(
++  db: DbQueryConnection,
++  threadIds: readonly string[],
++): Map<string, P6rParticipantWatermark> {
++  const ids = [...new Set(threadIds)];
++  if (ids.length === 0) return new Map();
++  const rows = db.all<{
++    contribution_accepted_at: number | null;
++    contribution_count: number;
++    request_event_id: string | null;
++    request_sequence: number | null;
++    thread_id: string;
++  }>(sql`
++    SELECT ids.value AS thread_id,
++      (SELECT e.sequence FROM events e WHERE e.thread_id = ids.value AND e.type = 'client/turn/requested' ORDER BY e.sequence DESC LIMIT 1) AS request_sequence,
++      (SELECT e.id FROM events e WHERE e.thread_id = ids.value AND e.type = 'client/turn/requested' ORDER BY e.sequence DESC LIMIT 1) AS request_event_id,
++      (SELECT count(*) FROM p6r_contributions c WHERE c.thread_id = ids.value) AS contribution_count,
++      (SELECT max(c.accepted_at) FROM p6r_contributions c WHERE c.thread_id = ids.value) AS contribution_accepted_at
++    FROM json_each(${JSON.stringify(ids)}) AS ids
++  `);
++  return new Map(
++    rows.map((row) => [
++      row.thread_id,
++      {
++        contributionAcceptedAt: row.contribution_accepted_at,
++        contributionCount: row.contribution_count,
++        projectorVersion: P6R_PARTICIPANT_PROJECTOR_VERSION,
++        requestEventId: row.request_event_id,
++        requestSequence: row.request_sequence,
++      },
++    ]),
++  );
++}
++
++export function readStoredP6rParticipantWatermarks(
++  db: DbQueryConnection,
++  threadIds: readonly string[],
++): Map<string, P6rParticipantWatermark> {
++  const ids = [...new Set(threadIds)];
++  if (ids.length === 0) return new Map();
++  return new Map(
++    db
++      .select()
++      .from(p6rParticipantWatermarks)
++      .where(inArray(p6rParticipantWatermarks.threadId, ids))
++      .all()
++      .map((row) => [
++        row.threadId,
++        {
++          contributionAcceptedAt: row.contributionAcceptedAt,
++          contributionCount: row.contributionCount,
++          projectorVersion: row.projectorVersion,
++          requestEventId: row.requestEventId,
++          requestSequence: row.requestSequence,
++        },
++      ]),
++  );
++}
++
++export function p6rParticipantWatermarksEqual(
++  left: P6rParticipantWatermark,
++  right: P6rParticipantWatermark,
++): boolean {
++  return (
++    left.contributionAcceptedAt === right.contributionAcceptedAt &&
++    left.contributionCount === right.contributionCount &&
++    left.projectorVersion === right.projectorVersion &&
++    left.requestEventId === right.requestEventId &&
++    left.requestSequence === right.requestSequence
++  );
++}
++
++export function writeP6rParticipantWatermarkInTransaction(
++  db: DbQueryConnection,
++  threadId: string,
++  watermark: P6rParticipantWatermark,
++): void {
++  const values = { ...watermark, updatedAt: Date.now() };
++  db.insert(p6rParticipantWatermarks)
++    .values({ threadId, ...values })
++    .onConflictDoUpdate({ target: p6rParticipantWatermarks.threadId, set: values })
++    .run();
++}
+ 
+ const targetListSchema = z.array(p6rMentionTargetSchema).max(256);
+ export function readP6rMentionTargetsForRequest(
+@@ -183,4 +280,7 @@ export function projectP6rParticipantsInTransaction(
+       left.p6rPrincipalKey.localeCompare(right.p6rPrincipalKey),
+     ),
+   });
++  const watermark = readP6rParticipantInputWatermarks(db, [threadId]).get(threadId);
++  if (watermark !== undefined)
++    writeP6rParticipantWatermarkInTransaction(db, threadId, watermark);
+ }
+diff --git a/apps/server/src/services/p6r/sidecar-schema.ts b/apps/server/src/services/p6r/sidecar-schema.ts
+index 4e7d2131cf2b958d4f2ce6ceb6ae65caf0cc1b8e..2d036e920d89cffdccd2f2920763a6fe2462672d 100644
+--- a/apps/server/src/services/p6r/sidecar-schema.ts
++++ b/apps/server/src/services/p6r/sidecar-schema.ts
+@@ -111,3 +111,16 @@ export const p6rMetadata = sqliteTable("p6r_metadata", {
+   key: text("key").primaryKey(),
+   value: text("value").notNull(),
+ });
++
++export const p6rParticipantWatermarks = sqliteTable(
++  "p6r_participant_watermarks",
++  {
++    threadId: text("thread_id").primaryKey(),
++    requestSequence: integer("request_sequence"),
++    requestEventId: text("request_event_id"),
++    contributionCount: integer("contribution_count").notNull(),
++    contributionAcceptedAt: integer("contribution_accepted_at"),
++    projectorVersion: integer("projector_version").notNull(),
++    updatedAt: integer("updated_at").notNull(),
++  },
++);
+diff --git a/apps/server/src/services/threads/thread-facet-query.ts b/apps/server/src/services/threads/thread-facet-query.ts
+index 06dd032830a5c2d964be1987dcc1ae5038d4cc62..9f3a7d2d25a7531ce239b1a015cc9e6608e680d1 100644
+--- a/apps/server/src/services/threads/thread-facet-query.ts
++++ b/apps/server/src/services/threads/thread-facet-query.ts
+@@ -1,4 +1,10 @@
+-import { readP6rParticipantTargets } from "../p6r/participant-projection.js";
++import {
++  p6rParticipantWatermarksEqual,
++  readP6rParticipantInputWatermarks,
++  readP6rParticipantTargets,
++  readStoredP6rParticipantWatermarks,
++  writeP6rParticipantWatermarkInTransaction,
++} from "../p6r/participant-projection.js";
+ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+ import { inArray } from "drizzle-orm";
+ import {
+@@ -13,7 +19,7 @@ import {
+   listCoreParticipantSummariesByThreadIds,
+   listThreadFacetOwnerProjections,
+   queryThreadFacetThreadIds,
+-  replaceCoreParticipantProfilesBatch,
++  replaceCoreParticipantProfilesInTransaction,
+   ThreadFacetInvariantError,
+ } from "@bb/db";
+ import type {
+@@ -182,8 +188,23 @@ function mapInvariant(error: unknown): never {
+ 
+ function ensureNativeParticipantProjection(
+   deps: AppDeps,
+-  threadIds: readonly string[],
++  requestedThreadIds: readonly string[],
+ ): void {
++  if (requestedThreadIds.length === 0) return;
++  const currentWatermarks = readP6rParticipantInputWatermarks(
++    deps.db,
++    requestedThreadIds,
++  );
++  const storedWatermarks = readStoredP6rParticipantWatermarks(
++    deps.db,
++    requestedThreadIds,
++  );
++  const threadIds = [...currentWatermarks].flatMap(([threadId, current]) => {
++    const stored = storedWatermarks.get(threadId);
++    return stored !== undefined && p6rParticipantWatermarksEqual(stored, current)
++      ? []
++      : [threadId];
++  });
+   if (threadIds.length === 0) return;
+   const rowsByThreadId = new Map<
+     string,
+@@ -201,7 +222,7 @@ function ensureNativeParticipantProjection(
+       latestEditor: p6rContributions.latestEditor,
+     })
+     .from(p6rContributions)
+-    .where(inArray(p6rContributions.threadId, [...new Set(threadIds)]))
++    .where(inArray(p6rContributions.threadId, threadIds))
+     .all();
+   for (const row of rows) rowsByThreadId.get(row.threadId)?.push(row);
+   const replacements: Array<{
+@@ -261,7 +282,21 @@ function ensureNativeParticipantProjection(
+       ),
+     });
+   }
+-  replaceCoreParticipantProfilesBatch(deps.db, replacements);
++  deps.db.transaction(
++    (tx) => {
++      for (const replacement of replacements) {
++        replaceCoreParticipantProfilesInTransaction(tx, replacement);
++        const watermark = currentWatermarks.get(replacement.threadId);
++        if (watermark !== undefined)
++          writeP6rParticipantWatermarkInTransaction(
++            tx,
++            replacement.threadId,
++            watermark,
++          );
++      }
++    },
++    { behavior: "immediate" },
++  );
+ }
+ 
+ interface ThreadExecutionProjectionInput {
+diff --git a/apps/server/test/services/p6r/native-acceptance.test.ts b/apps/server/test/services/p6r/native-acceptance.test.ts
+index 41acca0011f9a47cbfcf7f03cc2b6d96907d6370..4deba25b5c7e9ffa4f533ed880ddf1d9cc2346da 100644
+--- a/apps/server/test/services/p6r/native-acceptance.test.ts
++++ b/apps/server/test/services/p6r/native-acceptance.test.ts
+@@ -22,6 +22,9 @@ import {
+   sendNextQueuedMessageIfPresent,
+ } from "../../../src/services/threads/queued-messages.js";
+ import { migrateP6rSidecars } from "../../../src/services/p6r/sidecar-migrate.js";
++import { readP6rParticipantInputWatermarks } from "../../../src/services/p6r/participant-projection.js";
++import { p6rParticipantWatermarks } from "../../../src/services/p6r/sidecar-schema.js";
++import { eq as eqWatermarkThread } from "drizzle-orm";
+ import {
+   lookupP6rOperationReceipt,
+   listP6rAttempts,
+@@ -78,6 +81,11 @@ function acceptance() {
+   };
+ }
+ 
++function expectCurrentParticipantWatermark(db: ReturnType<typeof createConnection>, threadId: string) {
++  const stored = db.select().from(p6rParticipantWatermarks).where(eqWatermarkThread(p6rParticipantWatermarks.threadId, threadId)).get();
++  expect(stored).toMatchObject(readP6rParticipantInputWatermarks(db, [threadId]).get(threadId)!);
++}
++
+ describe("P6r native acceptance", () => {
+   it("leaves a pending cold start un-attributed while ordinary dispatch waits", async () => {
+     await withTestHarness(async (harness) => {
+@@ -367,6 +375,7 @@ describe("P6r native acceptance", () => {
+       await expect(sendNextQueuedMessageIfPresent(harness.deps, {
+         threadId: thread.id,
+       })).resolves.toBe(true);
++      expectCurrentParticipantWatermark(harness.db, thread.id);
+       expect(lookupP6rOperationReceipt(
+         harness.db,
+         "active-queue:plugin-1",
+@@ -845,6 +854,7 @@ describe("P6r native acceptance", () => {
+           (event) => event.type === "client/turn/requested",
+         ),
+       ).toHaveLength(1);
++      expectCurrentParticipantWatermark(harness.db, thread.id);
+     });
+   });
+ 
+@@ -977,6 +987,7 @@ describe("P6r native acceptance", () => {
+             JSON.parse(event.data).requestId === receipt?.nativeRequestId,
+         );
+         expect(requests).toHaveLength(1);
++        expectCurrentParticipantWatermark(harness.db, thread.id);
+       },
+     );
+   });
+diff --git a/apps/server/test/services/p6r/participant-watermarks.test.ts b/apps/server/test/services/p6r/participant-watermarks.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..c14c0a85632b6b179d09c4a7ae3dcb33f2bd6dc9
+--- /dev/null
++++ b/apps/server/test/services/p6r/participant-watermarks.test.ts
+@@ -0,0 +1,296 @@
++import { afterEach, describe, expect, it, vi } from "vitest";
++import {
++  deleteThreadEventSuffixInTransaction,
++  events,
++  threadFacetPrincipalProfiles,
++  threadFacetRelations,
++  threadFacetSnapshots,
++  threads,
++} from "@bb/db";
++import { and, eq, max } from "drizzle-orm";
++import type { P6rMentionTarget } from "@bb/domain";
++import {
++  P6R_PARTICIPANT_PROJECTOR_VERSION,
++  projectP6rParticipantsInTransaction,
++  readP6rParticipantInputWatermarks,
++} from "../../../src/services/p6r/participant-projection.js";
++import {
++  p6rContributions,
++  p6rParticipantWatermarks,
++} from "../../../src/services/p6r/sidecar-schema.js";
++import { appendClientTurnEventInTransaction } from "../../../src/services/threads/thread-events.js";
++import { executeThreadFacetParticipantPage } from "../../../src/services/threads/thread-facet-query.js";
++import {
++  seedHostSession,
++  seedProjectWithSource,
++  seedThread,
++} from "../../helpers/seed.js";
++import { withTestHarness, type TestAppHarness } from "../../helpers/test-app.js";
++
++type Harness = TestAppHarness;
++
++function person(subject: string, displayName: string): P6rMentionTarget {
++  return {
++    identity: { kind: "person", key: `person:fixture:${subject}`, issuer: "fixture:people", subject },
++    presentation: { displayName, handle: null, avatarUrl: null },
++    source: { pluginId: "fixture", generation: "1" },
++  };
++}
++
++function storedActor(subject: string, displayName: string): string {
++  return JSON.stringify({
++    identity: { key: `person:fixture:${subject}`, kind: "person", issuer: "fixture:people", subject },
++    presentation: { displayName, avatarUrl: null },
++  });
++}
++
++function newThread(harness: Harness) {
++  const { host } = seedHostSession(harness.deps);
++  const { project } = seedProjectWithSource(harness.deps, { hostId: host.id });
++  return seedThread(harness.deps, { projectId: project.id });
++}
++
++function appendRequest(harness: Harness, threadId: string, targets: P6rMentionTarget[]) {
++  return harness.db.transaction(
++    (tx) =>
++      appendClientTurnEventInTransaction(tx, {
++        threadId,
++        environmentId: null,
++        type: "client/turn/requested",
++        input: [{ type: "text", text: "Mention", mentions: [] }],
++        p6rMentionedTargets: targets,
++        execution: {
++          model: "gpt-5",
++          reasoningLevel: "medium",
++          permissionMode: "full",
++          serviceTier: "default",
++          source: "client/turn/requested",
++        },
++        initiator: "user",
++        senderThreadId: null,
++        requestMethod: "turn/start",
++        source: "tell",
++        target: { kind: "new-turn" },
++      }),
++    { behavior: "immediate" },
++  );
++}
++
++function acceptContribution(harness: Harness, threadId: string, id: string, acceptedAt: number, author: string, editor: string) {
++  harness.db.transaction(
++    (tx) => {
++      tx.insert(p6rContributions)
++        .values({
++          id,
++          threadId,
++          acceptedAt,
++          acceptedAuthorship: author,
++          initialInput: "[]",
++          currentProjection: "[]",
++          latestEditor: editor,
++          nativeRequestId: null,
++        })
++        .run();
++      projectP6rParticipantsInTransaction(tx, threadId);
++    },
++    { behavior: "immediate" },
++  );
++}
++
++function projection(harness: Harness, threadId: string) {
++  const omitUpdatedAt = <T extends { updatedAt: number }>({ updatedAt: _updatedAt, ...rest }: T) => rest;
++  return {
++    profiles: harness.db
++      .select()
++      .from(threadFacetPrincipalProfiles)
++      .where(eq(threadFacetPrincipalProfiles.threadId, threadId))
++      .orderBy(threadFacetPrincipalProfiles.memberPosition)
++      .all()
++      .map(omitUpdatedAt),
++    relations: harness.db
++      .select()
++      .from(threadFacetRelations)
++      .where(eq(threadFacetRelations.threadId, threadId))
++      .orderBy(threadFacetRelations.memberId)
++      .all()
++      .map(omitUpdatedAt),
++    snapshots: harness.db
++      .select()
++      .from(threadFacetSnapshots)
++      .where(and(eq(threadFacetSnapshots.threadId, threadId), eq(threadFacetSnapshots.localName, "participants")))
++      .all()
++      .map(omitUpdatedAt),
++  };
++}
++
++function snapshotUpdatedAt(harness: Harness, threadId: string) {
++  return harness.db
++    .select({ updatedAt: threadFacetSnapshots.updatedAt })
++    .from(threadFacetSnapshots)
++    .where(and(eq(threadFacetSnapshots.threadId, threadId), eq(threadFacetSnapshots.localName, "participants")))
++    .get()?.updatedAt;
++}
++
++function storedWatermark(harness: Harness, threadId: string) {
++  return harness.db
++    .select()
++    .from(p6rParticipantWatermarks)
++    .where(eq(p6rParticipantWatermarks.threadId, threadId))
++    .get();
++}
++
++function readPath(harness: Harness, threadId: string) {
++  return executeThreadFacetParticipantPage(harness.deps, { threadId, pageSize: 100 });
++}
++
++let clock = 1_800_000_000_000;
++function advanceClock() {
++  clock += 1_000;
++  vi.spyOn(Date, "now").mockReturnValue(clock);
++}
++
++function expectSkippedThenEqualToFullRebuild(harness: Harness, threadId: string) {
++  const before = snapshotUpdatedAt(harness, threadId);
++  advanceClock();
++  readPath(harness, threadId);
++  expect(snapshotUpdatedAt(harness, threadId), "an unchanged thread is not rebuilt").toBe(before);
++  const skipped = projection(harness, threadId);
++
++  harness.db.delete(p6rParticipantWatermarks).where(eq(p6rParticipantWatermarks.threadId, threadId)).run();
++  advanceClock();
++  readPath(harness, threadId);
++  expect(snapshotUpdatedAt(harness, threadId), "a missing watermark forces a full rebuild").toBe(clock);
++  expect(projection(harness, threadId)).toEqual(skipped);
++  return skipped;
++}
++
++afterEach(() => {
++  vi.restoreAllMocks();
++});
++
++describe("participant projection watermarks", () => {
++  it("skips an unchanged events-only thread and matches a full rebuild", async () => {
++    await withTestHarness(async (harness) => {
++      advanceClock();
++      const thread = newThread(harness);
++      appendRequest(harness, thread.id, [person("ada", "Ada"), person("bo", "Bo")]);
++      appendRequest(harness, thread.id, [person("ada", "Ada Lovelace")]);
++      const result = expectSkippedThenEqualToFullRebuild(harness, thread.id);
++      expect(result.profiles.map((profile) => profile.displayName)).toEqual(["Ada Lovelace", "Bo"]);
++    });
++  });
++
++  it("skips an unchanged contributions-only thread and matches a full rebuild", async () => {
++    await withTestHarness(async (harness) => {
++      advanceClock();
++      const thread = newThread(harness);
++      acceptContribution(harness, thread.id, "contribution-1", 10, storedActor("cy", "Cy"), storedActor("cy", "Cy"));
++      acceptContribution(harness, thread.id, "contribution-2", 20, storedActor("di", "Di"), storedActor("cy", "Cy Editor"));
++      const result = expectSkippedThenEqualToFullRebuild(harness, thread.id);
++      expect(result.profiles.map((profile) => profile.principalKey)).toEqual(["person:fixture:cy", "person:fixture:di"]);
++    });
++  });
++
++  it("skips an unchanged mixed thread with overlapping keys and matches a full rebuild", async () => {
++    await withTestHarness(async (harness) => {
++      advanceClock();
++      const thread = newThread(harness);
++      acceptContribution(harness, thread.id, "contribution-1", 10, storedActor("ada", "Ada (contribution)"), storedActor("ada", "Ada (contribution)"));
++      appendRequest(harness, thread.id, [person("ada", "Ada (event)"), person("eve", "Eve")]);
++      acceptContribution(harness, thread.id, "contribution-2", 30, storedActor("fay", "Fay"), storedActor("fay", "Fay"));
++      expectSkippedThenEqualToFullRebuild(harness, thread.id);
++    });
++  });
++
++  it("detects a suffix delete, then skips after the reprojecting append", async () => {
++    await withTestHarness(async (harness) => {
++      advanceClock();
++      const thread = newThread(harness);
++      appendRequest(harness, thread.id, [person("ada", "Ada")]);
++      appendRequest(harness, thread.id, [person("bo", "Bo")]);
++      const bo = harness.db.select({ sequence: events.sequence }).from(events)
++        .where(and(eq(events.threadId, thread.id), eq(events.type, "client/turn/requested")))
++        .orderBy(events.sequence).all().at(-1)!;
++      const maxSequence = harness.db.select({ value: max(events.sequence) }).from(events).where(eq(events.threadId, thread.id)).get()!.value!;
++      harness.db.transaction(
++        (tx) => deleteThreadEventSuffixInTransaction(tx, { threadId: thread.id, cutoffSequence: bo.sequence, oldMaxSequence: maxSequence }),
++        { behavior: "immediate" },
++      );
++
++      advanceClock();
++      readPath(harness, thread.id);
++      expect(snapshotUpdatedAt(harness, thread.id), "a removed request event invalidates the watermark").toBe(clock);
++      expect(projection(harness, thread.id).profiles.map((profile) => profile.displayName)).toEqual(["Ada"]);
++
++      appendRequest(harness, thread.id, [person("cy", "Cy")]);
++      const result = expectSkippedThenEqualToFullRebuild(harness, thread.id);
++      expect(result.profiles.map((profile) => profile.displayName)).toEqual(["Ada", "Cy"]);
++    });
++  });
++
++  it("keeps a valid watermark across soft delete and undelete", async () => {
++    await withTestHarness(async (harness) => {
++      advanceClock();
++      const thread = newThread(harness);
++      appendRequest(harness, thread.id, [person("ada", "Ada")]);
++      harness.db.update(threads).set({ deletedAt: clock }).where(eq(threads.id, thread.id)).run();
++      harness.db.update(threads).set({ deletedAt: null }).where(eq(threads.id, thread.id)).run();
++      expectSkippedThenEqualToFullRebuild(harness, thread.id);
++    });
++  });
++
++  it("rebuilds when the stored projector version differs", async () => {
++    await withTestHarness(async (harness) => {
++      advanceClock();
++      const thread = newThread(harness);
++      appendRequest(harness, thread.id, [person("ada", "Ada")]);
++      harness.db.update(p6rParticipantWatermarks)
++        .set({ projectorVersion: P6R_PARTICIPANT_PROJECTOR_VERSION - 1 })
++        .where(eq(p6rParticipantWatermarks.threadId, thread.id)).run();
++      advanceClock();
++      readPath(harness, thread.id);
++      expect(snapshotUpdatedAt(harness, thread.id)).toBe(clock);
++      expect(storedWatermark(harness, thread.id)?.projectorVersion).toBe(P6R_PARTICIPANT_PROJECTOR_VERSION);
++    });
++  });
++
++  it("records the watermark in the same transaction as an event-append projection", async () => {
++    await withTestHarness(async (harness) => {
++      advanceClock();
++      const thread = newThread(harness);
++      expect(() =>
++        harness.db.transaction((tx) => {
++          appendClientTurnEventInTransaction(tx, {
++            threadId: thread.id, environmentId: null, type: "client/turn/requested",
++            input: [{ type: "text", text: "Mention", mentions: [] }], p6rMentionedTargets: [person("ada", "Ada")],
++            execution: { model: "gpt-5", reasoningLevel: "medium", permissionMode: "full", serviceTier: "default", source: "client/turn/requested" },
++            initiator: "user", senderThreadId: null, requestMethod: "turn/start", source: "tell", target: { kind: "new-turn" },
++          });
++          throw new Error("rollback");
++        }, { behavior: "immediate" }),
++      ).toThrow("rollback");
++      expect(storedWatermark(harness, thread.id)).toBeUndefined();
++
++      appendRequest(harness, thread.id, [person("ada", "Ada")]);
++      const current = readP6rParticipantInputWatermarks(harness.db, [thread.id]).get(thread.id)!;
++      expect(storedWatermark(harness, thread.id)).toMatchObject(current);
++    });
++  });
++
++  it("rolls back a read-path rebuild when its watermark cannot be written", async () => {
++    await withTestHarness(async (harness) => {
++      advanceClock();
++      const thread = newThread(harness);
++      appendRequest(harness, thread.id, [person("ada", "Ada")]);
++      const before = projection(harness, thread.id);
++      harness.db.delete(p6rParticipantWatermarks).run();
++      harness.db.run(`CREATE TRIGGER fail_watermark BEFORE INSERT ON p6r_participant_watermarks BEGIN SELECT RAISE(ABORT, 'watermark write failed'); END;`);
++      harness.db.delete(threadFacetPrincipalProfiles).where(eq(threadFacetPrincipalProfiles.threadId, thread.id)).run();
++      expect(() => readPath(harness, thread.id)).toThrow("watermark write failed");
++      expect(projection(harness, thread.id).profiles).toEqual([]);
++      harness.db.run("DROP TRIGGER fail_watermark");
++      readPath(harness, thread.id);
++      expect(projection(harness, thread.id)).toEqual(before);
++    });
++  });
++});
+diff --git a/apps/server/test/services/p6r/sidecar-built-artifact.test.ts b/apps/server/test/services/p6r/sidecar-built-artifact.test.ts
+index 4b7fa3ef6de18944dc4da0a59caf62172ecc3a15..8b808bd4721cb35ce465e1d4fe97377cc265d934 100644
+--- a/apps/server/test/services/p6r/sidecar-built-artifact.test.ts
++++ b/apps/server/test/services/p6r/sidecar-built-artifact.test.ts
+@@ -25,6 +25,7 @@ it(
+       "0000_lying_energizer.sql",
+       "0001_aromatic_leopardon.sql",
+       "0002_pending_queued_dispatch.sql",
++      "0003_participant_watermarks.sql",
+     ]);
+     expect(
+       JSON.parse(
+@@ -34,6 +35,7 @@ it(
+       "0000_lying_energizer",
+       "0001_aromatic_leopardon",
+       "0002_pending_queued_dispatch",
++      "0003_participant_watermarks",
+     ]);
+     expect(await readFile(join(dist, "start-server.js"), "utf8")).toContain(
+       'from "./services/p6r/sidecar-migrate.js"',
+diff --git a/apps/server/test/services/p6r/sidecar-store.test.ts b/apps/server/test/services/p6r/sidecar-store.test.ts
+index 21065e51bd6ee28c20cbb62892dd9d7e43875ce4..dca2713909f07ba261873a90cbd677e37cbfd009 100644
+--- a/apps/server/test/services/p6r/sidecar-store.test.ts
++++ b/apps/server/test/services/p6r/sidecar-store.test.ts
+@@ -91,14 +91,14 @@ describe("P6r sidecar storage", () => {
+       db.$client
+         .prepare("SELECT COUNT(*) AS count FROM __p6r_migrations")
+         .get(),
+-    ).toEqual({ count: 3 });
++    ).toEqual({ count: 4 });
+     expect(
+       db.$client
+         .prepare(
+-          "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN ('p6r_contributions', 'p6r_attempts', 'p6r_attempt_inputs', 'p6r_operation_receipts', 'p6r_pending_queued_dispatches', 'p6r_metadata')",
++          "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN ('p6r_contributions', 'p6r_attempts', 'p6r_attempt_inputs', 'p6r_operation_receipts', 'p6r_pending_queued_dispatches', 'p6r_metadata', 'p6r_participant_watermarks')",
+         )
+         .get(),
+-    ).toEqual({ count: 6 });
++    ).toEqual({ count: 7 });
+   });
+ 
+   it("persists one instance namespace independently of its data directory path", () => {
+-- 
+2.53.0
+

@@ -1,4 +1,4 @@
-From 3e15f40a3d20d83ea4412d88e7c8881341a67370 Mon Sep 17 00:00:00 2001
+From 8bb253e35fc36cbfc1e2dc62d9b152a86f90e4a2 Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Fri, 18 Sep 2026 19:25:00 +0200
 Subject: [PATCH] fix(plugins): defer external CORS to plugin routes
@@ -10,10 +10,10 @@ Subject: [PATCH] fix(plugins): defer external CORS to plugin routes
  3 files changed, 103 insertions(+), 16 deletions(-)
 
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
-index dccaf398fea7921bbec906b782e00206bd688ad4..a809d549f03c7cecb4664dce289f4cc0d3a7a866 100644
+index d41619dc5559d3e97112ad4592e4fc940af48665..58c3577304d1d004c3ad6465b1bf65c7084cc4c4 100644
 --- a/apps/server/src/server.ts
 +++ b/apps/server/src/server.ts
-@@ -515,21 +515,24 @@ export function createApp(
+@@ -536,21 +536,24 @@ export function createApp(
      }
      return runEventLoopWork(`${context.req.method} ${path}`, next);
    });
@@ -54,7 +54,7 @@ index dccaf398fea7921bbec906b782e00206bd688ad4..a809d549f03c7cecb4664dce289f4cc0
    const compressResponse = compress();
    const compressApiJson = apiJsonCompression();
 diff --git a/apps/server/test/services/plugins/plugin-wire.test.ts b/apps/server/test/services/plugins/plugin-wire.test.ts
-index 249aab2bb190683af4bd03ea3543470ac8d4d7f4..c179df800c97b0558ac721feffd26093810b66a5 100644
+index 7d4a3974893fd422e6ffeecdee7f6fa73a2c8e2b..ddb32834eb8327def899747d4cd95ed8fa2a788d 100644
 --- a/apps/server/test/services/plugins/plugin-wire.test.ts
 +++ b/apps/server/test/services/plugins/plugin-wire.test.ts
 @@ -45,6 +45,18 @@ const WIRE_SOURCE = `
@@ -168,10 +168,10 @@ index 249aab2bb190683af4bd03ea3543470ac8d4d7f4..c179df800c97b0558ac721feffd26093
      const notJson = await rpc(harness, "echo", { x: 1 }, { contentType: null });
      expect(notJson.status).toBe(415);
 diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
-index c5483abd94f864f1366407d1171629417030afbd..eba71ead80c3adab9028ec3ea6ad73ff9d001580 100644
+index cee1d0719c2bda5cd53d4a7d933bd4b547a75fdf..b5522c334653c6d16c4a02c705a29887125fe2e6 100644
 --- a/packages/plugin-sdk/src/backend-contract.ts
 +++ b/packages/plugin-sdk/src/backend-contract.ts
-@@ -847,6 +847,11 @@ export interface PluginHttp {
+@@ -850,6 +850,11 @@ export interface PluginHttp {
     * - "token": requires the per-plugin token (`bb plugin token <id>`) via
     *   the x-bb-plugin-token header or ?token=.
     * - "none": no checks — only for signature-verified webhooks.

@@ -1,0 +1,69 @@
+From a864c05970f1ad7866223b245ae51ed2c923d3b9 Mon Sep 17 00:00:00 2001
+From: Phosphor <engineering@phosphor.co>
+Date: Tue, 8 Sep 2026 17:35:56 +0200
+Subject: [PATCH] fix(execution): invalidate stale execution caches
+
+---
+ .../cache-owners/realtime-cache-registry.ts   |  8 ++++++
+ .../src/hooks/realtime-cache-effects.test.ts  | 26 +++++++++++++++++++
+ 2 files changed, 34 insertions(+)
+
+diff --git a/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts b/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts
+index 0cdb54118550f38d6b6afee5c841ee2550efb8ff..8ab6e0ec5951a9ed1393ff545cdb5f3d043ff545 100644
+--- a/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts
++++ b/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts
+@@ -416,6 +416,14 @@ export const REALTIME_THREAD_CHANGE_REGISTRY = {
+       dirtyThreadStorageQueriesForThread,
+     ],
+   },
++  "execution-options-changed": {
++    flush: "immediate",
++    dirty: [
++      dirtyThreadListQueries,
++      dirtyThreadDetailQueries,
++      dirtyThreadDefaultExecutionOptionsQueries,
++    ],
++  },
+   "read-state-changed": {
+     flush: "debounced",
+     dirty: [markThreadDetailQueryStale, markThreadListQueriesStale],
+diff --git a/apps/app/src/hooks/realtime-cache-effects.test.ts b/apps/app/src/hooks/realtime-cache-effects.test.ts
+index dcc2cba1852ee0465762bdb97249cf228d043d36..df902358c7ccc331080cf33b031c5361c38e4ac8 100644
+--- a/apps/app/src/hooks/realtime-cache-effects.test.ts
++++ b/apps/app/src/hooks/realtime-cache-effects.test.ts
+@@ -1765,6 +1765,32 @@ describe("createRealtimeCacheEffects", () => {
+     effects.dispose();
+   });
+ 
++  it("invalidates the list, detail, and defaults when execution options change", () => {
++    const { effects, queryClient } = createRealtimeEffectsTestContext();
++    const listKey = threadListQueryKey({
++      archived: false,
++      projectId: "project-1",
++    });
++    const detailKey = threadQueryKey("thr_1");
++    const defaultsKey = threadDefaultExecutionOptionsQueryKey("thr_1");
++    queryClient.setQueryData(listKey, []);
++    queryClient.setQueryData(detailKey, {});
++    queryClient.setQueryData(defaultsKey, null);
++
++    effects.handleChanged({
++      type: "changed",
++      entity: "thread",
++      id: "thr_1",
++      metadata: { projectId: "project-1" },
++      changes: ["execution-options-changed"],
++    });
++
++    expect(queryClient.getQueryState(listKey)?.isInvalidated).toBe(true);
++    expect(queryClient.getQueryState(detailKey)?.isInvalidated).toBe(true);
++    expect(queryClient.getQueryState(defaultsKey)?.isInvalidated).toBe(true);
++    effects.dispose();
++  });
++
+   it("does not invalidate timeline queries for status-only thread changes", () => {
+     const { effects, queryClient } = createRealtimeEffectsTestContext();
+     const timelineKey = threadTimelineQueryKey("thr_1");
+-- 
+2.53.0
+

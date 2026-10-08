@@ -1,42 +1,52 @@
-From ae2c32cde3817093e55812d59620cf7993bed9c8 Mon Sep 17 00:00:00 2001
+From 03ac7a0dd6b1558fb10b7f40e20fe6d4a2fc41f8 Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Sat, 26 Sep 2026 03:41:59 +0200
 Subject: [PATCH] fix(db): accept exact prior fork bridge after upstream sync
 
+Earlier fork bridges used 0131 (BB 0.43) and 0132 (BB 0.44) before
+upstream allocated those indexes. Accept exactly those two receipts
+(same SQL hash) when upgrading an already-bridged database, without
+rewriting its ledger. Any other timestamp or hash still fails closed.
 ---
- packages/db/src/migrate.ts       | 13 +++++++++++--
- packages/db/test/migrate.test.ts | 18 ++++++++++++++++++
- 2 files changed, 29 insertions(+), 2 deletions(-)
+ packages/db/src/migrate.ts       |  19 ++-
+ packages/db/test/migrate.test.ts | 224 +++++++++++++++++++++++++++++++
+ 2 files changed, 241 insertions(+), 2 deletions(-)
 
 diff --git a/packages/db/src/migrate.ts b/packages/db/src/migrate.ts
-index e03a84cd6ca240efe51f7a87503973bec2bbefe5..0dd7ff3048a47e15c8d8945f4fd89abca01ab49e 100644
+index dcc625203b227ff8934a4cdcd3166613ab3dd58a..369c9faea6d54227c7fcffd7be1360b0f4206536 100644
 --- a/packages/db/src/migrate.ts
 +++ b/packages/db/src/migrate.ts
-@@ -217,6 +217,14 @@ const legacyIdentityAndContextMagnetMigrations = [
+@@ -212,6 +212,20 @@ const legacyIdentityAndContextMagnetMigrations = [
  ] as const;
  const identityContextBridgeCompletionTable = "bb_schema_bridge_completions";
  const identityContextBridgeCompletionName = "identity-context-0131";
 +
-+// The preceding fork used 0131 before upstream allocated that index.
-+// Preserve its exact receipt when upgrading an already-bridged database.
++// Preceding fork bridges used 0131 (BB 0.43) and 0132 (BB 0.44) before
++// upstream allocated those indexes. Preserve their exact receipts when
++// upgrading an already-bridged database.
++const priorIdentityContextBridgeCreatedAts: ReadonlySet<number> = new Set([
++  1790103658751, 1790230932026,
++]);
++
 +function isPriorIdentityContextBridge(migration: AppliedMigrationIdentityRow): boolean {
-+  return migration.createdAt === 1790103658751 &&
++  return migration.createdAt !== null &&
++    priorIdentityContextBridgeCreatedAts.has(migration.createdAt) &&
 +    migration.hash === "75a11b641e07ba8ec55cc617bd692fed6fd4d14e7fa47de765879cc81986e039";
 +}
 +
  const targetMigrationsThatMayBeSkippedByLegacyIdentityHistory = [
    "0119_provider_model_catalogs",
    "0120_perfect_clint_barton",
-@@ -1367,7 +1375,7 @@ function applyTargetMigrationsSkippedByLegacyIdentityHistory(
+@@ -1362,7 +1376,7 @@ function applyTargetMigrationsSkippedByLegacyIdentityHistory(
    assertLegacyIdentityAndContextMagnetSchema(
      db,
      legacyPrefixLength,
 -    expectedMigrations.some(
 +    appliedMigrations.some(isPriorIdentityContextBridge) || expectedMigrations.some(
        (migration) =>
-         migration.tag === "0132_zippy_reavers" &&
+         migration.tag === "0142_zippy_reavers" &&
          appliedMigrations.some(
-@@ -1388,7 +1396,8 @@ function applyTargetMigrationsSkippedByLegacyIdentityHistory(
+@@ -1383,7 +1397,8 @@ function applyTargetMigrationsSkippedByLegacyIdentityHistory(
    for (const migration of appliedMigrations) {
      if (
        migration.createdAt === null ||
@@ -47,28 +57,241 @@ index e03a84cd6ca240efe51f7a87503973bec2bbefe5..0dd7ff3048a47e15c8d8945f4fd89abc
        continue;
      }
 diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
-index 94620c328cadc6f173f56349360c924c5fc19799..d659b77c7e921cd5306f4de8ceb32149755f2fac 100644
+index 47d442c5b409459eb2098ea9752b8d8d6adad7c0..cba7f775eb1c34055cb3eef2647a2ef5d8973e87 100644
 --- a/packages/db/test/migrate.test.ts
 +++ b/packages/db/test/migrate.test.ts
-@@ -6072,6 +6072,24 @@ describe("identity and context magnet migration bridge", () => {
+@@ -290,6 +290,114 @@ function applyLegacyIdentityAndContextMagnetFixture(
+   }
+ }
+ 
++interface LedgerRow {
++  createdAt: number;
++  hash: string;
++}
++
++function readLedgerRows(db: DbConnection): LedgerRow[] {
++  return db.$client
++    .prepare<[], LedgerRow>(
++      "SELECT hash, created_at AS createdAt FROM __drizzle_migrations ORDER BY created_at",
++    )
++    .all();
++}
++
++function readBridgeCompletionName(db: DbConnection): string | null {
++  const row = db.$client
++    .prepare<[string], { name: string }>(
++      "SELECT name FROM bb_schema_bridge_completions WHERE name = ?",
++    )
++    .get("identity-context-0131");
++  return row?.name ?? null;
++}
++
++// Undo upstream migrations from `createdAt` onward the way upstream's own
++// rewind fixtures do, so Drizzle replays them on the next migrate().
++function rewindToBeforeUpstreamMigration(db: DbConnection, createdAt: number): void {
++  db.$client
++    .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
++    .run(createdAt);
++  dropIdleLifecycleIndexes(db);
++  rewindThreadPruningWork(db);
++  dropPluginEnabledFollowsDefaultColumn(db);
++  dropQueuedMessageEditHeldUntilColumn(db);
++}
++
++function insertPriorForkBridgeReceipt(db: DbConnection, createdAt: number): void {
++  db.$client
++    .prepare<InsertMigrationParameters>(
++      "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
++    )
++    .run(
++      "75a11b641e07ba8ec55cc617bd692fed6fd4d14e7fa47de765879cc81986e039",
++      createdAt,
++    );
++}
++
++// The bb-machine ledger observed on 2026-10-08: the bb-machine 0119 legacy
++// hash, upstream through 0131, then the 0.44 fork bridge at 0132.
++function createLiveShapedForkBridgeLedger(
++  db: DbConnection,
++  receipt: { createdAt: number; hash: string } = {
++    createdAt: 1790230932026,
++    hash: "75a11b641e07ba8ec55cc617bd692fed6fd4d14e7fa47de765879cc81986e039",
++  },
++): void {
++  createLegacyIdentityAndContextMagnetHistory(db, 1);
++  db.$client
++    .prepare("UPDATE __drizzle_migrations SET hash = ? WHERE created_at = ?")
++    .run(
++      "70be23ac3c47053d8b4d59cc0b5af9c5c1412b2656c44062af31d5ff16538319",
++      1789068314079,
++    );
++  migrate(db);
++  db.$client.exec(`
++    INSERT INTO thread_facet_principal_profiles (
++      type_scope, type_owner, local_name, assignment_scope, thread_id,
++      principal_key, identity_kind, member_position, display_name, image_url,
++      updated_at
++    ) VALUES (
++      'core', 'core', 'participants', 'shared-thread', 'thr_legacy',
++      'machine:live', 'machine', 0, 'bb-machine', NULL, 21
++    );
++    INSERT INTO context_magnet_contribution_traces (
++      contribution_id, thread_id, trace_sequence, operation_event_sequence,
++      trace_json, receipt_tool, plugin_id, created_at
++    ) VALUES (
++      'cmc_live', 'thr_legacy', 1, NULL, '{"live":true}', 'receipt', 'context-magnet', 22
++    );
++    UPDATE threads SET execution_revision = 7 WHERE id = 'thr_legacy';
++  `);
++  rewindToBeforeUpstreamMigration(db, 1790322211064);
++  db.$client
++    .prepare("DELETE FROM __drizzle_migrations WHERE created_at = ?")
++    .run(latestMigrationWhen);
++  db.$client
++    .prepare<InsertMigrationParameters>(
++      "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
++    )
++    .run(receipt.hash, receipt.createdAt);
++}
++
++function readRepresentativeBridgeRows(db: DbConnection) {
++  return {
++    profiles: db.$client
++      .prepare(
++        "SELECT principal_key, identity_kind, display_name FROM thread_facet_principal_profiles ORDER BY principal_key",
++      )
++      .all(),
++    traces: db.$client
++      .prepare(
++        "SELECT contribution_id, thread_id, trace_json, plugin_id FROM context_magnet_contribution_traces ORDER BY contribution_id",
++      )
++      .all(),
++    threads: db.$client
++      .prepare("SELECT id, execution_revision FROM threads ORDER BY id")
++      .all(),
++  };
++}
++
+ function createLegacyIdentityAndContextMagnetHistory(
+   db: DbConnection,
+   legacyPrefixLength: number = legacyIdentityAndContextMagnetFixtureFiles.length,
+@@ -4973,6 +5081,122 @@ describe("identity and context magnet migration bridge", () => {
      },
    );
  
-+  it("upgrades the preceding fork bridge before upstream retention indexes", () => {
++  it("upgrades the 0.43 fork bridge receipt before upstream retention indexes", () => {
 +    const db = createConnection(":memory:");
 +    try {
 +      createLegacyIdentityAndContextMagnetHistory(db, 1);
 +      migrate(db);
-+      db.$client.prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
-+        .run(1790230932025);
-+      db.$client.prepare<InsertMigrationParameters>(
-+        "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
-+      ).run("75a11b641e07ba8ec55cc617bd692fed6fd4d14e7fa47de765879cc81986e039", 1790103658751);
++      rewindToBeforeUpstreamMigration(db, 1790230932025);
++      insertPriorForkBridgeReceipt(db, 1790103658751);
 +      migrate(db);
 +      migrate(db);
 +      expect(readLatestAppliedMigrationCreatedAt(db)).toBe(latestMigrationWhen);
 +    } finally {
 +      closeConnection(db);
++    }
++  });
++
++  it("upgrades a live-shaped 0.44 ledger with its fork bridge receipt and reruns as a no-op", () => {
++    const db = createConnection(":memory:");
++    try {
++      createLiveShapedForkBridgeLedger(db);
++      const before = readLedgerRows(db);
++      const representative = readRepresentativeBridgeRows(db);
++      expect(before.map((row) => row.createdAt)).toContain(1790230932026);
++
++      migrate(db);
++      const after = readLedgerRows(db);
++      for (const row of before) expect(after).toContainEqual(row);
++      expect(readLatestAppliedMigrationCreatedAt(db)).toBe(latestMigrationWhen);
++      expect(readRepresentativeBridgeRows(db)).toEqual(representative);
++      expect(readBridgeCompletionName(db)).toBe("identity-context-0131");
++      expect(db.$client.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
++      expect(db.$client.pragma("quick_check", { simple: true })).toBe("ok");
++
++      migrate(db);
++      expect(readLedgerRows(db)).toEqual(after);
++      expect(readRepresentativeBridgeRows(db)).toEqual(representative);
++    } finally {
++      closeConnection(db);
++    }
++  });
++
++  it.each([
++    [
++      "an unrecognized timestamp",
++      {
++        createdAt: 1790230932027,
++        hash: "75a11b641e07ba8ec55cc617bd692fed6fd4d14e7fa47de765879cc81986e039",
++      },
++    ],
++    [
++      "a different hash",
++      {
++        createdAt: 1790230932026,
++        hash: "0000000000000000000000000000000000000000000000000000000000000000",
++      },
++    ],
++  ] as const)(
++    "fails closed for a live-shaped fork bridge receipt with %s",
++    (_case, receipt) => {
++      const db = createConnection(":memory:");
++      try {
++        createLiveShapedForkBridgeLedger(db, receipt);
++        const before = readLedgerRows(db);
++        expect(() => migrate(db)).toThrow(
++          /Unsupported legacy identity\/context migration history/,
++        );
++        expect(readLedgerRows(db)).toEqual(before);
++      } finally {
++        closeConnection(db);
++      }
++    },
++  );
++
++  it("recovers a live-shaped 0.44 upgrade that fails between Drizzle and bridge completion", () => {
++    const directory = mkdtempSync(join(tmpdir(), "bb-migration-live-bridge-"));
++    const databasePath = join(directory, "state.db");
++    const db = createConnection(databasePath);
++    let before: readonly LedgerRow[] = [];
++    let representative: ReturnType<typeof readRepresentativeBridgeRows>;
++    try {
++      createLiveShapedForkBridgeLedger(db);
++      db.$client
++        .prepare("DELETE FROM bb_schema_bridge_completions WHERE name = ?")
++        .run("identity-context-0131");
++      before = readLedgerRows(db);
++      representative = readRepresentativeBridgeRows(db);
++      expect(() =>
++        migrate(db, {
++          identityContextBridgeTestHooks: {
++            afterDrizzleMigration: () => {
++              throw new Error("forced live-shaped bridge failure");
++            },
++          },
++        }),
++      ).toThrow("forced live-shaped bridge failure");
++      expect(readLatestAppliedMigrationCreatedAt(db)).toBe(latestMigrationWhen);
++      expect(readBridgeCompletionName(db)).toBeNull();
++    } finally {
++      closeConnection(db);
++    }
++
++    const reopened = createConnection(databasePath);
++    try {
++      migrate(reopened);
++      const after = readLedgerRows(reopened);
++      for (const row of before) expect(after).toContainEqual(row);
++      expect(readBridgeCompletionName(reopened)).toBe("identity-context-0131");
++      expect(readRepresentativeBridgeRows(reopened)).toEqual(representative!);
++      expect(
++        reopened.$client.prepare("PRAGMA foreign_key_check").all(),
++      ).toEqual([]);
++    } finally {
++      closeConnection(reopened);
++      rmSync(directory, { force: true, recursive: true });
 +    }
 +  });
 +

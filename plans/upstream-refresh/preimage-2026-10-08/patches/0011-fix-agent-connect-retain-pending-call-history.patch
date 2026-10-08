@@ -1,0 +1,390 @@
+From 13b1933e505404897a1fd98a099274c67bc997f8 Mon Sep 17 00:00:00 2001
+From: Phosphor <engineering@phosphor.co>
+Date: Tue, 8 Sep 2026 17:35:56 +0200
+Subject: [PATCH] fix(agent-connect): retain pending call history
+
+---
+ .../src/services/p6r/identity-protocol.ts     |  27 +-
+ apps/server/src/services/p6r/sidecar-store.ts |  17 ++
+ .../services/p6r/identity-protocol.test.ts    | 270 +++++++++++++++++-
+ 3 files changed, 310 insertions(+), 4 deletions(-)
+
+diff --git a/apps/server/src/services/p6r/identity-protocol.ts b/apps/server/src/services/p6r/identity-protocol.ts
+index 8ba2bcaff79b8eef666531fbe76bb39168bbca2c..9e9a71b5b2253d84326277d9094e63c08af8cd12 100644
+--- a/apps/server/src/services/p6r/identity-protocol.ts
++++ b/apps/server/src/services/p6r/identity-protocol.ts
+@@ -7,6 +7,7 @@ import { p6rOutcomeFromStoredReceipt } from "./receipt-outcome.js";
+ import {
+   getP6rHistoryRevision,
+   findP6rNativeRequestForEvent,
++  isP6rAttemptAwaitingNativeTurnLink,
+   listP6rAttempts,
+   listP6rAttemptsForNativeTurn,
+   listP6rContributions,
+@@ -326,7 +327,10 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
+           return { ok: true, value: { status: missing.length === 0 ? "known" : "partial", items: page.value.items, missing, nextCursor: page.value.nextCursor, traversal: page.value.nextCursor === null ? "complete" : "continued" } };
+         },
+         historyAttempts: async (query) => {
+-          if (query.kind === "operation" && lookupP6rOperationReceipt(root.db, operationNamespace(root.instanceId, identityGeneration.pluginId), query.operationId) === null) {
++          const receipt = query.kind === "operation"
++            ? lookupP6rOperationReceipt(root.db, operationNamespace(root.instanceId, identityGeneration.pluginId), query.operationId)
++            : null;
++          if (query.kind === "operation" && receipt === null) {
+             return { ok: true, value: { status: "unavailable", reason: "missing-history" } };
+           }
+           const attempts = listP6rAttempts(root.db, operationNamespace(root.instanceId, identityGeneration.pluginId), query.kind === "operation" ? { operationId: query.operationId } : { contributionId: query.reference.contributionId });
+@@ -335,6 +339,27 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
+           const fingerprint = queryFingerprint(query.kind === "operation" ? { kind: query.kind, operationId: query.operationId } : { kind: query.kind, reference: query.reference });
+           const page = historyPage(entries, query, fingerprint, revision);
+           if (!page.ok) return page;
++          if (receipt?.status === "pending") {
++            return { ok: true, value: { status: "pending" } };
++          }
++          const awaitingExactTurnLink = receipt?.status === "accepted" &&
++            attempts.length > 0 &&
++            attempts.every((attempt, index) => {
++              const entry = entries[index];
++              return entry !== undefined &&
++                isP6rAttemptAwaitingNativeTurnLink(root.db, attempt) &&
++                attempt.inputs.length > 0 &&
++                attempt.inputs.every((source) =>
++                  source.sourceKind === "contribution" && source.contributionId !== null,
++                ) &&
++                entry.status === "partial" &&
++                entry.correlation === null &&
++                entry.missing.length === 0 &&
++                entry.contributions.length > 0;
++            });
++          if (awaitingExactTurnLink) {
++            return { ok: true, value: { status: "pending" } };
++          }
+           return { ok: true, value: { status: "known", items: page.value.items, missing: [], nextCursor: page.value.nextCursor, traversal: page.value.nextCursor === null ? "complete" : "continued" } };
+         },
+         directorySources: () => root.providerRegistry.directorySources(),
+diff --git a/apps/server/src/services/p6r/sidecar-store.ts b/apps/server/src/services/p6r/sidecar-store.ts
+index d2e7bd0d293d4621d04b0401ac250fdf48b55f17..6941d51ddbbd617e29d1d2de3dcf40ad7738825a 100644
+--- a/apps/server/src/services/p6r/sidecar-store.ts
++++ b/apps/server/src/services/p6r/sidecar-store.ts
+@@ -313,6 +313,23 @@ function nativeTurnIdForAttempt(
+   return typeof turnId === "string" ? turnId : null;
+ }
+ 
++export function isP6rAttemptAwaitingNativeTurnLink(
++  db: DbQueryConnection,
++  attempt: P6rStoredAttempt,
++): boolean {
++  if (attempt.nativeRequestId === null || attempt.nativeTurnId !== null) {
++    return false;
++  }
++  const matches = db.select({ turnId: events.turnId }).from(events).where(and(
++    eq(events.threadId, attempt.threadId),
++    eq(events.type, "turn/input/accepted"),
++    eq(events.scopeKind, "turn"),
++    isNotNull(events.turnId),
++    sql`json_extract(${events.data}, '$.clientRequestId') = ${attempt.nativeRequestId}`,
++  )).limit(1).all();
++  return matches.length === 0;
++}
++
+ export function linkP6rNativeTurnForRequest(
+   db: DbQueryConnection,
+   input: { readonly nativeRequestId: string; readonly threadId: string; readonly turnId: string },
+diff --git a/apps/server/test/services/p6r/identity-protocol.test.ts b/apps/server/test/services/p6r/identity-protocol.test.ts
+index c612957a3a001cc8a4b27359c0f103d8ae3989ae..487fce28f9aba8dd450b977821b0050cfbd7dab4 100644
+--- a/apps/server/test/services/p6r/identity-protocol.test.ts
++++ b/apps/server/test/services/p6r/identity-protocol.test.ts
+@@ -6,10 +6,23 @@ import {
+ } from "../../../src/services/p6r/identity-protocol.js";
+ import { createP6rInvocationRegistry } from "../../../src/services/p6r/invocation-registry.js";
+ import { createP6rProviderRegistry } from "../../../src/services/p6r/provider-registry.js";
+-import { createConnection, migrate } from "@bb/db";
+-import type { JsonValue } from "@bb/domain";
++import {
++  appendDaemonEventsInTransaction,
++  createConnection,
++  createProject,
++  createThread,
++  migrate,
++  noopNotifier,
++  upsertHost,
++} from "@bb/db";
++import { turnScope, type JsonValue } from "@bb/domain";
+ import { migrateP6rSidecars } from "../../../src/services/p6r/sidecar-migrate.js";
+-import { acceptP6rOperationInTransaction } from "../../../src/services/p6r/sidecar-store.js";
++import {
++  acceptP6rOperationInTransaction,
++  linkP6rNativeTurnForRequest,
++  rejectP6rQueuedOperationInTransaction,
++  reserveP6rQueuedOperationInTransaction,
++} from "../../../src/services/p6r/sidecar-store.js";
+ import { getServerP6rToolCorrelationRegistry } from "../../../src/services/p6r/tool-correlation-registry.js";
+ 
+ function readySession(stamp = "stamp") {
+@@ -41,6 +54,47 @@ function readySession(stamp = "stamp") {
+   };
+ }
+ 
++function historyExtension(db: ReturnType<typeof createConnection>) {
++  const service = createP6rIdentityService({
++    db,
++    instanceId: "instance-proof",
++    invocationRegistry: createP6rInvocationRegistry({ now: () => 100 }),
++    providerConfiguration: () => null,
++    providerRegistry: createP6rProviderRegistry({ now: () => 100 }),
++    native: {},
++    now: () => 100,
++    bindInvocation: () => ({
++      handler: () => { throw new Error("test handler is not dispatched"); },
++      registration: { dispose: () => undefined, generation: "unused", status: "staged" },
++    }),
++    activateBindings: () => undefined,
++    retireBindings: () => undefined,
++    trustedInvocation: async () => null,
++  });
++  const extension = service.forPluginGeneration("plugin", "generation", new AbortController().signal);
++  extension.activate();
++  return extension;
++}
++
++function historyThread(db: ReturnType<typeof createConnection>): string {
++  const host = upsertHost(db, noopNotifier, {
++    id: "history-host",
++    name: "History host",
++    type: "persistent",
++  });
++  const { project } = createProject(db, noopNotifier, {
++    name: "History project",
++    source: { hostId: host.id, path: "/history", type: "local_path" },
++  });
++  return createThread(db, noopNotifier, {
++    projectId: project.id,
++    providerId: "provider",
++    status: "idle",
++    title: "History thread",
++    titleFallback: "History thread",
++  }).id;
++}
++
+ describe("P6r identity protocol", () => {
+   it("stages, activates, and retires only its exact generation", async () => {
+     const registry = createP6rInvocationRegistry({ now: () => 100 });
+@@ -537,6 +591,216 @@ describe("P6r retained history", () => {
+     });
+   });
+ 
++  it("keeps only intact accepted attempts pending until their exact native turn is linked", async () => {
++    const db = createConnection(":memory:");
++    migrate(db);
++    migrateP6rSidecars(db);
++    const threadId = historyThread(db);
++    const extension = historyExtension(db);
++    const namespace = "14:instance-proof6:plugin";
++    const author: JsonValue = {
++      evidence: "integration-asserted",
++      identity: {
++        key: "history-external",
++        kind: "external",
++        pluginId: "plugin",
++        subject: "history-external",
++      },
++      presentation: { avatarUrl: null, displayName: "History external", handle: null },
++    };
++    const accept = (input: {
++      readonly attemptContributionId?: string;
++      readonly includeAttempt?: boolean;
++      readonly nativeRequestId?: string;
++      readonly operationId: string;
++      readonly sourceKind?: "contribution" | "generated" | "interaction";
++    }) => {
++      const contributionId = `contribution-${input.operationId}`;
++      db.transaction((tx) => acceptP6rOperationInTransaction(tx, {
++        assertLive: () => ({ ok: true }),
++        ...(input.includeAttempt === false ? {} : {
++          attempt: {
++            createdAt: 100,
++            id: `attempt-${input.operationId}`,
++            inputs: [{
++              contributionId: input.attemptContributionId ?? contributionId,
++              groupIndex: 0,
++              snapshot: { text: input.operationId },
++              sourceIndex: 0,
++              sourceKind: input.sourceKind ?? "contribution",
++            }],
++            ...(input.nativeRequestId === undefined ? {} : { nativeRequestId: input.nativeRequestId }),
++            threadId,
++          },
++        }),
++        contribution: {
++          acceptedAt: 100,
++          acceptedAuthorship: author,
++          currentProjection: { text: input.operationId },
++          id: contributionId,
++          initialInput: { text: input.operationId },
++          latestEditor: author,
++          ...(input.nativeRequestId === undefined ? {} : { nativeRequestId: input.nativeRequestId }),
++          threadId,
++        },
++        operationId: input.operationId,
++        operationNamespace: namespace,
++        payloadHash: `hash-${input.operationId}`,
++        receipt: {
++          acceptedAt: 100,
++          ...(input.nativeRequestId === undefined ? {} : { nativeRequestId: input.nativeRequestId }),
++          retentionDeadline: 1_000,
++          threadId,
++        },
++      }));
++    };
++    const read = (operationId: string) => extension.protocol.historyAttempts({
++      kind: "operation" as const,
++      limit: 10,
++      operationId,
++    });
++
++    accept({ nativeRequestId: "request-awaiting", operationId: "awaiting" });
++    await expect(read("awaiting")).resolves.toMatchObject({
++      ok: true,
++      value: { status: "pending" },
++    });
++    db.transaction((tx) => appendDaemonEventsInTransaction(tx, [
++      {
++        data: "{}",
++        environmentId: null,
++        itemId: null,
++        itemKind: null,
++        parentToolCallId: null,
++        providerThreadId: "history-provider",
++        scope: turnScope("history-turn"),
++        threadId,
++        type: "turn/started",
++      },
++      {
++        data: JSON.stringify({ clientRequestId: "request-awaiting" }),
++        environmentId: null,
++        itemId: null,
++        itemKind: null,
++        parentToolCallId: null,
++        providerThreadId: "history-provider",
++        scope: turnScope("history-turn"),
++        threadId,
++        type: "turn/input/accepted",
++      },
++    ]));
++    expect(linkP6rNativeTurnForRequest(db, {
++      nativeRequestId: "request-awaiting",
++      threadId,
++      turnId: "history-turn",
++    })).toBe(true);
++    await expect(read("awaiting")).resolves.toMatchObject({
++      ok: true,
++      value: {
++        items: [{ correlation: { threadId, turnId: "history-turn" }, status: "known" }],
++        status: "known",
++      },
++    });
++
++    db.transaction((tx) => reserveP6rQueuedOperationInTransaction(tx, {
++      acceptedAt: 100,
++      acceptedAuthorship: author,
++      assertLive: () => ({ ok: true }),
++      contributionId: "contribution-pending",
++      input: [{ text: "pending", type: "text" }],
++      operationId: "pending",
++      operationNamespace: namespace,
++      payloadHash: "hash-pending",
++      queuedMessageId: "queued-pending",
++      retentionDeadline: 1_000,
++      threadId,
++    }));
++    await expect(read("pending")).resolves.toMatchObject({
++      ok: true,
++      value: { status: "pending" },
++    });
++    db.transaction((tx) => expect(rejectP6rQueuedOperationInTransaction(
++      tx,
++      "queued-pending",
++    )).toBe(true));
++    await expect(read("pending")).resolves.toMatchObject({
++      ok: true,
++      value: { items: [], status: "known" },
++    });
++
++    accept({ includeAttempt: false, operationId: "empty" });
++    accept({ operationId: "missing-request" });
++    accept({
++      attemptContributionId: "missing-contribution",
++      nativeRequestId: "request-missing-contribution",
++      operationId: "missing-contribution",
++    });
++    accept({
++      nativeRequestId: "request-generated",
++      operationId: "generated",
++      sourceKind: "generated",
++    });
++    accept({ nativeRequestId: "request-ambiguous", operationId: "ambiguous" });
++    db.transaction((tx) => appendDaemonEventsInTransaction(tx, [
++      {
++        data: "{}",
++        environmentId: null,
++        itemId: null,
++        itemKind: null,
++        parentToolCallId: null,
++        providerThreadId: "history-provider",
++        scope: turnScope("ambiguous-one"),
++        threadId,
++        type: "turn/started",
++      },
++      {
++        data: JSON.stringify({ clientRequestId: "request-ambiguous" }),
++        environmentId: null,
++        itemId: null,
++        itemKind: null,
++        parentToolCallId: null,
++        providerThreadId: "history-provider",
++        scope: turnScope("ambiguous-one"),
++        threadId,
++        type: "turn/input/accepted",
++      },
++      {
++        data: "{}",
++        environmentId: null,
++        itemId: null,
++        itemKind: null,
++        parentToolCallId: null,
++        providerThreadId: "history-provider",
++        scope: turnScope("ambiguous-two"),
++        threadId,
++        type: "turn/started",
++      },
++      {
++        data: JSON.stringify({ clientRequestId: "request-ambiguous" }),
++        environmentId: null,
++        itemId: null,
++        itemKind: null,
++        parentToolCallId: null,
++        providerThreadId: "history-provider",
++        scope: turnScope("ambiguous-two"),
++        threadId,
++        type: "turn/input/accepted",
++      },
++    ]));
++    for (const operationId of [
++      "empty",
++      "missing-request",
++      "missing-contribution",
++      "generated",
++      "ambiguous",
++    ]) {
++      const result = await read(operationId);
++      expect(result).toMatchObject({ ok: true });
++      if (!result.ok) throw new Error("expected history result");
++      expect(result.value.status).not.toBe("pending");
++    }
++  });
++
+   it("pages visible retained contributions and projects external authors with editors", async () => {
+     const db = createConnection(":memory:");
+     migrate(db);
+-- 
+2.53.0
+

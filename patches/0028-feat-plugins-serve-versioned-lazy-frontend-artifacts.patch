@@ -1,12 +1,14 @@
-From 0fd8fb67c558570f2accc4c915d747e1057ba2c8 Mon Sep 17 00:00:00 2001
+From 516c00799c1b7a050e18fabc9db921ae90e090a2 Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Tue, 22 Sep 2026 15:29:53 +0200
 Subject: [PATCH] feat(plugins): serve versioned lazy frontend artifacts
 
 ---
  apps/cli/src/__tests__/plugin-build.test.ts   | 155 +++++++++++++----
- apps/server/src/routes/plugins.ts             |  74 +++-----
+ apps/demo-server/scripts/build-assets.ts      |  27 ++-
+ apps/server/src/routes/plugins.ts             |  66 +++-----
  .../server/src/services/plugins/app-bundle.ts | 160 +++++++++++++++---
+ .../src/services/plugins/plugin-runtime.ts    |  17 ++
  .../src/services/plugins/plugin-service.ts    |  41 ++---
  .../services/plugins/builtin-plugins.test.ts  |  31 ++--
  .../plugins/plugin-app-bundle.test.ts         | 100 ++++++++---
@@ -14,10 +16,10 @@ Subject: [PATCH] feat(plugins): serve versioned lazy frontend artifacts
  .../plugin-build/src/build-plugin-app.test.ts |  57 +++++++
  packages/plugin-build/src/build-plugin-app.ts |  98 +++++++++--
  .../plugin-build/src/plugin-artifact-meta.ts  |  18 +-
- 10 files changed, 551 insertions(+), 189 deletions(-)
+ 12 files changed, 593 insertions(+), 183 deletions(-)
 
 diff --git a/apps/cli/src/__tests__/plugin-build.test.ts b/apps/cli/src/__tests__/plugin-build.test.ts
-index f2795af428d3d37da619375948cf4594c8cefdcb..527fb75231d4523dbd3cbe586e837aacd7316e17 100644
+index 03f44c5d93267b26edba78929703dee93e6ebc54..ae054bcae9a94e27d206093987f9195d932a8e1c 100644
 --- a/apps/cli/src/__tests__/plugin-build.test.ts
 +++ b/apps/cli/src/__tests__/plugin-build.test.ts
 @@ -8,9 +8,10 @@ import {
@@ -126,8 +128,8 @@ index f2795af428d3d37da619375948cf4594c8cefdcb..527fb75231d4523dbd3cbe586e837aac
 +    }
    });
  
-   it("preserves authored CSS unscoped for editor decorations", async () => {
-@@ -284,6 +340,27 @@ describe("buildPluginApp", () => {
+   it("throws at import time without the BB runtime and loads once slots are set", async () => {
+@@ -254,6 +310,27 @@ describe("buildPluginApp", () => {
      const originalJs = await readFile(first.jsPath, "utf8");
      const originalCss = await readFile(first.cssPath, "utf8");
      const originalMeta = await readFile(first.metaPath, "utf8");
@@ -155,7 +157,7 @@ index f2795af428d3d37da619375948cf4594c8cefdcb..527fb75231d4523dbd3cbe586e837aac
  
      await writeFile(
        join(root, "app.tsx"),
-@@ -300,11 +377,18 @@ describe("buildPluginApp", () => {
+@@ -270,11 +347,18 @@ describe("buildPluginApp", () => {
      expect(await readFile(first.jsPath, "utf8")).toBe(originalJs);
      expect(await readFile(first.cssPath, "utf8")).toBe(originalCss);
      expect(await readFile(first.metaPath, "utf8")).toBe(originalMeta);
@@ -176,7 +178,7 @@ index f2795af428d3d37da619375948cf4594c8cefdcb..527fb75231d4523dbd3cbe586e837aac
    });
  
    it("errors clearly when the plugin has no bb.app entry", async () => {
-@@ -355,7 +439,18 @@ describe("buildPluginApp", () => {
+@@ -325,7 +409,18 @@ describe("buildPluginApp", () => {
        TEST_BB_VERSION,
        await testToolchain(),
      );
@@ -196,7 +198,7 @@ index f2795af428d3d37da619375948cf4594c8cefdcb..527fb75231d4523dbd3cbe586e837aac
    });
  
    it("builds the `bb plugin new` scaffold end to end", async () => {
-@@ -374,38 +469,28 @@ describe("buildPluginApp", () => {
+@@ -342,38 +437,28 @@ describe("buildPluginApp", () => {
      const result = await buildPluginApp(
        targetDir,
        TEST_BB_VERSION,
@@ -209,9 +211,9 @@ index f2795af428d3d37da619375948cf4594c8cefdcb..527fb75231d4523dbd3cbe586e837aac
      expect(css).toContain(".rounded-md");
 -
 -    (globalThis as { __bbPluginRuntime?: unknown }).__bbPluginRuntime = {
--      react: createRequire(new URL("../../../app/package.json", import.meta.url))(
--        "react",
--      ),
+-      react: createRequire(
+-        new URL("../../../app/package.json", import.meta.url),
+-      )("react"),
 -      reactDom: {},
 -      jsxRuntime: { jsx: () => ({}), jsxs: () => ({}), Fragment: {} },
 -      classVarianceAuthority: { cva: () => () => "" },
@@ -251,39 +253,63 @@ index f2795af428d3d37da619375948cf4594c8cefdcb..527fb75231d4523dbd3cbe586e837aac
      }
    });
  });
+diff --git a/apps/demo-server/scripts/build-assets.ts b/apps/demo-server/scripts/build-assets.ts
+index 5a94c658a818e2b3a849c7a1975e6b1aef6fb3ad..53ee4b3ac9202acc8a728dd5764bba27bbbd3a5e 100644
+--- a/apps/demo-server/scripts/build-assets.ts
++++ b/apps/demo-server/scripts/build-assets.ts
+@@ -31,6 +31,13 @@ const plugins: InstalledPlugin[] = [];
+ const artifactMetaSchema = z.object({
+   sdkMajor: z.number().int(),
+   sdkVersion: z.string(),
++  artifactFormatVersion: z.number().int().optional(),
++  appArtifact: z
++    .object({
++      generation: z.string().regex(/^[a-f0-9]{32}$/u),
++      files: z.array(z.object({ path: z.string() })),
++    })
++    .optional(),
+ });
+ for (const id of ["navigation", "thread-list"]) {
+   const source = new URL(
+@@ -45,8 +52,24 @@ for (const id of ["navigation", "thread-list"]) {
+   );
+   const assetDir = new URL(`demo-plugins/${id}/`, destination);
+   await mkdir(assetDir, { recursive: true });
+-  const js = await readFile(new URL("dist/app.js", source));
+-  const css = await readFile(new URL("dist/app.css", source));
++  // Versioned artifacts publish under dist/.bb-artifacts/<generation>/. The
++  // demo serves one static app.js and app.css per plugin, so a generation
++  // with lazy chunks cannot be represented here.
++  const artifactDir =
++    meta.artifactFormatVersion === 2 && meta.appArtifact !== undefined
++      ? `dist/.bb-artifacts/${meta.appArtifact.generation}/`
++      : "dist/";
++  const chunks =
++    meta.appArtifact?.files.filter(
++      (file) => file.path !== "app.js" && file.path !== "app.css",
++    ) ?? [];
++  if (chunks.length > 0) {
++    throw new Error(
++      `${id} emits lazy chunks the static demo cannot serve: ${chunks.map((file) => file.path).join(", ")}`,
++    );
++  }
++  const js = await readFile(new URL(`${artifactDir}app.js`, source));
++  const css = await readFile(new URL(`${artifactDir}app.css`, source));
+   const hash = createHash("sha256")
+     .update(js)
+     .update(css)
 diff --git a/apps/server/src/routes/plugins.ts b/apps/server/src/routes/plugins.ts
-index 3512ce0265d789510346871c42f373b57c70ec7e..b3d651fc657e499153d6e4b607b64b55fe235059 100644
+index d7588fe10c6c26a8063772e9da0473c307ba4dde..995a037381e57890a08854c54413b205742ff4c6 100644
 --- a/apps/server/src/routes/plugins.ts
 +++ b/apps/server/src/routes/plugins.ts
-@@ -1,5 +1,4 @@
+@@ -1,6 +1,5 @@
+ import type { PluginUpdateJobs } from "../services/plugins/plugin-update-jobs.js";
  import { randomUUID, timingSafeEqual } from "node:crypto";
 -import { readFile } from "node:fs/promises";
  import { promisify } from "node:util";
  import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
  import type { Context, Hono } from "hono";
-@@ -36,7 +35,6 @@ import {
- } from "./plugin-image-response.js";
- import {
-   pluginApplyUpdateRequestSchema,
--  pluginRpcDiscoveryQuerySchema,
-   pluginInstallRequestSchema,
-   pluginSafeModeRequestSchema,
-   pluginSettingsUpdateRequestSchema,
-@@ -440,13 +438,6 @@ export function registerPluginRoutes(
-     });
-   });
- 
--  app.get("/plugins/rpc", (context) => {
--    const query = pluginRpcDiscoveryQuerySchema.safeParse(context.req.query());
--    if (!query.success)
--      return context.json({ error: "Invalid RPC discovery query" }, 400);
--    return context.json(plugins.discoverRpc(query.data));
--  });
--
-   app.get("/plugins", (context) => context.json({ plugins: plugins.list() }));
- 
-   app.get("/plugins/contributions", (context) =>
-@@ -528,37 +519,29 @@ export function registerPluginRoutes(
+@@ -538,37 +537,29 @@ export function registerPluginRoutes(
      "app.css": { kind: "css", contentType: "text/css; charset=utf-8" },
    } as const;
  
@@ -319,7 +345,9 @@ index 3512ce0265d789510346871c42f373b57c70ec7e..b3d651fc657e499153d6e4b607b64b55
      } catch {
 -      return context.json({ ok: false, error: "bundle file missing" }, 404);
 +      return context.json({ ok: false, error: "plugin artifact path is invalid" }, 410);
-+    }
+     }
+-    return appAssetResponse(context, bytes, {
+-      assetKey: `${hash}:${spec.kind}`,
 +    const asset = plugins.getAppAsset(
 +      context.req.param("id"),
 +      file,
@@ -327,9 +355,7 @@ index 3512ce0265d789510346871c42f373b57c70ec7e..b3d651fc657e499153d6e4b607b64b55
 +    );
 +    if (!asset) {
 +      return context.json({ ok: false, error: "plugin artifact generation expired or asset is not declared" }, 410);
-     }
--    return appAssetResponse(context, bytes, {
--      assetKey: `${hash}:${spec.kind}`,
++    }
 +    return appAssetResponse(context, asset.bytes, {
 +      assetKey: `${context.req.param("id")}:${generation}:${file}`,
        cache: appAssetCompressionCache,
@@ -340,7 +366,7 @@ index 3512ce0265d789510346871c42f373b57c70ec7e..b3d651fc657e499153d6e4b607b64b55
        contentHash: asset.hash,
      });
    });
-@@ -596,34 +579,25 @@ export function registerPluginRoutes(
+@@ -606,34 +597,25 @@ export function registerPluginRoutes(
          hashedAssetCacheControl(context.req.query("h"), asset.hash),
        );
      }
@@ -660,11 +686,53 @@ index 81db348df8c313ec7fd38d5507b8ecebb980b8d8..87706e87b735253d3bf9f56335bb5275
 +    },
    };
  }
+diff --git a/apps/server/src/services/plugins/plugin-runtime.ts b/apps/server/src/services/plugins/plugin-runtime.ts
+index 0e2cfbf5541ca3078a2ab06cb8b1ae06fd816c99..a3faacbdaa5c9b08b3b82728e39e08b72acfded5 100644
+--- a/apps/server/src/services/plugins/plugin-runtime.ts
++++ b/apps/server/src/services/plugins/plugin-runtime.ts
+@@ -424,6 +424,10 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+   >();
+   const stabilizingPluginIds = new Set<string>();
+   const appBundles = new Map<string, PluginAppBundleSnapshot>();
++  const appArtifactGenerations = new Map<
++    string,
++    Map<string, NonNullable<PluginAppBundleSnapshot["assets"]>>
++  >();
+   const hostArtifacts =
+     deps.pluginHostArtifacts ?? new PluginHostArtifactRegistry();
+   const brandingAssets = new Map<string, PluginBrandingAssetSet>();
+@@ -1931,6 +1935,18 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+     disposeUnavailableProviderRegistrations(row.id);
+     loaded.set(row.id, plugin);
+     appBundles.set(row.id, appBundleCandidate.snapshot);
++    const currentAssets = appBundleCandidate.snapshot.assets;
++    if (
++      currentAssets?.generation !== null &&
++      currentAssets?.generation !== undefined
++    ) {
++      const generations = appArtifactGenerations.get(row.id) ?? new Map();
++      generations.delete(currentAssets.generation);
++      generations.set(currentAssets.generation, currentAssets);
++      while (generations.size > 3)
++        generations.delete(generations.keys().next().value!);
++      appArtifactGenerations.set(row.id, generations);
++    }
+     if (hostArtifactCandidate === null) hostArtifacts.delete(row.id);
+     else hostArtifacts.set(row.id, hostArtifactCandidate);
+     brandingAssets.set(row.id, brandingAssetCandidate);
+@@ -2125,6 +2141,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+     REGISTRATION_MUTATION_KEY,
+     agentToolProblems,
+     appBundles,
++    appArtifactGenerations,
+     hostArtifacts,
+     bindSdk,
+     resolveRpcCaller: rpcCallers.resolve,
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index 34595534a5057a7188426fa88cc00aa22fdf2119..72a7b6037ad2c0ef756c29043faa19c2ca51cc8c 100644
+index 1f3093c4f54115ac32d14656ed91a1dd3f3ff0ff..4a34f08506cbe310ea2375af8e109edf6f4bfb40 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
-@@ -308,20 +308,12 @@ export interface PluginService {
+@@ -325,20 +325,12 @@ export interface PluginService {
     * and its waits clear.
     */
    isPluginExpectedToRun(id: string): boolean;
@@ -689,15 +757,15 @@ index 34595534a5057a7188426fa88cc00aa22fdf2119..72a7b6037ad2c0ef756c29043faa19c2
    getBrandingAsset(
      id: string,
      variant: PluginBrandingAssetVariant,
-@@ -651,6 +643,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -676,6 +668,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
      REGISTRATION_MUTATION_KEY,
      agentToolProblems,
      appBundles,
 +    appArtifactGenerations,
      bindSdk: bindRuntimeSdk,
+     resolveRpcCaller,
      buildThreadDto,
-     builtinSourceWatchers,
-@@ -1759,23 +1752,17 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1861,23 +1854,17 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
        return row !== undefined && getStatus(row).status === "starting";
      },
  
@@ -731,7 +799,7 @@ index 34595534a5057a7188426fa88cc00aa22fdf2119..72a7b6037ad2c0ef756c29043faa19c2
  
      getBrandingAsset(id, variant) {
 diff --git a/apps/server/test/services/plugins/builtin-plugins.test.ts b/apps/server/test/services/plugins/builtin-plugins.test.ts
-index 305a619adc83f672ce68e77c1b5f9bf49735f702..db693e33e42047194b6a2047516928a75ac671ba 100644
+index 4835285eafb4b41028d82c51a5e435e5d583635a..f3af296f249f58e4f85c25688634731bbec45c62 100644
 --- a/apps/server/test/services/plugins/builtin-plugins.test.ts
 +++ b/apps/server/test/services/plugins/builtin-plugins.test.ts
 @@ -67,6 +67,17 @@ function packagedLoadCount(): number {
@@ -752,7 +820,7 @@ index 305a619adc83f672ce68e77c1b5f9bf49735f702..db693e33e42047194b6a2047516928a7
  async function writePackagedBuiltinSource(
    workDir: string,
    names: readonly string[],
-@@ -815,18 +826,13 @@ describe("builtin plugin reconciliation", () => {
+@@ -838,18 +849,13 @@ describe("builtin plugin reconciliation", () => {
      await service.start();
      const beforeHash = service.list()[0]?.app.bundle?.hash;
      expect(beforeHash).toBeTruthy();
@@ -774,7 +842,7 @@ index 305a619adc83f672ce68e77c1b5f9bf49735f702..db693e33e42047194b6a2047516928a7
      service = createService({
        db,
        dataDir: join(workDir, "data"),
-@@ -837,9 +843,10 @@ describe("builtin plugin reconciliation", () => {
+@@ -860,9 +866,10 @@ describe("builtin plugin reconciliation", () => {
      await service.start();
  
      expect(service.list()[0]?.app.bundle?.hash).not.toBe(beforeHash);
@@ -788,7 +856,7 @@ index 305a619adc83f672ce68e77c1b5f9bf49735f702..db693e33e42047194b6a2047516928a7
    }, 30_000);
  
    it("surfaces builtin app build failures in status until the next successful build", async () => {
-@@ -913,7 +920,7 @@ describe("builtin plugin reconciliation", () => {
+@@ -936,7 +943,7 @@ describe("builtin plugin reconciliation", () => {
      expect(after?.statusDetail).toBeNull();
      expect(after?.app.bundle?.hash).not.toBe(before?.hash);
      await expect(
@@ -798,7 +866,7 @@ index 305a619adc83f672ce68e77c1b5f9bf49735f702..db693e33e42047194b6a2047516928a7
    }, 90_000);
  
 diff --git a/apps/server/test/services/plugins/plugin-app-bundle.test.ts b/apps/server/test/services/plugins/plugin-app-bundle.test.ts
-index 32b7b29dbae5d4899a75ece192b8ff4ad366355c..3e281187cf8443167ff4f76171d83ac2659c7b8f 100644
+index 2315e221ceb672ae85a029cdde3692899ae09a93..2c48ea477fed5512108555fa7e6904fe9bc98246 100644
 --- a/apps/server/test/services/plugins/plugin-app-bundle.test.ts
 +++ b/apps/server/test/services/plugins/plugin-app-bundle.test.ts
 @@ -1,7 +1,7 @@
@@ -903,7 +971,7 @@ index 32b7b29dbae5d4899a75ece192b8ff4ad366355c..3e281187cf8443167ff4f76171d83ac2
      expect(bundled).not.toContain("backend-contract-must-not-bundle");
      expect(bundled).not.toContain("defineRpcContract");
      expect(bundled).toContain("typed rpc");
-@@ -399,7 +408,7 @@ describe("plugin app bundles (build policy, inventory, asset routes)", () => {
+@@ -401,7 +410,7 @@ describe("plugin app bundles (build policy, inventory, asset routes)", () => {
      expect(after).not.toBeNull();
      expect(after?.hash).not.toBe(before?.hash);
      expect(after?.jsUrl).toBe(
@@ -912,7 +980,7 @@ index 32b7b29dbae5d4899a75ece192b8ff4ad366355c..3e281187cf8443167ff4f76171d83ac2
      );
      const js = await harness.app.request(`${BASE}${after?.jsUrl ?? ""}`);
      expect(js.status).toBe(200);
-@@ -502,6 +511,49 @@ describe("plugin app bundles (build policy, inventory, asset routes)", () => {
+@@ -506,6 +515,49 @@ describe("plugin app bundles (build policy, inventory, asset routes)", () => {
        { sdkMajor: 0.5, sdkVersion: "0.5.0" },
        { sdkMajor: PLUGIN_SDK_MAJOR, sdkVersion: "banana" },
        { sdkMajor: PLUGIN_SDK_MAJOR, sdkVersion: `${PLUGIN_SDK_MAJOR + 1}.0.0` },
@@ -963,10 +1031,10 @@ index 32b7b29dbae5d4899a75ece192b8ff4ad366355c..3e281187cf8443167ff4f76171d83ac2
      for (const badMeta of badMetas) {
        await writeFile(
 diff --git a/apps/server/test/services/plugins/plugin-install.test.ts b/apps/server/test/services/plugins/plugin-install.test.ts
-index 954c2c9d7e50b1e96e74ffb3aca939ad8f9a355b..d71a0b9e4009da7fe905012beb506a5a1865f5ee 100644
+index 4e9e7264258cfaa0c64e59b3cfa139f852d04527..e11d60131fefb7da8e746018680202bb9f75a0a0 100644
 --- a/apps/server/test/services/plugins/plugin-install.test.ts
 +++ b/apps/server/test/services/plugins/plugin-install.test.ts
-@@ -1577,13 +1577,15 @@ describe("plugin install flows", () => {
+@@ -1569,13 +1569,15 @@ describe("plugin install flows", () => {
          validatePluginArtifactMeta({
            artifact: "server",
            raw: artifactMeta({
@@ -982,10 +1050,10 @@ index 954c2c9d7e50b1e96e74ffb3aca939ad8f9a355b..d71a0b9e4009da7fe905012beb506a5a
 +        /unknown artifactFormatVersion 3.*supported values are 1 and 2/,
 +      );
      });
+   });
  
-     it("accepts metadata that matches the manifest and this SDK", () => {
 diff --git a/packages/plugin-build/src/build-plugin-app.test.ts b/packages/plugin-build/src/build-plugin-app.test.ts
-index 1137519350a17ab034fe45c7fa08abd34a536eb6..036c4fa13c40c770b2be9d7880812a1ce202c9f0 100644
+index 6a92e438dbbbcde3f3c012d12f844fb36d9e9da6..0ef1aec7098f6032e9781ae91e1f0d4dc81a93da 100644
 --- a/packages/plugin-build/src/build-plugin-app.test.ts
 +++ b/packages/plugin-build/src/build-plugin-app.test.ts
 @@ -1,6 +1,7 @@
@@ -996,7 +1064,7 @@ index 1137519350a17ab034fe45c7fa08abd34a536eb6..036c4fa13c40c770b2be9d7880812a1c
    readFile,
    rm,
    symlink,
-@@ -460,6 +461,62 @@ describe("plugin app runtime shim", () => {
+@@ -471,6 +472,62 @@ describe("plugin app runtime shim", () => {
      expect(css).not.toContain("--color-background:");
    });
  
@@ -1057,10 +1125,10 @@ index 1137519350a17ab034fe45c7fa08abd34a536eb6..036c4fa13c40c770b2be9d7880812a1c
 +  });
 +
    it.each([
-     ["non-SVG XML", "<html/>", /<svg> root element/],
-     ["malformed XML", "<svg><path></svg>", /not valid SVG XML/],
+     [
+       "entity declarations",
 diff --git a/packages/plugin-build/src/build-plugin-app.ts b/packages/plugin-build/src/build-plugin-app.ts
-index fde8000b4e96469b13492c25f97afa73a8bd9afd..0216979b4eda65bf80dddb332d0430d622c8c8ab 100644
+index 042a426d934f83350d2a071832df4bb4989d5475..1c169d098eb29d6dfdd69a783e16cf5a23911762 100644
 --- a/packages/plugin-build/src/build-plugin-app.ts
 +++ b/packages/plugin-build/src/build-plugin-app.ts
 @@ -1,6 +1,10 @@
@@ -1073,8 +1141,8 @@ index fde8000b4e96469b13492c25f97afa73a8bd9afd..0216979b4eda65bf80dddb332d0430d6
 +  readdir,
    readFile,
    realpath,
-   rename,
-@@ -402,6 +406,55 @@ interface PluginAppBuildOptions {
+   rm,
+@@ -407,6 +411,55 @@ interface PluginAppBuildOptions {
    minify: boolean;
  }
  
@@ -1130,7 +1198,7 @@ index fde8000b4e96469b13492c25f97afa73a8bd9afd..0216979b4eda65bf80dddb332d0430d6
  export async function buildPluginApp(
    rootDir: string,
    bbVersion: string,
-@@ -414,26 +467,29 @@ export async function buildPluginApp(
+@@ -419,26 +472,29 @@ export async function buildPluginApp(
    const dependencySources = await readDependencyTailwindSources(rootDir);
    const distDir = join(rootDir, "dist");
    await mkdir(distDir, { recursive: true });
@@ -1165,7 +1233,7 @@ index fde8000b4e96469b13492c25f97afa73a8bd9afd..0216979b4eda65bf80dddb332d0430d6
        platform: "browser",
        target: "es2022",
        minify: options.minify,
-@@ -456,11 +512,6 @@ export async function buildPluginApp(
+@@ -461,11 +517,6 @@ export async function buildPluginApp(
      }
      let bundledInputs: ReadonlySet<string> = new Set();
      if (dependencySources.length > 0) {
@@ -1177,7 +1245,7 @@ index fde8000b4e96469b13492c25f97afa73a8bd9afd..0216979b4eda65bf80dddb332d0430d6
        bundledInputs = await bundledInputPaths(bundle.metafile, rootDir);
      }
      const tailwindCss = (
-@@ -479,20 +530,35 @@ export async function buildPluginApp(
+@@ -484,20 +535,35 @@ export async function buildPluginApp(
        minify: options.minify,
      }).code;
      await writeFile(stagedCssPath, css);
@@ -1200,13 +1268,13 @@ index fde8000b4e96469b13492c25f97afa73a8bd9afd..0216979b4eda65bf80dddb332d0430d6
        ) + "\n",
      );
 -
--    await rename(stagedJsPath, jsPath);
--    await rename(stagedCssPath, cssPath);
--    await rename(stagedMetaPath, metaPath);
+-    await renameIntoPlace(stagedJsPath, jsPath);
+-    await renameIntoPlace(stagedCssPath, cssPath);
+-    await renameIntoPlace(stagedMetaPath, metaPath);
 +    const generationsDir = join(distDir, ".bb-artifacts");
 +    const generationDir = join(generationsDir, generation);
 +    await mkdir(generationsDir, { recursive: true });
-+    await rename(stageDir, generationDir);
++    await renameIntoPlace(stageDir, generationDir);
 +    await pruneAppArtifactGenerations(generationsDir, generation);
 +    await cp(join(generationDir, "app.meta.json"), metaPath);
 +    return {

@@ -1,4 +1,4 @@
-From ffcdabcda1e80c33a0b4fb6cb37796206a9f4b46 Mon Sep 17 00:00:00 2001
+From 67e19ea402cc0637e7d7e069d6332a9707cd927e Mon Sep 17 00:00:00 2001
 From: bb-fork <bb-fork@invalid.local>
 Date: Fri, 25 Sep 2026 16:31:01 +0200
 Subject: [PATCH] fix(server): bind ingress before detached recovery
@@ -10,7 +10,7 @@ Subject: [PATCH] fix(server): bind ingress before detached recovery
  3 files changed, 269 insertions(+), 51 deletions(-)
 
 diff --git a/apps/server/src/start-server.ts b/apps/server/src/start-server.ts
-index 18a88a14b40a55f7f509aa9c1f219d249062a4b6..fdc45dd3089b5b4b08ba43cc230f692f2bbbb3c6 100644
+index 847d3a97023d5684090f53481a95487a569af0aa..e97f24781d702b5cafbf1167ab3bb083bbee7777 100644
 --- a/apps/server/src/start-server.ts
 +++ b/apps/server/src/start-server.ts
 @@ -1,4 +1,5 @@
@@ -19,7 +19,7 @@ index 18a88a14b40a55f7f509aa9c1f219d249062a4b6..fdc45dd3089b5b4b08ba43cc230f692f
  import { existsSync } from "node:fs";
  import { dirname, join, resolve } from "node:path";
  import { fileURLToPath } from "node:url";
-@@ -70,6 +71,95 @@ export function startHttpListener(args: StartHttpListenerArgs) {
+@@ -79,6 +80,95 @@ export function startHttpListener(args: StartHttpListenerArgs) {
    });
  }
  
@@ -115,7 +115,7 @@ index 18a88a14b40a55f7f509aa9c1f219d249062a4b6..fdc45dd3089b5b4b08ba43cc230f692f
  export interface StartServerPluginsArgs {
    dataDir: string;
    logger: Pick<ServerLogger, "error" | "warn">;
-@@ -327,35 +417,12 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+@@ -383,35 +473,12 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
      );
    }
  
@@ -153,7 +153,7 @@ index 18a88a14b40a55f7f509aa9c1f219d249062a4b6..fdc45dd3089b5b4b08ba43cc230f692f
    if (tailnetServer !== null) injectWebSocket(tailnetServer);
  
    logger.info(
-@@ -391,8 +458,12 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+@@ -447,8 +514,12 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
      pluginCatalogService.startPeriodicRefresh();
      // Recovery is independent of listener binding. Keep startup responsive
      // while preserving the sweep on every ordinary server start.
@@ -168,7 +168,7 @@ index 18a88a14b40a55f7f509aa9c1f219d249062a4b6..fdc45dd3089b5b4b08ba43cc230f692f
      });
      sweepInterval = setInterval(() => {
        if (!isServerMoveFrozen(db)) {
-@@ -427,26 +498,8 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+@@ -485,26 +556,8 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
            logger.warn({ err: error }, "Plugin shutdown failed");
          });
        }

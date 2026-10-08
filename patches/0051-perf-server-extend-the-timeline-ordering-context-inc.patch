@@ -1,49 +1,51 @@
-From 67a3ccfe525cdde74b4dd41ccef877b78850e876 Mon Sep 17 00:00:00 2001
+From 85fde8ba77ba86f26513b8850e37cafdb3d983a2 Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Wed, 7 Oct 2026 20:30:21 +0200
-Subject: [PATCH 51/51] perf(server): extend the timeline ordering context
+Subject: [PATCH] perf(server): extend the timeline ordering context
  incrementally
 
-getTimelineGroupingContext reuses a cached context only when no
-grouping-relevant rows were appended since the cached maxSeq. On an
-active thread new turns always add such rows. Every miss therefore
-re-ran listTimelineOrderingContext over the whole history from the
-epoch start, which reads five json_extract values per row. On an
-84k-event thread that is ~137 ms (20,922 rows) on every timeline build,
-and the route cache is keyed by maxSeq.
+getTimelineGroupingContext already reuses the ordering context while
+only parented rows change (#4716). When ordering rows arrive (a request,
+acceptance, turn start or completion), it still recomputes from scratch:
+computeTimelineOrderingContext re-reads listTimelineOrderingContext over
+the whole history from the epoch start, five json_extract values per
+row. On a long-lived server an 84k-event thread has 20,922 such rows,
+~137 ms per read. That thread had 636 ordering events in 17 h, so the
+first build after each one blocked for the full read (~37 times an hour).
 
-The newest cache entry per key now retains its ordering-context rows.
-A miss that finds a retained entry below the requested maxSeq, with the
-same rewrite generation and data version, reads only
-(cachedMaxSeq, maxSeq] and folds the concatenated rows. The parented
-boundary query still runs on every fold. The result is exact: the
-rows are sequence ordered, and every path that deletes or rewrites
-events bumps the rewrite generation (suffix delete, thread and
-rate-limit pruning, output migration). Writes from another connection
-change data_version.
+The newest cache entry per key now keeps the ordering-context rows it
+folded. When ordering rows changed and a retained entry with the same
+rewrite generation and data version sits below the requested maxSeq,
+only (cachedMaxSeq, maxSeq] is read. The rows are appended (both are
+sequence ordered) and folded in memory. The fold result is identical:
+every path that deletes or rewrites events bumps the rewrite generation,
+and writes from another connection change data_version. Either one
+still forces the full read. The parented-only reuse path keeps its rows,
+since by construction it has no ordering rows in range.
 
 Retained rows cost ~230 bytes each (4.8 MB for 20,922 rows). They are
-capped at 120,000 across the per-process cache, ~28 MB. The oldest
-keys lose their rows first, and a context over the cap is not retained,
-so it falls back to the full read.
+capped at 120,000 rows (~28 MB) across the per-process cache; the oldest
+keys lose their rows first. A context over the cap is not retained, so
+a very long thread falls back to the full read.
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 ---
- .../threads/timeline-context-order.ts         |  51 +++++-
+ .../threads/timeline-context-order.ts         |  65 +++++++-
  .../timeline-context-order-cache.test.ts      | 145 ++++++++++++++++++
- 2 files changed, 191 insertions(+), 5 deletions(-)
+ 2 files changed, 202 insertions(+), 8 deletions(-)
 
 diff --git a/apps/server/src/services/threads/timeline-context-order.ts b/apps/server/src/services/threads/timeline-context-order.ts
-index a7dff4ce6cb79d1f6b2b084104b60642c45725ac..0e656dfcf53ba0a76e448135346734205b0ae7ca 100644
+index 9fd061d6c0e9cadfc3685348659e74f4b738544a..330b397fead8d013caa1e71b8574a3778bc46844 100644
 --- a/apps/server/src/services/threads/timeline-context-order.ts
 +++ b/apps/server/src/services/threads/timeline-context-order.ts
-@@ -24,16 +24,20 @@ interface TimelineGroupingContextArgs {
-   threadId: string;
+@@ -30,17 +30,21 @@ interface TimelineOrderingContext {
+   boundaryScanThroughSequence: number;
  }
  
 +type TimelineOrderingContextRows = ReturnType<typeof listTimelineOrderingContext>;
 +
  interface TimelineGroupingContextEntry {
+   orderingContext: TimelineOrderingContext;
    context: TimelineGroupingContext;
    dataVersion: number;
    generation: number;
@@ -58,34 +60,52 @@ index a7dff4ce6cb79d1f6b2b084104b60642c45725ac..0e656dfcf53ba0a76e44813534673420
  
  const orderingContexts = new WeakMap<
    DbConnection,
-@@ -123,22 +127,59 @@ export function getTimelineGroupingContext(
+@@ -121,8 +125,27 @@ export function getTimelineGroupingContext(
      ]);
-     return reusable.context;
+     return reusable.entry.context;
    }
--  const context = computeTimelineGroupingContext(db, args);
-+  const base = entries
-+    .filter((entry) => entry.rows !== null && entry.maxSeq < args.maxSeq)
-+    .sort((left, right) => right.maxSeq - left.maxSeq)[0];
-+  const rows =
-+    base?.rows == null
-+      ? listTimelineOrderingContext(db, args)
-+      : [
-+          ...base.rows,
-+          ...listTimelineOrderingContext(db, {
-+            ...args,
-+            sequenceStart: base.maxSeq + 1,
-+          }),
-+        ];
-+  const context = foldTimelineGroupingContext(db, args, rows);
+-  const orderingContext =
+-    reusable?.entry.orderingContext ?? computeTimelineOrderingContext(db, args);
++  let orderingContext: TimelineOrderingContext;
++  let rows: TimelineOrderingContextRows | null;
++  if (reusable !== undefined) {
++    orderingContext = reusable.entry.orderingContext;
++    rows = reusable.entry.rows;
++  } else {
++    const base = entries
++      .filter((entry) => entry.rows !== null && entry.maxSeq < args.maxSeq)
++      .sort((left, right) => right.maxSeq - left.maxSeq)[0];
++    rows =
++      base?.rows == null
++        ? listTimelineOrderingContext(db, args)
++        : [
++            ...base.rows,
++            ...listTimelineOrderingContext(db, {
++              ...args,
++              sequenceStart: base.maxSeq + 1,
++            }),
++          ];
++    orderingContext = foldTimelineOrderingContext(rows);
++  }
+   const parentedBoundary = getFirstParentedTimelineBoundarySequence(db, args);
+   const context: TimelineGroupingContext = {
+     acceptedTurnIds: orderingContext.acceptedTurnIds,
+@@ -133,20 +156,46 @@ export function getTimelineGroupingContext(
+         : (orderingContext.boundarySequence ?? parentedBoundary),
+   };
    cache.set(key, [
--    { context, dataVersion, generation, maxSeq: args.maxSeq },
+-    { context, orderingContext, dataVersion, generation, maxSeq: args.maxSeq },
 -    ...entries.slice(0, GROUPING_CONTEXT_ENTRIES_PER_KEY - 1),
 +    {
 +      context,
++      orderingContext,
 +      dataVersion,
 +      generation,
 +      maxSeq: args.maxSeq,
-+      rows: rows.length <= MAX_RETAINED_ORDERING_CONTEXT_ROWS ? rows : null,
++      rows:
++        rows !== null && rows.length <= MAX_RETAINED_ORDERING_CONTEXT_ROWS
++          ? rows
++          : null,
 +    },
 +    ...entries
 +      .slice(0, GROUPING_CONTEXT_ENTRIES_PER_KEY - 1)
@@ -98,7 +118,9 @@ index a7dff4ce6cb79d1f6b2b084104b60642c45725ac..0e656dfcf53ba0a76e44813534673420
    return context;
  }
  
--function computeTimelineGroupingContext(
+-function computeTimelineOrderingContext(
+-  db: DbConnection,
+-  args: TimelineGroupingContextArgs,
 +function trimRetainedOrderingContextRows(
 +  cache: Map<string, TimelineGroupingContextEntry[]>,
 +): void {
@@ -114,20 +136,18 @@ index a7dff4ce6cb79d1f6b2b084104b60642c45725ac..0e656dfcf53ba0a76e44813534673420
 +  }
 +}
 +
-+function foldTimelineGroupingContext(
-   db: DbConnection,
-   args: TimelineGroupingContextArgs,
++function foldTimelineOrderingContext(
 +  context: TimelineOrderingContextRows,
- ): TimelineGroupingContext {
+ ): TimelineOrderingContext {
 -  const context = listTimelineOrderingContext(db, args);
    const spans = new Map<string, ExternalUserBoundaryTurnSpan>();
    const accepted = new Map<string, { sequence: number; turnId: string }>();
    for (const row of context) {
 diff --git a/apps/server/test/services/threads/timeline-context-order-cache.test.ts b/apps/server/test/services/threads/timeline-context-order-cache.test.ts
-index 8e12ed8985914ad3cfacd96f7d3d6d27d2bc674e..9e47304e92243a44447f90fb59ab1d6940c486f0 100644
+index 5d8f1588ae4f72345073d6f6d0ee08bc7b234116..9eadb5e5899904855022e8f1d423f0589a06e3ed 100644
 --- a/apps/server/test/services/threads/timeline-context-order-cache.test.ts
 +++ b/apps/server/test/services/threads/timeline-context-order-cache.test.ts
-@@ -378,6 +378,151 @@ describe("timeline grouping context cache", () => {
+@@ -527,6 +527,151 @@ describe("timeline grouping context cache", () => {
    }, 60_000);
  });
  

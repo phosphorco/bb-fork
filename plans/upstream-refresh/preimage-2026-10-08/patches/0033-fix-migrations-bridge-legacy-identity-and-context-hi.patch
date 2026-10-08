@@ -1,0 +1,2339 @@
+From b53fb254decc00bf78914cfd78601ddcec858c10 Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Wed, 23 Sep 2026 02:06:50 +0200
+Subject: [PATCH] fix(migrations): bridge legacy identity and context histories
+
+---
+ packages/db/drizzle/0132_zippy_reavers.sql    | 186 ++++
+ packages/db/drizzle/meta/0116_snapshot.json   |   2 +-
+ packages/db/drizzle/meta/_journal.json        |  22 +-
+ packages/db/src/data/events.ts                |  44 +
+ packages/db/src/migrate.ts                    | 926 +++++++++++++++++-
+ packages/db/src/migration-history.ts          |   1 -
+ packages/db/src/schema.ts                     |   2 +-
+ packages/db/test/data/events.test.ts          |  21 +-
+ .../0119_soft_pandemic.sql                    | 102 ++
+ .../0120_early_virginia_dare.sql              |  33 +
+ .../0121_sticky_king_bedlam.sql               |   4 +
+ .../0122_living_quasimodo.sql                 |  49 +
+ packages/db/test/migrate.test.ts              | 671 ++++++++++++-
+ 13 files changed, 2035 insertions(+), 28 deletions(-)
+ create mode 100644 packages/db/drizzle/0132_zippy_reavers.sql
+ create mode 100644 packages/db/test/fixtures/legacy-identity-context-magnet/0119_soft_pandemic.sql
+ create mode 100644 packages/db/test/fixtures/legacy-identity-context-magnet/0120_early_virginia_dare.sql
+ create mode 100644 packages/db/test/fixtures/legacy-identity-context-magnet/0121_sticky_king_bedlam.sql
+ create mode 100644 packages/db/test/fixtures/legacy-identity-context-magnet/0122_living_quasimodo.sql
+
+diff --git a/packages/db/drizzle/0132_zippy_reavers.sql b/packages/db/drizzle/0132_zippy_reavers.sql
+new file mode 100644
+index 0000000000000000000000000000000000000000..fe5ef2479889fe5fcf9fe3a6192ceceac4fe2110
+--- /dev/null
++++ b/packages/db/drizzle/0132_zippy_reavers.sql
+@@ -0,0 +1,186 @@
++CREATE TABLE IF NOT EXISTS `context_magnet_contribution_trace_receipts` (
++	`contribution_id` text NOT NULL,
++	`call_id` text NOT NULL,
++	`turn_id` text NOT NULL,
++	`operation_id` text,
++	`operation_event_sequence` integer,
++	`receipt_sequence` integer DEFAULT 0 NOT NULL,
++	`observed_at` integer NOT NULL,
++	FOREIGN KEY (`contribution_id`) REFERENCES `context_magnet_contribution_traces`(`contribution_id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE UNIQUE INDEX IF NOT EXISTS `context_magnet_trace_receipt_contribution_idx` ON `context_magnet_contribution_trace_receipts` (`contribution_id`);--> statement-breakpoint
++CREATE TABLE IF NOT EXISTS `context_magnet_contribution_trace_snapshots` (
++	`id` text PRIMARY KEY NOT NULL,
++	`thread_id` text NOT NULL,
++	`high_water_sequence` integer NOT NULL,
++	`operation_seq_high_watermark` integer NOT NULL,
++	`receipt_high_water_sequence` integer DEFAULT 0 NOT NULL,
++	`admission_observation_high_water_sequence` integer DEFAULT 0 NOT NULL,
++	`admission_attempt_high_water_sequence` integer DEFAULT 0 NOT NULL,
++	`admission_retention_high_water_sequence` integer DEFAULT 0 NOT NULL,
++	`captured_at` integer NOT NULL,
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE INDEX IF NOT EXISTS `context_magnet_trace_snapshot_thread_idx` ON `context_magnet_contribution_trace_snapshots` (`thread_id`,`captured_at`);--> statement-breakpoint
++CREATE TABLE IF NOT EXISTS `context_magnet_contribution_traces` (
++	`contribution_id` text PRIMARY KEY NOT NULL,
++	`thread_id` text NOT NULL,
++	`trace_sequence` integer NOT NULL,
++	`operation_event_sequence` integer,
++	`trace_json` text NOT NULL,
++	`receipt_tool` text NOT NULL,
++	`plugin_id` text NOT NULL,
++	`created_at` integer NOT NULL,
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE UNIQUE INDEX IF NOT EXISTS `context_magnet_trace_thread_sequence_idx` ON `context_magnet_contribution_traces` (`thread_id`,`trace_sequence`);--> statement-breakpoint
++CREATE INDEX IF NOT EXISTS `context_magnet_trace_thread_operation_idx` ON `context_magnet_contribution_traces` (`thread_id`,`operation_event_sequence`,`contribution_id`);--> statement-breakpoint
++CREATE TABLE IF NOT EXISTS `context_magnet_provider_admission_attempts` (
++	`admission_id` text PRIMARY KEY NOT NULL,
++	`contribution_id` text NOT NULL,
++	`thread_id` text NOT NULL,
++	`request_kind` text NOT NULL,
++	`provider_kind` text NOT NULL,
++	`instruction_mode` text NOT NULL,
++	`selected_tool_summary` text NOT NULL,
++	`created_at` integer NOT NULL,
++	`admission_attempt_sequence` integer NOT NULL,
++	FOREIGN KEY (`contribution_id`) REFERENCES `context_magnet_contribution_traces`(`contribution_id`) ON UPDATE no action ON DELETE cascade,
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE INDEX IF NOT EXISTS `context_magnet_admission_attempt_contribution_idx` ON `context_magnet_provider_admission_attempts` (`contribution_id`);--> statement-breakpoint
++CREATE UNIQUE INDEX IF NOT EXISTS `context_magnet_admission_attempt_thread_sequence_idx` ON `context_magnet_provider_admission_attempts` (`thread_id`,`admission_attempt_sequence`);--> statement-breakpoint
++CREATE TABLE IF NOT EXISTS `context_magnet_provider_admission_observations` (
++	`admission_observation_sequence` integer PRIMARY KEY NOT NULL,
++	`admission_id` text NOT NULL,
++	`thread_id` text NOT NULL,
++	`kind` text NOT NULL,
++	`settlement` text,
++	`observed_at` integer NOT NULL,
++	FOREIGN KEY (`admission_id`) REFERENCES `context_magnet_provider_admission_attempts`(`admission_id`) ON UPDATE no action ON DELETE cascade,
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE INDEX IF NOT EXISTS `context_magnet_admission_observation_thread_idx` ON `context_magnet_provider_admission_observations` (`thread_id`,`admission_observation_sequence`);--> statement-breakpoint
++CREATE TABLE IF NOT EXISTS `context_magnet_provider_admission_retention` (
++	`contribution_id` text PRIMARY KEY NOT NULL,
++	`thread_id` text NOT NULL,
++	`pruned_attempt_count` integer NOT NULL,
++	`retention_sequence` integer NOT NULL,
++	FOREIGN KEY (`contribution_id`) REFERENCES `context_magnet_contribution_traces`(`contribution_id`) ON UPDATE no action ON DELETE cascade,
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE INDEX IF NOT EXISTS `context_magnet_admission_retention_thread_idx` ON `context_magnet_provider_admission_retention` (`thread_id`,`retention_sequence`);--> statement-breakpoint
++CREATE TABLE IF NOT EXISTS `context_magnet_provider_admission_sequences` (
++	`thread_id` text PRIMARY KEY NOT NULL,
++	`last_attempt_sequence` integer DEFAULT 0 NOT NULL,
++	`last_observation_sequence` integer DEFAULT 0 NOT NULL,
++	`last_retention_sequence` integer DEFAULT 0 NOT NULL,
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE TABLE IF NOT EXISTS `thread_facet_cursor_keys` (
++	`key_id` text PRIMARY KEY NOT NULL,
++	`secret` text NOT NULL,
++	`created_at` integer NOT NULL
++);
++--> statement-breakpoint
++CREATE TABLE IF NOT EXISTS `thread_facet_declarations` (
++	`type_scope` text NOT NULL,
++	`type_owner` text NOT NULL,
++	`local_name` text NOT NULL,
++	`member_kind` text NOT NULL,
++	`cardinality` text NOT NULL,
++	`assignment_scope` text NOT NULL,
++	`created_at` integer NOT NULL,
++	`updated_at` integer NOT NULL,
++	PRIMARY KEY(`type_scope`, `type_owner`, `local_name`)
++);
++--> statement-breakpoint
++CREATE TABLE IF NOT EXISTS `thread_facet_members` (
++	`type_scope` text NOT NULL,
++	`type_owner` text NOT NULL,
++	`local_name` text NOT NULL,
++	`member_id` text NOT NULL,
++	`member_rank` integer NOT NULL,
++	`created_at` integer NOT NULL,
++	PRIMARY KEY(`type_scope`, `type_owner`, `local_name`, `member_id`)
++);
++--> statement-breakpoint
++CREATE UNIQUE INDEX IF NOT EXISTS `thread_facet_members_rank_idx` ON `thread_facet_members` (`type_scope`,`type_owner`,`local_name`,`member_rank`);--> statement-breakpoint
++CREATE TABLE IF NOT EXISTS `thread_facet_owners` (
++	`type_scope` text NOT NULL,
++	`type_owner` text NOT NULL,
++	`local_name` text NOT NULL,
++	`assignment_scope` text NOT NULL,
++	`generation` integer NOT NULL,
++	`state` text NOT NULL,
++	`census_exhausted` integer DEFAULT false NOT NULL,
++	`census_terminal_delivered` integer DEFAULT false NOT NULL,
++	`projection_revision` integer DEFAULT 0 NOT NULL,
++	`updated_at` integer NOT NULL,
++	PRIMARY KEY(`type_scope`, `type_owner`, `local_name`, `assignment_scope`)
++);
++--> statement-breakpoint
++CREATE TABLE IF NOT EXISTS `thread_facet_principal_profiles` (
++	`type_scope` text NOT NULL,
++	`type_owner` text NOT NULL,
++	`local_name` text NOT NULL,
++	`assignment_scope` text NOT NULL,
++	`thread_id` text NOT NULL,
++	`principal_key` text NOT NULL,
++	`identity_kind` text DEFAULT 'person' NOT NULL,
++	`member_position` integer NOT NULL,
++	`display_name` text NOT NULL,
++	`image_url` text,
++	`updated_at` integer NOT NULL,
++	PRIMARY KEY(`type_scope`, `type_owner`, `local_name`, `assignment_scope`, `thread_id`, `principal_key`),
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE UNIQUE INDEX IF NOT EXISTS `thread_facet_principal_profiles_position_idx` ON `thread_facet_principal_profiles` (`type_scope`,`type_owner`,`local_name`,`assignment_scope`,`thread_id`,`member_position`);--> statement-breakpoint
++CREATE TABLE IF NOT EXISTS `thread_facet_reconciliation_targets` (
++	`type_scope` text NOT NULL,
++	`type_owner` text NOT NULL,
++	`local_name` text NOT NULL,
++	`assignment_scope` text NOT NULL,
++	`owner_generation` integer NOT NULL,
++	`thread_id` text NOT NULL,
++	`discharged` integer DEFAULT false NOT NULL,
++	PRIMARY KEY(`type_scope`, `type_owner`, `local_name`, `assignment_scope`, `owner_generation`, `thread_id`),
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE INDEX IF NOT EXISTS `thread_facet_reconciliation_targets_pending_idx` ON `thread_facet_reconciliation_targets` (`type_scope`,`type_owner`,`local_name`,`assignment_scope`,`owner_generation`,`discharged`,`thread_id`);--> statement-breakpoint
++CREATE TABLE IF NOT EXISTS `thread_facet_relations` (
++	`type_scope` text NOT NULL,
++	`type_owner` text NOT NULL,
++	`local_name` text NOT NULL,
++	`assignment_scope` text NOT NULL,
++	`thread_id` text NOT NULL,
++	`member_id` text NOT NULL,
++	`updated_at` integer NOT NULL,
++	PRIMARY KEY(`type_scope`, `type_owner`, `local_name`, `assignment_scope`, `thread_id`, `member_id`),
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE INDEX IF NOT EXISTS `thread_facet_relations_member_thread_idx` ON `thread_facet_relations` (`type_scope`,`type_owner`,`local_name`,`assignment_scope`,`member_id`,`thread_id`);--> statement-breakpoint
++CREATE TABLE IF NOT EXISTS `thread_facet_snapshots` (
++	`type_scope` text NOT NULL,
++	`type_owner` text NOT NULL,
++	`local_name` text NOT NULL,
++	`assignment_scope` text NOT NULL,
++	`thread_id` text NOT NULL,
++	`owner_generation` integer NOT NULL,
++	`source_version` integer,
++	`updated_at` integer NOT NULL,
++	PRIMARY KEY(`type_scope`, `type_owner`, `local_name`, `assignment_scope`, `thread_id`),
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE INDEX IF NOT EXISTS `thread_facet_snapshots_generation_thread_idx` ON `thread_facet_snapshots` (`type_scope`,`type_owner`,`local_name`,`assignment_scope`,`owner_generation`,`thread_id`);
+diff --git a/packages/db/drizzle/meta/0116_snapshot.json b/packages/db/drizzle/meta/0116_snapshot.json
+index f9684f6546ad27de1ab47bd11ce8b5c386295d47..fa7e75ecafc2a93cf9b7cb760ef0a3b08dca7066 100644
+--- a/packages/db/drizzle/meta/0116_snapshot.json
++++ b/packages/db/drizzle/meta/0116_snapshot.json
+@@ -4064,4 +4064,4 @@
+   "internal": {
+     "indexes": {}
+   }
+-}
++}
+\ No newline at end of file
+diff --git a/packages/db/drizzle/meta/_journal.json b/packages/db/drizzle/meta/_journal.json
+index 438d00753bac8c4d433485cbb354035aa062ae70..3a9c5a83c4c90fad0acb2098c16f64f37caf49dc 100644
+--- a/packages/db/drizzle/meta/_journal.json
++++ b/packages/db/drizzle/meta/_journal.json
+@@ -927,25 +927,11 @@
+       "breakpoints": true
+     },
+     {
+-      "idx": 120,
+-      "version": "6",
+-      "when": 1789920055084,
+-      "tag": "0120_early_virginia_dare",
+-      "breakpoints": true
+-    },
+-    {
+-      "idx": 121,
+-      "version": "6",
+-      "when": 1789922567893,
+-      "tag": "0121_sticky_king_bedlam",
+-      "breakpoints": true
+-    },
+-    {
+-      "idx": 122,
++      "idx": 132,
+       "version": "6",
+-      "when": 1789936012627,
+-      "tag": "0122_living_quasimodo",
++      "when": 1790230932026,
++      "tag": "0132_zippy_reavers",
+       "breakpoints": true
+     }
+   ]
+-}
+\ No newline at end of file
++}
+diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
+index 3661eaebd19577b7bba1aaf7e63d70963bb41621..e854156e9ad61fc23d4a5969878fee4e0c4bff88 100644
+--- a/packages/db/src/data/events.ts
++++ b/packages/db/src/data/events.ts
+@@ -333,6 +333,10 @@ export interface StoredTurnRequestEventRow {
+   type: ThreadEventType;
+ }
+ 
++export interface ListLastStoredTurnRequestEventsByThreadIdsArgs {
++  threadIds: readonly string[];
++}
++
+ export interface DeleteThreadEventSuffixArgs {
+   cutoffSequence: number;
+   oldMaxSequence: number;
+@@ -3907,6 +3911,46 @@ export function listThreadIdsWithLatestHostDaemonRestartInterruption(
+     .map((row) => row.threadId);
+ }
+ 
++export function listLastStoredTurnRequestEventsByThreadIds(
++  db: DbQueryConnection,
++  args: ListLastStoredTurnRequestEventsByThreadIdsArgs,
++): StoredTurnRequestEventRow[] {
++  return queryInSqliteVariableBatches({
++    dedupeKey: (threadId) => threadId,
++    fixedVariableCount: 3,
++    queryBatch: (threadIds) =>
++      db.all<StoredTurnRequestEventRow>(sql`
++      WITH execution_request_candidates AS (
++        SELECT ${events.threadId} AS thread_id, MAX(${events.sequence}) AS sequence
++        FROM ${events} INDEXED BY events_thread_type_sequence_idx
++        WHERE ${inArray(events.threadId, [...threadIds])}
++          AND ${events.type} = 'client/turn/requested'
++        GROUP BY ${events.threadId}
++        UNION ALL
++        SELECT ${events.threadId} AS thread_id, MAX(${events.sequence}) AS sequence
++        FROM ${events} INDEXED BY events_thread_type_sequence_idx
++        WHERE ${inArray(events.threadId, [...threadIds])}
++          AND ${inArray(events.type, ["client/thread/start", "client/turn/start"])}
++          AND json_valid(${events.data})
++          AND json_type(${events.data}, '$.input') IS NOT NULL
++        GROUP BY ${events.threadId}
++      ), latest_execution_request AS (
++        SELECT thread_id, MAX(sequence) AS sequence
++        FROM execution_request_candidates
++        GROUP BY thread_id
++      )
++      SELECT event.data AS data, event.sequence AS sequence,
++        event.thread_id AS threadId, event.type AS type
++      FROM latest_execution_request latest
++      JOIN events event ON event.thread_id = latest.thread_id
++        AND event.sequence = latest.sequence
++      ORDER BY event.thread_id
++    `),
++    values: args.threadIds,
++    variableCountPerValue: 2,
++  });
++}
++
+ export function getLastStoredTurnRequestEvent(
+   db: DbQueryConnection,
+   threadId: string,
+diff --git a/packages/db/src/migrate.ts b/packages/db/src/migrate.ts
+index 116fa356c757bde2df5064ad9fb6d31be18d3386..7dfbd5e7630595e9cfa1652964958333eb029e16 100644
+--- a/packages/db/src/migrate.ts
++++ b/packages/db/src/migrate.ts
+@@ -14,10 +14,12 @@ export interface ResolveMigrationsFolderForModuleDirArgs {
+ }
+ 
+ interface SqliteTableInfoColumn {
++  defaultValue: string | null;
+   name: string;
+   type: string;
+   notNull: boolean;
+   primaryKey: boolean;
++  primaryKeyOrder: number;
+ }
+ 
+ interface SqliteForeignKey {
+@@ -55,6 +57,12 @@ interface ExpectedIndex {
+   unique: boolean;
+ }
+ 
++interface CanonicalTableContract {
++  columns: Array<ExpectedColumn & { defaultValue: string | null }>;
++  primaryKeyColumns: string[];
++  tableName: string;
++}
++
+ interface MigrationJournalEntry {
+   tag: string;
+   when: number;
+@@ -99,6 +107,12 @@ export interface MigrationWarningLogger {
+ export interface MigrateOptions {
+   deferDestructiveLegacyCleanup?: boolean;
+   logger?: MigrationWarningLogger;
++  /** Test-only failure injection for the durable identity/context bridge. */
++  identityContextBridgeTestHooks?: {
++    afterDrizzleMigration?: () => void;
++    afterColumnAdded?: (column: string) => void;
++    beforeCompletionRecorded?: () => void;
++  };
+ }
+ 
+ interface AppliedMigrationRow {
+@@ -131,6 +145,11 @@ interface AppliedMigrationCountRow {
+   count: number;
+ }
+ 
++interface DuplicateMigrationTimestampRow {
++  createdAt: number;
++  count: number;
++}
++
+ interface PendingInteractionProviderRequestDuplicateRow {
+   duplicateCount: number;
+   providerId: string;
+@@ -165,6 +184,44 @@ const branchLocalThreadSearchMigrationCreatedAts = [
+   1781403656070, 1781403656071,
+ ] as const;
+ const branchLocalThreadTabsMigrationCreatedAts = [1783633750817] as const;
++const legacyIdentityAndContextMagnetMigrationCreatedAts = [
++  1789068314079, 1789920055084, 1789922567893, 1789936012627,
++] as const;
++const legacyIdentityAndContextMagnetMigrations = [
++  {
++    createdAt: 1789068314079,
++    hash: "a6aae36a008c169416105c2a8577709bf6576491b2866bcfb566326cb012a3ba",
++    tag: "0119_soft_pandemic",
++  },
++  {
++    createdAt: 1789920055084,
++    hash: "31305fe3d20ec978784db38097e4ebe8b3963758c2620ac9c444753773ddf3ff",
++    tag: "0120_early_virginia_dare",
++  },
++  {
++    createdAt: 1789922567893,
++    hash: "c6ea307df24123baab6678ab89a4370acecba67ea4e7ee11dad3a6192eb6d9ff",
++    tag: "0121_sticky_king_bedlam",
++  },
++  {
++    createdAt: 1789936012627,
++    hash: "45dc4939a7687be7199991278cb15f5f5986ae9648f750fc19fd5d7e83a265b3",
++    tag: "0122_living_quasimodo",
++  },
++] as const;
++const identityContextBridgeCompletionTable = "bb_schema_bridge_completions";
++const identityContextBridgeCompletionName = "identity-context-0131";
++const targetMigrationsThatMayBeSkippedByLegacyIdentityHistory = [
++  "0119_provider_model_catalogs",
++  "0120_perfect_clint_barton",
++  "0121_fluffy_major_mapleleaf",
++  "0122_attachment_accounting",
++  "0123_cheerful_tomorrow_man",
++  "0124_thread_pruning",
++  "0125_silent_guardian",
++  "0126_overconfident_vin_gonzales",
++  "0127_thread_image_metadata",
++] as const;
+ const pendingInteractionColumns: ExpectedColumn[] = [
+   { name: "id", type: "text", notNull: true, primaryKey: true },
+   { name: "thread_id", type: "text", notNull: true, primaryKey: false },
+@@ -278,20 +335,24 @@ function parseTableInfoColumn(value: unknown): SqliteTableInfoColumn {
+   const type = value.type;
+   const notNull = value.notnull;
+   const primaryKey = value.pk;
++  const defaultValue = value.dflt_value;
+   if (
+     typeof name !== "string" ||
+     typeof type !== "string" ||
+     typeof notNull !== "number" ||
+-    typeof primaryKey !== "number"
++    typeof primaryKey !== "number" ||
++    (typeof defaultValue !== "string" && defaultValue !== null)
+   ) {
+     throw new Error("Unexpected PRAGMA table_info column fields");
+   }
+ 
+   return {
++    defaultValue,
+     name,
+     type: type.toLowerCase(),
+     notNull: notNull !== 0,
+     primaryKey: primaryKey !== 0,
++    primaryKeyOrder: primaryKey,
+   };
+ }
+ 
+@@ -503,6 +564,30 @@ function readAppliedMigrationCreatedAts(db: DbConnection): Set<number> {
+   return new Set(rows.map((row) => row.createdAt));
+ }
+ 
++function assertAppliedMigrationTimestampsAreUnique(db: DbConnection): void {
++  if (!tableExists(db, "__drizzle_migrations")) {
++    return;
++  }
++  const duplicates = db.$client
++    .prepare<[], DuplicateMigrationTimestampRow>(
++      `
++        SELECT created_at AS createdAt, COUNT(*) AS count
++        FROM __drizzle_migrations
++        WHERE created_at IS NOT NULL
++        GROUP BY created_at
++        HAVING COUNT(*) > 1
++        ORDER BY created_at
++        LIMIT 10
++      `,
++    )
++    .all();
++  if (duplicates.length > 0) {
++    throw new Error(
++      `Unsupported migration history: duplicate created_at ledger rows (${duplicates.map((row) => `${row.createdAt} x${row.count}`).join(", ")}).`,
++    );
++  }
++}
++
+ export function countAppliedMigrations(db: DbConnection): number {
+   if (!tableExists(db, "__drizzle_migrations")) {
+     return 0;
+@@ -1186,6 +1271,840 @@ function applyQueuedMessageGroupingSchema(db: DbConnection): void {
+     .run();
+ }
+ 
++function applyTargetMigrationsSkippedByLegacyIdentityHistory(
++  db: DbConnection,
++  migrationsFolder: string,
++): void {
++  if (!tableExists(db, "__drizzle_migrations")) {
++    return;
++  }
++
++  const expectedMigrations = readExpectedAppliedMigrations(migrationsFolder);
++  const appliedMigrations = db.$client
++    .prepare<[], AppliedMigrationIdentityRow>(
++      "SELECT hash, created_at AS createdAt FROM __drizzle_migrations",
++    )
++    .all();
++  const knownCreatedAts = new Set([
++    ...expectedMigrations.map((migration) => migration.createdAt),
++    ...legacyIdentityAndContextMagnetMigrationCreatedAts,
++  ]);
++  const appliedCreatedAts = new Set(
++    appliedMigrations
++      .map((migration) => migration.createdAt)
++      .filter((createdAt): createdAt is number => createdAt !== null),
++  );
++  const legacyPrefixLength = legacyIdentityAndContextMagnetMigrations.reduce(
++    (length, legacyMigration, index) =>
++      appliedCreatedAts.has(legacyMigration.createdAt) ? index + 1 : length,
++    0,
++  );
++  const legacyCreatedAts =
++    legacyIdentityAndContextMagnetMigrationCreatedAts.filter((createdAt) =>
++      appliedCreatedAts.has(createdAt),
++    );
++  if (legacyCreatedAts.length === 0) {
++    return;
++  }
++
++  const unknownEarlyMigrations = appliedMigrations.filter(
++    (migration) =>
++      migration.createdAt !== null &&
++      migration.createdAt <= Math.max(...legacyCreatedAts) &&
++      !knownCreatedAts.has(migration.createdAt),
++  );
++  if (unknownEarlyMigrations.length > 0) {
++    throw new Error(
++      "Unsupported legacy identity/context migration history: an unknown ledger row appears at or before the legacy prefix.",
++    );
++  }
++
++  const expectedLegacyCreatedAts =
++    legacyIdentityAndContextMagnetMigrations.slice(0, legacyPrefixLength);
++  if (
++    legacyCreatedAts.length !== expectedLegacyCreatedAts.length ||
++    legacyCreatedAts.some(
++      (createdAt, index) =>
++        createdAt !== expectedLegacyCreatedAts[index]?.createdAt,
++    )
++  ) {
++    throw new Error(
++      "Unsupported legacy identity/context migration history: legacy migrations must be one exact ordered prefix with no holes.",
++    );
++  }
++  for (const legacyMigration of expectedLegacyCreatedAts) {
++    if (
++      !appliedMigrations.some(
++        (migration) =>
++          migration.createdAt === legacyMigration.createdAt &&
++          migration.hash === legacyMigration.hash,
++      )
++    ) {
++      throw new Error(
++        `Unsupported legacy identity/context migration history: ${legacyMigration.tag} has an unrecognized hash.`,
++      );
++    }
++  }
++  assertLegacyIdentityAndContextMagnetSchema(
++    db,
++    legacyPrefixLength,
++    expectedMigrations.some(
++      (migration) =>
++        migration.tag === "0132_zippy_reavers" &&
++        appliedMigrations.some(
++          (appliedMigration) =>
++            appliedMigration.createdAt === migration.createdAt &&
++            appliedMigration.hash === migration.hash,
++        ),
++    ),
++  );
++
++  const latestLegacyCreatedAt = legacyCreatedAts.at(-1);
++  if (latestLegacyCreatedAt === undefined) {
++    return;
++  }
++  const expectedMigrationsByCreatedAt = new Map(
++    expectedMigrations.map((migration) => [migration.createdAt, migration]),
++  );
++  for (const migration of appliedMigrations) {
++    if (
++      migration.createdAt === null ||
++      migration.createdAt <= latestLegacyCreatedAt
++    ) {
++      continue;
++    }
++    const expectedMigration = expectedMigrationsByCreatedAt.get(
++      migration.createdAt,
++    );
++    if (
++      expectedMigration === undefined ||
++      migration.hash !== expectedMigration.hash
++    ) {
++      throw new Error(
++        "Unsupported legacy identity/context migration history: a later migration is not an exact target migration.",
++      );
++    }
++  }
++  const firstTargetMigration = requireExpectedAppliedMigration(
++    expectedMigrations,
++    targetMigrationsThatMayBeSkippedByLegacyIdentityHistory[0],
++  );
++  const latestTargetMigrationAfterLegacy = appliedMigrations
++    .filter(
++      (migration): migration is AppliedMigrationIdentityRow & { createdAt: number } =>
++        migration.createdAt !== null &&
++        migration.createdAt > latestLegacyCreatedAt &&
++        expectedMigrationsByCreatedAt.has(migration.createdAt),
++    )
++    .map((migration) => migration.createdAt)
++    .reduce<number | null>(
++      (latest, createdAt) => Math.max(latest ?? createdAt, createdAt),
++      null,
++    );
++  if (latestTargetMigrationAfterLegacy !== null) {
++    const missingTargetPrefix = expectedMigrations.filter(
++      (migration) =>
++        migration.createdAt >= firstTargetMigration.createdAt &&
++        migration.createdAt <= latestTargetMigrationAfterLegacy &&
++        !appliedMigrations.some(
++          (appliedMigration) =>
++            appliedMigration.createdAt === migration.createdAt &&
++            appliedMigration.hash === migration.hash,
++        ),
++    );
++    if (missingTargetPrefix.length > 0) {
++      throw new Error(
++        "Unsupported legacy identity/context migration history: later target migrations require a complete exact target prefix.",
++      );
++    }
++  }
++
++  for (const tag of targetMigrationsThatMayBeSkippedByLegacyIdentityHistory) {
++    const migration = requireExpectedAppliedMigration(expectedMigrations, tag);
++    if (
++      migration.createdAt <= latestLegacyCreatedAt &&
++      !appliedCreatedAts.has(migration.createdAt)
++    ) {
++      applyMigrationStatements(db, migration);
++      appliedCreatedAts.add(migration.createdAt);
++    }
++  }
++}
++
++function addColumnWhenMissing(
++  db: DbConnection,
++  tableName: string,
++  columnName: string,
++  definition: string,
++): void {
++  if (tableExists(db, tableName) && !columnExists(db, tableName, columnName)) {
++    db.$client
++      .prepare(`ALTER TABLE ${tableName} ADD COLUMN ${definition}`)
++      .run();
++  }
++}
++
++const identityContextBridgeColumns = [
++  ["queued_thread_messages", "p6r_authors", "p6r_authors text"],
++  ["threads", "execution_revision", "execution_revision integer DEFAULT 0 NOT NULL"],
++  [
++    "context_magnet_contribution_trace_receipts",
++    "operation_id",
++    "operation_id text",
++  ],
++  [
++    "context_magnet_contribution_trace_receipts",
++    "operation_event_sequence",
++    "operation_event_sequence integer",
++  ],
++  [
++    "context_magnet_contribution_trace_receipts",
++    "receipt_sequence",
++    "receipt_sequence integer DEFAULT 0 NOT NULL",
++  ],
++  [
++    "context_magnet_contribution_trace_snapshots",
++    "receipt_high_water_sequence",
++    "receipt_high_water_sequence integer DEFAULT 0 NOT NULL",
++  ],
++  [
++    "context_magnet_contribution_trace_snapshots",
++    "admission_observation_high_water_sequence",
++    "admission_observation_high_water_sequence integer DEFAULT 0 NOT NULL",
++  ],
++  [
++    "context_magnet_contribution_trace_snapshots",
++    "admission_attempt_high_water_sequence",
++    "admission_attempt_high_water_sequence integer DEFAULT 0 NOT NULL",
++  ],
++  [
++    "context_magnet_contribution_trace_snapshots",
++    "admission_retention_high_water_sequence",
++    "admission_retention_high_water_sequence integer DEFAULT 0 NOT NULL",
++  ],
++] as const;
++const identityContextBridgeColumnContracts = [
++  ["queued_thread_messages", "p6r_authors", "text", false, null],
++  ["threads", "execution_revision", "integer", true, "0"],
++  ["context_magnet_contribution_trace_receipts", "operation_id", "text", false, null],
++  ["context_magnet_contribution_trace_receipts", "operation_event_sequence", "integer", false, null],
++  ["context_magnet_contribution_trace_receipts", "receipt_sequence", "integer", true, "0"],
++  ["context_magnet_contribution_trace_snapshots", "receipt_high_water_sequence", "integer", true, "0"],
++  ["context_magnet_contribution_trace_snapshots", "admission_observation_high_water_sequence", "integer", true, "0"],
++  ["context_magnet_contribution_trace_snapshots", "admission_attempt_high_water_sequence", "integer", true, "0"],
++  ["context_magnet_contribution_trace_snapshots", "admission_retention_high_water_sequence", "integer", true, "0"],
++] as const;
++const identityContextRequiredTables = [
++  "context_magnet_contribution_trace_receipts",
++  "context_magnet_contribution_trace_snapshots",
++  "context_magnet_contribution_traces",
++  "context_magnet_provider_admission_attempts",
++  "context_magnet_provider_admission_observations",
++  "context_magnet_provider_admission_retention",
++  "context_magnet_provider_admission_sequences",
++  "thread_facet_cursor_keys",
++  "thread_facet_declarations",
++  "thread_facet_members",
++  "thread_facet_owners",
++  "thread_facet_principal_profiles",
++  "thread_facet_reconciliation_targets",
++  "thread_facet_relations",
++  "thread_facet_snapshots",
++] as const;
++const identityContextRequiredIndexes: Array<
++  ExpectedIndex & { tableName: string }
++> = [
++  {
++    tableName: "context_magnet_contribution_trace_receipts",
++    name: "context_magnet_trace_receipt_contribution_idx",
++    columns: ["contribution_id"],
++    unique: true,
++  },
++  {
++    tableName: "context_magnet_contribution_trace_snapshots",
++    name: "context_magnet_trace_snapshot_thread_idx",
++    columns: ["thread_id", "captured_at"],
++    unique: false,
++  },
++  {
++    tableName: "context_magnet_contribution_traces",
++    name: "context_magnet_trace_thread_sequence_idx",
++    columns: ["thread_id", "trace_sequence"],
++    unique: true,
++  },
++  {
++    tableName: "context_magnet_contribution_traces",
++    name: "context_magnet_trace_thread_operation_idx",
++    columns: ["thread_id", "operation_event_sequence", "contribution_id"],
++    unique: false,
++  },
++  {
++    tableName: "context_magnet_provider_admission_attempts",
++    name: "context_magnet_admission_attempt_contribution_idx",
++    columns: ["contribution_id"],
++    unique: false,
++  },
++  {
++    tableName: "context_magnet_provider_admission_attempts",
++    name: "context_magnet_admission_attempt_thread_sequence_idx",
++    columns: ["thread_id", "admission_attempt_sequence"],
++    unique: true,
++  },
++  {
++    tableName: "context_magnet_provider_admission_observations",
++    name: "context_magnet_admission_observation_thread_idx",
++    columns: ["thread_id", "admission_observation_sequence"],
++    unique: false,
++  },
++  {
++    tableName: "context_magnet_provider_admission_retention",
++    name: "context_magnet_admission_retention_thread_idx",
++    columns: ["thread_id", "retention_sequence"],
++    unique: false,
++  },
++  {
++    tableName: "thread_facet_members",
++    name: "thread_facet_members_rank_idx",
++    columns: ["type_scope", "type_owner", "local_name", "member_rank"],
++    unique: true,
++  },
++  {
++    tableName: "thread_facet_principal_profiles",
++    name: "thread_facet_principal_profiles_position_idx",
++    columns: [
++      "type_scope",
++      "type_owner",
++      "local_name",
++      "assignment_scope",
++      "thread_id",
++      "member_position",
++    ],
++    unique: true,
++  },
++  {
++    tableName: "thread_facet_reconciliation_targets",
++    name: "thread_facet_reconciliation_targets_pending_idx",
++    columns: ["type_scope", "type_owner", "local_name", "assignment_scope", "owner_generation", "discharged", "thread_id"],
++    unique: false,
++  },
++  {
++    tableName: "thread_facet_relations",
++    name: "thread_facet_relations_member_thread_idx",
++    columns: ["type_scope", "type_owner", "local_name", "assignment_scope", "member_id", "thread_id"],
++    unique: false,
++  },
++  {
++    tableName: "thread_facet_snapshots",
++    name: "thread_facet_snapshots_generation_thread_idx",
++    columns: ["type_scope", "type_owner", "local_name", "assignment_scope", "owner_generation", "thread_id"],
++    unique: false,
++  },
++];
++const identityContextRequiredForeignKeys: Array<
++  ExpectedForeignKey & { childTable: string }
++> = [
++  {
++    name: "context_magnet_contribution_trace_receipts.contribution_id",
++    childTable: "context_magnet_contribution_trace_receipts",
++    table: "context_magnet_contribution_traces",
++    from: "contribution_id",
++    to: "contribution_id",
++    onUpdate: "NO ACTION",
++    onDelete: "CASCADE",
++  },
++  {
++    name: "context_magnet_contribution_trace_snapshots.thread_id",
++    childTable: "context_magnet_contribution_trace_snapshots",
++    table: "threads",
++    from: "thread_id",
++    to: "id",
++    onUpdate: "NO ACTION",
++    onDelete: "CASCADE",
++  },
++  {
++    name: "context_magnet_contribution_traces.thread_id",
++    childTable: "context_magnet_contribution_traces",
++    table: "threads",
++    from: "thread_id",
++    to: "id",
++    onUpdate: "NO ACTION",
++    onDelete: "CASCADE",
++  },
++  {
++    name: "context_magnet_provider_admission_attempts.contribution_id",
++    childTable: "context_magnet_provider_admission_attempts",
++    table: "context_magnet_contribution_traces",
++    from: "contribution_id",
++    to: "contribution_id",
++    onUpdate: "NO ACTION",
++    onDelete: "CASCADE",
++  },
++  {
++    name: "context_magnet_provider_admission_attempts.thread_id",
++    childTable: "context_magnet_provider_admission_attempts",
++    table: "threads",
++    from: "thread_id",
++    to: "id",
++    onUpdate: "NO ACTION",
++    onDelete: "CASCADE",
++  },
++  {
++    name: "context_magnet_provider_admission_observations.admission_id",
++    childTable: "context_magnet_provider_admission_observations",
++    table: "context_magnet_provider_admission_attempts",
++    from: "admission_id",
++    to: "admission_id",
++    onUpdate: "NO ACTION",
++    onDelete: "CASCADE",
++  },
++  {
++    name: "context_magnet_provider_admission_observations.thread_id",
++    childTable: "context_magnet_provider_admission_observations",
++    table: "threads",
++    from: "thread_id",
++    to: "id",
++    onUpdate: "NO ACTION",
++    onDelete: "CASCADE",
++  },
++  {
++    name: "context_magnet_provider_admission_retention.contribution_id",
++    childTable: "context_magnet_provider_admission_retention",
++    table: "context_magnet_contribution_traces",
++    from: "contribution_id",
++    to: "contribution_id",
++    onUpdate: "NO ACTION",
++    onDelete: "CASCADE",
++  },
++  {
++    name: "context_magnet_provider_admission_retention.thread_id",
++    childTable: "context_magnet_provider_admission_retention",
++    table: "threads",
++    from: "thread_id",
++    to: "id",
++    onUpdate: "NO ACTION",
++    onDelete: "CASCADE",
++  },
++  {
++    name: "context_magnet_provider_admission_sequences.thread_id",
++    childTable: "context_magnet_provider_admission_sequences",
++    table: "threads",
++    from: "thread_id",
++    to: "id",
++    onUpdate: "NO ACTION",
++    onDelete: "CASCADE",
++  },
++  {
++    name: "thread_facet_principal_profiles.thread_id",
++    childTable: "thread_facet_principal_profiles",
++    table: "threads",
++    from: "thread_id",
++    to: "id",
++    onUpdate: "NO ACTION",
++    onDelete: "CASCADE",
++  },
++  {
++    name: "thread_facet_reconciliation_targets.thread_id",
++    childTable: "thread_facet_reconciliation_targets",
++    table: "threads",
++    from: "thread_id",
++    to: "id",
++    onUpdate: "NO ACTION",
++    onDelete: "CASCADE",
++  },
++  {
++    name: "thread_facet_relations.thread_id",
++    childTable: "thread_facet_relations",
++    table: "threads",
++    from: "thread_id",
++    to: "id",
++    onUpdate: "NO ACTION",
++    onDelete: "CASCADE",
++  },
++  {
++    name: "thread_facet_snapshots.thread_id",
++    childTable: "thread_facet_snapshots",
++    table: "threads",
++    from: "thread_id",
++    to: "id",
++    onUpdate: "NO ACTION",
++    onDelete: "CASCADE",
++  },
++];
++const identityContextPrimaryKeys: Array<{
++  tableName: string;
++  columns: string[];
++}> = [
++  { tableName: "context_magnet_contribution_trace_receipts", columns: [] },
++  { tableName: "context_magnet_contribution_trace_snapshots", columns: ["id"] },
++  { tableName: "context_magnet_contribution_traces", columns: ["contribution_id"] },
++  { tableName: "context_magnet_provider_admission_attempts", columns: ["admission_id"] },
++  { tableName: "context_magnet_provider_admission_observations", columns: ["admission_observation_sequence"] },
++  { tableName: "context_magnet_provider_admission_retention", columns: ["contribution_id"] },
++  { tableName: "context_magnet_provider_admission_sequences", columns: ["thread_id"] },
++  { tableName: "thread_facet_cursor_keys", columns: ["key_id"] },
++  { tableName: "thread_facet_declarations", columns: ["type_scope", "type_owner", "local_name"] },
++  { tableName: "thread_facet_members", columns: ["type_scope", "type_owner", "local_name", "member_id"] },
++  { tableName: "thread_facet_owners", columns: ["type_scope", "type_owner", "local_name", "assignment_scope"] },
++  { tableName: "thread_facet_principal_profiles", columns: ["type_scope", "type_owner", "local_name", "assignment_scope", "thread_id", "principal_key"] },
++  { tableName: "thread_facet_reconciliation_targets", columns: ["type_scope", "type_owner", "local_name", "assignment_scope", "owner_generation", "thread_id"] },
++  { tableName: "thread_facet_relations", columns: ["type_scope", "type_owner", "local_name", "assignment_scope", "thread_id", "member_id"] },
++  { tableName: "thread_facet_snapshots", columns: ["type_scope", "type_owner", "local_name", "assignment_scope", "thread_id"] },
++];
++
++let identityContextCanonicalTableContracts:
++  | CanonicalTableContract[]
++  | undefined;
++const permittedLegacyIdentityContextColumnOrders = new Map<string, string[]>([
++  [
++    "context_magnet_contribution_trace_receipts",
++    [
++      "contribution_id",
++      "call_id",
++      "turn_id",
++      "observed_at",
++      "operation_id",
++      "operation_event_sequence",
++      "receipt_sequence",
++    ],
++  ],
++  [
++    "context_magnet_contribution_trace_snapshots",
++    [
++      "id",
++      "thread_id",
++      "high_water_sequence",
++      "operation_seq_high_watermark",
++      "captured_at",
++      "receipt_high_water_sequence",
++      "admission_observation_high_water_sequence",
++      "admission_attempt_high_water_sequence",
++      "admission_retention_high_water_sequence",
++    ],
++  ],
++]);
++
++function parseCanonicalTableContract(statement: string): CanonicalTableContract | null {
++  const match = /^CREATE TABLE IF NOT EXISTS `([^`]+)` \(([\s\S]+)\);?$/.exec(statement.trim());
++  if (!match) return null;
++  const [, tableName, body] = match;
++  if (!identityContextRequiredTables.includes(tableName as never)) return null;
++  const columns: Array<ExpectedColumn & { defaultValue: string | null }> = [];
++  let primaryKeyColumns: string[] = [];
++  for (const rawLine of body.split("\n")) {
++    const line = rawLine.trim().replace(/,$/, "");
++    const columnMatch = /^`([^`]+)`\s+(\w+)(.*)$/.exec(line);
++    if (columnMatch) {
++      const [, name, type, rest] = columnMatch;
++      columns.push({
++        defaultValue: /\bDEFAULT\s+((?:'[^']*')|\S+)/.exec(rest)?.[1] ?? null,
++        name,
++        type: type.toLowerCase(),
++        notNull: /\bNOT NULL\b/.test(rest),
++        primaryKey: /\bPRIMARY KEY\b/.test(rest),
++      });
++      if (/\bPRIMARY KEY\b/.test(rest)) primaryKeyColumns = [name];
++      continue;
++    }
++    const primaryKeyMatch = /^PRIMARY KEY\((.+)\)$/.exec(line);
++    if (primaryKeyMatch) {
++      primaryKeyColumns = [...primaryKeyMatch[1].matchAll(/`([^`]+)`/g)].map(
++        (entry) => entry[1],
++      );
++    }
++  }
++  return { columns, primaryKeyColumns, tableName };
++}
++
++function readIdentityContextCanonicalTableContracts(): CanonicalTableContract[] {
++  if (identityContextCanonicalTableContracts !== undefined) {
++    return identityContextCanonicalTableContracts;
++  }
++  const migration = requireExpectedAppliedMigration(
++    readExpectedAppliedMigrations(resolveMigrationsFolder()),
++    "0132_zippy_reavers",
++  );
++  const contracts = migration.sql
++    .map(parseCanonicalTableContract)
++    .filter((contract): contract is CanonicalTableContract => contract !== null);
++  if (contracts.length !== identityContextRequiredTables.length) {
++    throw new Error("Canonical 0131 identity/context table contract is incomplete.");
++  }
++  identityContextCanonicalTableContracts = contracts;
++  return contracts;
++}
++
++function assertLegacyIdentityAndContextMagnetSchema(
++  db: DbConnection,
++  legacyPrefixLength: number,
++  hasTargetIdentityContextCompletionMarker: boolean,
++): void {
++  const requirements = [
++    {
++      tables: [
++        "thread_facet_cursor_keys",
++        "thread_facet_declarations",
++        "thread_facet_members",
++        "thread_facet_owners",
++        "thread_facet_principal_profiles",
++        "thread_facet_reconciliation_targets",
++        "thread_facet_relations",
++        "thread_facet_snapshots",
++      ],
++      columns: [
++        ["queued_thread_messages", "p6r_authors"],
++        ["threads", "execution_revision"],
++      ],
++    },
++    {
++      tables: [
++        "context_magnet_contribution_trace_receipts",
++        "context_magnet_contribution_trace_snapshots",
++        "context_magnet_contribution_traces",
++      ],
++      columns: [],
++    },
++    {
++      tables: [],
++      columns: [
++        ["context_magnet_contribution_trace_receipts", "operation_id"],
++        [
++          "context_magnet_contribution_trace_receipts",
++          "operation_event_sequence",
++        ],
++        ["context_magnet_contribution_trace_receipts", "receipt_sequence"],
++        [
++          "context_magnet_contribution_trace_snapshots",
++          "receipt_high_water_sequence",
++        ],
++      ],
++    },
++    {
++      tables: [
++        "context_magnet_provider_admission_attempts",
++        "context_magnet_provider_admission_observations",
++        "context_magnet_provider_admission_retention",
++        "context_magnet_provider_admission_sequences",
++      ],
++      columns: [
++        [
++          "context_magnet_contribution_trace_snapshots",
++          "admission_observation_high_water_sequence",
++        ],
++        [
++          "context_magnet_contribution_trace_snapshots",
++          "admission_attempt_high_water_sequence",
++        ],
++        [
++          "context_magnet_contribution_trace_snapshots",
++          "admission_retention_high_water_sequence",
++        ],
++      ],
++    },
++  ] as const;
++  const selected = requirements.slice(0, legacyPrefixLength);
++  const missingTables = selected.flatMap((requirement) =>
++    requirement.tables.filter((tableName) => !tableExists(db, tableName)),
++  );
++  const missingColumns = selected.flatMap((requirement) =>
++    requirement.columns
++      .filter(([tableName, columnName]) => !columnExists(db, tableName, columnName))
++      .map(([tableName, columnName]) => `${tableName}.${columnName}`),
++  );
++  const laterRequirements = requirements.slice(legacyPrefixLength);
++  const unexpectedTables = hasTargetIdentityContextCompletionMarker
++    ? []
++    : laterRequirements.flatMap((requirement) =>
++        requirement.tables.filter((tableName) => tableExists(db, tableName)),
++      );
++  const unexpectedColumns = hasTargetIdentityContextCompletionMarker
++    ? []
++    : laterRequirements.flatMap((requirement) =>
++        requirement.columns
++          .filter(([tableName, columnName]) =>
++            columnExists(db, tableName, columnName),
++          )
++          .map(([tableName, columnName]) => `${tableName}.${columnName}`),
++      );
++  if (
++    missingTables.length > 0 ||
++    missingColumns.length > 0 ||
++    unexpectedTables.length > 0 ||
++    unexpectedColumns.length > 0
++  ) {
++    throw new Error(
++      [
++        "Unsupported legacy identity/context migration history: ledger and schema disagree.",
++        missingTables.length > 0 ? `Missing tables: ${missingTables.join(", ")}.` : null,
++        missingColumns.length > 0 ? `Missing columns: ${missingColumns.join(", ")}.` : null,
++        unexpectedTables.length > 0 ? `Unexpected later tables: ${unexpectedTables.join(", ")}.` : null,
++        unexpectedColumns.length > 0 ? `Unexpected later columns: ${unexpectedColumns.join(", ")}.` : null,
++      ].filter((message): message is string => message !== null).join(" "),
++    );
++  }
++}
++
++function assertIdentityAndContextMagnetSchema(db: DbConnection): void {
++  const canonicalTableContracts = readIdentityContextCanonicalTableContracts();
++  const missingTables = identityContextRequiredTables.filter(
++    (tableName) => !tableExists(db, tableName),
++  );
++  const missingColumns = identityContextBridgeColumns.filter(
++    ([tableName, columnName]) => !columnExists(db, tableName, columnName),
++  ).map(([tableName, columnName]) => `${tableName}.${columnName}`);
++  const bridgeColumnErrors = identityContextBridgeColumnContracts.flatMap(
++    ([tableName, columnName, type, notNull, defaultValue]) => {
++      const actual = getTableInfo(db, tableName).find(
++        (column) => column.name === columnName,
++      );
++      if (actual === undefined) return [];
++      return actual.type === type && actual.notNull === notNull && actual.defaultValue === defaultValue
++        ? []
++        : [`${tableName}.${columnName}: definition mismatch`];
++    },
++  );
++  const tableShapeErrors = canonicalTableContracts.flatMap((contract) => {
++    const actualColumns = getTableInfo(db, contract.tableName);
++    const actualNames = actualColumns.map((column) => column.name);
++    const expectedNames = contract.columns.map((column) => column.name);
++    const permittedLegacyOrder = permittedLegacyIdentityContextColumnOrders.get(
++      contract.tableName,
++    );
++    const matchesExpectedOrder = actualNames.every(
++      (name, index) => name === expectedNames[index],
++    );
++    const matchesPermittedLegacyOrder =
++      permittedLegacyOrder !== undefined &&
++      actualNames.every((name, index) => name === permittedLegacyOrder[index]);
++    if (
++      actualNames.length !== expectedNames.length ||
++      (!matchesExpectedOrder && !matchesPermittedLegacyOrder)
++    ) {
++      return [`${contract.tableName}: column set/order mismatch`];
++    }
++    const mismatchedColumn = contract.columns.find((expected) => {
++      const actual = actualColumns.find((column) => column.name === expected.name);
++      return actual === undefined || actual.type !== expected.type || actual.notNull !== expected.notNull || actual.defaultValue !== expected.defaultValue;
++    });
++    if (mismatchedColumn !== undefined) {
++      return [`${contract.tableName}.${mismatchedColumn.name}: column definition mismatch`];
++    }
++    const actualPrimaryKey = actualColumns
++      .filter((column) => column.primaryKey)
++      .sort((left, right) => left.primaryKeyOrder - right.primaryKeyOrder)
++      .map((column) => column.name);
++    return actualPrimaryKey.length === contract.primaryKeyColumns.length &&
++      actualPrimaryKey.every(
++        (column, index) => column === contract.primaryKeyColumns[index],
++      )
++      ? []
++      : [`${contract.tableName}: primary key mismatch`];
++  });
++  const indexErrors = identityContextRequiredIndexes.flatMap((expectedIndex) => {
++    const actualIndex = getIndexes(db, expectedIndex.tableName).find(
++      (index) => index.name === expectedIndex.name,
++    );
++    if (actualIndex === undefined) return [`${expectedIndex.name}: missing`];
++    const columns = getIndexColumnNames(db, expectedIndex.name);
++    return actualIndex.unique === expectedIndex.unique &&
++      columns.length === expectedIndex.columns.length &&
++      columns.every((column, index) => column === expectedIndex.columns[index])
++      ? []
++      : [`${expectedIndex.name}: definition mismatch`];
++  });
++  const primaryKeyErrors = identityContextPrimaryKeys.flatMap((expected) => {
++    const actual = getTableInfo(db, expected.tableName)
++      .filter((column) => column.primaryKey)
++      .sort((left, right) => left.primaryKeyOrder - right.primaryKeyOrder)
++      .map((column) => column.name);
++    return actual.length === expected.columns.length &&
++      actual.every((column, index) => column === expected.columns[index])
++      ? []
++      : [`${expected.tableName}: primary key mismatch`];
++  });
++  const foreignKeyErrors = identityContextRequiredForeignKeys.filter(
++    (expectedForeignKey) =>
++      !getForeignKeys(db, expectedForeignKey.childTable).some(
++        (foreignKey) =>
++          foreignKey.table === expectedForeignKey.table &&
++          foreignKey.from === expectedForeignKey.from &&
++          foreignKey.to === expectedForeignKey.to &&
++          foreignKey.onUpdate === expectedForeignKey.onUpdate &&
++          foreignKey.onDelete === expectedForeignKey.onDelete,
++      ),
++  ).map((foreignKey) => foreignKey.name);
++  if (
++    missingTables.length > 0 ||
++    missingColumns.length > 0 ||
++    bridgeColumnErrors.length > 0 ||
++    tableShapeErrors.length > 0 ||
++    primaryKeyErrors.length > 0 ||
++    indexErrors.length > 0 ||
++    foreignKeyErrors.length > 0
++  ) {
++    throw new Error(
++      [
++        "Identity/context schema bridge is incomplete or drifted.",
++        missingTables.length > 0 ? `Missing tables: ${missingTables.join(", ")}.` : null,
++        missingColumns.length > 0 ? `Missing columns: ${missingColumns.join(", ")}.` : null,
++        bridgeColumnErrors.length > 0 ? `Bridge columns: ${bridgeColumnErrors.join("; ")}.` : null,
++        tableShapeErrors.length > 0 ? `Table shapes: ${tableShapeErrors.join("; ")}.` : null,
++        primaryKeyErrors.length > 0 ? `Primary keys: ${primaryKeyErrors.join("; ")}.` : null,
++        indexErrors.length > 0 ? `Indexes: ${indexErrors.join("; ")}.` : null,
++        foreignKeyErrors.length > 0 ? `Foreign keys: ${foreignKeyErrors.join(", ")}.` : null,
++      ].filter((message): message is string => message !== null).join(" "),
++    );
++  }
++}
++
++function assertForeignKeyIntegrity(db: DbConnection): void {
++  const violations = db.$client.pragma("foreign_key_check");
++  if (!Array.isArray(violations)) {
++    throw new Error("Unexpected PRAGMA foreign_key_check result");
++  }
++  if (violations.length > 0) {
++    throw new Error(
++      `Foreign key integrity check failed after migration (${violations.length} violation(s)): ${violations
++        .slice(0, 10)
++        .map((violation) => JSON.stringify(violation))
++        .join(", ")}.`,
++    );
++  }
++}
++
++function completeIdentityAndContextMagnetSchemaBridge(
++  db: DbConnection,
++  options: MigrateOptions,
++): void {
++  const complete = db.$client.transaction(() => {
++    db.$client.exec(
++      `CREATE TABLE IF NOT EXISTS ${identityContextBridgeCompletionTable} (name text PRIMARY KEY NOT NULL, completed_at integer NOT NULL)`,
++    );
++    for (const [tableName, columnName, definition] of identityContextBridgeColumns) {
++      const hadColumn = tableExists(db, tableName) && columnExists(db, tableName, columnName);
++      addColumnWhenMissing(db, tableName, columnName, definition);
++      if (!hadColumn) options.identityContextBridgeTestHooks?.afterColumnAdded?.(`${tableName}.${columnName}`);
++    }
++    assertIdentityAndContextMagnetSchema(db);
++    assertForeignKeyIntegrity(db);
++    options.identityContextBridgeTestHooks?.beforeCompletionRecorded?.();
++    db.$client
++      .prepare<[string, number]>(
++        `INSERT OR REPLACE INTO ${identityContextBridgeCompletionTable} (name, completed_at) VALUES (?, ?)`,
++      )
++      .run(identityContextBridgeCompletionName, Date.now());
++  });
++  complete();
++  const completion = db.$client
++    .prepare<[string], { name: string }>(
++      `SELECT name FROM ${identityContextBridgeCompletionTable} WHERE name = ?`,
++    )
++    .get(identityContextBridgeCompletionName);
++  if (completion === undefined) {
++    throw new Error("Identity/context schema bridge completion was not recorded.");
++  }
++  assertIdentityAndContextMagnetSchema(db);
++}
++
+ function applyInitialThreadSectionSchema(db: DbConnection): void {
+   if (!tableExists(db, "thread_folders")) {
+     db.$client
+@@ -1564,6 +2483,7 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
+   }
+   sqlite.pragma("foreign_keys = OFF");
+   try {
++    assertAppliedMigrationTimestampsAreUnique(db);
+     assertNoDuplicatePendingInteractionProviderRequests(db);
+     if (options.deferDestructiveLegacyCleanup === true) {
+       applyDeferredDestructiveLegacyCleanup(db, migrationsFolder);
+@@ -1584,6 +2504,7 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
+     );
+     const stagedThreadStorageDeletedAt =
+       stageExistingThreadStorageDeletedAtColumn(db, migrationsFolder);
++    applyTargetMigrationsSkippedByLegacyIdentityHistory(db, migrationsFolder);
+     try {
+       drizzleMigrate(db, { migrationsFolder });
+     } finally {
+@@ -1591,6 +2512,8 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
+       if (stagedThreadStorageDeletedAt)
+         restoreStagedThreadStorageDeletedAtColumn(db);
+     }
++    options.identityContextBridgeTestHooks?.afterDrizzleMigration?.();
++    completeIdentityAndContextMagnetSchemaBridge(db, options);
+     applyReorderedCleanupMigrations(db, migrationsFolder);
+     applyQueuedMessageGroupingSchema(db);
+     seedKeepAwakePluginConfiguration(db);
+@@ -1601,4 +2524,5 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
+   warnAboutFutureAppliedMigrations(db, options);
+   validateAppliedMigrationHistory(db, migrationsFolder);
+   validatePendingInteractionsSchema(db);
++  assertForeignKeyIntegrity(db);
+ }
+diff --git a/packages/db/src/migration-history.ts b/packages/db/src/migration-history.ts
+index 1bab29a971c473ce027a47ab3b95b6f63e936387..dbd4e5896b567ea4031e43e26f8224832b32a326 100644
+--- a/packages/db/src/migration-history.ts
++++ b/packages/db/src/migration-history.ts
+@@ -13,7 +13,6 @@ export const publishedMigrationWhens = [
+   { tag: "0000_baseline", when: 1778891867195 },
+   { tag: "0001_terminal_session_user_input", when: 1779139400000 },
+   { tag: "0002_closed_session_prune_indexes", when: 1779139400001 },
+-  { tag: "0119_soft_pandemic", when: 1789068314079 },
+ ] as const satisfies readonly PublishedMigrationWhen[];
+ 
+ export const compatibleMigrationHashes = [
+diff --git a/packages/db/src/schema.ts b/packages/db/src/schema.ts
+index 5b84a35b162ad4a60e8aee238e54c169a4e707ab..e6876d52f87780fbdaa5019a6ecf48afa7b22f41 100644
+--- a/packages/db/src/schema.ts
++++ b/packages/db/src/schema.ts
+@@ -983,7 +983,7 @@ export const threadFacetPrincipalProfiles = sqliteTable(
+     assignmentScope: text("assignment_scope").$type<ThreadFacetAssignmentScope>().notNull(),
+     threadId: text("thread_id").notNull().references(() => threads.id, { onDelete: "cascade" }),
+     principalKey: text("principal_key").notNull(),
+-    identityKind: text("identity_kind").$type<"external" | "person">().notNull().default("person"),
++    identityKind: text("identity_kind").$type<"external" | "machine" | "person">().notNull().default("person"),
+     memberPosition: integer("member_position").notNull(),
+     displayName: text("display_name").notNull(),
+     imageUrl: text("image_url"),
+diff --git a/packages/db/test/data/events.test.ts b/packages/db/test/data/events.test.ts
+index 2261a37a499ca4261f02a1fd7a91610710114b10..dc0404c82e885735366ae9f828d58f0b76dee599 100644
+--- a/packages/db/test/data/events.test.ts
++++ b/packages/db/test/data/events.test.ts
+@@ -1179,11 +1179,28 @@ describe("events", () => {
+   it("indexes daemon-appended messages without parsing deltas or tool outputs", () => {
+     const { db, thread } = setup();
+     const inputs = searchNeedleDaemonEventInputs(thread.id);
++    const clientTurnRequest = inputs.find(
++      (input) => input.type === "client/turn/requested",
++    );
++    if (clientTurnRequest === undefined) {
++      throw new Error("Expected a client turn request search fixture");
++    }
+     const parse = vi.spyOn(JSON, "parse");
+     try {
+-      db.transaction((tx) => appendDaemonEventsInTransaction(tx, inputs), {
+-        behavior: "immediate",
++      appendStoredThreadEvent(db, noopNotifier, {
++        threadId: clientTurnRequest.threadId,
++        type: "client/turn/requested",
++        scope: threadScope(),
++        data: JSON.parse(clientTurnRequest.data),
+       });
++      db.transaction(
++        (tx) =>
++          appendDaemonEventsInTransaction(
++            tx,
++            inputs.filter((input) => input !== clientTurnRequest),
++          ),
++        { behavior: "immediate" },
++      );
+       const parsedData = new Set(parse.mock.calls.map(([text]) => text));
+       expect(
+         inputs
+diff --git a/packages/db/test/fixtures/legacy-identity-context-magnet/0119_soft_pandemic.sql b/packages/db/test/fixtures/legacy-identity-context-magnet/0119_soft_pandemic.sql
+new file mode 100644
+index 0000000000000000000000000000000000000000..6a8c34d747e9b23888ff2e954d4d00ad8ba0ef23
+--- /dev/null
++++ b/packages/db/test/fixtures/legacy-identity-context-magnet/0119_soft_pandemic.sql
+@@ -0,0 +1,102 @@
++CREATE TABLE `thread_facet_cursor_keys` (
++	`key_id` text PRIMARY KEY NOT NULL,
++	`secret` text NOT NULL,
++	`created_at` integer NOT NULL
++);
++--> statement-breakpoint
++CREATE TABLE `thread_facet_declarations` (
++	`type_scope` text NOT NULL,
++	`type_owner` text NOT NULL,
++	`local_name` text NOT NULL,
++	`member_kind` text NOT NULL,
++	`cardinality` text NOT NULL,
++	`assignment_scope` text NOT NULL,
++	`created_at` integer NOT NULL,
++	`updated_at` integer NOT NULL,
++	PRIMARY KEY(`type_scope`, `type_owner`, `local_name`)
++);
++--> statement-breakpoint
++CREATE TABLE `thread_facet_members` (
++	`type_scope` text NOT NULL,
++	`type_owner` text NOT NULL,
++	`local_name` text NOT NULL,
++	`member_id` text NOT NULL,
++	`member_rank` integer NOT NULL,
++	`created_at` integer NOT NULL,
++	PRIMARY KEY(`type_scope`, `type_owner`, `local_name`, `member_id`)
++);
++--> statement-breakpoint
++CREATE UNIQUE INDEX `thread_facet_members_rank_idx` ON `thread_facet_members` (`type_scope`,`type_owner`,`local_name`,`member_rank`);--> statement-breakpoint
++CREATE TABLE `thread_facet_owners` (
++	`type_scope` text NOT NULL,
++	`type_owner` text NOT NULL,
++	`local_name` text NOT NULL,
++	`assignment_scope` text NOT NULL,
++	`generation` integer NOT NULL,
++	`state` text NOT NULL,
++	`census_exhausted` integer DEFAULT false NOT NULL,
++	`census_terminal_delivered` integer DEFAULT false NOT NULL,
++	`projection_revision` integer DEFAULT 0 NOT NULL,
++	`updated_at` integer NOT NULL,
++	PRIMARY KEY(`type_scope`, `type_owner`, `local_name`, `assignment_scope`)
++);
++--> statement-breakpoint
++CREATE TABLE `thread_facet_principal_profiles` (
++	`type_scope` text NOT NULL,
++	`type_owner` text NOT NULL,
++	`local_name` text NOT NULL,
++	`assignment_scope` text NOT NULL,
++	`thread_id` text NOT NULL,
++	`principal_key` text NOT NULL,
++	`identity_kind` text DEFAULT 'person' NOT NULL,
++	`member_position` integer NOT NULL,
++	`display_name` text NOT NULL,
++	`image_url` text,
++	`updated_at` integer NOT NULL,
++	PRIMARY KEY(`type_scope`, `type_owner`, `local_name`, `assignment_scope`, `thread_id`, `principal_key`),
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE UNIQUE INDEX `thread_facet_principal_profiles_position_idx` ON `thread_facet_principal_profiles` (`type_scope`,`type_owner`,`local_name`,`assignment_scope`,`thread_id`,`member_position`);--> statement-breakpoint
++CREATE TABLE `thread_facet_reconciliation_targets` (
++	`type_scope` text NOT NULL,
++	`type_owner` text NOT NULL,
++	`local_name` text NOT NULL,
++	`assignment_scope` text NOT NULL,
++	`owner_generation` integer NOT NULL,
++	`thread_id` text NOT NULL,
++	`discharged` integer DEFAULT false NOT NULL,
++	PRIMARY KEY(`type_scope`, `type_owner`, `local_name`, `assignment_scope`, `owner_generation`, `thread_id`),
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE INDEX `thread_facet_reconciliation_targets_pending_idx` ON `thread_facet_reconciliation_targets` (`type_scope`,`type_owner`,`local_name`,`assignment_scope`,`owner_generation`,`discharged`,`thread_id`);--> statement-breakpoint
++CREATE TABLE `thread_facet_relations` (
++	`type_scope` text NOT NULL,
++	`type_owner` text NOT NULL,
++	`local_name` text NOT NULL,
++	`assignment_scope` text NOT NULL,
++	`thread_id` text NOT NULL,
++	`member_id` text NOT NULL,
++	`updated_at` integer NOT NULL,
++	PRIMARY KEY(`type_scope`, `type_owner`, `local_name`, `assignment_scope`, `thread_id`, `member_id`),
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE INDEX `thread_facet_relations_member_thread_idx` ON `thread_facet_relations` (`type_scope`,`type_owner`,`local_name`,`assignment_scope`,`member_id`,`thread_id`);--> statement-breakpoint
++CREATE TABLE `thread_facet_snapshots` (
++	`type_scope` text NOT NULL,
++	`type_owner` text NOT NULL,
++	`local_name` text NOT NULL,
++	`assignment_scope` text NOT NULL,
++	`thread_id` text NOT NULL,
++	`owner_generation` integer NOT NULL,
++	`source_version` integer,
++	`updated_at` integer NOT NULL,
++	PRIMARY KEY(`type_scope`, `type_owner`, `local_name`, `assignment_scope`, `thread_id`),
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE INDEX `thread_facet_snapshots_generation_thread_idx` ON `thread_facet_snapshots` (`type_scope`,`type_owner`,`local_name`,`assignment_scope`,`owner_generation`,`thread_id`);--> statement-breakpoint
++ALTER TABLE `queued_thread_messages` ADD `p6r_authors` text;--> statement-breakpoint
++ALTER TABLE `threads` ADD `execution_revision` integer DEFAULT 0 NOT NULL;
+diff --git a/packages/db/test/fixtures/legacy-identity-context-magnet/0120_early_virginia_dare.sql b/packages/db/test/fixtures/legacy-identity-context-magnet/0120_early_virginia_dare.sql
+new file mode 100644
+index 0000000000000000000000000000000000000000..1e3a55ae6a1ee621867b5520243334c85466c3b1
+--- /dev/null
++++ b/packages/db/test/fixtures/legacy-identity-context-magnet/0120_early_virginia_dare.sql
+@@ -0,0 +1,33 @@
++CREATE TABLE `context_magnet_contribution_trace_receipts` (
++	`contribution_id` text NOT NULL,
++	`call_id` text NOT NULL,
++	`turn_id` text NOT NULL,
++	`observed_at` integer NOT NULL,
++	FOREIGN KEY (`contribution_id`) REFERENCES `context_magnet_contribution_traces`(`contribution_id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE UNIQUE INDEX `context_magnet_trace_receipt_contribution_idx` ON `context_magnet_contribution_trace_receipts` (`contribution_id`);--> statement-breakpoint
++CREATE TABLE `context_magnet_contribution_trace_snapshots` (
++	`id` text PRIMARY KEY NOT NULL,
++	`thread_id` text NOT NULL,
++	`high_water_sequence` integer NOT NULL,
++	`operation_seq_high_watermark` integer NOT NULL,
++	`captured_at` integer NOT NULL,
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE INDEX `context_magnet_trace_snapshot_thread_idx` ON `context_magnet_contribution_trace_snapshots` (`thread_id`,`captured_at`);--> statement-breakpoint
++CREATE TABLE `context_magnet_contribution_traces` (
++	`contribution_id` text PRIMARY KEY NOT NULL,
++	`thread_id` text NOT NULL,
++	`trace_sequence` integer NOT NULL,
++	`operation_event_sequence` integer,
++	`trace_json` text NOT NULL,
++	`receipt_tool` text NOT NULL,
++	`plugin_id` text NOT NULL,
++	`created_at` integer NOT NULL,
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE UNIQUE INDEX `context_magnet_trace_thread_sequence_idx` ON `context_magnet_contribution_traces` (`thread_id`,`trace_sequence`);--> statement-breakpoint
++CREATE INDEX `context_magnet_trace_thread_operation_idx` ON `context_magnet_contribution_traces` (`thread_id`,`operation_event_sequence`,`contribution_id`);
+diff --git a/packages/db/test/fixtures/legacy-identity-context-magnet/0121_sticky_king_bedlam.sql b/packages/db/test/fixtures/legacy-identity-context-magnet/0121_sticky_king_bedlam.sql
+new file mode 100644
+index 0000000000000000000000000000000000000000..874fe9bfe31248389b95f98f14aa16e85dc173b2
+--- /dev/null
++++ b/packages/db/test/fixtures/legacy-identity-context-magnet/0121_sticky_king_bedlam.sql
+@@ -0,0 +1,4 @@
++ALTER TABLE `context_magnet_contribution_trace_receipts` ADD `operation_id` text;--> statement-breakpoint
++ALTER TABLE `context_magnet_contribution_trace_receipts` ADD `operation_event_sequence` integer;--> statement-breakpoint
++ALTER TABLE `context_magnet_contribution_trace_receipts` ADD `receipt_sequence` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
++ALTER TABLE `context_magnet_contribution_trace_snapshots` ADD `receipt_high_water_sequence` integer DEFAULT 0 NOT NULL;
+diff --git a/packages/db/test/fixtures/legacy-identity-context-magnet/0122_living_quasimodo.sql b/packages/db/test/fixtures/legacy-identity-context-magnet/0122_living_quasimodo.sql
+new file mode 100644
+index 0000000000000000000000000000000000000000..6eefd1d5f7654f90a07cb775bc82641c6194cbd2
+--- /dev/null
++++ b/packages/db/test/fixtures/legacy-identity-context-magnet/0122_living_quasimodo.sql
+@@ -0,0 +1,49 @@
++CREATE TABLE `context_magnet_provider_admission_attempts` (
++	`admission_id` text PRIMARY KEY NOT NULL,
++	`contribution_id` text NOT NULL,
++	`thread_id` text NOT NULL,
++	`request_kind` text NOT NULL,
++	`provider_kind` text NOT NULL,
++	`instruction_mode` text NOT NULL,
++	`selected_tool_summary` text NOT NULL,
++	`created_at` integer NOT NULL,
++	`admission_attempt_sequence` integer NOT NULL,
++	FOREIGN KEY (`contribution_id`) REFERENCES `context_magnet_contribution_traces`(`contribution_id`) ON UPDATE no action ON DELETE cascade,
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE INDEX `context_magnet_admission_attempt_contribution_idx` ON `context_magnet_provider_admission_attempts` (`contribution_id`);--> statement-breakpoint
++CREATE UNIQUE INDEX `context_magnet_admission_attempt_thread_sequence_idx` ON `context_magnet_provider_admission_attempts` (`thread_id`,`admission_attempt_sequence`);--> statement-breakpoint
++CREATE TABLE `context_magnet_provider_admission_observations` (
++	`admission_observation_sequence` integer PRIMARY KEY NOT NULL,
++	`admission_id` text NOT NULL,
++	`thread_id` text NOT NULL,
++	`kind` text NOT NULL,
++	`settlement` text,
++	`observed_at` integer NOT NULL,
++	FOREIGN KEY (`admission_id`) REFERENCES `context_magnet_provider_admission_attempts`(`admission_id`) ON UPDATE no action ON DELETE cascade,
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE INDEX `context_magnet_admission_observation_thread_idx` ON `context_magnet_provider_admission_observations` (`thread_id`,`admission_observation_sequence`);--> statement-breakpoint
++CREATE TABLE `context_magnet_provider_admission_retention` (
++	`contribution_id` text PRIMARY KEY NOT NULL,
++	`thread_id` text NOT NULL,
++	`pruned_attempt_count` integer NOT NULL,
++	`retention_sequence` integer NOT NULL,
++	FOREIGN KEY (`contribution_id`) REFERENCES `context_magnet_contribution_traces`(`contribution_id`) ON UPDATE no action ON DELETE cascade,
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++CREATE INDEX `context_magnet_admission_retention_thread_idx` ON `context_magnet_provider_admission_retention` (`thread_id`,`retention_sequence`);--> statement-breakpoint
++CREATE TABLE `context_magnet_provider_admission_sequences` (
++	`thread_id` text PRIMARY KEY NOT NULL,
++	`last_attempt_sequence` integer DEFAULT 0 NOT NULL,
++	`last_observation_sequence` integer DEFAULT 0 NOT NULL,
++	`last_retention_sequence` integer DEFAULT 0 NOT NULL,
++	FOREIGN KEY (`thread_id`) REFERENCES `threads`(`id`) ON UPDATE no action ON DELETE cascade
++);
++--> statement-breakpoint
++ALTER TABLE `context_magnet_contribution_trace_snapshots` ADD `admission_observation_high_water_sequence` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
++ALTER TABLE `context_magnet_contribution_trace_snapshots` ADD `admission_attempt_high_water_sequence` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
++ALTER TABLE `context_magnet_contribution_trace_snapshots` ADD `admission_retention_high_water_sequence` integer DEFAULT 0 NOT NULL;
+diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
+index 23f0299397439046d141306a50c17fc21ee7321c..1d6c2c659dc066006e77178cc80f5f730d33329f 100644
+--- a/packages/db/test/migrate.test.ts
++++ b/packages/db/test/migrate.test.ts
+@@ -1,7 +1,9 @@
+ import { beforeAll, describe, expect, it, vi } from "vitest";
+-import { readFileSync } from "node:fs";
+-import { dirname, resolve } from "node:path";
++import { mkdtempSync, readFileSync, rmSync } from "node:fs";
++import { dirname, join, resolve } from "node:path";
+ import { fileURLToPath } from "node:url";
++import { tmpdir } from "node:os";
++import { readMigrationFiles } from "drizzle-orm/migrator";
+ import { publishedMigrationWhensByTag } from "../src/migration-history.js";
+ import { defaultAppSettings } from "@bb/domain";
+ import {
+@@ -23,6 +25,7 @@ import {
+ } from "./helpers/migrated-connection.js";
+ 
+ type InsertMigrationParameters = [string, number];
++type InsertAppSettingParameters = [string, string, number];
+ type DeleteMigrationParameters = [number];
+ type DeleteMigrationsParameters = [number, number, number, number];
+ type TableNameParameters = [string];
+@@ -272,6 +275,138 @@ const latestMigrationWhen = Math.max(
+   ).entries.map((entry) => entry.when),
+ );
+ 
++const legacyIdentityAndContextMagnetFixtureFiles = [
++  "0119_soft_pandemic.sql",
++  "0120_early_virginia_dare.sql",
++  "0121_sticky_king_bedlam.sql",
++  "0122_living_quasimodo.sql",
++] as const;
++const legacyIdentityAndContextMagnetMigrationWhens = [
++  1789068314079, 1789920055084, 1789922567893, 1789936012627,
++] as const;
++const legacyIdentityAndContextMagnetMigrationHashes = [
++  "a6aae36a008c169416105c2a8577709bf6576491b2866bcfb566326cb012a3ba",
++  "31305fe3d20ec978784db38097e4ebe8b3963758c2620ac9c444753773ddf3ff",
++  "c6ea307df24123baab6678ab89a4370acecba67ea4e7ee11dad3a6192eb6d9ff",
++  "45dc4939a7687be7199991278cb15f5f5986ae9648f750fc19fd5d7e83a265b3",
++] as const;
++
++function applyLegacyIdentityAndContextMagnetFixture(
++  db: DbConnection,
++  count: number,
++): void {
++  for (const filename of legacyIdentityAndContextMagnetFixtureFiles.slice(0, count)) {
++    db.$client.exec(
++      readFileSync(
++        resolve(
++          __dirname,
++          "fixtures",
++          "legacy-identity-context-magnet",
++          filename,
++        ),
++        "utf8",
++      ),
++    );
++  }
++}
++
++function createLegacyIdentityAndContextMagnetHistory(
++  db: DbConnection,
++  legacyPrefixLength: number = legacyIdentityAndContextMagnetFixtureFiles.length,
++): void {
++  const migrations = readMigrationFiles({
++    migrationsFolder: resolve(__dirname, "../drizzle"),
++  });
++  db.$client.exec(
++    'CREATE TABLE "__drizzle_migrations" (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at numeric)',
++  );
++  db.$client.exec(
++    "CREATE TEMP TABLE bb_migration_local_host (id TEXT PRIMARY KEY)",
++  );
++  for (const migration of migrations.slice(0, 119)) {
++    for (const statement of migration.sql) db.$client.exec(statement);
++    db.$client
++      .prepare<InsertMigrationParameters>(
++        "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
++      )
++      .run(migration.hash, migration.folderMillis);
++  }
++  db.$client.exec(`
++    INSERT INTO projects (id, name, created_at, updated_at)
++    VALUES ('proj_legacy', 'Legacy migration project', 1, 1);
++    INSERT INTO threads (
++      id, project_id, provider_id, status, latest_attention_at, created_at,
++      updated_at
++    ) VALUES ('thr_legacy', 'proj_legacy', 'codex', 'starting', 1, 1, 1);
++    INSERT INTO app_settings_values (key, value, updated_at)
++    VALUES (
++      'machineEnvironment:legacy-token',
++      '{"name":"LEGACY_TOKEN","ciphertext":"ciphertext_legacy","version":1,"note":"preserve me"}',
++      2
++    );
++  `);
++  db.$client.pragma("foreign_keys = OFF");
++  applyLegacyIdentityAndContextMagnetFixture(db, legacyPrefixLength);
++  for (const [index, createdAt] of legacyIdentityAndContextMagnetMigrationWhens
++    .slice(0, legacyPrefixLength)
++    .entries()) {
++    db.$client
++      .prepare<InsertMigrationParameters>(
++        "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
++      )
++      .run(legacyIdentityAndContextMagnetMigrationHashes[index], createdAt);
++  }
++  if (legacyPrefixLength !== legacyIdentityAndContextMagnetFixtureFiles.length) {
++    return;
++  }
++  db.$client.exec(`
++    INSERT INTO thread_facet_principal_profiles (
++      type_scope, type_owner, local_name, assignment_scope, thread_id,
++      principal_key, identity_kind, member_position, display_name, image_url,
++      updated_at
++    ) VALUES (
++      'core', 'core', 'participants', 'shared-thread', 'thr_legacy',
++      'machine:legacy', 'machine', 0, 'Legacy machine',
++      'https://example.test/legacy.png', 12
++    );
++    INSERT INTO context_magnet_contribution_traces (
++      contribution_id, thread_id, trace_sequence, operation_event_sequence,
++      trace_json, receipt_tool, plugin_id, created_at
++    ) VALUES (
++      'contribution_legacy', 'thr_legacy', 1, 4, '{"legacy":true}',
++      'legacy-tool', 'context-magnet', 13
++    );
++    INSERT INTO context_magnet_contribution_trace_receipts (
++      contribution_id, call_id, turn_id, operation_id,
++      operation_event_sequence, receipt_sequence, observed_at
++    ) VALUES (
++      'contribution_legacy', 'call_legacy', 'turn_legacy', 'operation_legacy',
++      4, 9, 14
++    );
++    INSERT INTO context_magnet_contribution_trace_snapshots (
++      id, thread_id, high_water_sequence, operation_seq_high_watermark,
++      receipt_high_water_sequence, admission_observation_high_water_sequence,
++      admission_attempt_high_water_sequence,
++      admission_retention_high_water_sequence, captured_at
++    ) VALUES ('snapshot_legacy', 'thr_legacy', 1, 4, 9, 2, 3, 4, 15);
++    INSERT INTO context_magnet_provider_admission_attempts (
++      admission_id, contribution_id, thread_id, request_kind, provider_kind,
++      instruction_mode, selected_tool_summary, created_at,
++      admission_attempt_sequence
++    ) VALUES (
++      'admission_legacy', 'contribution_legacy', 'thr_legacy', 'request',
++      'provider', 'instruction', 'tool', 16, 3
++    );
++    INSERT INTO context_magnet_provider_admission_observations (
++      admission_observation_sequence, admission_id, thread_id, kind,
++      settlement, observed_at
++    ) VALUES (2, 'admission_legacy', 'thr_legacy', 'observed', 'settled', 17);
++    INSERT INTO context_magnet_provider_admission_retention (
++      contribution_id, thread_id, pruned_attempt_count, retention_sequence
++    ) VALUES ('contribution_legacy', 'thr_legacy', 1, 4);
++  `);
++}
++
+ function restoreWideExperimentsTable(db: DbConnection): void {
+   const columns = db.$client
+     .prepare<[], TableInfoRow>("PRAGMA table_info(system_experiments)")
+@@ -725,8 +860,15 @@ function dropMarketplaceStatsColumn(db: DbConnection): void {
+ 
+ /** Undo the downstream identity migrations that follow the queue rework. */
+ function dropIdentityKernelSchema(db: DbConnection): void {
+-  if (db.$client.prepare<[], TableInfoRow>("PRAGMA table_info(queued_thread_messages)").all().some((column) => column.name === "p6r_authors")) {
+-    db.$client.exec("ALTER TABLE queued_thread_messages DROP COLUMN p6r_authors");
++  if (
++    db.$client
++      .prepare<[], TableInfoRow>("PRAGMA table_info(queued_thread_messages)")
++      .all()
++      .some((column) => column.name === "p6r_authors")
++  ) {
++    db.$client.exec(
++      "ALTER TABLE queued_thread_messages DROP COLUMN p6r_authors",
++    );
+   }
+   for (const table of [
+     "thread_facet_reconciliation_targets",
+@@ -5744,6 +5886,527 @@ describe("migrate", () => {
+   });
+ });
+ 
++describe("identity and context magnet migration bridge", () => {
++  it("migrates a clean target database through the target-native 0131 bridge", () => {
++    const db = createConnection(":memory:");
++
++    try {
++      migrate(db);
++
++      expect(
++        db.$client
++          .prepare(
++            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'context_magnet_contribution_traces'",
++          )
++          .get(),
++      ).toEqual({ name: "context_magnet_contribution_traces" });
++      expect(
++        db.$client
++          .prepare<[], TableInfoRow>(
++            "PRAGMA table_info(queued_thread_messages)",
++          )
++          .all()
++          .map((column) => column.name),
++      ).toContain("p6r_authors");
++      expect(
++        db.$client
++          .prepare<[], TableInfoRow>("PRAGMA table_info(threads)")
++          .all()
++          .map((column) => column.name),
++      ).toContain("execution_revision");
++      expect(readLatestAppliedMigrationCreatedAt(db)).toBe(latestMigrationWhen);
++    } finally {
++      closeConnection(db);
++    }
++  });
++
++  it("upgrades preserved legacy identity and context magnet history without data loss", () => {
++    const db = createConnection(":memory:");
++
++    try {
++      createLegacyIdentityAndContextMagnetHistory(db);
++      migrate(db);
++
++      const appliedCreatedAts = readAppliedMigrationCreatedAts(db);
++      for (const createdAt of legacyIdentityAndContextMagnetMigrationWhens) {
++        expect(appliedCreatedAts).toContain(createdAt);
++      }
++      expect(appliedCreatedAts).toContain(latestMigrationWhen);
++      expect(
++        db.$client
++          .prepare(
++            `
++              SELECT principal_key, identity_kind, display_name, image_url
++              FROM thread_facet_principal_profiles
++              WHERE principal_key = 'machine:legacy'
++            `,
++          )
++          .get(),
++      ).toEqual({
++        principal_key: "machine:legacy",
++        identity_kind: "machine",
++        display_name: "Legacy machine",
++        image_url: "https://example.test/legacy.png",
++      });
++      expect(
++        db.$client
++          .prepare(
++            `
++              SELECT operation_id, operation_event_sequence, receipt_sequence
++              FROM context_magnet_contribution_trace_receipts
++              WHERE contribution_id = 'contribution_legacy'
++            `,
++          )
++          .get(),
++      ).toEqual({
++        operation_id: "operation_legacy",
++        operation_event_sequence: 4,
++        receipt_sequence: 9,
++      });
++      expect(
++        db.$client
++          .prepare(
++            `
++              SELECT receipt_high_water_sequence,
++                admission_observation_high_water_sequence,
++                admission_attempt_high_water_sequence,
++                admission_retention_high_water_sequence
++              FROM context_magnet_contribution_trace_snapshots
++              WHERE id = 'snapshot_legacy'
++            `,
++          )
++          .get(),
++      ).toEqual({
++        receipt_high_water_sequence: 9,
++        admission_observation_high_water_sequence: 2,
++        admission_attempt_high_water_sequence: 3,
++        admission_retention_high_water_sequence: 4,
++      });
++      expect(
++        db.$client
++          .prepare(
++            `
++              SELECT admission_id, admission_attempt_sequence
++              FROM context_magnet_provider_admission_attempts
++              WHERE admission_id = 'admission_legacy'
++            `,
++          )
++          .get(),
++      ).toEqual({
++        admission_id: "admission_legacy",
++        admission_attempt_sequence: 3,
++      });
++
++      migrate(db);
++
++      expect(
++        db.$client
++          .prepare(
++            "SELECT project_id, name, ciphertext, encryption_version, note FROM environment_variables WHERE name = 'LEGACY_TOKEN'",
++          )
++          .get(),
++      ).toEqual({
++        project_id: null,
++        name: "LEGACY_TOKEN",
++        ciphertext: "ciphertext_legacy",
++        encryption_version: 1,
++        note: "preserve me",
++      });
++      expect(
++        db.$client
++          .prepare(
++            "SELECT key FROM app_settings_values WHERE key = 'machineEnvironment:legacy-token'",
++          )
++          .get(),
++      ).toBeUndefined();
++      expect(readIndexNames({ db, tableName: "events" })).toContain(
++        "events_provider_identity_idx",
++      );
++      expect(readIndexNames({ db, tableName: "project_attachments" })).toContain(
++        "project_attachments_project_path_idx",
++      );
++      expect(readIndexNames({ db, tableName: "threads" })).toContain(
++        "threads_lifecycle_owner_idx",
++      );
++
++      expect(
++        db.$client
++          .prepare(
++            "SELECT COUNT(*) AS count FROM context_magnet_contribution_traces WHERE contribution_id = 'contribution_legacy'",
++          )
++          .get(),
++      ).toEqual({ count: 1 });
++      expect(
++        db.$client
++          .prepare(
++            "SELECT COUNT(*) AS count FROM environment_variables WHERE name = 'LEGACY_TOKEN'",
++          )
++          .get(),
++      ).toEqual({ count: 1 });
++      expect(
++        db.$client
++          .prepare(
++            "SELECT COUNT(*) AS count FROM __drizzle_migrations WHERE created_at IN (1789068314079, 1789920055084, 1789922567893, 1789936012627)",
++          )
++          .get(),
++      ).toEqual({ count: 4 });
++    } finally {
++      closeConnection(db);
++    }
++  });
++
++  it.each([1, 2, 3, 4])(
++    "upgrades supported legacy identity/context prefix %i",
++    (legacyPrefixLength) => {
++      const db = createConnection(":memory:");
++
++      try {
++        createLegacyIdentityAndContextMagnetHistory(db, legacyPrefixLength);
++        migrate(db);
++        expect(readLatestAppliedMigrationCreatedAt(db)).toBe(
++          latestMigrationWhen,
++        );
++      } finally {
++        closeConnection(db);
++      }
++    },
++  );
++
++  it("rolls back the non-idempotent 0123 settings move and retries after reopen", () => {
++    const directory = mkdtempSync(join(tmpdir(), "bb-migration-0123-"));
++    const databasePath = join(directory, "state.db");
++    const db = createConnection(databasePath);
++
++    try {
++      createLegacyIdentityAndContextMagnetHistory(db);
++      db.$client
++        .prepare<InsertAppSettingParameters>(
++          "INSERT INTO app_settings_values (key, value, updated_at) VALUES (?, ?, ?)",
++        )
++        .run(
++          "machineEnvironment:duplicate-token",
++          '{"name":"LEGACY_TOKEN","ciphertext":"ciphertext_duplicate","version":1,"note":"duplicate"}',
++          3,
++        );
++      expect(() => migrate(db)).toThrow();
++      expect(
++        db.$client
++          .prepare<[], MigrationCountRow>(
++            "SELECT COUNT(*) AS count FROM __drizzle_migrations WHERE created_at = 1789583950442",
++          )
++          .get(),
++      ).toEqual({ count: 0 });
++      expect(
++        db.$client
++          .prepare<[], MigrationCountRow>(
++            "SELECT COUNT(*) AS count FROM app_settings_values WHERE key LIKE 'machineEnvironment:%'",
++          )
++          .get(),
++      ).toEqual({ count: 2 });
++      expect(
++        db.$client
++          .prepare(
++            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'environment_variables'",
++          )
++          .get(),
++      ).toBeUndefined();
++    } finally {
++      closeConnection(db);
++    }
++
++    const reopened = createConnection(databasePath);
++    try {
++      reopened.$client
++        .prepare(
++          "DELETE FROM app_settings_values WHERE key = 'machineEnvironment:duplicate-token'",
++        )
++        .run();
++      migrate(reopened);
++      expect(
++        reopened.$client
++          .prepare<[], MigrationCountRow>(
++            "SELECT COUNT(*) AS count FROM __drizzle_migrations WHERE created_at = 1789583950442",
++          )
++          .get(),
++      ).toEqual({ count: 1 });
++      expect(
++        reopened.$client
++          .prepare<[], MigrationCountRow>(
++            "SELECT COUNT(*) AS count FROM environment_variables WHERE name = 'LEGACY_TOKEN'",
++          )
++          .get(),
++      ).toEqual({ count: 1 });
++      expect(
++        reopened.$client
++          .prepare<[], MigrationCountRow>(
++            "SELECT COUNT(*) AS count FROM app_settings_values WHERE key LIKE 'machineEnvironment:%'",
++          )
++          .get(),
++      ).toEqual({ count: 0 });
++    } finally {
++      closeConnection(reopened);
++      rmSync(directory, { force: true, recursive: true });
++    }
++  });
++
++  it.each([
++    ["after Drizzle records 0131", "afterDrizzleMigration"],
++    ["during a guarded column add", "afterColumnAdded"],
++    ["after validation before completion", "beforeCompletionRecorded"],
++  ] as const)("recovers in a fresh process when it fails %s", (_phase, hook) => {
++    const directory = mkdtempSync(join(tmpdir(), "bb-migration-bridge-"));
++    const databasePath = join(directory, "state.db");
++    const db = createConnection(databasePath);
++
++    try {
++      expect(() =>
++        migrate(db, {
++          identityContextBridgeTestHooks: {
++            [hook]: () => {
++              throw new Error(`forced bridge failure: ${hook}`);
++            },
++          },
++        }),
++      ).toThrow(`forced bridge failure: ${hook}`);
++      expect(readLatestAppliedMigrationCreatedAt(db)).toBe(latestMigrationWhen);
++      expect(
++        db.$client
++          .prepare(
++            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'bb_schema_bridge_completions'",
++          )
++          .get(),
++      ).toBeUndefined();
++    } finally {
++      closeConnection(db);
++    }
++
++    const reopened = createConnection(databasePath);
++    try {
++      migrate(reopened);
++      expect(
++        reopened.$client
++          .prepare(
++            "SELECT name FROM bb_schema_bridge_completions WHERE name = 'identity-context-0131'",
++          )
++          .get(),
++      ).toEqual({ name: "identity-context-0131" });
++      expect(readLatestAppliedMigrationCreatedAt(reopened)).toBe(
++        latestMigrationWhen,
++      );
++    } finally {
++      closeConnection(reopened);
++      rmSync(directory, { force: true, recursive: true });
++    }
++  });
++
++  it("rejects a legacy identity/context ledger with a hole before replay", () => {
++    const db = createConnection(":memory:");
++
++    try {
++      createLegacyIdentityAndContextMagnetHistory(db);
++      db.$client
++        .prepare<DeleteMigrationParameters>(
++          "DELETE FROM __drizzle_migrations WHERE created_at = ?",
++        )
++        .run(1789920055084);
++      expect(() => migrate(db)).toThrow("one exact ordered prefix with no holes");
++    } finally {
++      closeConnection(db);
++    }
++  });
++
++  it("rejects a legacy identity/context ledger with an unknown hash before replay", () => {
++    const db = createConnection(":memory:");
++
++    try {
++      createLegacyIdentityAndContextMagnetHistory(db);
++      db.$client
++        .prepare("UPDATE __drizzle_migrations SET hash = 'wrong' WHERE created_at = 1789068314079")
++        .run();
++      expect(() => migrate(db)).toThrow("has an unrecognized hash");
++    } finally {
++      closeConnection(db);
++    }
++  });
++
++  it("rejects later identity/context schema without its legacy ledger marker", () => {
++    const db = createConnection(":memory:");
++
++    try {
++      createLegacyIdentityAndContextMagnetHistory(db);
++      db.$client
++        .prepare<DeleteMigrationParameters>(
++          "DELETE FROM __drizzle_migrations WHERE created_at = ?",
++        )
++        .run(1789920055084);
++      db.$client
++        .prepare<DeleteMigrationParameters>(
++          "DELETE FROM __drizzle_migrations WHERE created_at = ?",
++        )
++        .run(1789922567893);
++      db.$client
++        .prepare<DeleteMigrationParameters>(
++          "DELETE FROM __drizzle_migrations WHERE created_at = ?",
++        )
++        .run(1789936012627);
++      expect(() => migrate(db)).toThrow("Unexpected later tables");
++    } finally {
++      closeConnection(db);
++    }
++  });
++
++  it("rejects a later target marker with a wrong hash before replay", () => {
++    const db = createConnection(":memory:");
++
++    try {
++      createLegacyIdentityAndContextMagnetHistory(db);
++      db.$client
++        .prepare<InsertMigrationParameters>(
++          "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
++        )
++        .run("wrong-target-hash", 1790008317938);
++      expect(() => migrate(db)).toThrow("not an exact target migration");
++    } finally {
++      closeConnection(db);
++    }
++  });
++
++  it("rejects an unrelated future marker before replay", () => {
++    const db = createConnection(":memory:");
++
++    try {
++      createLegacyIdentityAndContextMagnetHistory(db);
++      db.$client
++        .prepare<InsertMigrationParameters>(
++          "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
++        )
++        .run("unrelated", 1999999999999);
++      expect(() => migrate(db)).toThrow("not an exact target migration");
++    } finally {
++      closeConnection(db);
++    }
++  });
++
++  it("rejects a legacy identity/context ledger whose required schema is absent", () => {
++    const db = createConnection(":memory:");
++
++    try {
++      createLegacyIdentityAndContextMagnetHistory(db);
++      db.$client.pragma("foreign_keys = OFF");
++      db.$client.exec("DROP TABLE context_magnet_contribution_traces");
++      expect(() => migrate(db)).toThrow("ledger and schema disagree");
++    } finally {
++      closeConnection(db);
++    }
++  });
++
++  it("rejects a same-named identity index with the wrong definition", () => {
++    const db = createConnection(":memory:");
++
++    try {
++      createLegacyIdentityAndContextMagnetHistory(db);
++      db.$client.exec(
++        "DROP INDEX thread_facet_principal_profiles_position_idx; CREATE INDEX thread_facet_principal_profiles_position_idx ON thread_facet_principal_profiles (principal_key)",
++      );
++      expect(() => migrate(db)).toThrow("definition mismatch");
++    } finally {
++      closeConnection(db);
++    }
++  });
++
++  it("rejects a bridge column with the wrong type/default contract", () => {
++    const db = createConnection(":memory:");
++
++    try {
++      migrate(db);
++      db.$client.exec(
++        "ALTER TABLE queued_thread_messages DROP COLUMN p6r_authors; ALTER TABLE queued_thread_messages ADD COLUMN p6r_authors integer DEFAULT 0 NOT NULL",
++      );
++      expect(() => migrate(db)).toThrow("Bridge columns");
++    } finally {
++      closeConnection(db);
++    }
++  });
++
++  it("rejects an identity/context table with a missing foreign key", () => {
++    const db = createConnection(":memory:");
++
++    try {
++      migrate(db);
++      db.$client.pragma("foreign_keys = OFF");
++      db.$client.exec(`
++        DROP TABLE context_magnet_contribution_traces;
++        CREATE TABLE context_magnet_contribution_traces (
++          contribution_id text PRIMARY KEY NOT NULL,
++          thread_id text NOT NULL,
++          trace_sequence integer NOT NULL,
++          operation_event_sequence integer,
++          trace_json text NOT NULL,
++          receipt_tool text NOT NULL,
++          plugin_id text NOT NULL,
++          created_at integer NOT NULL
++        );
++        CREATE UNIQUE INDEX context_magnet_trace_thread_sequence_idx
++          ON context_magnet_contribution_traces (thread_id, trace_sequence);
++        CREATE INDEX context_magnet_trace_thread_operation_idx
++          ON context_magnet_contribution_traces (thread_id, operation_event_sequence, contribution_id);
++      `);
++      expect(() => migrate(db)).toThrow("Foreign keys");
++    } finally {
++      closeConnection(db);
++    }
++  });
++
++  it.each([
++    [
++      "a missing base column",
++      `CREATE TABLE context_magnet_provider_admission_sequences (
++        thread_id text PRIMARY KEY NOT NULL,
++        last_attempt_sequence integer DEFAULT 0 NOT NULL,
++        last_observation_sequence integer DEFAULT 0 NOT NULL
++      )`,
++    ],
++    [
++      "a wrong base type/null/default",
++      `CREATE TABLE context_magnet_provider_admission_sequences (
++        thread_id text PRIMARY KEY NOT NULL,
++        last_attempt_sequence text DEFAULT 'wrong' NOT NULL,
++        last_observation_sequence integer DEFAULT 0 NOT NULL,
++        last_retention_sequence integer DEFAULT 0 NOT NULL,
++        FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
++      )`,
++    ],
++    [
++      "a reversed composite primary key",
++      `CREATE TABLE thread_facet_declarations (
++        type_scope text NOT NULL,
++        type_owner text NOT NULL,
++        local_name text NOT NULL,
++        member_kind text NOT NULL,
++        cardinality text NOT NULL,
++        assignment_scope text NOT NULL,
++        created_at integer NOT NULL,
++        updated_at integer NOT NULL,
++        PRIMARY KEY(local_name, type_owner, type_scope)
++      )`,
++    ],
++  ])("rejects %s in the canonical base-table contract", (_name, definition) => {
++    const db = createConnection(":memory:");
++
++    try {
++      migrate(db);
++      db.$client.pragma("foreign_keys = OFF");
++      const tableName = definition.includes("thread_facet_declarations")
++        ? "thread_facet_declarations"
++        : "context_magnet_provider_admission_sequences";
++      db.$client.exec(`DROP TABLE ${tableName}; ${definition}`);
++      expect(() => migrate(db)).toThrow("Table shapes");
++    } finally {
++      closeConnection(db);
++    }
++  });
++});
++
+ describe("environment providers migration", () => {
+   const environmentProvidersMigrationWhen = 1788386943764;
+ 
+-- 
+2.53.0
+

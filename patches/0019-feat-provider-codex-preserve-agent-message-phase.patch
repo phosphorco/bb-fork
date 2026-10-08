@@ -1,4 +1,4 @@
-From ad14ed8f564d7dadc24e61e8c52d01c43db3548d Mon Sep 17 00:00:00 2001
+From 5693831c91cc8eba41a0467108766245df9ec37d Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Wed, 16 Sep 2026 16:31:38 +0200
 Subject: [PATCH] feat(provider-codex): preserve agent message phase
@@ -34,10 +34,10 @@ Subject: [PATCH] feat(provider-codex): preserve agent message phase
  27 files changed, 639 insertions(+), 77 deletions(-)
 
 diff --git a/apps/server/test/public/public-thread-data.test.ts b/apps/server/test/public/public-thread-data.test.ts
-index 5c077d1e8639e9cc0a782f8b3d4f2e7eae178642..def6d86a9515d9dfec150e439495c5189f29447b 100644
+index 17f50e650e97505b4318cfe56b771b85bef83d59..120a0d3078b6ab7b80494cf1c763227e140e2338 100644
 --- a/apps/server/test/public/public-thread-data.test.ts
 +++ b/apps/server/test/public/public-thread-data.test.ts
-@@ -26,6 +26,7 @@ import {
+@@ -27,6 +27,7 @@ import {
  import {
    encodeClientTurnRequestIdNumber,
    turnRequestEventDataSchema,
@@ -45,7 +45,7 @@ index 5c077d1e8639e9cc0a782f8b3d4f2e7eae178642..def6d86a9515d9dfec150e439495c518
    threadQueuedMessageSchema,
    threadScope,
    threadSchema,
-@@ -5339,6 +5340,147 @@ describe("public thread data routes", () => {
+@@ -4660,6 +4661,147 @@ describe("public thread data routes", () => {
      });
    });
  
@@ -194,7 +194,7 @@ index 5c077d1e8639e9cc0a782f8b3d4f2e7eae178642..def6d86a9515d9dfec150e439495c518
      await withTestHarness(async (harness) => {
        const { environment, thread } = seedThreadFixture(harness);
 diff --git a/packages/domain/src/provider-event.ts b/packages/domain/src/provider-event.ts
-index 008114b9777cfed95d65a77f5b362f182298c9e6..d70a792a8832ce683c6b02bea049364023b97e49 100644
+index 2eefa9f60f1291872c91fa22efa441cafd57f6e7..6d3c675b3141d2a5d2ada936220aa85d741dc19f 100644
 --- a/packages/domain/src/provider-event.ts
 +++ b/packages/domain/src/provider-event.ts
 @@ -374,6 +374,14 @@ export type ThreadEventBackgroundTaskItem = z.infer<
@@ -221,10 +221,10 @@ index 008114b9777cfed95d65a77f5b362f182298c9e6..d70a792a8832ce683c6b02bea0493640
      parentToolCallId: z.string().optional(),
    }),
 diff --git a/packages/domain/test/stored-thread-event.test.ts b/packages/domain/test/stored-thread-event.test.ts
-index d6800edc7b0e3b3cfdc5c866a345f26cc03d58e3..ffa5e4a658913c683e58acde0cc9c50428f4cba4 100644
+index 4e64516789b47cf2f5d561106fc006d07620c6cb..a2e2f01a0da986ee53d5c08de508152fd6528ae6 100644
 --- a/packages/domain/test/stored-thread-event.test.ts
 +++ b/packages/domain/test/stored-thread-event.test.ts
-@@ -155,6 +155,76 @@ describe("parseStoredThreadEvent", () => {
+@@ -154,6 +154,76 @@ describe("parseStoredThreadEvent", () => {
      expect(event).not.toHaveProperty("turnId");
    });
  
@@ -820,7 +820,7 @@ index 57d2d90d24bf74517fedc38f4f60391168a8647d..b26641a89ba05a1e0be6ea827dfdb150
  {"ts":1787279446059,"run":1787279443667,"seq":22.63157894736842,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_kbyc2f5ivt\",\"deltas\":[{\"kind\":\"provider.rateLimits\",\"rateLimits\":{\"providerId\":\"codex\",\"status\":\"allowed\",\"kind\":\"subscription-window\",\"windows\":[{\"providerKey\":\"primary\",\"label\":\"Weekly limit\",\"status\":\"allowed\",\"resetsAtMs\":1787810287000}],\"reachedReason\":null,\"overageStatus\":null,\"overageReason\":null}}]}}"}
  {"ts":1787279446060,"run":1787279443667,"seq":22.68421052631579,"dir":"bridge→runtime","line":"{\"jsonrpc\":\"2.0\",\"method\":\"thread/delta\",\"params\":{\"threadId\":\"thr_kbyc2f5ivt\",\"deltas\":[{\"kind\":\"turn.boundary\",\"providerTurnId\":\"01a02228-1024-7680-bd98-b1dd3fd15eeb\",\"status\":\"completed\",\"providerCheckpointId\":\"01a02228-1024-7680-bd98-b1dd3fd15eeb\"}]}}"}
 diff --git a/packages/provider-bridge-protocol/src/assembler/delta-assembler.test.ts b/packages/provider-bridge-protocol/src/assembler/delta-assembler.test.ts
-index c58437a2519e86691038e971c49ab211467965ee..192ceb1ec88111e6adc5f6f2f3f255354cae284b 100644
+index 9fe84a62d756f57b9073638bb8223413c78d7ac3..2c75458cb7e08873a0ea1cbfb5d9693040a27dcf 100644
 --- a/packages/provider-bridge-protocol/src/assembler/delta-assembler.test.ts
 +++ b/packages/provider-bridge-protocol/src/assembler/delta-assembler.test.ts
 @@ -1163,6 +1163,76 @@ describe("delta assembler unified streaming dialect", () => {
@@ -1013,10 +1013,10 @@ index 6c91529d946854b06758dd8b572089da409103ef..4607771599c811d205eff818f021b012
      type: z.literal("reasoning"),
      summary: z.array(z.string()),
 diff --git a/packages/sdk/test/sdk.test.ts b/packages/sdk/test/sdk.test.ts
-index 716f000c5ab10acc1b89e1987f60209349d30cfd..74c1c516d89a65d3bb6df07bb1a5acfa99ebf4e4 100644
+index 0106dc24c4eef593ffd75a5d09ce14be79acc139..c9413bc788520edb0e26cbaaa7aada57b88165bb 100644
 --- a/packages/sdk/test/sdk.test.ts
 +++ b/packages/sdk/test/sdk.test.ts
-@@ -297,6 +297,109 @@ describe("@bb/sdk", () => {
+@@ -317,6 +317,109 @@ describe("@bb/sdk", () => {
      ]);
    });
  
@@ -1127,10 +1127,10 @@ index 716f000c5ab10acc1b89e1987f60209349d30cfd..74c1c516d89a65d3bb6df07bb1a5acfa
      const controller = new AbortController();
      let receivedSignal: AbortSignal | null | undefined;
 diff --git a/plugins/provider-codex/src/delta-translation.test.ts b/plugins/provider-codex/src/delta-translation.test.ts
-index 2aff8d4b928f9a97a9fc8811b845df87a32b986c..8b02c1618203b0239b4e1e1030e48aa830d1e02c 100644
+index 9d601e21d243c5d352d628cd64a7d3f9159b70c8..1886dd7ae65caa4a13bdb93262390d1f50cd7898 100644
 --- a/plugins/provider-codex/src/delta-translation.test.ts
 +++ b/plugins/provider-codex/src/delta-translation.test.ts
-@@ -459,12 +459,121 @@ describe("codex item translation", () => {
+@@ -353,12 +353,121 @@ describe("codex item translation", () => {
            type: "agentMessage",
            id: harness.itemId("item-1"),
            text: "Hello",
@@ -1253,10 +1253,10 @@ index 2aff8d4b928f9a97a9fc8811b845df87a32b986c..8b02c1618203b0239b4e1e1030e48aa8
      const harness = createHarness();
      const events = harness.translate(
 diff --git a/plugins/provider-codex/src/delta-translation.ts b/plugins/provider-codex/src/delta-translation.ts
-index 8b6b37dbb8a5c265b00b6f4e5a5337a6ed6659d6..7c1b7772a7861eec5819b438551dc9682891a4b8 100644
+index d815b9b01d6224b28d38c6338bd2e675976183cc..c0c354ea9745d8cd418f1e5e73f6f3dc1ec6f0fd 100644
 --- a/plugins/provider-codex/src/delta-translation.ts
 +++ b/plugins/provider-codex/src/delta-translation.ts
-@@ -773,7 +773,13 @@ function translateCodexItemShape(
+@@ -776,7 +776,13 @@ function translateCodexItemShape(
      case "agentMessage":
        return {
          kind: "translated",
@@ -1272,7 +1272,7 @@ index 8b6b37dbb8a5c265b00b6f4e5a5337a6ed6659d6..7c1b7772a7861eec5819b438551dc968
          status: "completed",
          approvalDenied: false,
 diff --git a/plugins/provider-codex/src/schemas.ts b/plugins/provider-codex/src/schemas.ts
-index ffcf4fc159264603b2bce702e3d0a90c577aef2a..b5d054d1004311f4a7f101a66031633ffbc057e0 100644
+index 664b8ff908af2b27f3b35fde532f2830bd3532da..f513629baae4f770d23034dddc00818487032634 100644
 --- a/plugins/provider-codex/src/schemas.ts
 +++ b/plugins/provider-codex/src/schemas.ts
 @@ -25,6 +25,12 @@ const codexItemStatusSchema = z.enum([
@@ -1288,7 +1288,7 @@ index ffcf4fc159264603b2bce702e3d0a90c577aef2a..b5d054d1004311f4a7f101a66031633f
  const codexPlanStepStatusSchema = z.enum([
    "pending",
    "inProgress",
-@@ -349,6 +355,7 @@ export const codexHandledThreadItemSchema = z.discriminatedUnion("type", [
+@@ -372,6 +378,7 @@ export const codexHandledThreadItemSchema = z.discriminatedUnion("type", [
        type: z.literal("agentMessage"),
        id: z.string(),
        text: z.string(),

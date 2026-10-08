@@ -1,0 +1,410 @@
+From ffcdabcda1e80c33a0b4fb6cb37796206a9f4b46 Mon Sep 17 00:00:00 2001
+From: bb-fork <bb-fork@invalid.local>
+Date: Fri, 25 Sep 2026 16:31:01 +0200
+Subject: [PATCH] fix(server): bind ingress before detached recovery
+
+---
+ apps/server/src/start-server.ts               | 145 +++++++++++------
+ .../test/app/startup-diagnostics.test.ts      | 152 +++++++++++++++++-
+ .../imported-daemon-sessions.test.ts          |  23 ++-
+ 3 files changed, 269 insertions(+), 51 deletions(-)
+
+diff --git a/apps/server/src/start-server.ts b/apps/server/src/start-server.ts
+index 18a88a14b40a55f7f509aa9c1f219d249062a4b6..fdc45dd3089b5b4b08ba43cc230f692f2bbbb3c6 100644
+--- a/apps/server/src/start-server.ts
++++ b/apps/server/src/start-server.ts
+@@ -1,4 +1,5 @@
+ import { serve } from "@hono/node-server";
++import { once } from "node:events";
+ import { existsSync } from "node:fs";
+ import { dirname, join, resolve } from "node:path";
+ import { fileURLToPath } from "node:url";
+@@ -70,6 +71,95 @@ export function startHttpListener(args: StartHttpListenerArgs) {
+   });
+ }
+ 
++type HttpListener = ReturnType<typeof startHttpListener>;
++
++export function resolveTailnetIngressPort(args: {
++  portText: string | undefined;
++  serverConfig: Pick<ServerConfig, "BB_SERVER_BIND_HOST" | "BB_SERVER_PORT" | "BB_HOST_DAEMON_PORT">;
++}): number | null {
++  if (args.portText === undefined) return null;
++  const port = Number(args.portText);
++  if (
++    !Number.isInteger(port) ||
++    port < 1 ||
++    port > 65535 ||
++    port === args.serverConfig.BB_SERVER_PORT ||
++    port === args.serverConfig.BB_HOST_DAEMON_PORT ||
++    !isLoopbackHostname(args.serverConfig.BB_SERVER_BIND_HOST)
++  ) {
++    throw new Error("BB_TAILNET_INGRESS_PORT must be a distinct loopback TCP port");
++  }
++  return port;
++}
++
++async function waitForHttpListener(server: HttpListener): Promise<void> {
++  if (!server.listening) await once(server, "listening");
++}
++
++async function closeHttpListener(server: HttpListener): Promise<void> {
++  if (!server.listening) return;
++  await new Promise<void>((resolveClose, rejectClose) => {
++    server.close((error) => {
++      if (error) rejectClose(error);
++      else resolveClose();
++    });
++  });
++}
++
++export async function closeConfiguredHttpListeners(args: {
++  server: HttpListener;
++  tailnetServer: HttpListener | null;
++}): Promise<void> {
++  await Promise.all([
++    closeHttpListener(args.server),
++    ...(args.tailnetServer === null ? [] : [closeHttpListener(args.tailnetServer)]),
++  ]);
++}
++
++export async function startConfiguredHttpListeners(args: {
++  fetch: StartHttpListenerArgs["fetch"];
++  serverConfig: Pick<ServerConfig, "BB_SERVER_BIND_HOST" | "BB_SERVER_PORT" | "BB_HOST_DAEMON_PORT">;
++  tailnetPortText: string | undefined;
++}): Promise<{ server: HttpListener; tailnetServer: HttpListener | null }> {
++  const tailnetPort = resolveTailnetIngressPort({
++    portText: args.tailnetPortText,
++    serverConfig: args.serverConfig,
++  });
++  const server = startHttpListener({ fetch: args.fetch, serverConfig: args.serverConfig });
++  try {
++    await waitForHttpListener(server);
++    const tailnetServer =
++      tailnetPort === null
++        ? null
++        : startHttpListener({
++            fetch: args.fetch,
++            serverConfig: {
++              BB_SERVER_BIND_HOST: "127.0.0.1",
++              BB_SERVER_PORT: tailnetPort,
++            },
++          });
++    if (tailnetServer !== null) await waitForHttpListener(tailnetServer);
++    return { server, tailnetServer };
++  } catch (error) {
++    await closeHttpListener(server);
++    throw error;
++  }
++}
++
++export function startStartupRecoveryAfterListeners(args: {
++  listeners: { server: HttpListener; tailnetServer: HttpListener | null };
++  run: () => Promise<void>;
++  onError: (error: unknown) => void;
++}): void {
++  if (
++    !args.listeners.server.listening ||
++    (args.listeners.tailnetServer !== null && !args.listeners.tailnetServer.listening)
++  ) {
++    throw new Error("Startup recovery requires listening ingress sockets");
++  }
++  void args.run().catch(args.onError);
++}
++
+ export interface StartServerPluginsArgs {
+   dataDir: string;
+   logger: Pick<ServerLogger, "error" | "warn">;
+@@ -327,35 +417,12 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+     );
+   }
+ 
+-  const server = startHttpListener({
++  const { server, tailnetServer } = await startConfiguredHttpListeners({
+     fetch: app.fetch,
+     serverConfig,
++    tailnetPortText: process.env.BB_TAILNET_INGRESS_PORT,
+   });
+   injectWebSocket(server);
+-
+-  const tailnetPortText = process.env.BB_TAILNET_INGRESS_PORT;
+-  const tailnetPort = tailnetPortText === undefined ? null : Number(tailnetPortText);
+-  if (
+-    tailnetPort !== null &&
+-    (!Number.isInteger(tailnetPort) ||
+-      tailnetPort < 1 ||
+-      tailnetPort > 65535 ||
+-      tailnetPort === serverConfig.BB_SERVER_PORT ||
+-      tailnetPort === serverConfig.BB_HOST_DAEMON_PORT ||
+-      !isLoopbackHostname(serverConfig.BB_SERVER_BIND_HOST))
+-  ) {
+-    throw new Error("BB_TAILNET_INGRESS_PORT must be a distinct loopback TCP port");
+-  }
+-  const tailnetServer =
+-    tailnetPort === null
+-      ? null
+-      : startHttpListener({
+-          fetch: app.fetch,
+-          serverConfig: {
+-            BB_SERVER_BIND_HOST: "127.0.0.1",
+-            BB_SERVER_PORT: tailnetPort,
+-          },
+-        });
+   if (tailnetServer !== null) injectWebSocket(tailnetServer);
+ 
+   logger.info(
+@@ -391,8 +458,12 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+     pluginCatalogService.startPeriodicRefresh();
+     // Recovery is independent of listener binding. Keep startup responsive
+     // while preserving the sweep on every ordinary server start.
+-    void runStartupRecoverySweep(sweepDeps).catch((error) => {
+-      logger.error({ err: error }, "Startup recovery sweep failed");
++    startStartupRecoveryAfterListeners({
++      listeners: { server, tailnetServer },
++      run: () => runStartupRecoverySweep(sweepDeps),
++      onError: (error) => {
++        logger.error({ err: error }, "Startup recovery sweep failed");
++      },
+     });
+     sweepInterval = setInterval(() => {
+       if (!isServerMoveFrozen(db)) {
+@@ -427,26 +498,8 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+           logger.warn({ err: error }, "Plugin shutdown failed");
+         });
+       }
+-      const closeServer = new Promise<void>((resolve, reject) => {
+-        server.close((error) => {
+-          if (error) {
+-            reject(error);
+-            return;
+-          }
+-          resolve();
+-        });
+-      });
+-      const closeTailnetServer =
+-        tailnetServer === null
+-          ? Promise.resolve()
+-          : new Promise<void>((resolve, reject) => {
+-              tailnetServer.close((error) => {
+-                if (error) reject(error);
+-                else resolve();
+-              });
+-            });
+       await closeWebSockets();
+-      await Promise.all([closeServer, closeTailnetServer]);
++      await closeConfiguredHttpListeners({ server, tailnetServer });
+     })();
+     return shutdownPromise;
+   };
+diff --git a/apps/server/test/app/startup-diagnostics.test.ts b/apps/server/test/app/startup-diagnostics.test.ts
+index 7264d4307c4136dc72e5eb840b1b43c4a1f87fa0..aae04ea94c6d065df13b8dc227d9fdd17216e816 100644
+--- a/apps/server/test/app/startup-diagnostics.test.ts
++++ b/apps/server/test/app/startup-diagnostics.test.ts
+@@ -1,10 +1,16 @@
+ import { once } from "node:events";
+ import { readFile } from "node:fs/promises";
++import { createServer } from "node:net";
+ import { dirname, resolve } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { loadServerConfig } from "@bb/config/server";
+ import { describe, expect, it } from "vitest";
+-import { startHttpListener } from "../../src/start-server.js";
++import {
++  closeConfiguredHttpListeners,
++  startConfiguredHttpListeners,
++  startHttpListener,
++  startStartupRecoveryAfterListeners,
++} from "../../src/start-server.js";
+ 
+ const testDir = dirname(fileURLToPath(import.meta.url));
+ 
+@@ -16,7 +22,151 @@ async function readServerPackageJson(): Promise<string> {
+   return readFile(resolve(testDir, "../../package.json"), "utf8");
+ }
+ 
++async function reservePort() {
++  const server = createServer();
++  server.listen(0, "127.0.0.1");
++  await once(server, "listening");
++  const address = server.address();
++  if (address === null || typeof address === "string") {
++    throw new Error("Expected a TCP address");
++  }
++  return { server, port: address.port };
++}
++
++async function closeServer(server: ReturnType<typeof createServer>): Promise<void> {
++  await new Promise<void>((resolveClose, rejectClose) => {
++    server.close((error) => {
++      if (error) rejectClose(error);
++      else resolveClose();
++    });
++  });
++}
++
+ describe("server startup diagnostics", () => {
++  it("rejects an invalid Tailnet port before opening the primary listener", async () => {
++    const primary = await reservePort();
++    const port = primary.port;
++    await closeServer(primary.server);
++
++    await expect(
++      startConfiguredHttpListeners({
++        fetch: () => new Response("ok"),
++        serverConfig: {
++          BB_SERVER_BIND_HOST: "127.0.0.1",
++          BB_SERVER_PORT: port,
++          BB_HOST_DAEMON_PORT: 1,
++        },
++        tailnetPortText: String(port),
++      }),
++    ).rejects.toThrow("BB_TAILNET_INGRESS_PORT must be a distinct loopback TCP port");
++
++    const probe = createServer();
++    probe.listen(port, "127.0.0.1");
++    try {
++      await once(probe, "listening");
++    } finally {
++      await closeServer(probe);
++    }
++  });
++
++  it("closes the primary listener when the Tailnet listener cannot bind", async () => {
++    const primary = await reservePort();
++    const primaryPort = primary.port;
++    await closeServer(primary.server);
++    const occupied = await reservePort();
++    try {
++      await expect(
++        startConfiguredHttpListeners({
++          fetch: () => new Response("ok"),
++          serverConfig: {
++            BB_SERVER_BIND_HOST: "127.0.0.1",
++            BB_SERVER_PORT: primaryPort,
++            BB_HOST_DAEMON_PORT: 1,
++          },
++          tailnetPortText: String(occupied.port),
++        }),
++      ).rejects.toMatchObject({ code: "EADDRINUSE" });
++
++      const probe = createServer();
++      probe.listen(primaryPort, "127.0.0.1");
++      try {
++        await once(probe, "listening");
++      } finally {
++        await closeServer(probe);
++      }
++    } finally {
++      await closeServer(occupied.server);
++    }
++  });
++
++  it("starts both listeners, detaches recovery only after readiness, and closes both", async () => {
++    const primary = await reservePort();
++    const primaryPort = primary.port;
++    await closeServer(primary.server);
++    const tailnet = await reservePort();
++    const tailnetPort = tailnet.port;
++    await closeServer(tailnet.server);
++    const listeners = await startConfiguredHttpListeners({
++      fetch: () => new Response("ok"),
++      serverConfig: {
++        BB_SERVER_BIND_HOST: "127.0.0.1",
++        BB_SERVER_PORT: primaryPort,
++        BB_HOST_DAEMON_PORT: 1,
++      },
++      tailnetPortText: String(tailnetPort),
++    });
++    try {
++      const events: string[] = [];
++      let finishRecovery: (() => void) | undefined;
++      const recovery = new Promise<void>((resolveRecovery) => {
++        finishRecovery = resolveRecovery;
++      });
++      const returnValue = startStartupRecoveryAfterListeners({
++        listeners,
++        run: () => {
++          expect(listeners.server.listening).toBe(true);
++          expect(listeners.tailnetServer?.listening).toBe(true);
++          events.push("recovery-started");
++          return recovery.then(() => {
++            events.push("recovery-finished");
++          });
++        },
++        onError: (error) => {
++          throw error;
++        },
++      });
++      expect(returnValue).toBeUndefined();
++      expect(events).toEqual(["recovery-started"]);
++      expect((await fetch(`http://127.0.0.1:${primaryPort}`)).status).toBe(200);
++      expect((await fetch(`http://127.0.0.1:${tailnetPort}`)).status).toBe(200);
++      expect(events).toEqual(["recovery-started"]);
++      finishRecovery?.();
++      await recovery;
++      await Promise.resolve();
++      expect(events).toEqual(["recovery-started", "recovery-finished"]);
++      await closeConfiguredHttpListeners(listeners);
++      expect(() =>
++        startStartupRecoveryAfterListeners({
++          listeners,
++          run: async () => {
++            throw new Error("Recovery must not start on closed listeners");
++          },
++          onError: () => {},
++        }),
++      ).toThrow("Startup recovery requires listening ingress sockets");
++      for (const port of [primaryPort, tailnetPort]) {
++        const probe = createServer();
++        probe.listen(port, "127.0.0.1");
++        try {
++          await once(probe, "listening");
++        } finally {
++          await closeServer(probe);
++        }
++      }
++    } finally {
++      await closeConfiguredHttpListeners(listeners);
++    }
++  });
+   it("installs safe diagnostics before loading the startup module", async () => {
+     const source = await readServerEntrypoint();
+     const installCallIndex = source.indexOf("installSafeProcessDiagnostics({");
+diff --git a/apps/server/test/server-move/imported-daemon-sessions.test.ts b/apps/server/test/server-move/imported-daemon-sessions.test.ts
+index 2970c559c06c84feb5b4659a5dd7a4a81285d4f3..f739785e831a059c4a6e3a4d30e78f3dd4282431 100644
+--- a/apps/server/test/server-move/imported-daemon-sessions.test.ts
++++ b/apps/server/test/server-move/imported-daemon-sessions.test.ts
+@@ -176,11 +176,26 @@ describe("daemon sessions in an imported server snapshot", () => {
+       fileURLToPath(new URL("../../src/start-server.ts", import.meta.url)),
+       "utf8",
+     );
+-    const disconnect = source.indexOf("disconnectImportedDaemonSessions(");
++    const runServer = source.slice(
++      source.indexOf("export async function runServer("),
++    );
++    const disconnectCall = "disconnectImportedDaemonSessions(";
++    const listenerCall =
++      "const { server, tailnetServer } = await startConfiguredHttpListeners({";
++    const disconnectBeforeListener = (body: string) => {
++      const createApp = body.indexOf("createApp(");
++      const disconnect = body.indexOf(disconnectCall);
++      const listener = body.indexOf(listenerCall);
++      return createApp >= 0 && disconnect > createApp && listener > disconnect;
++    };
+ 
+-    expect(disconnect).toBeGreaterThan(source.indexOf("createApp("));
+-    expect(disconnect).toBeLessThan(source.indexOf("startHttpListener({"));
+-    expect(source.slice(disconnect)).toContain(
++    expect(disconnectBeforeListener(runServer)).toBe(true);
++    const inverted = runServer
++      .replace(disconnectCall, "__DISCONNECT_CALL__")
++      .replace(listenerCall, disconnectCall)
++      .replace("__DISCONNECT_CALL__", listenerCall);
++    expect(disconnectBeforeListener(inverted)).toBe(false);
++    expect(runServer.slice(runServer.indexOf(disconnectCall))).toContain(
+       "sessions: serverImport.importedDaemonSessions",
+     );
+   });
+-- 
+2.53.0
+

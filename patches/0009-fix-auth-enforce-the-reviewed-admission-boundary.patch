@@ -1,4 +1,4 @@
-From bbeb9a674627c549a1d0bab285222a5fc0df067f Mon Sep 17 00:00:00 2001
+From 2439937455e55b34bbf85ee47cacd3567f6f37ea Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
 Subject: [PATCH] fix(auth): enforce the reviewed admission boundary
@@ -7,18 +7,18 @@ Subject: [PATCH] fix(auth): enforce the reviewed admission boundary
  apps/server/src/routes/plugins.ts             |  13 +-
  apps/server/src/server.ts                     |   3 +
  .../src/services/p6r/identity-protocol.ts     |  27 +-
- .../src/services/plugins/plugin-service.ts    |  48 ++-
+ .../src/services/plugins/plugin-service.ts    |  41 ++-
  .../services/p6r/identity-protocol.test.ts    | 108 ++++++-
- .../plugin-p6r-admission-boundary.test.ts     | 288 ++++++++++++++++++
+ .../plugin-p6r-admission-boundary.test.ts     | 296 ++++++++++++++++++
  packages/plugin-sdk/src/rpc-contract.ts       |   2 +
- 7 files changed, 475 insertions(+), 14 deletions(-)
+ 7 files changed, 478 insertions(+), 12 deletions(-)
  create mode 100644 apps/server/test/services/plugins/plugin-p6r-admission-boundary.test.ts
 
 diff --git a/apps/server/src/routes/plugins.ts b/apps/server/src/routes/plugins.ts
-index 029893e164dbd5cb72814c8d3e6cf1b00782d47f..3512ce0265d789510346871c42f373b57c70ec7e 100644
+index 25eed49c81b8c0f9bbeded5984f51f77ac9dc3be..d7588fe10c6c26a8063772e9da0473c307ba4dde 100644
 --- a/apps/server/src/routes/plugins.ts
 +++ b/apps/server/src/routes/plugins.ts
-@@ -957,10 +957,15 @@ export function registerPluginRoutes(
+@@ -997,10 +997,15 @@ export function registerPluginRoutes(
        },
      );
      if (!outcome.ok) {
@@ -39,10 +39,10 @@ index 029893e164dbd5cb72814c8d3e6cf1b00782d47f..3512ce0265d789510346871c42f373b5
      return context.json({ ok: true, result: outcome.result });
    });
 diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
-index da004a559f045b003e9510c33005265f29b9e0c5..0b5e401924647948110b17c8a23ae9b179544953 100644
+index 66d7c9d465afdb116a7a7ba31adfa313765f7fbd..45e0fd73c4b8985c698f67c2e7293e3cfff113b5 100644
 --- a/apps/server/src/server.ts
 +++ b/apps/server/src/server.ts
-@@ -770,6 +770,9 @@ export function createApp(
+@@ -836,6 +836,9 @@ export function createApp(
        forwardRpc: (input) => pluginService.forwardP6rRpc(input),
      },
      now: Date.now,
@@ -53,10 +53,10 @@ index da004a559f045b003e9510c33005265f29b9e0c5..0b5e401924647948110b17c8a23ae9b1
      trustedInvocation: p6rAdmission.trustedInvocation,
    });
 diff --git a/apps/server/src/services/p6r/identity-protocol.ts b/apps/server/src/services/p6r/identity-protocol.ts
-index e12c37017be619900f53676753b9ea30d1d4758e..8ba2bcaff79b8eef666531fbe76bb39168bbca2c 100644
+index d80a4826f7e9e226e37ac6c000859064502fc6dd..0d761d24f45db7d19264bbdce3cd6d82b158e113 100644
 --- a/apps/server/src/services/p6r/identity-protocol.ts
 +++ b/apps/server/src/services/p6r/identity-protocol.ts
-@@ -68,6 +68,7 @@ export interface P6rIdentityServiceRoot {
+@@ -69,6 +69,7 @@ export interface P6rIdentityServiceRoot {
      }) => Promise<P6rJson>;
    };
    readonly now: () => number;
@@ -64,7 +64,7 @@ index e12c37017be619900f53676753b9ea30d1d4758e..8ba2bcaff79b8eef666531fbe76bb391
    activateBindings(generation: P6rIdentityGeneration): void;
    bindInvocation<Args extends readonly unknown[], Output>(input: { readonly generation: P6rIdentityGeneration; readonly handler: (context: ExperimentalP6rInvocationContext<object>, ...args: Args) => Output; readonly routeClass: ExperimentalP6rInvocationRouteClass; }): { readonly handler: (...args: Args) => Output; readonly registration: ExperimentalP6rInvocationRegistration; };
    retireBindings(generation: P6rIdentityGeneration): void;
-@@ -78,7 +79,18 @@ export interface P6rDerivedForwardInvocation {
+@@ -79,7 +80,18 @@ export interface P6rDerivedForwardInvocation {
    readonly release: () => void;
    readonly scope: P6rInvocationScope;
  }
@@ -84,7 +84,7 @@ index e12c37017be619900f53676753b9ea30d1d4758e..8ba2bcaff79b8eef666531fbe76bb391
  
  function failure(code: P6rIdentityError["code"], message: string): P6rIdentityError { return { code, message, retry: code === "expired" ? "same-operation" : code === "unavailable" ? "after-reconnect" : "never" }; }
  function unavailableSession(): P6rServerSession { return { error: failure("unavailable", "Identity is unavailable for this request"), instanceId: "p6r-unavailable", status: "unavailable" }; }
-@@ -182,7 +194,18 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
+@@ -183,7 +195,18 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
        if (generation === undefined || generation.pluginId !== input.pluginId) return { ok: false, code: "retired" };
        const trusted = await root.trustedInvocation({ generation, ingress: input.ingress, request: input.request, routeClass: input.routeClass });
        if (trusted === null) return { ok: false, code: "retired" };
@@ -105,10 +105,10 @@ index e12c37017be619900f53676753b9ea30d1d4758e..8ba2bcaff79b8eef666531fbe76bb391
        if (captured.ok) { const session = snapshotSession(trusted.session); requests.set(input.request, { scope: captured.scope, session }); scopeSessions.set(captured.scope, session); scopeRequests.set(captured.scope, input.request); }
        return captured;
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index 9ea290e44f410bd838fa602bc6d6c17b9d1774f3..cb346d59e3c1f199e2589e03c9213ee8763bb8fa 100644
+index 02a4549360420ef3448eb8f85056d0966ef2883f..46c113aaf8c65b16b8612be8fdd3ad5a99130013 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
-@@ -159,7 +159,10 @@ import {
+@@ -169,7 +169,10 @@ import {
  } from "./plugin-time-box.js";
  import { createPluginUpdates } from "./plugin-updates.js";
  import { retainP6rHttpResponse } from "./plugin-p6r-http.js";
@@ -120,7 +120,7 @@ index 9ea290e44f410bd838fa602bc6d6c17b9d1774f3..cb346d59e3c1f199e2589e03c9213ee8
  import type { P6rInvocationScope } from "../p6r/invocation-registry.js";
  
  import type {
-@@ -468,6 +471,26 @@ function throwRpcBoundaryError(error: PluginRpcError): never {
+@@ -492,6 +495,26 @@ function throwRpcBoundaryError(error: PluginRpcError): never {
    throw new PluginRpcBoundaryError(error);
  }
  
@@ -147,7 +147,7 @@ index 9ea290e44f410bd838fa602bc6d6c17b9d1774f3..cb346d59e3c1f199e2589e03c9213ee8
  function normalizeAgentToolResult(
    name: string,
    result: unknown,
-@@ -1974,7 +1997,14 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2076,7 +2099,14 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
              routeClass: binding.routeClass,
            });
            if (!capture.ok) {
@@ -163,18 +163,7 @@ index 9ea290e44f410bd838fa602bc6d6c17b9d1774f3..cb346d59e3c1f199e2589e03c9213ee8
            }
            const abort = () => capture.scope.release();
            context.req.raw.signal.addEventListener("abort", abort, {
-@@ -2066,8 +2096,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
-             handler.outputSchema,
-             result,
-             "output",
-+            throwRpcBoundaryError,
-           );
--          return normalizeRpcJsonResult(parsedOutput);
-+          return normalizeRpcJsonResult(parsedOutput, throwRpcBoundaryError);
-         }
-         if (
-           binding.pluginId !== id ||
-@@ -2088,9 +2119,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2193,9 +2223,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
            routeClass: binding.routeClass,
          });
          if (!capture.ok) {
@@ -188,25 +177,6 @@ index 9ea290e44f410bd838fa602bc6d6c17b9d1774f3..cb346d59e3c1f199e2589e03c9213ee8
            });
          }
          let result: unknown;
-@@ -2143,6 +2175,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
-         handler.inputSchema,
-         args.input,
-         "input",
-+        throwRpcBoundaryError,
-       );
-       const derived = args.deriveScope(binding.generation);
-       if (derived === null) {
-@@ -2168,8 +2201,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
-         handler.outputSchema,
-         outcome.value,
-         "output",
-+        throwRpcBoundaryError,
-       );
--      return normalizeRpcJsonResult(parsedOutput);
-+      return normalizeRpcJsonResult(parsedOutput, throwRpcBoundaryError);
-     },
- 
-     async httpToken(id, options) {
 diff --git a/apps/server/test/services/p6r/identity-protocol.test.ts b/apps/server/test/services/p6r/identity-protocol.test.ts
 index ce0306c94dc5e8db63b766b6cfb3e19f6092ac81..c612957a3a001cc8a4b27359c0f103d8ae3989ae 100644
 --- a/apps/server/test/services/p6r/identity-protocol.test.ts
@@ -335,10 +305,10 @@ index ce0306c94dc5e8db63b766b6cfb3e19f6092ac81..c612957a3a001cc8a4b27359c0f103d8
      const target = service.forPluginGeneration("target-plugin", "target-generation", new AbortController().signal);
 diff --git a/apps/server/test/services/plugins/plugin-p6r-admission-boundary.test.ts b/apps/server/test/services/plugins/plugin-p6r-admission-boundary.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..ff3e9b3240333efe787c4b5009d40400ceb211eb
+index 0000000000000000000000000000000000000000..970e0ddc7dc753c8a264a15264afc9ea30d35652
 --- /dev/null
 +++ b/apps/server/test/services/plugins/plugin-p6r-admission-boundary.test.ts
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,296 @@
 +import { mkdtemp, rm } from "node:fs/promises";
 +import { tmpdir } from "node:os";
 +import { join } from "node:path";
@@ -514,6 +484,7 @@ index 0000000000000000000000000000000000000000..ff3e9b3240333efe787c4b5009d40400
 +      },
 +      inputSchema: schema,
 +      outputSchema: schema,
++      publication: null,
 +    };
 +    const binding = {
 +      generation: "fixture-generation",
@@ -540,10 +511,17 @@ index 0000000000000000000000000000000000000000..ff3e9b3240333efe787c4b5009d40400
 +      },
 +    });
 +    await expect(
-+      boundaryService.invokeRpcHandler("fixture", "identity", rpcHandler, {}, {
-+        ingress: { requestId: "request", transport: "http" },
-+        request: {},
-+      }),
++      boundaryService.invokeRpcHandler(
++        "fixture",
++        "identity",
++        rpcHandler,
++        {},
++        { kind: "client" },
++        {
++          ingress: { requestId: "request", transport: "http" },
++          request: {},
++        },
++      ),
 +    ).resolves.toEqual({
 +      ok: false,
 +      error: {
@@ -628,7 +606,7 @@ index 0000000000000000000000000000000000000000..ff3e9b3240333efe787c4b5009d40400
 +  });
 +});
 diff --git a/packages/plugin-sdk/src/rpc-contract.ts b/packages/plugin-sdk/src/rpc-contract.ts
-index 7e1d45a5c97fc10296fe81913f77dc3edac13f54..dbbc0f9f4f41349fdf2a0d026bce764e3b9c6e82 100644
+index 2fd5ed1cd17ccda9974dcc6c204bda238f7d36d1..e4122849f027451cb49e28117fbfda1eb9fa0510 100644
 --- a/packages/plugin-sdk/src/rpc-contract.ts
 +++ b/packages/plugin-sdk/src/rpc-contract.ts
 @@ -14,6 +14,8 @@ export type PluginRpcErrorCode =
