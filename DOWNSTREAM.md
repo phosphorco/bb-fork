@@ -395,3 +395,17 @@ exists. No example plugin, lockfile importer, DB migration, host transport,
 provider wrapper or service activation is included. The
 [maintainer map](plans/p6r-prompts-maintainer-map.md) records exact source and
 coverage boundaries.
+
+## Automatic parent followups (patch 52)
+
+`bb thread spawn --no-automatic-parent-followups` and SDK/API
+`noAutomaticParentFollowups: true` retain the native parent link while suppressing
+automatic outcomes, attention, and ownership notices. A reserved metadata row is
+seeded in the existing creation transaction; omitted settings preserve normal
+delivery. No migration, Thread field, or daemon protocol change is introduced.
+The setting is creation-only. Explicit delivery remains available.
+
+[Design and maintenance](docs/no-automatic-parent-followups.md) records the
+authorized fork justification, storage/default/error behavior, test boundaries,
+and upstream retirement path. Both server and CLI need this patch. Source
+publication and build do not activate it in an already-running server.

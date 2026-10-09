@@ -1,0 +1,786 @@
+From 4341ad7c6490bdb01dcc594a14e47e8417a80816 Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Fri, 9 Oct 2026 02:51:00 +0200
+Subject: [PATCH] feat(p6r): support opting out of automatic parent followups
+
+---
+ .../command-output/thread-spawn.test.ts       |  41 +++
+ apps/cli/src/commands/thread/spawn.ts         |  11 +-
+ .../threads/child-thread-notifications.ts     |  13 +
+ .../threads/p6r-parent-followup-policy.ts     |  39 +++
+ .../services/threads/thread-create-helpers.ts |   2 +
+ .../services/threads/thread-create-request.ts |   1 +
+ .../src/services/threads/thread-ownership.ts  |   4 +
+ .../test/threads/p6r-parent-followups.test.ts | 269 ++++++++++++++++++
+ packages/db/src/data/index.ts                 |   1 +
+ .../db/src/data/thread-plugin-metadata.ts     |   2 +
+ packages/db/src/data/threads.ts               |  13 +-
+ .../test/data/thread-plugin-metadata.test.ts  | 113 +++++++-
+ packages/server-contract/src/api/threads.ts   |   1 +
+ .../server-contract/test/contract.test.ts     |   1 +
+ .../src/templates/bb-guide-threads.md         |   2 +
+ .../bb-cli/references/thread-creation.md      |   6 +
+ 16 files changed, 515 insertions(+), 4 deletions(-)
+ create mode 100644 apps/server/src/services/threads/p6r-parent-followup-policy.ts
+ create mode 100644 apps/server/test/threads/p6r-parent-followups.test.ts
+
+diff --git a/apps/cli/src/__tests__/command-output/thread-spawn.test.ts b/apps/cli/src/__tests__/command-output/thread-spawn.test.ts
+index dfbe208cc60649cff9b34503bb2ba2754b025dfe..1887c40e0859d1fb66c5a543f8fb95e607b66ec4 100644
+--- a/apps/cli/src/__tests__/command-output/thread-spawn.test.ts
++++ b/apps/cli/src/__tests__/command-output/thread-spawn.test.ts
+@@ -23,6 +23,47 @@ describe("bb thread spawn command output", () => {
+   const register: CommandRegistrar = (program) =>
+     registerThreadCommands(program, () => "http://server");
+ 
++  it.each([false, true])(
++    "sends the opt-out only when requested (%s)",
++    async (suppressed) => {
++      vi.stubEnv("BB_THREAD_ID", "parent");
++      const post = vi.fn(async (_request: { json: unknown }) =>
++        fixtures.makeThread({
++          id: "child",
++          projectId: "proj-1",
++          providerId: "codex",
++          parentThreadId: "parent",
++        }),
++      );
++      stubServerApi({ "v1.threads.$post": post });
++      await runCommand(
++        [
++          "thread",
++          "spawn",
++          "--project",
++          "proj-1",
++          "--prompt",
++          "hello",
++          "--parent-self",
++          ...(suppressed ? ["--no-automatic-parent-followups"] : []),
++        ],
++        register,
++      );
++      const body = createThreadRequestSchema.parse(
++        post.mock.calls[0]?.[0]?.json,
++      );
++      expect(body.parentThreadId).toBe("parent");
++      expect(body.noAutomaticParentFollowups).toBe(
++        suppressed ? true : undefined,
++      );
++      expect(
++        collectLogLines(vi.mocked(console.log)).includes(
++          "You will be notified when this thread is done.",
++        ),
++      ).toBe(!suppressed);
++    },
++  );
++
+   function captureCommanderErrors() {
+     return vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+   }
+diff --git a/apps/cli/src/commands/thread/spawn.ts b/apps/cli/src/commands/thread/spawn.ts
+index d900f04d61ae9f4239410075265a4f9b86867742..18def42157892470d6e282e81c25321969d967f4 100644
+--- a/apps/cli/src/commands/thread/spawn.ts
++++ b/apps/cli/src/commands/thread/spawn.ts
+@@ -62,6 +62,7 @@ interface ThreadSpawnCommandOptions {
+   permissionMode?: string;
+   plan?: boolean;
+   parentSelf?: boolean;
++  automaticParentFollowups?: boolean;
+   machine?: string;
+   host?: string;
+   newMachine?: string;
+@@ -361,6 +362,10 @@ export function registerSpawnCommand(
+     )
+     .option("--parent-thread <id>", "Parent thread ID for worker thread links")
+     .option("--parent-self", "Parent the new thread to BB_THREAD_ID")
++    .option(
++      "--no-automatic-parent-followups",
++      "Suppress automatic outcome, attention, and ownership notices to parents for this thread",
++    )
+     .option("--provider <id>", PROVIDER_HELP)
+     .option(
+       "--model <model>",
+@@ -598,6 +603,9 @@ export function registerSpawnCommand(
+             startedOnBehalfOf: null,
+             originKind: opts.originKind ?? null,
+             ...(parentThreadId ? { parentThreadId } : {}),
++            ...(opts.automaticParentFollowups === false
++              ? { noAutomaticParentFollowups: true }
++              : {}),
+             ...(opts.lifecycleOwnerThread !== undefined
+               ? { lifecycleOwnerThreadId: opts.lifecycleOwnerThread }
+               : {}),
+@@ -618,9 +626,8 @@ export function registerSpawnCommand(
+             `First message scheduled for ${new Date(sendAt).toLocaleString()}; the thread stays pending until then.`,
+           );
+         }
+-        // A hidden child reports to its parent too, so the promise follows the
+-        // parent link alone.
+         if (
++          opts.automaticParentFollowups !== false &&
+           thread.parentThreadId &&
+           thread.parentThreadId === resolveContextThreadId()
+         ) {
+diff --git a/apps/server/src/services/threads/child-thread-notifications.ts b/apps/server/src/services/threads/child-thread-notifications.ts
+index 750db2a6bfd5721daea08a30cd66defda433e917..4dea9629f3efeb7f8572707f44e4545a073680be 100644
+--- a/apps/server/src/services/threads/child-thread-notifications.ts
++++ b/apps/server/src/services/threads/child-thread-notifications.ts
+@@ -1,3 +1,4 @@
++import { suppressP6rAutomaticParentFollowup } from "./p6r-parent-followup-policy.js";
+ import type { P6rPromptContext } from "@get-bb/plugin-sdk";
+ import type {
+   PromptInput,
+@@ -504,6 +505,10 @@ export async function queueChildThreadTurnNotificationBestEffort(
+   args: QueueChildThreadTurnNotificationArgs,
+ ): Promise<void> {
+   try {
++    if (
++      suppressP6rAutomaticParentFollowup(deps, args.childThread.id, "outcome")
++    )
++      return;
+     queueChildThreadTurnNotificationBatchItem(deps, args);
+   } catch (error) {
+     deps.logger.error(
+@@ -523,6 +528,14 @@ export async function queueChildThreadNeedsAttentionNotificationBestEffort(
+   args: QueueChildThreadNeedsAttentionNotificationArgs,
+ ): Promise<void> {
+   try {
++    if (
++      suppressP6rAutomaticParentFollowup(
++        deps,
++        args.childThread.id,
++        "needs-attention",
++      )
++    )
++      return;
+     await queueParentSystemMessage(deps, {
+       input: buildChildThreadNeedsAttentionInput({
+         blockerSummary: args.blockerSummary,
+diff --git a/apps/server/src/services/threads/p6r-parent-followup-policy.ts b/apps/server/src/services/threads/p6r-parent-followup-policy.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..04f2c2e0c80aaf5686763125c4e7a50288be8704
+--- /dev/null
++++ b/apps/server/src/services/threads/p6r-parent-followup-policy.ts
+@@ -0,0 +1,39 @@
++import {
++  getThreadPluginMetadata,
++  P6R_PARENT_FOLLOWUP_POLICY_NAMESPACE,
++} from "@bb/db";
++import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
++
++export function suppressP6rAutomaticParentFollowup(
++  deps: Pick<LoggedPendingInteractionWorkSessionDeps, "db" | "logger">,
++  childThreadId: string,
++  noticeKind: "outcome" | "needs-attention" | "ownership",
++): boolean {
++  try {
++    const { metadata, corrupt } = getThreadPluginMetadata(
++      deps.db,
++      childThreadId,
++      P6R_PARENT_FOLLOWUP_POLICY_NAMESPACE,
++    );
++    const value = metadata.noAutomaticParentFollowups;
++    if (corrupt || (value !== undefined && typeof value !== "boolean")) {
++      deps.logger.warn(
++        { childThreadId, noticeKind },
++        "Invalid parent followup policy; using default delivery",
++      );
++      return false;
++    }
++    if (value !== true) return false;
++    deps.logger.debug(
++      { childThreadId, noticeKind },
++      "Automatic parent followup suppressed",
++    );
++    return true;
++  } catch (err) {
++    deps.logger.warn(
++      { childThreadId, noticeKind, err },
++      "Could not read parent followup policy; using default delivery",
++    );
++    return false;
++  }
++}
+diff --git a/apps/server/src/services/threads/thread-create-helpers.ts b/apps/server/src/services/threads/thread-create-helpers.ts
+index 6da50ef431d63eb47076d69e24a6c883216fdaf4..f246b745eb78435ceb99586f28d40c8ff318a003 100644
+--- a/apps/server/src/services/threads/thread-create-helpers.ts
++++ b/apps/server/src/services/threads/thread-create-helpers.ts
+@@ -110,6 +110,8 @@ export function createThreadRecord(
+       sectionId,
+       pinned: args.request.pinned ?? false,
+       parentThreadId: args.request.parentThreadId ?? null,
++      noAutomaticParentFollowups:
++        args.request.noAutomaticParentFollowups ?? false,
+       sourceThreadId: args.request.sourceThreadId ?? null,
+       lifecycleOwnerThreadId: args.request.lifecycleOwnerThreadId,
+       originKind: args.request.originKind,
+diff --git a/apps/server/src/services/threads/thread-create-request.ts b/apps/server/src/services/threads/thread-create-request.ts
+index 4696e607735ad5ea1d5576b6c6ce5603963f8e47..78a5e2c607a1fe175c2a92bd644682bc388f5606 100644
+--- a/apps/server/src/services/threads/thread-create-request.ts
++++ b/apps/server/src/services/threads/thread-create-request.ts
+@@ -32,6 +32,7 @@ export interface ThreadCreateServiceRequestInput {
+   originPluginId?: CreateThreadRequest["originPluginId"];
+   originKind?: ThreadOriginKind | null;
+   parentThreadId?: string;
++  noAutomaticParentFollowups?: boolean;
+   lifecycleOwnerThreadId?: string;
+   permissionMode?: CreateThreadRequest["permissionMode"];
+   projectId: string;
+diff --git a/apps/server/src/services/threads/thread-ownership.ts b/apps/server/src/services/threads/thread-ownership.ts
+index ce4865d2c8a498c917c7a817a1795e34d583472c..a079a8e909d10cb20298dbe578a0acbb12fa3cb5 100644
+--- a/apps/server/src/services/threads/thread-ownership.ts
++++ b/apps/server/src/services/threads/thread-ownership.ts
+@@ -1,3 +1,4 @@
++import { suppressP6rAutomaticParentFollowup } from "./p6r-parent-followup-policy.js";
+ import {
+   archiveThread,
+   getThread,
+@@ -182,6 +183,9 @@ async function sendThreadOwnershipNotices(
+     return;
+   }
+ 
++  if (suppressP6rAutomaticParentFollowup(deps, childThreadId, "ownership"))
++    return;
++
+   if (thread.parentThreadId) {
+     await queueParentSystemMessageBestEffort(deps, {
+       childThreadId: thread.id,
+diff --git a/apps/server/test/threads/p6r-parent-followups.test.ts b/apps/server/test/threads/p6r-parent-followups.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..add5c47a929e3e8a007f53cac662043b10efcda2
+--- /dev/null
++++ b/apps/server/test/threads/p6r-parent-followups.test.ts
+@@ -0,0 +1,269 @@
++import { afterEach, describe, expect, it, vi } from "vitest";
++import {
++  createThread,
++  getThread,
++  getThreadPluginMetadata,
++  listEvents,
++  listQueuedThreadMessages,
++  P6R_PARENT_FOLLOWUP_POLICY_NAMESPACE,
++  threadPluginMetadata,
++  updateThread,
++} from "@bb/db";
++import { turnRequestEventDataSchema } from "@bb/domain";
++import { eq } from "drizzle-orm";
++import {
++  queueChildThreadNeedsAttentionNotificationBestEffort,
++  queueChildThreadTurnNotificationBestEffort,
++} from "../../src/services/threads/child-thread-notifications.js";
++import { suppressP6rAutomaticParentFollowup } from "../../src/services/threads/p6r-parent-followup-policy.js";
++import { queueParentSystemMessage } from "../../src/services/threads/parent-system-messages.js";
++import { handleThreadOwnershipChange } from "../../src/services/threads/thread-ownership.js";
++import { seedThreadFixture, seedThreadRuntimeState } from "../helpers/seed.js";
++import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
++
++function fixture(harness: TestAppHarness, suppressed = true) {
++  const { thread: parent, project, environment } = seedThreadFixture(harness);
++  seedThreadRuntimeState(harness.deps, {
++    threadId: parent.id,
++    environmentId: environment.id,
++    providerThreadId: "parent-provider",
++  });
++  const child = createThread(harness.db, harness.deps.hub, {
++    projectId: project.id,
++    environmentId: environment.id,
++    providerId: "codex",
++    parentThreadId: parent.id,
++    noAutomaticParentFollowups: suppressed,
++    status: "idle",
++    visibility: "hidden",
++  });
++  return { parent, child, environment, project };
++}
++function notices(harness: TestAppHarness, id: string) {
++  return listEvents(harness.db, { threadId: id })
++    .filter((e) => e.type === "client/turn/requested")
++    .map((e) => turnRequestEventDataSchema.parse(JSON.parse(e.data)))
++    .filter((e) => e.initiator === "system");
++}
++afterEach(() => {
++  vi.useRealTimers();
++  vi.restoreAllMocks();
++});
++
++describe("p6r automatic parent followup policy", () => {
++  it.each(["completed", "failed", "interrupted"] as const)(
++    "suppresses %s before batching and still permits explicit delivery",
++    async (turnStatus) => {
++      await withTestHarness(async (h) => {
++        const { parent, child } = fixture(h);
++        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
++        await queueChildThreadTurnNotificationBestEffort(h.deps, {
++          childThread: child,
++          parentThreadId: parent.id,
++          turnStatus,
++        });
++        await queueChildThreadNeedsAttentionNotificationBestEffort(h.deps, {
++          childThread: child,
++          parentThreadId: parent.id,
++          blockerSummary: "Approval needed",
++        });
++        await vi.advanceTimersByTimeAsync(2000);
++        expect(notices(h, parent.id)).toEqual([]);
++        expect(listQueuedThreadMessages(h.db, parent.id)).toEqual([]);
++        expect(getThread(h.db, child.id)?.parentThreadId).toBe(parent.id);
++        await queueParentSystemMessage(h.deps, {
++          systemMessageKind: "tool-result-delivered",
++          systemMessageSubject: null,
++          parentThreadId: parent.id,
++          input: [
++            { type: "text", text: "Explicit tool delivery", mentions: [] },
++          ],
++        });
++        expect(notices(h, parent.id)).toHaveLength(1);
++      });
++    },
++  );
++
++  it("keeps an opted-out sibling out of a batch without delaying another child", async () => {
++    await withTestHarness(async (h) => {
++      const { parent, child, environment, project } = fixture(h);
++      const sibling = createThread(h.db, h.deps.hub, {
++        projectId: project.id,
++        environmentId: environment.id,
++        providerId: "codex",
++        parentThreadId: parent.id,
++        status: "idle",
++      });
++      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
++      await queueChildThreadTurnNotificationBestEffort(h.deps, {
++        childThread: sibling,
++        parentThreadId: parent.id,
++        turnStatus: "completed",
++      });
++      await vi.advanceTimersByTimeAsync(1000);
++      await queueChildThreadTurnNotificationBestEffort(h.deps, {
++        childThread: child,
++        parentThreadId: parent.id,
++        turnStatus: "failed",
++      });
++      await vi.advanceTimersByTimeAsync(1000);
++      const messages = notices(h, parent.id);
++      expect(messages).toHaveLength(1);
++      expect(JSON.stringify(messages[0]?.input)).toContain(sibling.id);
++      expect(JSON.stringify(messages[0]?.input)).not.toContain(child.id);
++    });
++  });
++
++  it.each([false, true])(
++    "retains ownership events while respecting the notice policy (%s)",
++    async (suppressed) => {
++      await withTestHarness(async (h) => {
++        const { child, parent, project, environment } = fixture(h, suppressed);
++        const next = createThread(h.db, h.deps.hub, {
++          projectId: project.id,
++          environmentId: environment.id,
++          providerId: "codex",
++          status: "idle",
++        });
++        seedThreadRuntimeState(h.deps, {
++          threadId: next.id,
++          environmentId: environment.id,
++          providerThreadId: "next-provider",
++        });
++        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
++        const moved = updateThread(h.db, h.deps.hub, child.id, {
++          parentThreadId: next.id,
++        })!;
++        const before = listEvents(h.db, { threadId: child.id }).length;
++        await handleThreadOwnershipChange(h.deps, {
++          previousThread: child,
++          updatedThread: moved,
++        });
++        await vi.advanceTimersByTimeAsync(2000);
++        expect(getThread(h.db, child.id)?.parentThreadId).toBe(next.id);
++        expect(listEvents(h.db, { threadId: child.id }).length).toBeGreaterThan(
++          before,
++        );
++        expect(notices(h, parent.id)).toHaveLength(suppressed ? 0 : 1);
++        expect(notices(h, next.id)).toHaveLength(suppressed ? 0 : 1);
++        await queueChildThreadNeedsAttentionNotificationBestEffort(h.deps, {
++          childThread: moved,
++          parentThreadId: next.id,
++          blockerSummary: "Decision needed",
++        });
++        expect(
++          notices(h, next.id).length +
++            listQueuedThreadMessages(h.db, next.id).length,
++        ).toBe(suppressed ? 0 : 2);
++      });
++    },
++  );
++
++  it.each([
++    "{}",
++    '{"noAutomaticParentFollowups":false}',
++    '{"noAutomaticParentFollowups":"true"}',
++    '{"noAutomaticParentFollowups":1}',
++    "null",
++    "{broken",
++  ])(
++    "defaults to delivery for persisted policy %s without rewriting it",
++    async (metadataJson) => {
++      await withTestHarness(async (h) => {
++        const { parent, child } = fixture(h);
++        h.db
++          .update(threadPluginMetadata)
++          .set({ metadataJson })
++          .where(eq(threadPluginMetadata.threadId, child.id))
++          .run();
++        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
++        await queueChildThreadTurnNotificationBestEffort(h.deps, {
++          childThread: child,
++          parentThreadId: parent.id,
++          turnStatus: "failed",
++        });
++        await vi.advanceTimersByTimeAsync(2000);
++        expect(notices(h, parent.id)).toHaveLength(1);
++        expect(
++          h.db
++            .select()
++            .from(threadPluginMetadata)
++            .where(eq(threadPluginMetadata.threadId, child.id))
++            .get()?.metadataJson,
++        ).toBe(metadataJson);
++      });
++    },
++  );
++
++  it("defaults to delivery and logs when the metadata query fails", async () => {
++    await withTestHarness(async (h) => {
++      const { child } = fixture(h);
++      const warn = vi.spyOn(h.deps.logger, "warn");
++      expect(() =>
++        h.db.transaction((tx) => {
++          tx.run("DROP TABLE thread_plugin_metadata");
++          expect(
++            suppressP6rAutomaticParentFollowup(h.deps, child.id, "outcome"),
++          ).toBe(false);
++          expect(warn).toHaveBeenCalled();
++          throw new Error("restore table");
++        }),
++      ).toThrow("restore table");
++      expect(
++        suppressP6rAutomaticParentFollowup(h.deps, child.id, "outcome"),
++      ).toBe(true);
++    });
++  });
++
++  it.each([undefined, false, true])(
++    "persists scheduled public creation policy (%s) without plugin attribution",
++    async (value) => {
++      await withTestHarness(async (h) => {
++        const { parent, environment, project } = fixture(h, false);
++        const response = await h.app.request("/api/v1/threads", {
++          method: "POST",
++          headers: { "content-type": "application/json" },
++          body: JSON.stringify({
++            projectId: project.id,
++            providerId: "codex",
++            origin: "cli",
++            startedOnBehalfOf: null,
++            environment: { type: "reuse", environmentId: environment.id },
++            parentThreadId: parent.id,
++            input: [{ type: "text", text: "Scheduled child", mentions: [] }],
++            sendAt: Date.now() + 60000,
++            ...(value === undefined
++              ? {}
++              : { noAutomaticParentFollowups: value }),
++          }),
++        });
++        expect(response.status).toBe(201);
++        const body = await response.json();
++        const thread = getThread(h.db, body.id)!;
++        expect(thread.parentThreadId).toBe(parent.id);
++        expect(thread.originKind).toBeNull();
++        expect(thread.originPluginId).toBeNull();
++        expect(thread.status).toBe("pending");
++        expect(
++          getThreadPluginMetadata(
++            h.db,
++            thread.id,
++            P6R_PARENT_FOLLOWUP_POLICY_NAMESPACE,
++          ).metadata,
++        ).toEqual(value === true ? { noAutomaticParentFollowups: true } : {});
++        const patch = await h.app.request(
++          `/api/v1/threads/${thread.id}/plugin-metadata`,
++          {
++            method: "PATCH",
++            headers: { "content-type": "application/json" },
++            body: JSON.stringify({
++              pluginId: P6R_PARENT_FOLLOWUP_POLICY_NAMESPACE,
++              set: { noAutomaticParentFollowups: false },
++            }),
++          },
++        );
++        expect(patch.status).toBe(400);
++      });
++    },
++  );
++});
+diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
+index 747e4d37a7e1de2c4fcc467cd1c13f5e67454167..c403f05f09c3c5461b678358587b506cd9f7a7e6 100644
+--- a/packages/db/src/data/index.ts
++++ b/packages/db/src/data/index.ts
+@@ -61,6 +61,7 @@ export {
+   listThreadPluginMetadataRows,
+   patchThreadPluginMetadata,
+ } from "./thread-plugin-metadata.js";
++export { P6R_PARENT_FOLLOWUP_POLICY_NAMESPACE } from "./thread-plugin-metadata.js";
+ 
+ export {
+   createThread,
+diff --git a/packages/db/src/data/thread-plugin-metadata.ts b/packages/db/src/data/thread-plugin-metadata.ts
+index 8ba58a6e2bc0a57823a7deebaf78560a3e6b3815..ae2e03dbabab77e1bb87ed062f58f63c16f0846d 100644
+--- a/packages/db/src/data/thread-plugin-metadata.ts
++++ b/packages/db/src/data/thread-plugin-metadata.ts
+@@ -11,6 +11,8 @@ import type {
+ } from "../connection.js";
+ import { threadPluginMetadata } from "../schema.js";
+ 
++export const P6R_PARENT_FOLLOWUP_POLICY_NAMESPACE = "_p6r-core-parent-policy";
++
+ export interface ThreadPluginMetadataPatch {
+   threadId: string;
+   pluginId: string;
+diff --git a/packages/db/src/data/threads.ts b/packages/db/src/data/threads.ts
+index b1282b9707a4f2b150a0e644eacbfdef03427a98..92d67a31d19312488bc22b010476b4db4d213465 100644
+--- a/packages/db/src/data/threads.ts
++++ b/packages/db/src/data/threads.ts
+@@ -47,7 +47,10 @@ import {
+ import { createThreadId } from "../ids.js";
+ import { NON_TERMINAL_SESSION_STATUSES } from "./terminal-sessions.js";
+ import { createOrderKeyBetween } from "./order-keys.js";
+-import { insertThreadPluginMetadata } from "./thread-plugin-metadata.js";
++import {
++  insertThreadPluginMetadata,
++  P6R_PARENT_FOLLOWUP_POLICY_NAMESPACE,
++} from "./thread-plugin-metadata.js";
+ 
+ type ThreadWriteConnection = DbConnection | DbTransaction;
+ 
+@@ -270,6 +273,7 @@ export interface CreateThreadInput {
+   pinned?: boolean;
+   status?: ThreadStatus;
+   parentThreadId?: string | null;
++  noAutomaticParentFollowups?: boolean;
+   lifecycleOwnerThreadId?: string | null;
+   sourceThreadId?: string | null;
+   originKind?: ThreadOriginKind | null;
+@@ -360,6 +364,13 @@ export function createThread(
+           createdThread.id,
+         );
+       }
++      if (input.noAutomaticParentFollowups === true) {
++        insertThreadPluginMetadata(tx, {
++          threadId: createdThread.id,
++          pluginId: P6R_PARENT_FOLLOWUP_POLICY_NAMESPACE,
++          metadata: { noAutomaticParentFollowups: true },
++        });
++      }
+       upsertThreadTitleSearchSegments(tx, {
+         threadId: createdThread.id,
+         title: createdThread.title,
+diff --git a/packages/db/test/data/thread-plugin-metadata.test.ts b/packages/db/test/data/thread-plugin-metadata.test.ts
+index e24f581ed412eee3d67004ba4d29c802a7a1acbf..19f4db7d7d5316c1d5134139218108991857d828 100644
+--- a/packages/db/test/data/thread-plugin-metadata.test.ts
++++ b/packages/db/test/data/thread-plugin-metadata.test.ts
+@@ -3,7 +3,7 @@ import { join } from "node:path";
+ import { tmpdir } from "node:os";
+ import { describe, expect, it } from "vitest";
+ import { createConnection, migrate } from "../../src/index.js";
+-import { threadPluginMetadata } from "../../src/schema.js";
++import { threads, threadPluginMetadata } from "../../src/schema.js";
+ import { withWriteAfterFirstRead } from "../helpers/interleave.js";
+ import { createProject } from "../../src/data/projects.js";
+ import {
+@@ -12,6 +12,7 @@ import {
+   searchThreadsWithPendingInteractionState,
+ } from "../../src/data/threads.js";
+ import {
++  P6R_PARENT_FOLLOWUP_POLICY_NAMESPACE,
+   getThreadPluginMetadata,
+   insertThreadPluginMetadata,
+   listThreadPluginMetadataRows,
+@@ -35,6 +36,116 @@ function setup(name: string) {
+ }
+ 
+ describe("thread plugin metadata persistence", () => {
++  it("commits the parent policy before notifying creation without changing attribution", () => {
++    const { db, project } = setup("parent-policy");
++    const observations: unknown[] = [];
++    const thread = createThread(
++      db,
++      {
++        ...noopNotifier,
++        notifyThread(id) {
++          observations.push(
++            getThreadPluginMetadata(
++              db,
++              id,
++              P6R_PARENT_FOLLOWUP_POLICY_NAMESPACE,
++            ).metadata,
++          );
++        },
++      },
++      {
++        projectId: project.id,
++        providerId: "codex",
++        noAutomaticParentFollowups: true,
++      },
++    );
++    expect(observations).toEqual([{ noAutomaticParentFollowups: true }]);
++    expect(thread.originKind).toBeNull();
++    expect(thread.originPluginId).toBeNull();
++    for (const noAutomaticParentFollowups of [undefined, false]) {
++      const ordinary = createThread(db, noopNotifier, {
++        projectId: project.id,
++        providerId: "codex",
++        parentThreadId: thread.id,
++        noAutomaticParentFollowups,
++      });
++      expect(
++        listThreadPluginMetadataRows(db, ordinary.id, [
++          P6R_PARENT_FOLLOWUP_POLICY_NAMESPACE,
++        ]),
++      ).toEqual([]);
++    }
++    const fork = createThread(db, noopNotifier, {
++      projectId: project.id,
++      providerId: "codex",
++      originKind: "fork",
++      sourceThreadId: thread.id,
++    });
++    expect(
++      listThreadPluginMetadataRows(db, fork.id, [
++        P6R_PARENT_FOLLOWUP_POLICY_NAMESPACE,
++      ]),
++    ).toEqual([]);
++    db.$client.close();
++  });
++
++  it("rolls back the thread when inserting its policy fails", () => {
++    const { db, project } = setup("parent-policy-rollback");
++    const observed: string[] = [];
++    db.$client
++      .exec(`CREATE TEMP TRIGGER reject_parent_policy BEFORE INSERT ON thread_plugin_metadata
++      WHEN NEW.plugin_id = '_p6r-core-parent-policy' BEGIN SELECT RAISE(ABORT, 'policy insert failed'); END`);
++    expect(() =>
++      createThread(
++        db,
++        { ...noopNotifier, notifyThread: (id) => observed.push(id) },
++        {
++          projectId: project.id,
++          providerId: "codex",
++          noAutomaticParentFollowups: true,
++        },
++      ),
++    ).toThrow("policy insert failed");
++    expect(db.select().from(threads).all()).toEqual([]);
++    expect(observed).toEqual([]);
++    db.$client.close();
++  });
++
++  it("retains the policy across reopening storage", () => {
++    const dir = mkdtempSync(join(tmpdir(), "bb-parent-policy-"));
++    const path = join(dir, "db.sqlite");
++    const db = createConnection(path);
++    let id = "";
++    try {
++      migrate(db);
++      const host = upsertHost(db, noopNotifier, { name: "host" });
++      const { project } = createProject(db, noopNotifier, {
++        name: "project",
++        source: { type: "local_path", hostId: host.id, path: dir },
++      });
++      id = createThread(db, noopNotifier, {
++        projectId: project.id,
++        providerId: "codex",
++        noAutomaticParentFollowups: true,
++      }).id;
++    } finally {
++      db.$client.close();
++    }
++    const reopened = createConnection(path);
++    try {
++      expect(
++        getThreadPluginMetadata(
++          reopened,
++          id,
++          P6R_PARENT_FOLLOWUP_POLICY_NAMESPACE,
++        ).metadata,
++      ).toEqual({ noAutomaticParentFollowups: true });
++    } finally {
++      reopened.$client.close();
++      rmSync(dir, { recursive: true, force: true });
++    }
++  });
++
+   it("seeds one namespace and returns {} when absent", () => {
+     const { db, project } = setup("seed");
+     const thread = createThread(db, noopNotifier, {
+diff --git a/packages/server-contract/src/api/threads.ts b/packages/server-contract/src/api/threads.ts
+index 6ee0cd1df4f19516a9f3a8f75a9787ae833215ca..7682fde52cbdd3c1ab8084a0fe7009d52da68efa 100644
+--- a/packages/server-contract/src/api/threads.ts
++++ b/packages/server-contract/src/api/threads.ts
+@@ -109,6 +109,7 @@ export const createThreadRequestSchema = z
+     executionInputSources: createExecutionInputSourcesSchema.optional(),
+     environment: createThreadEnvironmentArgsSchema,
+     parentThreadId: z.string().min(1).optional(),
++    noAutomaticParentFollowups: z.boolean().optional(),
+     sectionId: z.string().min(1).nullable().optional(),
+     pinned: z.boolean().optional(),
+     sourceThreadId: z.string().min(1).optional(),
+diff --git a/packages/server-contract/test/contract.test.ts b/packages/server-contract/test/contract.test.ts
+index df4d6a58e5d1f98201ce1d72d0af843aca3e10f0..4a8eaa50ebfeee0ea7e607581fb112b2f0eadceb 100644
+--- a/packages/server-contract/test/contract.test.ts
++++ b/packages/server-contract/test/contract.test.ts
+@@ -413,6 +413,7 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
+       "createThreadRequestSchema.pinned",
+       "createThreadRequestSchema.model",
+       "createThreadRequestSchema.parentThreadId",
++      "createThreadRequestSchema.noAutomaticParentFollowups",
+       "createThreadRequestSchema.providerId",
+       "createThreadRequestSchema.permissionMode",
+       "createThreadRequestSchema.reasoningLevel",
+diff --git a/packages/templates/src/templates/bb-guide-threads.md b/packages/templates/src/templates/bb-guide-threads.md
+index cbe98fb41d26e6fa5e6b16cc17072e708fb28f29..90158983866dcd79f742b0633b6410ce72f3de0a 100644
+--- a/packages/templates/src/templates/bb-guide-threads.md
++++ b/packages/templates/src/templates/bb-guide-threads.md
+@@ -22,6 +22,7 @@ Spawning:
+     --project <id>                 Project (required; when omitted the error prints this thread's project ID to add)
+     --parent-thread <id>           Parent thread (may be in another project)
+     --parent-self                  Parent to the current thread (BB_THREAD_ID)
++    --no-automatic-parent-followups  Suppress automatic parent notices for this thread
+     --lifecycle-owner-thread <id>  Archive/delete with this owner
+     --provider <id>                Provider override
+     --model <model>                Model override
+@@ -69,6 +70,7 @@ Spawning:
+   explicit sandbox and approval bypass. Plan mode is separate from permissions.
+   Subagents inherit the parent's permission mode by default, adapted to the child provider's supported modes. Explicit requests and a thread's recorded mode take precedence; nesting a thread does not cap its permissions. The host permission ceiling still applies.
+   Parenting is opt-in. Inside a thread, pass --parent-self to parent the new thread to the current thread.
++  Add --no-automatic-parent-followups to suppress automatic outcome, attention, and ownership notices for the new thread. The setting persists across restarts and reparenting; explicit messages still work. New children and forks do not inherit it. Requires a server supporting this flag. SDK: threads.spawn({ ..., noAutomaticParentFollowups: true }).
+   Hidden threads are for plugin/background workers. They remain addressable by
+   ID while staying out of sidebar organization and unread/pending favicon
+   attention. Thread lists exclude them unless
+diff --git a/plugins/bb-guide/skills/bb-cli/references/thread-creation.md b/plugins/bb-guide/skills/bb-cli/references/thread-creation.md
+index 90b7256bb536ce4ea33a2c42588c14d29cc09967..c4ebaf5fc74e8a373df2deb1bc09a30127589407 100644
+--- a/plugins/bb-guide/skills/bb-cli/references/thread-creation.md
++++ b/plugins/bb-guide/skills/bb-cli/references/thread-creation.md
+@@ -176,6 +176,12 @@ environment pull-request show <id>`. Diff commands require an explicit target
+ - Use `--parent-self` inside a thread to parent the new thread to the current
+   thread.
+ - Use `--parent-thread <thread-id>` to choose another specific parent.
++- Add `--no-automatic-parent-followups` to suppress automatic outcome, attention,
++  and ownership notices for the new thread while retaining its parent link.
++  It persists across restarts and reparenting; explicit messages still work.
++  New children and forks do not inherit it. This is a creation-only setting
++  requiring a server that supports the flag. SDK callers can pass
++  `noAutomaticParentFollowups: true` to `threads.spawn`.
+ - A parent can live in a different project. Pass `--project <other-id>` with
+   `--parent-self` to delegate work in another repository; the child still
+   reports back to its parent and inherits its permission mode by default, adapted
+-- 
+2.53.0
+

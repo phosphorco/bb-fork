@@ -71,7 +71,7 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The forty-seven patches listed in `patches/series` form the current implementation
+The forty-eight patches listed in `patches/series` form the current implementation
 candidate. Queue numbers 0022, 0027, 0030 and 0048 are intentionally absent: 0022 is a
 historical gap, the former 0027 Monaco routing backport is supplied by
 upstream commit `283e6d7`, and 0030 and 0048 were retired at the 2026-10-08
@@ -151,9 +151,21 @@ Patches 49–51 are performance changes: participant projection watermarks, the
 delegating-item partial-index hint, and incremental extension of the timeline
 ordering context on top of upstream's split ordering cache.
 
-## Verification boundary for this source receipt
+Patch 52 adds a persistent creation-time opt-out for automatic parent notices;
+see [behavior and maintenance](docs/no-automatic-parent-followups.md).
 
-The locked source (tree `81da17d778dcf19648c77a726b7f5cd41ec2d3f0`) passed
+## Current source verification receipt
+
+Patch 52 replays to `49cf6254c49aa92253aa4d875b237c3bc4ce5efa`. Full typecheck,
+build, database tests and focused feature suites passed. The broad test graph
+reported six failures; reruns isolated environmental/timing failures, with the
+existing child-outcome failures also reproduced against the original notification
+implementation. See [the complete verification boundary](docs/no-automatic-parent-followups.md#verification--2026-10-09).
+The running server has not been restarted for this source change.
+
+## Previous source verification receipt
+
+The preceding source (tree `81da17d778dcf19648c77a726b7f5cd41ec2d3f0`) passed
 workspace typecheck and build (165 tasks), a per-patch typecheck of every
 exported commit in order, and the package test graph run with an isolated
 `HOME`, disk-backed temporary storage and BB session variables removed:
