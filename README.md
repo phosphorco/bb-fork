@@ -156,8 +156,13 @@ see [behavior and maintenance](docs/no-automatic-parent-followups.md).
 
 ## Current source verification receipt
 
-Patch 52 replays to `49cf6254c49aa92253aa4d875b237c3bc4ce5efa`. Full typecheck,
-build, database tests and focused feature suites passed. The broad test graph
+Patch 52 now allows failed child outcomes through the opt-out. The updated queue
+replays to `2371fec864b822532f71ce52069301f13d36b820`. The server/CLI
+build and typecheck, 17 policy tests, 45 CLI tests, and queue replay passed.
+See [behavior and maintenance](docs/no-automatic-parent-followups.md).
+
+The initial implementation passed full typecheck, build, database tests and
+focused feature suites. The broad test graph
 reported six failures; reruns isolated environmental/timing failures, with the
 existing child-outcome failures also reproduced against the original notification
 implementation. See [the complete verification boundary](docs/no-automatic-parent-followups.md#verification--2026-10-09).

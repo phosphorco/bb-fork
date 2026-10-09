@@ -400,8 +400,10 @@ coverage boundaries.
 
 `bb thread spawn --no-automatic-parent-followups` and SDK/API
 `noAutomaticParentFollowups: true` retain the native parent link while suppressing
-automatic outcomes, attention, and ownership notices. A reserved metadata row is
-seeded in the existing creation transaction; omitted settings preserve normal
+automatic completion, interruption, attention, and ownership notices. Child
+failures always use normal parent delivery, including setup failures and exhausted
+message retries. A reserved metadata row is seeded in the existing creation
+transaction; omitted settings preserve normal
 delivery. No migration, Thread field, or daemon protocol change is introduced.
 The setting is creation-only. Explicit delivery remains available.
 

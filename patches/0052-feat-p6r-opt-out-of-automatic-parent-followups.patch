@@ -1,4 +1,4 @@
-From 4341ad7c6490bdb01dcc594a14e47e8417a80816 Mon Sep 17 00:00:00 2001
+From cb0ae80dedec311fc7ee4001a6473b9059a024de Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Fri, 9 Oct 2026 02:51:00 +0200
 Subject: [PATCH] feat(p6r): support opting out of automatic parent followups
@@ -6,21 +6,21 @@ Subject: [PATCH] feat(p6r): support opting out of automatic parent followups
 ---
  .../command-output/thread-spawn.test.ts       |  41 +++
  apps/cli/src/commands/thread/spawn.ts         |  11 +-
- .../threads/child-thread-notifications.ts     |  13 +
+ .../threads/child-thread-notifications.ts     |  14 +
  .../threads/p6r-parent-followup-policy.ts     |  39 +++
  .../services/threads/thread-create-helpers.ts |   2 +
  .../services/threads/thread-create-request.ts |   1 +
  .../src/services/threads/thread-ownership.ts  |   4 +
- .../test/threads/p6r-parent-followups.test.ts | 269 ++++++++++++++++++
+ .../test/threads/p6r-parent-followups.test.ts | 301 ++++++++++++++++++
  packages/db/src/data/index.ts                 |   1 +
  .../db/src/data/thread-plugin-metadata.ts     |   2 +
  packages/db/src/data/threads.ts               |  13 +-
- .../test/data/thread-plugin-metadata.test.ts  | 113 +++++++-
+ .../test/data/thread-plugin-metadata.test.ts  | 113 ++++++-
  packages/server-contract/src/api/threads.ts   |   1 +
  .../server-contract/test/contract.test.ts     |   1 +
  .../src/templates/bb-guide-threads.md         |   2 +
- .../bb-cli/references/thread-creation.md      |   6 +
- 16 files changed, 515 insertions(+), 4 deletions(-)
+ .../bb-cli/references/thread-creation.md      |   8 +
+ 16 files changed, 550 insertions(+), 4 deletions(-)
  create mode 100644 apps/server/src/services/threads/p6r-parent-followup-policy.ts
  create mode 100644 apps/server/test/threads/p6r-parent-followups.test.ts
 
@@ -77,7 +77,7 @@ index dfbe208cc60649cff9b34503bb2ba2754b025dfe..1887c40e0859d1fb66c5a543f8fb95e6
      return vi.spyOn(process.stderr, "write").mockImplementation(() => true);
    }
 diff --git a/apps/cli/src/commands/thread/spawn.ts b/apps/cli/src/commands/thread/spawn.ts
-index d900f04d61ae9f4239410075265a4f9b86867742..18def42157892470d6e282e81c25321969d967f4 100644
+index d900f04d61ae9f4239410075265a4f9b86867742..727f80544772c1e9364a30700409175910c07650 100644
 --- a/apps/cli/src/commands/thread/spawn.ts
 +++ b/apps/cli/src/commands/thread/spawn.ts
 @@ -62,6 +62,7 @@ interface ThreadSpawnCommandOptions {
@@ -94,7 +94,7 @@ index d900f04d61ae9f4239410075265a4f9b86867742..18def42157892470d6e282e81c253219
      .option("--parent-self", "Parent the new thread to BB_THREAD_ID")
 +    .option(
 +      "--no-automatic-parent-followups",
-+      "Suppress automatic outcome, attention, and ownership notices to parents for this thread",
++      "Suppress automatic parent notices except failures for this thread",
 +    )
      .option("--provider <id>", PROVIDER_HELP)
      .option(
@@ -121,7 +121,7 @@ index d900f04d61ae9f4239410075265a4f9b86867742..18def42157892470d6e282e81c253219
            thread.parentThreadId === resolveContextThreadId()
          ) {
 diff --git a/apps/server/src/services/threads/child-thread-notifications.ts b/apps/server/src/services/threads/child-thread-notifications.ts
-index 750db2a6bfd5721daea08a30cd66defda433e917..4dea9629f3efeb7f8572707f44e4545a073680be 100644
+index 750db2a6bfd5721daea08a30cd66defda433e917..03c991ae5afc6a4394b0b0c335364e54d89d6446 100644
 --- a/apps/server/src/services/threads/child-thread-notifications.ts
 +++ b/apps/server/src/services/threads/child-thread-notifications.ts
 @@ -1,3 +1,4 @@
@@ -129,18 +129,19 @@ index 750db2a6bfd5721daea08a30cd66defda433e917..4dea9629f3efeb7f8572707f44e4545a
  import type { P6rPromptContext } from "@get-bb/plugin-sdk";
  import type {
    PromptInput,
-@@ -504,6 +505,10 @@ export async function queueChildThreadTurnNotificationBestEffort(
+@@ -504,6 +505,11 @@ export async function queueChildThreadTurnNotificationBestEffort(
    args: QueueChildThreadTurnNotificationArgs,
  ): Promise<void> {
    try {
 +    if (
++      args.turnStatus !== "failed" &&
 +      suppressP6rAutomaticParentFollowup(deps, args.childThread.id, "outcome")
 +    )
 +      return;
      queueChildThreadTurnNotificationBatchItem(deps, args);
    } catch (error) {
      deps.logger.error(
-@@ -523,6 +528,14 @@ export async function queueChildThreadNeedsAttentionNotificationBestEffort(
+@@ -523,6 +529,14 @@ export async function queueChildThreadNeedsAttentionNotificationBestEffort(
    args: QueueChildThreadNeedsAttentionNotificationArgs,
  ): Promise<void> {
    try {
@@ -246,10 +247,10 @@ index ce4865d2c8a498c917c7a817a1795e34d583472c..a079a8e909d10cb20298dbe578a0acbb
        childThreadId: thread.id,
 diff --git a/apps/server/test/threads/p6r-parent-followups.test.ts b/apps/server/test/threads/p6r-parent-followups.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..add5c47a929e3e8a007f53cac662043b10efcda2
+index 0000000000000000000000000000000000000000..281a9f8e3ac3a3f087c89711345cefd8e31afbf8
 --- /dev/null
 +++ b/apps/server/test/threads/p6r-parent-followups.test.ts
-@@ -0,0 +1,269 @@
+@@ -0,0 +1,301 @@
 +import { afterEach, describe, expect, it, vi } from "vitest";
 +import {
 +  createThread,
@@ -303,7 +304,7 @@ index 0000000000000000000000000000000000000000..add5c47a929e3e8a007f53cac662043b
 +});
 +
 +describe("p6r automatic parent followup policy", () => {
-+  it.each(["completed", "failed", "interrupted"] as const)(
++  it.each(["completed", "interrupted"] as const)(
 +    "suppresses %s before batching and still permits explicit delivery",
 +    async (turnStatus) => {
 +      await withTestHarness(async (h) => {
@@ -336,6 +337,38 @@ index 0000000000000000000000000000000000000000..add5c47a929e3e8a007f53cac662043b
 +    },
 +  );
 +
++  it.each([false, true])(
++    "delivers child failures regardless of the opt-out (%s)",
++    async (suppressed) => {
++      await withTestHarness(async (h) => {
++        const { parent, child } = fixture(h, suppressed);
++        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
++        const failureContexts = [
++          undefined,
++          "failed during workspace setup before a turn began",
++          "could not send a queued message after retrying",
++        ];
++        for (const failureContext of failureContexts) {
++          await queueChildThreadTurnNotificationBestEffort(h.deps, {
++            childThread: child,
++            parentThreadId: parent.id,
++            turnStatus: "failed",
++            ...(failureContext ? { failureContext } : {}),
++          });
++        }
++        await vi.advanceTimersByTimeAsync(2000);
++        const messages = notices(h, parent.id);
++        expect(messages).toHaveLength(1);
++        const input = JSON.stringify(messages[0]?.input);
++        expect(input).toContain(child.id);
++        expect(input).toContain("failed");
++        for (const failureContext of failureContexts.slice(1)) {
++          expect(input).toContain(failureContext);
++        }
++      });
++    },
++  );
++
 +  it("keeps an opted-out sibling out of a batch without delaying another child", async () => {
 +    await withTestHarness(async (h) => {
 +      const { parent, child, environment, project } = fixture(h);
@@ -356,7 +389,7 @@ index 0000000000000000000000000000000000000000..add5c47a929e3e8a007f53cac662043b
 +      await queueChildThreadTurnNotificationBestEffort(h.deps, {
 +        childThread: child,
 +        parentThreadId: parent.id,
-+        turnStatus: "failed",
++        turnStatus: "completed",
 +      });
 +      await vi.advanceTimersByTimeAsync(1000);
 +      const messages = notices(h, parent.id);
@@ -432,7 +465,7 @@ index 0000000000000000000000000000000000000000..add5c47a929e3e8a007f53cac662043b
 +        await queueChildThreadTurnNotificationBestEffort(h.deps, {
 +          childThread: child,
 +          parentThreadId: parent.id,
-+          turnStatus: "failed",
++          turnStatus: "completed",
 +        });
 +        await vi.advanceTimersByTimeAsync(2000);
 +        expect(notices(h, parent.id)).toHaveLength(1);
@@ -745,14 +778,14 @@ index df4d6a58e5d1f98201ce1d72d0af843aca3e10f0..4a8eaa50ebfeee0ea7e607581fb112b2
        "createThreadRequestSchema.permissionMode",
        "createThreadRequestSchema.reasoningLevel",
 diff --git a/packages/templates/src/templates/bb-guide-threads.md b/packages/templates/src/templates/bb-guide-threads.md
-index cbe98fb41d26e6fa5e6b16cc17072e708fb28f29..90158983866dcd79f742b0633b6410ce72f3de0a 100644
+index cbe98fb41d26e6fa5e6b16cc17072e708fb28f29..2a6d71f96869a81e18df5b3fafc480dc14640cea 100644
 --- a/packages/templates/src/templates/bb-guide-threads.md
 +++ b/packages/templates/src/templates/bb-guide-threads.md
 @@ -22,6 +22,7 @@ Spawning:
      --project <id>                 Project (required; when omitted the error prints this thread's project ID to add)
      --parent-thread <id>           Parent thread (may be in another project)
      --parent-self                  Parent to the current thread (BB_THREAD_ID)
-+    --no-automatic-parent-followups  Suppress automatic parent notices for this thread
++    --no-automatic-parent-followups  Suppress automatic parent notices except failures
      --lifecycle-owner-thread <id>  Archive/delete with this owner
      --provider <id>                Provider override
      --model <model>                Model override
@@ -760,20 +793,22 @@ index cbe98fb41d26e6fa5e6b16cc17072e708fb28f29..90158983866dcd79f742b0633b6410ce
    explicit sandbox and approval bypass. Plan mode is separate from permissions.
    Subagents inherit the parent's permission mode by default, adapted to the child provider's supported modes. Explicit requests and a thread's recorded mode take precedence; nesting a thread does not cap its permissions. The host permission ceiling still applies.
    Parenting is opt-in. Inside a thread, pass --parent-self to parent the new thread to the current thread.
-+  Add --no-automatic-parent-followups to suppress automatic outcome, attention, and ownership notices for the new thread. The setting persists across restarts and reparenting; explicit messages still work. New children and forks do not inherit it. Requires a server supporting this flag. SDK: threads.spawn({ ..., noAutomaticParentFollowups: true }).
++  Add --no-automatic-parent-followups to suppress automatic completion, interruption, attention, and ownership notices for the new thread. Child failures still notify the parent, including workspace setup failures and exhausted message retries. The setting persists across restarts and reparenting; explicit messages still work. New children and forks do not inherit it. Requires a server supporting this flag. SDK: threads.spawn({ ..., noAutomaticParentFollowups: true }).
    Hidden threads are for plugin/background workers. They remain addressable by
    ID while staying out of sidebar organization and unread/pending favicon
    attention. Thread lists exclude them unless
 diff --git a/plugins/bb-guide/skills/bb-cli/references/thread-creation.md b/plugins/bb-guide/skills/bb-cli/references/thread-creation.md
-index 90b7256bb536ce4ea33a2c42588c14d29cc09967..c4ebaf5fc74e8a373df2deb1bc09a30127589407 100644
+index 90b7256bb536ce4ea33a2c42588c14d29cc09967..268a706c7c7b71076f582192d5dd6151f91992c3 100644
 --- a/plugins/bb-guide/skills/bb-cli/references/thread-creation.md
 +++ b/plugins/bb-guide/skills/bb-cli/references/thread-creation.md
-@@ -176,6 +176,12 @@ environment pull-request show <id>`. Diff commands require an explicit target
+@@ -176,6 +176,14 @@ environment pull-request show <id>`. Diff commands require an explicit target
  - Use `--parent-self` inside a thread to parent the new thread to the current
    thread.
  - Use `--parent-thread <thread-id>` to choose another specific parent.
-+- Add `--no-automatic-parent-followups` to suppress automatic outcome, attention,
-+  and ownership notices for the new thread while retaining its parent link.
++- Add `--no-automatic-parent-followups` to suppress automatic completion,
++  interruption, attention, and ownership notices while retaining the parent link.
++  Child failures still notify the parent, including workspace setup failures and
++  exhausted message retries.
 +  It persists across restarts and reparenting; explicit messages still work.
 +  New children and forks do not inherit it. This is a creation-only setting
 +  requiring a server that supports the flag. SDK callers can pass
