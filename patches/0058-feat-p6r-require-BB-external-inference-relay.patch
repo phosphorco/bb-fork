@@ -1,6 +1,40 @@
+From 48ffc9364a257772155607540c50d76495daadb7 Mon Sep 17 00:00:00 2001
 From: BB delivery <bb-fork@invalid.local>
 Date: Thu, 15 Oct 2026 14:00:00 +0000
 Subject: [PATCH] feat(p6r): require BB-scoped external inference relay
+
+---
+ apps/host-daemon/src/command-dispatch.test.ts |  16 ++
+ apps/host-daemon/src/command-dispatch.ts      |  19 +-
+ .../providers/provider-model-catalog-store.ts |  41 +++-
+ .../required-external-model-catalog.ts        |  71 +++++++
+ .../provider-model-catalog-store.test.ts      |  25 +++
+ .../required-external-model-catalog.test.ts   |  65 ++++++
+ packages/host-daemon-contract/src/commands.ts |   4 +
+ packages/host-daemon-contract/src/protocol.ts |   2 +-
+ .../test/contract.test.ts                     |  20 +-
+ plugins/account-pool/PLUGIN_OVERVIEW.md       |   2 +
+ .../references/accounts-and-routing.md        |   7 +
+ .../references/required-external-inference.md |  32 +++
+ .../src/required-external-pool.test.ts        | 130 ++++++++++++
+ .../src/required-external-pool.ts             | 185 ++++++++++++++++++
+ plugins/account-pool/src/server.ts            |  20 +-
+ .../src/bridge/__tests__/sdk-session.test.ts  |  83 ++++++++
+ .../src/bridge/model-list.ts                  |   3 +
+ .../src/bridge/provider-maintenance.ts        |   3 +
+ .../required-external-maintenance.test.ts     |  12 ++
+ .../src/bridge/sdk-session.ts                 |  13 +-
+ .../src/bridge/app-server-launch.test.ts      |  22 +++
+ plugins/provider-codex/src/bridge/bridge.ts   |  23 ++-
+ .../src/bridge/provider-maintenance.test.ts   |   9 +
+ .../src/bridge/provider-maintenance.ts        |   3 +
+ 24 files changed, 789 insertions(+), 21 deletions(-)
+ create mode 100644 apps/server/src/services/providers/required-external-model-catalog.ts
+ create mode 100644 apps/server/test/providers/required-external-model-catalog.test.ts
+ create mode 100644 plugins/account-pool/skills/account-pool/references/required-external-inference.md
+ create mode 100644 plugins/account-pool/src/required-external-pool.test.ts
+ create mode 100644 plugins/account-pool/src/required-external-pool.ts
+ create mode 100644 plugins/provider-claude-code/src/bridge/required-external-maintenance.test.ts
 
 diff --git a/apps/host-daemon/src/command-dispatch.test.ts b/apps/host-daemon/src/command-dispatch.test.ts
 index 7b3af3b6c113d7673e7bc9962479b9d0dac59d56..7f2322ff3fd4301daf8e4da8dd07571ec40c0883 100644
@@ -789,6 +823,103 @@ index 1d3d27f3b97ea3909267e93655166b1cb0c920b1..85166f75b3e5e92b375841521f0832f4
      const hasRemovedSettings =
        "cacheMissDebug" in storedConfig || "cacheMissMinTokens" in storedConfig;
      delete storedConfig.cacheMissDebug;
+diff --git a/plugins/provider-claude-code/src/bridge/__tests__/sdk-session.test.ts b/plugins/provider-claude-code/src/bridge/__tests__/sdk-session.test.ts
+index 242a08574c9152a15a8dc3966288b637deee9e4f..b68252e4455b01d9e591bc73d730fa9454e89e1e 100644
+--- a/plugins/provider-claude-code/src/bridge/__tests__/sdk-session.test.ts
++++ b/plugins/provider-claude-code/src/bridge/__tests__/sdk-session.test.ts
+@@ -87,9 +87,92 @@ describe("SdkSession", () => {
+   });
+ 
+   afterEach(() => {
++    vi.unstubAllEnvs();
+     vi.restoreAllMocks();
+   });
+ 
++  it.each([
++    ["missing route", {}],
++    ["missing token", { ANTHROPIC_BASE_URL: "http://127.0.0.1:38886/pool" }],
++    ["missing origin", { ANTHROPIC_AUTH_TOKEN: "fixture-pool-token" }],
++    [
++      "blank origin",
++      { ANTHROPIC_BASE_URL: " ", ANTHROPIC_AUTH_TOKEN: "fixture-pool-token" },
++    ],
++    [
++      "blank token",
++      {
++        ANTHROPIC_BASE_URL: "http://127.0.0.1:38886/pool",
++        ANTHROPIC_AUTH_TOKEN: " ",
++      },
++    ],
++  ])(
++    "rejects required inference with %s before starting or resuming the SDK",
++    (_name, route) => {
++      for (const resume of [undefined, "existing-session"]) {
++        const session = new SdkSession(
++          {
++            ...defaultOptions,
++            env: { ...route, BB_ACCOUNT_POOL_EXTERNAL_REQUIRED: "1" },
++          },
++          vi.fn(),
++          vi.fn(),
++        );
++        expect(() => session.start(resume)).toThrow(
++          "Required BB inference route is unavailable.",
++        );
++        session.stop();
++      }
++      expect(queryMock).not.toHaveBeenCalled();
++    },
++  );
++
++  it("rejects a missing inherited required route before calling the SDK", () => {
++    vi.stubEnv("BB_ACCOUNT_POOL_EXTERNAL_REQUIRED", "1");
++    vi.stubEnv("ANTHROPIC_BASE_URL", "");
++    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "");
++    const session = new SdkSession(defaultOptions, vi.fn(), vi.fn());
++    expect(() => session.start()).toThrow(
++      "Required BB inference route is unavailable.",
++    );
++    expect(queryMock).not.toHaveBeenCalled();
++    session.stop();
++  });
++
++  it("uses the required route without changing caller settings or session behavior", () => {
++    const env = {
++      BB_ACCOUNT_POOL_EXTERNAL_REQUIRED: "1",
++      ANTHROPIC_BASE_URL: "http://127.0.0.1:38886/pool",
++      ANTHROPIC_AUTH_TOKEN: "fixture-pool-token",
++    };
++    const settings = { env: { CALLER_SETTING: "retained" } };
++    const session = new SdkSession(
++      { ...defaultOptions, env, settings },
++      vi.fn(),
++      vi.fn(),
++    );
++    session.start("existing-session");
++    const { options } = getLatestQueryCall();
++    expect(options.env).toBe(env);
++    expect(options.settings).toBe(settings);
++    expect(options.settingSources).toEqual(["user", "project", "local"]);
++    expect(options.resume).toBe("existing-session");
++    session.stop();
++  });
++
++  it("preserves an ordinary profile without required external inference", () => {
++    const env = { ANTHROPIC_API_KEY: "fixture-ordinary-key" };
++    const session = new SdkSession(
++      { ...defaultOptions, env },
++      vi.fn(),
++      vi.fn(),
++    );
++    session.start();
++    expect(getLatestQueryCall().options.env).toBe(env);
++    expect(queryMock).toHaveBeenCalledOnce();
++    session.stop();
++  });
++
+   it("rejects queued input when the SDK input stream closes before consumption", async () => {
+     const session = new SdkSession(defaultOptions, vi.fn(), vi.fn());
+     const consumed = session.pushInput("hello");
 diff --git a/plugins/provider-claude-code/src/bridge/model-list.ts b/plugins/provider-claude-code/src/bridge/model-list.ts
 index b5bb73ea71ed07c7d4c9f6af43f3832f79e2ec39..9c16a73dfc0073d5129c6fc9ea72121bc426b555 100644
 --- a/plugins/provider-claude-code/src/bridge/model-list.ts
@@ -835,6 +966,44 @@ index 0000000000000000000000000000000000000000..702a43ab1c2d3e143c9a552afabe303c
 +  await expect(listClaudeCodeBridgeModels()).rejects.toThrow(/Unrouted Claude model probes/);
 +  expect(fetch).not.toHaveBeenCalled();
 +});
+diff --git a/plugins/provider-claude-code/src/bridge/sdk-session.ts b/plugins/provider-claude-code/src/bridge/sdk-session.ts
+index d87b1abdaed3ae5fac8a9dc97da69bf487708f99..9c06bc8cba38d2299d505dbdddd9b1dab6a901a5 100644
+--- a/plugins/provider-claude-code/src/bridge/sdk-session.ts
++++ b/plugins/provider-claude-code/src/bridge/sdk-session.ts
+@@ -22,6 +22,15 @@ import {
+   translateMissingClaudeCliError,
+ } from "./missing-cli-error.js";
+ 
++function requireRequiredExternalClaudeRoute(env: NodeJS.ProcessEnv): void {
++  if (
++    env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED === "1" &&
++    (!env.ANTHROPIC_BASE_URL?.trim() || !env.ANTHROPIC_AUTH_TOKEN?.trim())
++  ) {
++    throw new Error("Required BB inference route is unavailable.");
++  }
++}
++
+ export interface SdkSessionOptions {
+   cwd: string;
+   systemPrompt: Exclude<Options["systemPrompt"], undefined>;
+@@ -226,6 +235,8 @@ export class SdkSession {
+   }
+ 
+   start(resumeSessionId?: string): void {
++    const env = this.options.env ?? process.env;
++    requireRequiredExternalClaudeRoute(env);
+     if (resumeSessionId) {
+       this.sessionId = resumeSessionId;
+     } else if (this.options.sessionId) {
+@@ -262,7 +273,7 @@ export class SdkSession {
+       includePartialMessages: true,
+       settingSources: ["user", "project", "local"],
+       persistSession: true,
+-      env: this.options.env ?? process.env,
++      env,
+       stderr: onStderr,
+       ...(this.options.mcpServers
+         ? { mcpServers: this.options.mcpServers }
 diff --git a/plugins/provider-codex/src/bridge/app-server-launch.test.ts b/plugins/provider-codex/src/bridge/app-server-launch.test.ts
 index 19c36321b0d192beb44c4086ca6fff543aebeed4..36fcc92b76ec6b0e4a99cd999446f59880f3f2c5 100644
 --- a/plugins/provider-codex/src/bridge/app-server-launch.test.ts
@@ -945,3 +1114,6 @@ index 1101b64da40df87b01f4b8267cc718f75619510f..744ef0147eb3493c1c046403c0490964
    if ((await resolveExecutablePath("codex")) === null) {
      return { supported: true, usage: { status: "not_installed" } };
    }
+-- 
+2.50.1 (Apple Git-155)
+

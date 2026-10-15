@@ -414,4 +414,4 @@ publication and build do not activate it in an already-running server.
 
 ## Reviewed external inference relay (0058)
 
-Patch 0058 requires the external inference relay for selected BB sessions, disables local account management and provider probes in that profile, and carries authenticated model facts through host protocol 231 (required external contract version 1). The optional candidate 0059 is excluded from this composition. Live acceptance remains required.
+Patch 0058 requires the external inference relay for selected BB sessions, disables local account management and provider probes in that profile, and carries authenticated model facts through host protocol 231 (required external contract version 1). Claude SDK start/resume also rejects a required profile without a nonblank contributed base URL and auth token before invoking the SDK, including startup recovery while Account Pool is disabled. Ordinary profiles and caller settings retain their behavior. The optional candidate 0059 is excluded from this composition. Live acceptance remains required.
