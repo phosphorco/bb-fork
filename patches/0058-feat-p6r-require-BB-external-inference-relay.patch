@@ -1,0 +1,947 @@
+From: BB delivery <bb-fork@invalid.local>
+Date: Thu, 15 Oct 2026 14:00:00 +0000
+Subject: [PATCH] feat(p6r): require BB-scoped external inference relay
+
+diff --git a/apps/host-daemon/src/command-dispatch.test.ts b/apps/host-daemon/src/command-dispatch.test.ts
+index 7b3af3b6c113d7673e7bc9962479b9d0dac59d56..7f2322ff3fd4301daf8e4da8dd07571ec40c0883 100644
+--- a/apps/host-daemon/src/command-dispatch.test.ts
++++ b/apps/host-daemon/src/command-dispatch.test.ts
+@@ -2485,3 +2485,19 @@ describe("dispatchCommand", () => {
+     });
+   });
+ });
++
++it("returns server-authenticated external catalogue facts without native provider work and rejects missing facts", async () => {
++  vi.stubEnv("BB_ACCOUNT_POOL_EXTERNAL_REQUIRED", "1");
++  try {
++    const runtime = createRuntime();
++    const manager = new RuntimeManager({ createRuntime: () => runtime, provisionWorkspace: async () => createWorkspace() });
++    const listModels = vi.fn(async () => ({ models: [], selectedOnlyModels: [] }));
++    const fetchPluginHostArtifact = vi.fn(async () => { throw new Error("native bridge must not be started"); });
++    const options = makeDispatchOptions({ runtimeManager: manager, listModels, fetchPluginHostArtifact });
++    const catalogue = { models: [{ id: "gpt-5.3-codex", model: "gpt-5.3-codex", displayName: "gpt-5.3-codex", description: "", supportedReasoningEfforts: [], defaultReasoningEffort: "low" as const, isDefault: false }], selectedOnlyModels: [] };
++    await expect(dispatchOnlineRpcCommand({ type: "provider.list_models", providerId: "codex", bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH, requiredExternalCatalog: catalogue }, options)).resolves.toEqual(catalogue);
++    await expect(dispatchOnlineRpcCommand({ type: "provider.list_models", providerId: "codex", bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH }, options)).rejects.toThrow(/catalogue is unavailable/);
++    expect(listModels).not.toHaveBeenCalled();
++    expect(fetchPluginHostArtifact).not.toHaveBeenCalled();
++  } finally { vi.unstubAllEnvs(); }
++});
+diff --git a/apps/host-daemon/src/command-dispatch.ts b/apps/host-daemon/src/command-dispatch.ts
+index f19a9a180ddb0bb4774bbcd02a6618ee6c32d365..0dfacbb2121ba705c47b072566322f69b15166ba 100644
+--- a/apps/host-daemon/src/command-dispatch.ts
++++ b/apps/host-daemon/src/command-dispatch.ts
+@@ -657,10 +657,23 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
+   "host.read_file_chunk": readHostFileChunk,
+   "host.read_file_relative": readHostRelativeFile,
+   "host.write_file": writeHostFile,
+-  "provider.list_models": (command, options) =>
+-    withResolvedBridgeLaunch(command, options, (args) =>
++  "provider.list_models": (command, options) => {
++    if (command.requiredExternalCatalog !== undefined) {
++      return Promise.resolve(command.requiredExternalCatalog);
++    }
++    if (
++      process.env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED === "1" &&
++      ["claude-code", "codex"].includes(command.providerId)
++    ) {
++      throw new ExpectedCommandDispatchError(
++        "provider_bridge_unavailable",
++        "Required BB external model catalogue is unavailable.",
++      );
++    }
++    return withResolvedBridgeLaunch(command, options, (args) =>
+       options.listModels(args),
+-    ),
++    );
++  },
+   "provider.health": (command, options) =>
+     withResolvedBridgeLaunch(command, options, (args) =>
+       options.providerHealth(args),
+diff --git a/apps/server/src/services/providers/provider-model-catalog-store.ts b/apps/server/src/services/providers/provider-model-catalog-store.ts
+index 89097c885c1bec11604bf06137f90ae0c12013dd..3d272e8e5791ad62dfc51a2c2d2f23a6b0a067ab 100644
+--- a/apps/server/src/services/providers/provider-model-catalog-store.ts
++++ b/apps/server/src/services/providers/provider-model-catalog-store.ts
+@@ -1,3 +1,4 @@
++import { readRequiredExternalModelCatalog } from "./required-external-model-catalog.js";
+ import { createHash } from "node:crypto";
+ import {
+   deleteStoredProviderModelCatalogsForHost,
+@@ -177,6 +178,16 @@ function catalogFingerprint(
+         bridgeLaunch.source,
+         bridgeLaunch.providerOptions,
+         bridgeLaunch.envPassthrough,
++        ...(process.env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED !== undefined &&
++        ["claude-code", "codex"].includes(providerId)
++          ? [
++              process.env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED,
++              process.env.BB_ACCOUNT_POOL_EXTERNAL_URL ?? null,
++              createHash("sha256")
++                .update(process.env.BB_ACCOUNT_POOL_EXTERNAL_TOKEN ?? "")
++                .digest("hex"),
++            ]
++          : []),
+       ]),
+     )
+     .digest("hex");
+@@ -512,16 +523,26 @@ export function createProviderModelCatalogStore(options: {
+       promise: Promise.resolve({ ok: false, code: "failed", detail: null }),
+     };
+     entry.refresh = refresh;
+-    refresh.promise = callHostOnlineRpc(deps, {
+-      hostId,
+-      timeoutMs: COMMAND_TIMEOUT_MS,
+-      command: {
+-        type: "provider.list_models",
+-        providerId,
+-        ...(scopeKey === "" ? {} : { cwd: scopeKey }),
+-        bridgeLaunch,
+-      },
+-    }).then(
++    refresh.promise = (async () => {
++      const externalCatalog =
++        process.env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED !== undefined &&
++        ["claude-code", "codex"].includes(providerId)
++          ? await readRequiredExternalModelCatalog(providerId)
++          : undefined;
++      return callHostOnlineRpc(deps, {
++        hostId,
++        timeoutMs: COMMAND_TIMEOUT_MS,
++        command: {
++          type: "provider.list_models",
++          providerId,
++          ...(scopeKey === "" ? {} : { cwd: scopeKey }),
++          bridgeLaunch,
++          ...(externalCatalog === undefined
++            ? {}
++            : { requiredExternalCatalog: externalCatalog }),
++        },
++      });
++    })().then(
+       (result) =>
+         settle(deps, entry, refresh, {
+           ok: true,
+diff --git a/apps/server/src/services/providers/required-external-model-catalog.ts b/apps/server/src/services/providers/required-external-model-catalog.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..04660a04ae01da8de9b5815bfa97744009add65c
+--- /dev/null
++++ b/apps/server/src/services/providers/required-external-model-catalog.ts
+@@ -0,0 +1,71 @@
++import { availableModelSchema, type AvailableModel } from "@bb/domain";
++import { z } from "zod";
++
++const catalogueSchema = z.object({
++  data: z.array(z.object({ id: z.string().min(1).max(200) })).max(4096),
++});
++
++// Catalogue discovery uses the same server-held route/key as inference. Workers
++// receive model facts over their authenticated BB command transport, never keys.
++export async function readRequiredExternalModelCatalog(
++  providerId: string,
++  env: NodeJS.ProcessEnv = process.env,
++  request: typeof fetch = fetch,
++): Promise<{ models: AvailableModel[]; selectedOnlyModels: AvailableModel[] }> {
++  try {
++    const origin = new URL(env.BB_ACCOUNT_POOL_EXTERNAL_URL ?? "");
++    const token = env.BB_ACCOUNT_POOL_EXTERNAL_TOKEN ?? "";
++    if (
++      env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED !== "1" ||
++      origin.protocol !== "https:" ||
++      !origin.hostname.endsWith(".ts.net") ||
++      origin.username ||
++      origin.password ||
++      origin.port ||
++      origin.pathname !== "/" ||
++      origin.search ||
++      origin.hash ||
++      !token ||
++      /\s/.test(token)
++    )
++      throw new Error();
++    const response = await request(`${origin.origin}/v1/models`, {
++      headers: { authorization: `Bearer ${token}` },
++      redirect: "error",
++      signal: AbortSignal.timeout(15_000),
++    });
++    if (!response.ok) throw new Error();
++    const bytes = await response.text();
++    if (Buffer.byteLength(bytes) > 1024 * 1024) throw new Error();
++    const catalogue = catalogueSchema.parse(JSON.parse(bytes));
++    const seen = new Set<string>();
++    const models: AvailableModel[] = [];
++    for (const { id } of catalogue.data) {
++      const admitted =
++        providerId === "claude-code"
++          ? /^claude-(?:opus|sonnet|haiku)-/u.test(id)
++          : providerId === "codex" &&
++            /^gpt-\d[\w.-]*$/u.test(id) &&
++            !/(?:image|audio|realtime|transcri|embedding)/u.test(id);
++      if (!admitted || seen.has(id)) continue;
++      seen.add(id);
++      models.push(
++        availableModelSchema.parse({
++          id,
++          model: id,
++          displayName: id,
++          description:
++            "Available through the required shared BB inference pool.",
++          supportedReasoningEfforts: [],
++          defaultReasoningEffort: "low",
++          isDefault: false,
++        }),
++      );
++    }
++    if (models.length === 0) throw new Error();
++    return { models, selectedOnlyModels: [] };
++  } catch {
++    // Never include a route key or upstream diagnostic in UI/log errors.
++    throw new Error("Required BB external model catalogue is unavailable.");
++  }
++}
+diff --git a/apps/server/test/providers/provider-model-catalog-store.test.ts b/apps/server/test/providers/provider-model-catalog-store.test.ts
+index 3afe7ec9aa56e0ceba854deb3eb3991bfeeb1d34..6c3df71306f1e0d34c84dd4c6affc6426df2db89 100644
+--- a/apps/server/test/providers/provider-model-catalog-store.test.ts
++++ b/apps/server/test/providers/provider-model-catalog-store.test.ts
+@@ -951,3 +951,28 @@ describe("provider model catalog store", () => {
+     });
+   });
+ });
++
++it("discovers required shared-pool models through authenticated host commands and never falls back to native discovery", async () => {
++  vi.stubEnv("BB_ACCOUNT_POOL_EXTERNAL_REQUIRED", "1");
++  vi.stubEnv("BB_ACCOUNT_POOL_EXTERNAL_URL", "https://inference.example.ts.net");
++  vi.stubEnv("BB_ACCOUNT_POOL_EXTERNAL_TOKEN", "synthetic-catalogue-key");
++  const fetch = vi.fn(async () => Response.json({ data: [{ id: "gpt-5.3-codex" }, { id: "claude-sonnet-4-5" }] }));
++  vi.stubGlobal("fetch", fetch);
++  try {
++    await withTestHarness(async harness => {
++      const host = setupCatalogHost(harness, { id: "host-required-catalogue" });
++      host.setAnswer(command => {
++        expect(command.requiredExternalCatalog).toBeDefined();
++        expect(JSON.stringify(command)).not.toContain("synthetic-catalogue-key");
++        return catalogAnswer(command.requiredExternalCatalog?.models ?? []);
++      });
++      expect(modelIds(await host.read("codex"))).toEqual(["gpt-5.3-codex"]);
++      expect(modelIds(await host.read("claude-code"))).toEqual(["claude-sonnet-4-5"]);
++      const prior = host.listRequests().length;
++      vi.stubEnv("BB_ACCOUNT_POOL_EXTERNAL_URL", "");
++      expect((await host.forceRead("codex")).modelLoadError?.code).toBe("failed");
++      expect(host.listRequests()).toHaveLength(prior);
++      expect(fetch).toHaveBeenCalledTimes(2);
++    });
++  } finally { vi.unstubAllGlobals(); vi.unstubAllEnvs(); }
++});
+diff --git a/apps/server/test/providers/required-external-model-catalog.test.ts b/apps/server/test/providers/required-external-model-catalog.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e278fce6758b2f1005f835c6365b75cb08894266
+--- /dev/null
++++ b/apps/server/test/providers/required-external-model-catalog.test.ts
+@@ -0,0 +1,65 @@
++import { expect, it, vi } from "vitest";
++import { readRequiredExternalModelCatalog } from "../../src/services/providers/required-external-model-catalog.js";
++const env = {
++  BB_ACCOUNT_POOL_EXTERNAL_REQUIRED: "1",
++  BB_ACCOUNT_POOL_EXTERNAL_URL: "https://inference.example.ts.net",
++  BB_ACCOUNT_POOL_EXTERNAL_TOKEN: "synthetic-key",
++};
++it("uses the server-held route and returns only each provider's catalogue facts", async () => {
++  const request = vi.fn(async (url, init) => {
++    expect(url).toBe("https://inference.example.ts.net/v1/models");
++    expect(new Headers(init?.headers).get("authorization")).toBe(
++      "Bearer synthetic-key",
++    );
++    expect(init?.redirect).toBe("error");
++    return Response.json({
++      data: [
++        { id: "claude-sonnet-4-5" },
++        { id: "gpt-5.3-codex" },
++        { id: "gpt-4o-audio" },
++        { id: "gpt-5.3-codex" },
++      ],
++    });
++  });
++  expect(
++    (
++      await readRequiredExternalModelCatalog("claude-code", env, request)
++    ).models.map((model) => model.id),
++  ).toEqual(["claude-sonnet-4-5"]);
++  const codex = await readRequiredExternalModelCatalog("codex", env, request);
++  expect(codex.models.map((model) => model.id)).toEqual(["gpt-5.3-codex"]);
++  expect(JSON.stringify(codex)).not.toContain("synthetic-key");
++});
++it("never makes a request when the required route is missing or invalid", async () => {
++  const request = vi.fn();
++  for (const config of [
++    {},
++    { ...env, BB_ACCOUNT_POOL_EXTERNAL_URL: "https://provider.example" },
++    { ...env, BB_ACCOUNT_POOL_EXTERNAL_TOKEN: "" },
++  ]) {
++    await expect(
++      readRequiredExternalModelCatalog("codex", config, request),
++    ).rejects.toThrow(/unavailable/);
++  }
++  expect(request).not.toHaveBeenCalled();
++});
++it("returns unavailable on Mac/router failure and invalid model facts, without fallback", async () => {
++  for (const response of [
++    new Response(null, { status: 503 }),
++    Response.json({ data: [] }),
++    Response.json({ data: [{ model: "gpt-5.3-codex" }] }),
++  ]) {
++    const request = vi.fn(async () => response);
++    await expect(
++      readRequiredExternalModelCatalog("codex", env, request),
++    ).rejects.toThrow(/unavailable/);
++    expect(request).toHaveBeenCalledTimes(1);
++  }
++  const request = vi.fn(async () => {
++    throw new Error("offline synthetic-key");
++  });
++  await expect(
++    readRequiredExternalModelCatalog("codex", env, request),
++  ).rejects.toThrow("Required BB external model catalogue is unavailable.");
++  expect(request).toHaveBeenCalledTimes(1);
++});
+diff --git a/packages/host-daemon-contract/src/commands.ts b/packages/host-daemon-contract/src/commands.ts
+index f1f7ec2b53949a530fb09a7645e64f4dce59c8e9..0a0aaa10f5fe2c922c97426fde6d5aa157a6f466 100644
+--- a/packages/host-daemon-contract/src/commands.ts
++++ b/packages/host-daemon-contract/src/commands.ts
+@@ -859,6 +859,10 @@ const hostListBranchOptionsCommandSchema = z
+   .strict();
+ 
+ const providerListModelsCommandSchema = z.object({
++  requiredExternalCatalog: z.object({
++    models: z.array(availableModelSchema).min(1),
++    selectedOnlyModels: z.array(availableModelSchema),
++  }).strict().optional(),
+   type: z.literal("provider.list_models"),
+   providerId: z.string().min(1),
+   bridgeLaunch: hostDaemonBridgeLaunchSchema,
+diff --git a/packages/host-daemon-contract/src/protocol.ts b/packages/host-daemon-contract/src/protocol.ts
+index bc94cb68d5e723da9989205b10823ce3b7ac13a3..0c0fcda05ea7cba2ddcd14f183c98504eaa2911e 100644
+--- a/packages/host-daemon-contract/src/protocol.ts
++++ b/packages/host-daemon-contract/src/protocol.ts
+@@ -1,4 +1,4 @@
+-export const HOST_DAEMON_PROTOCOL_VERSION = 230 as const;
++export const HOST_DAEMON_PROTOCOL_VERSION = 231 as const;
+ 
+ export const HOST_ARTIFACT_MAX_BYTES = 256 * 1024 * 1024;
+ 
+diff --git a/packages/host-daemon-contract/test/contract.test.ts b/packages/host-daemon-contract/test/contract.test.ts
+index 3d6a02fee5ab22da955530c7f58cf2a3f6e0cfc7..493560084c7476d06b48c70c88e2cdb21d228212 100644
+--- a/packages/host-daemon-contract/test/contract.test.ts
++++ b/packages/host-daemon-contract/test/contract.test.ts
+@@ -782,6 +782,24 @@ function terminalDataBase64(byteLength: number): string {
+ }
+ 
+ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog":
++    "present only when the BB server has fetched the required shared-pool catalogue; absence selects native discovery only outside the required profile.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.routeProviderId":
++    "pooled catalogue models can omit a separate route-provider identity; the existing AvailableModel contract defines the same omission semantics.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.supportedServiceTiers":
++    "model facts need not advertise service tiers; the existing AvailableModel contract defines the same omission semantics.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.supportedServiceTiers.description":
++    "service tier descriptions are optional display metadata; the existing AvailableModel contract defines the same omission semantics.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.supportedServiceTiers.label":
++    "service tier labels are optional display metadata; the existing AvailableModel contract defines the same omission semantics.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.routeProviderId":
++    "pooled catalogue models can omit a separate route-provider identity; the existing AvailableModel contract defines the same omission semantics.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.supportedServiceTiers":
++    "model facts need not advertise service tiers; the existing AvailableModel contract defines the same omission semantics.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.supportedServiceTiers.description":
++    "service tier descriptions are optional display metadata; the existing AvailableModel contract defines the same omission semantics.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.supportedServiceTiers.label":
++    "service tier labels are optional display metadata; the existing AvailableModel contract defines the same omission semantics.",
+   "hostDaemonCommandSchema.resolution.description":
+     "the interaction.resolve command's resolution is the persisted union, so it also admits the plugin_submitted arm and the description a plugin's describeSubmission returned. It never reaches the wire: a plugin interaction is settled in the server against its waiting requestInput promise and never queues a daemon command, so an older daemon never sees the field.",
+   "hostDaemonCommandSchema.resolution.description.detail":
+@@ -1210,7 +1228,7 @@ const CONTRIBUTED_ENV = [
+ 
+ describe("host-daemon command schemas", () => {
+   it("uses the current host-daemon protocol version", () => {
+-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(230);
++    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(231);
+     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
+   });
+ 
+diff --git a/plugins/account-pool/PLUGIN_OVERVIEW.md b/plugins/account-pool/PLUGIN_OVERVIEW.md
+index 2990989244a7f38a05c251a88ff5b37af4df7dad..8aa3efb561a1007ed116c3c364f1c37956286f3a 100644
+--- a/plugins/account-pool/PLUGIN_OVERVIEW.md
++++ b/plugins/account-pool/PLUGIN_OVERVIEW.md
+@@ -34,3 +34,5 @@ Experimental: routing, storage, and CLI may change.
+ ## For agents
+ 
+ `bb pool account add|list|remove|enable|disable|priority|reorder`, `bb pool status`, `bb pool routing <claude|codex> [--off]`, `bb pool config`, `bb pool config set`, `bb pool parent [proxy|isolate]`, `bb pool token rotate`, and `bb pool bypass <thread-id>`. Every command takes `--json` and `--help`; `bb pool --help` lists the commands and `bb pool <command> --help` prints its arguments, options, and rules.
++
++Required external deployments route BB clients through a shared inference service. See the Account Pooler skill references for operator configuration.
+diff --git a/plugins/account-pool/skills/account-pool/references/accounts-and-routing.md b/plugins/account-pool/skills/account-pool/references/accounts-and-routing.md
+index 8ac140d4454a1b6681c6196fcc4b7a90da588aef..7da95b6277d96991af41c8abcc1568f0a6f2e50c 100644
+--- a/plugins/account-pool/skills/account-pool/references/accounts-and-routing.md
++++ b/plugins/account-pool/skills/account-pool/references/accounts-and-routing.md
+@@ -149,3 +149,10 @@ accounts or to each provider's own credentials.
+ Proxied traffic authenticates as the parent machine's token, so `bb pool status`
+ on the parent attributes it to the parent host rather than to the nested
+ instance.
++
++Required external deployments are selected by the server environment
++`BB_ACCOUNT_POOL_EXTERNAL_REQUIRED=1`, `BB_ACCOUNT_POOL_EXTERNAL_URL` and
++`BB_ACCOUNT_POOL_EXTERNAL_TOKEN`. This operator policy routes BB clients only;
++it disables local pool management and ignores per-thread bypass. A missing route
++is unavailable, with no personal-account fallback. See [required external inference](required-external-inference.md) for
++configuration and the separate provider-node administration boundary.
+diff --git a/plugins/account-pool/skills/account-pool/references/required-external-inference.md b/plugins/account-pool/skills/account-pool/references/required-external-inference.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..8846f78b0f1a629d888cceb947d2fde8d9009871
+--- /dev/null
++++ b/plugins/account-pool/skills/account-pool/references/required-external-inference.md
+@@ -0,0 +1,32 @@
++## Required external inference deployment
++
++An operator may set `BB_ACCOUNT_POOL_EXTERNAL_REQUIRED=1`,
++`BB_ACCOUNT_POOL_EXTERNAL_URL` (an HTTPS Tailnet origin without a path), and
++`BB_ACCOUNT_POOL_EXTERNAL_TOKEN` in the BB server environment. This selects an
++inference-only relay: both BB providers always use the authenticated BB hub,
++which replaces its machine credential with the external Bearer key. Missing or
++invalid route configuration fails launches as unavailable. Route failures never
++select local accounts. Thread bypass and ordinary pool settings do not override
++this deployment policy. Personal terminal client settings are unchanged.
++
++This mode registers no account login, inspection, refresh, usage worker or local
++pool management handlers. Administer the shared provider pool through its
++separate node management service. It relays Messages, token counting, Responses, Responses compact and model listing only; upstream admission may
++keep compact closed. Management and other routes remain absent. Native
++session headers are retained, redirects rejected and failed requests not replayed.
++Server environment changes require the normal explicit service reload; dynamic
++node changes belong to the external router. Existing running provider sessions
++must be drained and relaunched before claiming this policy covers them.
++
++Set the required marker on managed BB execution-daemon processes too, without
++copying the external key to workers. Local subscription usage/probes are then
++disabled. For model discovery, the BB server queries the router with its own
++private key and sends validated model facts through authenticated host commands;
++workers never receive that key or launch an unrouted catalogue probe. Missing
++router configuration or unavailable catalogue data fails catalogue refresh with
++no native fallback. The host-daemon protocol must be version 231 or newer.
++
++The required relay contract readiness marker is
++`REQUIRED_EXTERNAL_POOL_CONTRACT_VERSION = 1`. Disabling this server profile
++requires removing its required marker, not setting it to zero. Provisioning and
++service mapping remain owned by rosetta-machine apply/check/verify.
+diff --git a/plugins/account-pool/src/required-external-pool.test.ts b/plugins/account-pool/src/required-external-pool.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..0bc1aa65f9ed262614796665181b8b0ac867a322
+--- /dev/null
++++ b/plugins/account-pool/src/required-external-pool.test.ts
+@@ -0,0 +1,130 @@
++import { describe, expect, it, vi } from "vitest";
++import {
++  externalPoolSelected,
++  requiredExternalRoute,
++  externalRelay,
++} from "./required-external-pool.js";
++const env = {
++  BB_ACCOUNT_POOL_EXTERNAL_REQUIRED: "1",
++  BB_ACCOUNT_POOL_EXTERNAL_URL: "https://inference.example.ts.net",
++  BB_ACCOUNT_POOL_EXTERNAL_TOKEN: "synthetic-key",
++};
++describe("required external inference", () => {
++  it("keeps partial and invalid selection required", () => {
++    expect(externalPoolSelected({})).toBe(false);
++    for (const value of ["", "0", "1"]) {
++      const partial = { BB_ACCOUNT_POOL_EXTERNAL_REQUIRED: value };
++      expect(externalPoolSelected(partial)).toBe(true);
++      expect(() => requiredExternalRoute(partial)).toThrow(/unavailable/);
++    }
++  });
++  it.each([
++    "http://inference.example.ts.net",
++    "https://provider.example",
++    "https://inference.example.ts.net/v1",
++    "https://user:pass@inference.example.ts.net",
++  ])("rejects forbidden destination %s", (url) => {
++    expect(() =>
++      requiredExternalRoute({ ...env, BB_ACCOUNT_POOL_EXTERNAL_URL: url }),
++    ).toThrow();
++  });
++  it("fails missing route without any upstream request", async () => {
++    const upstream = vi.fn();
++    expect(
++      (
++        await externalRelay(
++          new Request("https://bb.test/v1/responses", { method: "POST" }),
++          "/v1/responses",
++          {},
++          upstream,
++        )
++      ).status,
++    ).toBe(503);
++    expect(upstream).not.toHaveBeenCalled();
++  });
++  it("replaces credentials, preserves session identity and streams without replay", async () => {
++    const upstream = vi.fn(async (_url, init) => {
++      const headers = new Headers(init?.headers);
++      expect(headers.get("authorization")).toBe("Bearer synthetic-key");
++      expect(headers.get("x-api-key")).toBeNull();
++      expect(headers.get("x-bb-account-pool-token")).toBeNull();
++      expect(headers.get("x-forwarded-host")).toBeNull();
++      expect(headers.get("session-id")).toBe("native-session");
++      expect(init?.redirect).toBe("error");
++      return new Response("data: test\n\n", {
++        headers: { "content-type": "text/event-stream" },
++      });
++    });
++    const request = new Request("https://bb.test/v1/responses", {
++      method: "POST",
++      headers: {
++        authorization: "Bearer personal",
++        "x-api-key": "personal",
++        "x-bb-account-pool-token": "hub",
++        "x-forwarded-host": "evil",
++        "session-id": "native-session",
++      },
++      body: "{}",
++    });
++    expect(
++      await (
++        await externalRelay(request, "/v1/responses", env, upstream)
++      ).text(),
++    ).toContain("data: test");
++    expect(upstream).toHaveBeenCalledTimes(1);
++  });
++  it("returns unavailable on Mac loss without another attempt", async () => {
++    const upstream = vi.fn(async () => {
++      throw new Error("offline");
++    });
++    expect(
++      (
++        await externalRelay(
++          new Request("https://bb.test/v1/messages", { method: "POST" }),
++          "/v1/messages",
++          env,
++          upstream,
++        )
++      ).status,
++    ).toBe(503);
++    expect(upstream).toHaveBeenCalledTimes(1);
++  });
++});
++
++it("registers both required BB routes without local management or provider calls", async () => {
++  const { createFakePluginHost } = await import("@get-bb/plugin-sdk/testing");
++  const { createAccountPoolPlugin } = await import("./server.js");
++  const { mkdtemp, rm } = await import("node:fs/promises");
++  const { tmpdir } = await import("node:os");
++  const dataDir = await mkdtemp(`${tmpdir()}/bb-required-relay-`);
++  const host = createFakePluginHost({ pluginId: "account-pool", dataDir });
++  const upstream = vi.fn(async () => {
++    throw new Error("must not contact provider during registration");
++  });
++  try {
++    await createAccountPoolPlugin({ env, fetch: upstream })(host.bb);
++    for (const provider of ["claude-code", "codex"]) {
++      const entries = await host.harness.behavior.resolveProviderEnv(provider, {
++        threadId: "test",
++        projectId: "test",
++        hostId: "host",
++      });
++      expect(
++        entries.some(
++          (entry) =>
++            entry.name ===
++            (provider === "codex"
++              ? "CODEX_OPENAI_BASE_URL"
++              : "ANTHROPIC_BASE_URL"),
++        ),
++      ).toBe(true);
++    }
++    expect(upstream).not.toHaveBeenCalled();
++    await expect(
++      host.harness.behavior.callRpc("login.start", {}),
++    ).rejects.toThrow();
++  } finally {
++    await host.harness.lifecycle.dispose();
++    await rm(dataDir, { recursive: true, force: true });
++  }
++});
+diff --git a/plugins/account-pool/src/required-external-pool.ts b/plugins/account-pool/src/required-external-pool.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..2675e13dfc0b34c58d55a800de63eeac520a0bc7
+--- /dev/null
++++ b/plugins/account-pool/src/required-external-pool.ts
+@@ -0,0 +1,185 @@
++import path from "node:path";
++import type { BbPluginApi } from "@get-bb/plugin-sdk";
++import { HubTokenStore } from "./store.js";
++
++export const REQUIRED_EXTERNAL_POOL_CONTRACT_VERSION = 1;
++
++const ROOT = "/api/v1/plugins/account-pool/http";
++export function externalPoolSelected(env: NodeJS.ProcessEnv): boolean {
++  return env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED !== undefined;
++}
++
++export function requiredExternalRoute(env: NodeJS.ProcessEnv): {
++  origin: string;
++  token: string;
++} {
++  try {
++    const url = new URL(env.BB_ACCOUNT_POOL_EXTERNAL_URL ?? "");
++    const token = env.BB_ACCOUNT_POOL_EXTERNAL_TOKEN ?? "";
++    if (
++      env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED !== "1" ||
++      url.protocol !== "https:" ||
++      !url.hostname.endsWith(".ts.net") ||
++      url.username ||
++      url.password ||
++      url.port ||
++      url.pathname !== "/" ||
++      url.search ||
++      url.hash ||
++      !token ||
++      /\s/.test(token)
++    )
++      throw new Error();
++    return { origin: url.origin, token };
++  } catch {
++    throw new Error("Required BB inference route is unavailable or invalid.");
++  }
++}
++
++export async function externalRelay(
++  request: Request,
++  routePath: string,
++  env: NodeJS.ProcessEnv,
++  upstream: typeof fetch,
++): Promise<Response> {
++  let route: ReturnType<typeof requiredExternalRoute>;
++  try {
++    route = requiredExternalRoute(env);
++  } catch {
++    return new Response("Required BB inference route unavailable.", {
++      status: 503,
++    });
++  }
++  const headers = new Headers(request.headers);
++  for (const name of [...headers.keys()]) {
++    if (
++      [
++        "authorization",
++        "x-api-key",
++        "x-bb-account-pool-token",
++        "host",
++        "content-length",
++        "connection",
++        "cookie",
++      ].includes(name) ||
++      name.startsWith("x-forwarded-") ||
++      name === "forwarded"
++    )
++      headers.delete(name);
++  }
++  headers.set("authorization", `Bearer ${route.token}`);
++  try {
++    const response = await upstream(
++      `${route.origin}${routePath}${new URL(request.url).search}`,
++      {
++        method: request.method,
++        headers,
++        redirect: "error",
++        signal: request.signal,
++        ...(request.method === "GET"
++          ? {}
++          : { body: await request.arrayBuffer() }),
++      },
++    );
++    return new Response(response.body, {
++      status: response.status,
++      headers: response.headers,
++    });
++  } catch {
++    return new Response("Required BB inference route unavailable.", {
++      status: request.signal.aborted ? 499 : 503,
++    });
++  }
++}
++
++export async function registerRequiredExternalPool(
++  bb: BbPluginApi,
++  env: NodeJS.ProcessEnv,
++  upstream: typeof fetch,
++  now: () => number,
++): Promise<void> {
++  // This branch never constructs local account stores, login handlers, or usage workers.
++  const tokens = new HubTokenStore(
++    path.join(
++      bb.server.experimental_dataDir,
++      "plugins",
++      bb.pluginId,
++      "secrets",
++      "accounts",
++    ),
++    now,
++  );
++  await tokens.initialize();
++  const contribute =
++    (provider: "claude" | "codex") => async (context: { hostId: string }) => {
++      requiredExternalRoute(env); // Missing configuration must fail before starting the official client.
++      const token = await tokens.forHost(context.hostId);
++      const entries =
++        provider === "claude"
++          ? [
++              { name: "ANTHROPIC_BASE_URL", value: { serverPath: ROOT } },
++              { name: "ANTHROPIC_AUTH_TOKEN", value: token },
++              { name: "ANTHROPIC_API_KEY", value: "" },
++              { name: "CLAUDE_CODE_USE_BEDROCK", value: "" },
++              { name: "CLAUDE_CODE_USE_VERTEX", value: "" },
++              { name: "CLAUDE_CODE_USE_FOUNDRY", value: "" },
++            ]
++          : [
++              {
++                name: "CODEX_OPENAI_BASE_URL",
++                value: { serverPath: `${ROOT}/v1` },
++              },
++              { name: "CODEX_POOL_AUTH_TOKEN", value: token },
++              { name: "BB_ACCOUNT_POOL_EXTERNAL_REQUIRED", value: "1" },
++            ];
++      entries.push(
++        { name: "BB_ACCOUNT_POOL_EXTERNAL_TOKEN", value: "" },
++        { name: "BB_ACCOUNT_POOL_EXTERNAL_URL", value: "" },
++      );
++      return entries.map((entry) => ({
++        ...entry,
++        reason: "Required BB external inference route",
++      }));
++    };
++  bb.providers.experimental_contributeEnv("claude-code", contribute("claude"));
++  bb.providers.experimental_contributeEnv("codex", contribute("codex"));
++  for (const provider of ["claude-code", "codex"]) {
++    bb.providers.experimental_contributeEnvHealth(provider, () => {
++      try {
++        requiredExternalRoute(env);
++      } catch {
++        return null;
++      }
++      return {
++        label: "External pool",
++        statusMessage:
++          "BB inference uses its required external route; local credentials are disabled.",
++      };
++    });
++  }
++  for (const [method, route] of [
++    ["POST", "/v1/messages"],
++    ["POST", "/v1/messages/count_tokens"],
++    ["POST", "/v1/responses"],
++    ["POST", "/v1/responses/compact"],
++    ["GET", "/v1/models"],
++  ] as const) {
++    bb.http.route(
++      method,
++      route,
++      async (context) => {
++        const request = context.req.raw;
++        const presented =
++          request.headers.get("x-bb-account-pool-token") ??
++          /^Bearer\s+(.+)$/i.exec(
++            request.headers.get("authorization") ?? "",
++          )?.[1] ??
++          null;
++        if ((await tokens.authenticate(presented)) === null)
++          return new Response(null, { status: 401 });
++        return externalRelay(request, route, env, upstream);
++      },
++      { auth: "none" },
++    );
++  }
++}
+diff --git a/plugins/account-pool/src/server.ts b/plugins/account-pool/src/server.ts
+index 1d3d27f3b97ea3909267e93655166b1cb0c920b1..85166f75b3e5e92b375841521f0832f4fb228378 100644
+--- a/plugins/account-pool/src/server.ts
++++ b/plugins/account-pool/src/server.ts
+@@ -1,3 +1,7 @@
++import {
++  registerRequiredExternalPool,
++  externalPoolSelected,
++} from "./required-external-pool.js";
+ import { registerUsageSource } from "./usage-source.js";
+ import {
+   createUpstreamTransport,
+@@ -88,9 +92,19 @@ export function createAccountPoolPlugin(
+   options: AccountPoolPluginOptions = {},
+ ) {
+   return async function accountPoolPlugin(bb: BbPluginApi): Promise<void> {
+-    const storedConfig = z.record(z.string(), z.unknown()).parse(
+-      (await bb.storage.kv.get("config")) ?? {},
+-    );
++    const launchEnv = options.env ?? process.env;
++    if (externalPoolSelected(launchEnv)) {
++      await registerRequiredExternalPool(
++        bb,
++        launchEnv,
++        options.fetch ?? fetch,
++        options.now ?? Date.now,
++      );
++      return;
++    }
++    const storedConfig = z
++      .record(z.string(), z.unknown())
++      .parse((await bb.storage.kv.get("config")) ?? {});
+     const hasRemovedSettings =
+       "cacheMissDebug" in storedConfig || "cacheMissMinTokens" in storedConfig;
+     delete storedConfig.cacheMissDebug;
+diff --git a/plugins/provider-claude-code/src/bridge/model-list.ts b/plugins/provider-claude-code/src/bridge/model-list.ts
+index b5bb73ea71ed07c7d4c9f6af43f3832f79e2ec39..9c16a73dfc0073d5129c6fc9ea72121bc426b555 100644
+--- a/plugins/provider-claude-code/src/bridge/model-list.ts
++++ b/plugins/provider-claude-code/src/bridge/model-list.ts
+@@ -46,6 +46,9 @@ async function probeClaudeCodeModels(env: NodeJS.ProcessEnv): Promise<{
+ export async function listClaudeCodeBridgeModels(
+   env: NodeJS.ProcessEnv = process.env,
+ ): ReturnType<typeof probeClaudeCodeModels> {
++  if (env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED === "1") {
++    throw new Error("Unrouted Claude model probes are disabled for required BB external inference.");
++  }
+   try {
+     return await probeClaudeCodeModels(env);
+   } catch (error) {
+diff --git a/plugins/provider-claude-code/src/bridge/provider-maintenance.ts b/plugins/provider-claude-code/src/bridge/provider-maintenance.ts
+index 45af151cbf4cdff53af1011d76dda42e1ac98924..9e96764f1c4ee7556357f3e6ff3f4444b024005d 100644
+--- a/plugins/provider-claude-code/src/bridge/provider-maintenance.ts
++++ b/plugins/provider-claude-code/src/bridge/provider-maintenance.ts
+@@ -524,6 +524,9 @@ function normalizeUsage(
+ }
+ 
+ export async function getClaudeProviderUsage(): Promise<ProviderUsageResult> {
++  if (process.env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED === "1") {
++    return { supported: true, usage: { status: "error", message: "Usage is managed by the required external BB inference pool.", planLabel: null, accountEmail: null } };
++  }
+   const command = await claudeExecutable();
+   if ((await resolveExecutablePath(command)) === null) {
+     return { supported: true, usage: { status: "not_installed" } };
+diff --git a/plugins/provider-claude-code/src/bridge/required-external-maintenance.test.ts b/plugins/provider-claude-code/src/bridge/required-external-maintenance.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..702a43ab1c2d3e143c9a552afabe303cd24067a0
+--- /dev/null
++++ b/plugins/provider-claude-code/src/bridge/required-external-maintenance.test.ts
+@@ -0,0 +1,12 @@
++import { afterEach, expect, it, vi } from "vitest";
++import { getClaudeProviderUsage } from "./provider-maintenance.js";
++import { listClaudeCodeBridgeModels } from "./model-list.js";
++afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
++it("suppresses local credential usage calls and unrouted native model probes", async () => {
++  vi.stubEnv("BB_ACCOUNT_POOL_EXTERNAL_REQUIRED", "1");
++  const fetch = vi.fn(() => { throw new Error("provider must not be contacted"); });
++  vi.stubGlobal("fetch", fetch);
++  expect((await getClaudeProviderUsage()).supported).toBe(true);
++  await expect(listClaudeCodeBridgeModels()).rejects.toThrow(/Unrouted Claude model probes/);
++  expect(fetch).not.toHaveBeenCalled();
++});
+diff --git a/plugins/provider-codex/src/bridge/app-server-launch.test.ts b/plugins/provider-codex/src/bridge/app-server-launch.test.ts
+index 19c36321b0d192beb44c4086ca6fff543aebeed4..36fcc92b76ec6b0e4a99cd999446f59880f3f2c5 100644
+--- a/plugins/provider-codex/src/bridge/app-server-launch.test.ts
++++ b/plugins/provider-codex/src/bridge/app-server-launch.test.ts
+@@ -61,3 +61,25 @@ describe("Codex Account Pool isolation", () => {
+     },
+   );
+ });
++
++describe("required external BB inference launch", () => {
++  it("rejects a partial required route instead of personal authentication", () => {
++    expect(() =>
++      resolveAppServerLaunch({ BB_ACCOUNT_POOL_EXTERNAL_REQUIRED: "1" }),
++    ).toThrow(/unavailable/);
++  });
++  it("uses the hub credential without requiring a personal OpenAI login", () => {
++    const launch = resolveAppServerLaunch({
++      BB_ACCOUNT_POOL_EXTERNAL_REQUIRED: "1",
++      CODEX_OPENAI_BASE_URL: "https://bb.example/pool/v1",
++      CODEX_POOL_AUTH_TOKEN: "synthetic-hub-token",
++    });
++    expect(launch.args).toContain(
++      "model_providers.bb-account-pool.requires_openai_auth=false",
++    );
++    expect(launch.args).toContain(
++      'model_providers.bb-account-pool.env_key="CODEX_POOL_AUTH_TOKEN"',
++    );
++    expect(JSON.stringify(launch.args)).not.toContain("synthetic-hub-token");
++  });
++});
+diff --git a/plugins/provider-codex/src/bridge/bridge.ts b/plugins/provider-codex/src/bridge/bridge.ts
+index b77e374d056d7e205de3c917fd2495fc6add9064..a07cd556ceb0ba40841a716ead1bdbe707c67bee 100644
+--- a/plugins/provider-codex/src/bridge/bridge.ts
++++ b/plugins/provider-codex/src/bridge/bridge.ts
+@@ -361,6 +361,10 @@ export function resolveAppServerLaunch(env: NodeJS.ProcessEnv = process.env): {
+     : ["app-server"];
+   const poolBaseUrl = env[CODEX_POOL_BASE_URL_ENV];
+   const poolToken = env[CODEX_POOL_AUTH_TOKEN_ENV];
++  const externalRequired = env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED === "1";
++  if (externalRequired && (!poolBaseUrl || !poolToken)) {
++    throw new Error("Required BB inference route is unavailable.");
++  }
+   if (!poolBaseUrl || !poolToken) return { command: command ?? "codex", args };
+   return {
+     command: command ?? "codex",
+@@ -377,7 +381,13 @@ export function resolveAppServerLaunch(env: NodeJS.ProcessEnv = process.env): {
+       "-c",
+       'model_providers.bb-account-pool.wire_api="responses"',
+       "-c",
+-      "model_providers.bb-account-pool.requires_openai_auth=true",
++      `model_providers.bb-account-pool.requires_openai_auth=${!externalRequired}`,
++      ...(externalRequired
++        ? [
++            "-c",
++            'model_providers.bb-account-pool.env_key="CODEX_POOL_AUTH_TOKEN"',
++          ]
++        : []),
+       "-c",
+       "model_providers.bb-account-pool.supports_websockets=false",
+       "-c",
+@@ -391,8 +401,17 @@ function appServerLaunchEnv(
+ ): NodeJS.ProcessEnv {
+   const poolBaseUrl = envVars?.[CODEX_POOL_BASE_URL_ENV];
+   const poolAuthToken = envVars?.[CODEX_POOL_AUTH_TOKEN_ENV];
++  const inherited = { ...process.env };
++  delete inherited.BB_ACCOUNT_POOL_EXTERNAL_TOKEN;
++  delete inherited.BB_ACCOUNT_POOL_EXTERNAL_URL;
+   return {
+-    ...process.env,
++    ...inherited,
++    ...(envVars?.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED === undefined
++      ? {}
++      : {
++          BB_ACCOUNT_POOL_EXTERNAL_REQUIRED:
++            envVars.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED,
++        }),
+     ...(poolBaseUrl === undefined
+       ? {}
+       : { [CODEX_POOL_BASE_URL_ENV]: poolBaseUrl }),
+diff --git a/plugins/provider-codex/src/bridge/provider-maintenance.test.ts b/plugins/provider-codex/src/bridge/provider-maintenance.test.ts
+index 32bd0e4c14710b74a1fbf8719e290a57d62a52c4..a6d0b771a53e79e3b5a1fd51ad1f9ff63a4ec0d9 100644
+--- a/plugins/provider-codex/src/bridge/provider-maintenance.test.ts
++++ b/plugins/provider-codex/src/bridge/provider-maintenance.test.ts
+@@ -367,3 +367,12 @@ describe("Codex credential health and usage", () => {
+     expect(retryHeaders.get("chatgpt-account-id")).toBe("account-123");
+   });
+ });
++
++it("does not inspect credentials or fetch local subscription usage in required external mode", async () => {
++  vi.stubEnv("BB_ACCOUNT_POOL_EXTERNAL_REQUIRED", "1");
++  const fetch = vi.fn(() => { throw new Error("provider must not be contacted"); });
++  vi.stubGlobal("fetch", fetch);
++  const result = await getCodexProviderUsage();
++  expect(result).toMatchObject({ usage: { status: "error", message: expect.stringContaining("external BB inference pool") } });
++  expect(fetch).not.toHaveBeenCalled();
++});
+diff --git a/plugins/provider-codex/src/bridge/provider-maintenance.ts b/plugins/provider-codex/src/bridge/provider-maintenance.ts
+index 1101b64da40df87b01f4b8267cc718f75619510f..744ef0147eb3493c1c046403c0490964e44d32b5 100644
+--- a/plugins/provider-codex/src/bridge/provider-maintenance.ts
++++ b/plugins/provider-codex/src/bridge/provider-maintenance.ts
+@@ -320,6 +320,9 @@ function normalizeUsage(raw: unknown, email: string | null): ProviderUsage {
+ }
+ 
+ export async function getCodexProviderUsage(): Promise<ProviderUsageResult> {
++  if (process.env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED === "1") {
++    return { supported: true, usage: { status: "error", message: "Usage is managed by the required external BB inference pool.", planLabel: null, accountEmail: null } };
++  }
+   if ((await resolveExecutablePath("codex")) === null) {
+     return { supported: true, usage: { status: "not_installed" } };
+   }

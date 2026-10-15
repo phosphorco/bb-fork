@@ -411,3 +411,7 @@ The setting is creation-only. Explicit delivery remains available.
 authorized fork justification, storage/default/error behavior, test boundaries,
 and upstream retirement path. Both server and CLI need this patch. Source
 publication and build do not activate it in an already-running server.
+
+## Reviewed external inference relay (0058)
+
+Patch 0058 requires the external inference relay for selected BB sessions, disables local account management and provider probes in that profile, and carries authenticated model facts through host protocol 231 (required external contract version 1). The optional candidate 0059 is excluded from this composition. Live acceptance remains required.
