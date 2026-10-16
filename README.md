@@ -71,7 +71,7 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The fifty patches listed in `patches/series` form the current implementation
+The fifty-one patches listed in `patches/series` form the current implementation
 candidate. Queue numbers 0022, 0027, 0030 and 0048 are intentionally absent: 0022 is a
 historical gap, the former 0027 Monaco routing backport is supplied by
 upstream commit `283e6d7`, and 0030 and 0048 were retired at the 2026-10-08
@@ -156,8 +156,8 @@ see [behavior and maintenance](docs/no-automatic-parent-followups.md).
 ## Current source verification receipt — 2026-10-16
 
 The 223-commit upstream refresh retains all 49 selected logical patches, narrows
-0018 to its existing layout data seam, and adds fixture-only follow-up 0060.
-The queue replays to `975e38f02f1a615bd1da36f6dd21f6fd546a103a`.
+0018 to its existing layout data seam, and adds fixture-only follow-up 0060 and CI portability correction 0061.
+The queue replays to `a957cedd611da0eab516375628a5b45ee8ff8a67`.
 Frozen install, 164 typecheck/build tasks, and 106 test-graph tasks passed.
 The app passed 5,932 tests and the server 3,757; the bridge migration suite
 passed 88 cases. A separate sequential integration run passed 74 tests.
@@ -203,3 +203,5 @@ passed a migration rehearsal on a private copy of bb-machine state through the
 database entrypoint only; its receipt is in the 2026-10-08 refresh notes in
 DOWNSTREAM.md. Electron desktop tests are excluded. Runtime, host policy, and
 browser acceptance are checked at activation.
+
+The CI follow-up 0061 removes seven comments rejected by provider lint policy, makes Monaco’s Pkl tokenizer self-contained using an identical local implementation, and scopes the forkable-import test exception to the Claude bridge acceptance fixture that intentionally composes Account Pool. No production cross-plugin import is exempted. SDK declarations and executable behavior are unchanged. Full lint passes all 48 tasks; Monaco typecheck passes. The existing SDK archive remains bound to its original 975e38f02f1a source receipt and identical SDK source tree.

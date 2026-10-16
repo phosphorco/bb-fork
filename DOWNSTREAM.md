@@ -419,7 +419,7 @@ Patch 0058 requires the external inference relay for selected BB sessions, disab
 ## Upstream refresh — 2026-10-16
 
 Base `01affc197dc621cddc7343e09b1c5c10a5b9efcb`, result tree
-`975e38f02f1a615bd1da36f6dd21f6fd546a103a`, BB 0.46.1 / SDK 0.6.52.
+`a957cedd611da0eab516375628a5b45ee8ff8a67`, BB 0.46.1 / SDK 0.6.52.
 All 49 selected logical patches remain; 0060 aligns fixtures with the migrated
 DB and attribution behavior. Historical gaps and optional 0059 remain excluded.
 
