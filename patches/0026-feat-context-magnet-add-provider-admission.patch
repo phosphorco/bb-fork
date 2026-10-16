@@ -1,4 +1,4 @@
-From f39853cf08cdddf60a73d44f8b2a6c7132d19794 Mon Sep 17 00:00:00 2001
+From 20c61fdb880d02e3b34be15f172e6850b5ce1cfd Mon Sep 17 00:00:00 2001
 From: bb-fork materializer <bb-fork@invalid.local>
 Date: Sun, 20 Sep 2026 20:00:00 +0200
 Subject: [PATCH] feat(context-magnet): add provider admission
@@ -44,10 +44,10 @@ Subject: [PATCH] feat(context-magnet): add provider admission
  create mode 100644 plugins/provider-codex/src/bridge/bridge.admission.test.ts
 
 diff --git a/apps/host-daemon/src/command-dispatch.test.ts b/apps/host-daemon/src/command-dispatch.test.ts
-index 3c8196ba7840782d062bd95d78f10159cda21fd6..7b3af3b6c113d7673e7bc9962479b9d0dac59d56 100644
+index 3b9a832d90856cbada9fd6914cf9d99536be20d0..433713a8bd906743de60427f0c3f0354a10941ca 100644
 --- a/apps/host-daemon/src/command-dispatch.test.ts
 +++ b/apps/host-daemon/src/command-dispatch.test.ts
-@@ -1447,11 +1447,60 @@ describe("dispatchCommand", () => {
+@@ -1431,11 +1431,60 @@ describe("dispatchCommand", () => {
        threadStorageRootPath: "/tmp/bb-thread-storage",
      });
  
@@ -109,7 +109,7 @@ index 3c8196ba7840782d062bd95d78f10159cda21fd6..7b3af3b6c113d7673e7bc9962479b9d0
    it("prepares a Codex rewind through the requested retained turn", async () => {
      const runtime = createRuntime();
      const manager = new RuntimeManager({
-@@ -1618,10 +1667,10 @@ describe("dispatchCommand", () => {
+@@ -1602,10 +1651,10 @@ describe("dispatchCommand", () => {
  
      await expect(
        dispatchCommand(createInstallationGatedThreadStart("thread-1"), options),
@@ -122,7 +122,7 @@ index 3c8196ba7840782d062bd95d78f10159cda21fd6..7b3af3b6c113d7673e7bc9962479b9d0
  
      expect(providerInstallationStatus).toHaveBeenCalledOnce();
      expect(runtime.startThread).toHaveBeenCalledTimes(2);
-@@ -1659,8 +1708,8 @@ describe("dispatchCommand", () => {
+@@ -1643,8 +1692,8 @@ describe("dispatchCommand", () => {
      staleProbe.reject(new Error("Runtime shutting down"));
  
      await expect(starts).resolves.toEqual([
@@ -133,7 +133,7 @@ index 3c8196ba7840782d062bd95d78f10159cda21fd6..7b3af3b6c113d7673e7bc9962479b9d0
      ]);
      expect(providerInstallationStatus).toHaveBeenCalledTimes(2);
      expect(runtime.startThread).toHaveBeenCalledTimes(2);
-@@ -1824,7 +1873,7 @@ describe("dispatchCommand", () => {
+@@ -1808,7 +1857,7 @@ describe("dispatchCommand", () => {
  
      await expect(
        dispatchCommand(createInstallationGatedThreadStart("thread-1"), options),
@@ -142,7 +142,7 @@ index 3c8196ba7840782d062bd95d78f10159cda21fd6..7b3af3b6c113d7673e7bc9962479b9d0
      await expect(
        dispatchCommand(createInstallationGatedThreadStart("thread-2"), options),
      ).rejects.toMatchObject({ code: "provider_cli_unsupported_version" });
-@@ -2289,7 +2338,7 @@ describe("dispatchCommand", () => {
+@@ -2280,7 +2329,7 @@ describe("dispatchCommand", () => {
        threadStorageRootPath: "/tmp/bb-thread-storage",
      });
  
@@ -152,10 +152,10 @@ index 3c8196ba7840782d062bd95d78f10159cda21fd6..7b3af3b6c113d7673e7bc9962479b9d0
      const currentCatalog = await stageInjectedSkillSources({
        dataDir: fixture.dataDir,
 diff --git a/apps/host-daemon/src/command-handlers/thread.ts b/apps/host-daemon/src/command-handlers/thread.ts
-index b29bb01c03b66a8fa54ca689138af7d7bfb5280d..c315620a062e913d84eeaa83745b8d00d44725f6 100644
+index 5ffdef4a4f1ce1a10c92c1055386bb5468f7746a..17bc0b7c1615ef639b127d26febf2f6d8230b5dc 100644
 --- a/apps/host-daemon/src/command-handlers/thread.ts
 +++ b/apps/host-daemon/src/command-handlers/thread.ts
-@@ -237,7 +237,7 @@ export async function startThread(
+@@ -241,7 +241,7 @@ export async function startThread(
        command,
        options,
      );
@@ -164,7 +164,7 @@ index b29bb01c03b66a8fa54ca689138af7d7bfb5280d..c315620a062e913d84eeaa83745b8d00
        bridgeLaunch,
        skillRoots: entry.skillRoots,
        environmentId: command.environmentId,
-@@ -251,8 +251,12 @@ export async function startThread(
+@@ -255,8 +255,12 @@ export async function startThread(
        instructions: command.instructions,
        dynamicTools: command.dynamicTools,
        instructionMode: command.instructionMode,
@@ -191,10 +191,10 @@ index 8f404d386b106b8230b08ea81189d1b49548b269..d51d0c4a190f9926791a49a215ccbd74
        dynamicInstructions: [] as Array<{ pluginId: string; text: string }>,
      };
 diff --git a/apps/server/src/services/plugins/plugin-service-internal.ts b/apps/server/src/services/plugins/plugin-service-internal.ts
-index baec7aabdb1f4caeaa0d1323c94f53860dedf0fe..d6bd83d669e78c79113f62c62f184b3d3d031cd7 100644
+index 9c0e3985c05286c8b2335c92357f53114a0c1d3a..b6bb6738189c61652945af29cbaafdf3feb95882 100644
 --- a/apps/server/src/services/plugins/plugin-service-internal.ts
 +++ b/apps/server/src/services/plugins/plugin-service-internal.ts
-@@ -181,6 +181,7 @@ export interface PluginInstructionContribution {
+@@ -185,6 +185,7 @@ export interface PluginInstructionContribution {
  }
  
  export interface PluginResolvedAgentConfiguration {
@@ -203,7 +203,7 @@ index baec7aabdb1f4caeaa0d1323c94f53860dedf0fe..d6bd83d669e78c79113f62c62f184b3d
    selectedSkillIdsByPlugin: ReadonlyMap<string, ReadonlySet<string>>;
    dynamicInstructions: Array<{ pluginId: string; text: string }>;
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index 5595072ab38140ba0268e92a2d7aae955e71339b..1f3093c4f54115ac32d14656ed91a1dd3f3ff0ff 100644
+index 381cca03b633019fcf0f53eae825a74964fac399..6edea1bdc0e62453dc0eccf458eb9e63b74f22a3 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
 @@ -66,6 +66,7 @@ import {
@@ -214,7 +214,7 @@ index 5595072ab38140ba0268e92a2d7aae955e71339b..1f3093c4f54115ac32d14656ed91a1dd
    recordContextMagnetContributionReceipt,
    deleteAllPluginSettings,
    deleteInstalledPlugin,
-@@ -2397,6 +2398,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2470,6 +2471,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
        const tools: PluginAgentToolContribution[] = [];
        const selectedSkillIdsByPlugin = new Map<string, ReadonlySet<string>>();
        const dynamicInstructions: Array<{ pluginId: string; text: string }> = [];
@@ -222,7 +222,7 @@ index 5595072ab38140ba0268e92a2d7aae955e71339b..1f3093c4f54115ac32d14656ed91a1dd
        const plugins = [...loaded.entries()]
          .sort(([a], [b]) => a.localeCompare(b))
          .map(([pluginId, plugin]) => ({
-@@ -2472,12 +2474,24 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2545,12 +2547,24 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
          selectedSkillIdsByPlugin.set(pluginId, new Set(outcome.value.skillIds));
          if (outcome.value.contextMagnetTrace !== null) {
            try {
@@ -248,7 +248,7 @@ index 5595072ab38140ba0268e92a2d7aae955e71339b..1f3093c4f54115ac32d14656ed91a1dd
            } catch (error) {
              logger.warn(
                `Rejected Context Magnet trace from plugin ${pluginId}: ${error instanceof Error ? error.message : String(error)}`,
-@@ -2492,7 +2506,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2565,7 +2579,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
          }
        }
  
@@ -258,10 +258,10 @@ index 5595072ab38140ba0268e92a2d7aae955e71339b..1f3093c4f54115ac32d14656ed91a1dd
  
      async resolveProviderEnv({ providerId, context }) {
 diff --git a/apps/server/src/services/threads/thread-commands.ts b/apps/server/src/services/threads/thread-commands.ts
-index da4f414a0326ee0d44efd4a7199a266b648ea184..59e02491e58253e5684c3c50e7f3a92b960be2e0 100644
+index 0f90d10698680b9b41af7aad66b6856107541b62..53faaba87bce0a638f1db3d4e73f61338fed3736 100644
 --- a/apps/server/src/services/threads/thread-commands.ts
 +++ b/apps/server/src/services/threads/thread-commands.ts
-@@ -297,6 +297,7 @@ export async function buildThreadStartCommand(
+@@ -303,6 +303,7 @@ export async function buildThreadStartCommand(
      instructions: runtimeContext.instructions,
      dynamicTools: runtimeContext.dynamicTools,
      contributedEnv: runtimeContext.contributedEnv,
@@ -293,7 +293,7 @@ index 115894054b933aea1319f73f3accfa7e7cd118a9..972c88ea5aaf2a162477a3c961d02852
    } = start;
    return { type: "thread.rewind.prepare", ...context, ...args };
 diff --git a/apps/server/src/services/threads/thread-lifecycle.ts b/apps/server/src/services/threads/thread-lifecycle.ts
-index 1049ae152c736cb58fc62e23763b35eb82b2c7c0..2e2c7bb525a8b8716417180885497b953095a2b0 100644
+index 6cb00427e6970a5f81a7ab2d85dd3afd4c784f81..de9c17e91c0e218755e1a1ad697c15db525f392d 100644
 --- a/apps/server/src/services/threads/thread-lifecycle.ts
 +++ b/apps/server/src/services/threads/thread-lifecycle.ts
 @@ -25,6 +25,7 @@ import {
@@ -370,10 +370,10 @@ index 1049ae152c736cb58fc62e23763b35eb82b2c7c0..2e2c7bb525a8b8716417180885497b95
      thread.title !== null &&
      inFlightThreadRpcGuard.isHeld(thread.id, "thread.start.title-sync");
 diff --git a/apps/server/src/services/threads/thread-runtime-config.ts b/apps/server/src/services/threads/thread-runtime-config.ts
-index 7756c7138e6c228f441c89076b00781904d9fa99..1b3d95fe99f8eb13dda9e597e21991bcfddb4922 100644
+index bb352c1ff66d99f9ddb984ef7447bed6adbede27..a059483f5af8ebb72284531812af88ecd27893c7 100644
 --- a/apps/server/src/services/threads/thread-runtime-config.ts
 +++ b/apps/server/src/services/threads/thread-runtime-config.ts
-@@ -63,6 +63,7 @@ interface ResolvePermissionEscalationArgs {
+@@ -62,6 +62,7 @@ interface ResolvePermissionEscalationArgs {
  
  export interface ResolvedThreadRuntimeCommandConfig {
    contributedEnv: HostDaemonContributedEnvEntry[];
@@ -381,8 +381,8 @@ index 7756c7138e6c228f441c89076b00781904d9fa99..1b3d95fe99f8eb13dda9e597e21991bc
    dynamicTools: DynamicTool[];
    injectedSkillSources: HostDaemonInjectedSkillSource[];
    instructionMode: InstructionMode;
-@@ -287,6 +288,7 @@ export async function resolveThreadRuntimeCommandConfig(
-   });
+@@ -281,6 +282,7 @@ export async function resolveThreadRuntimeCommandConfig(
+   markTurnTraceSpan("runtimeConfig.built");
    return {
      contributedEnv,
 +    contextMagnetAdmissionAttempts: conditionalConfiguration.contextMagnetAdmissionAttempts ?? [],
@@ -390,10 +390,10 @@ index 7756c7138e6c228f441c89076b00781904d9fa99..1b3d95fe99f8eb13dda9e597e21991bc
      injectedSkillSources,
      instructionMode: "append",
 diff --git a/apps/server/test/helpers/commands.ts b/apps/server/test/helpers/commands.ts
-index d110afd203f22857f9dc937a2d283a35fb6fc9ff..bf8e159f56f94725dd4e15765f735f9a59d94327 100644
+index 4f68fd98604d45bc720b7f3f4fa583ec1495dea7..a9e32e77c5bb83e58ba22e9c34a5e2015de2a087 100644
 --- a/apps/server/test/helpers/commands.ts
 +++ b/apps/server/test/helpers/commands.ts
-@@ -586,9 +586,19 @@ export async function reportQueuedCommandSuccess<
+@@ -555,9 +555,19 @@ export async function reportQueuedCommandSuccess<
    if (!queued.rpcRequest) {
      throw new Error("Queued command is missing RPC request metadata");
    }
@@ -483,10 +483,10 @@ index 0000000000000000000000000000000000000000..5b0974daff774375f879e1028ff6012b
 +  });
 +});
 diff --git a/packages/agent-runtime/src/bridge-protocol-adapter.ts b/packages/agent-runtime/src/bridge-protocol-adapter.ts
-index 27bc5341d2b635ed72d522efa8cc1a4be5d40875..3e7fc4c03a8708362a8742fa44d8032131a83786 100644
+index edb9f4acef59362694b1b59dc308026155a6a992..8e76360223b89e96779796be05589c31dff15692 100644
 --- a/packages/agent-runtime/src/bridge-protocol-adapter.ts
 +++ b/packages/agent-runtime/src/bridge-protocol-adapter.ts
-@@ -187,6 +187,7 @@ export function createBridgeProtocolAdapter(
+@@ -201,6 +201,7 @@ export function createBridgeProtocolAdapter(
          ? { dynamicTools: command.dynamicTools }
          : {}),
        instructionMode: command.instructionMode,
@@ -505,10 +505,10 @@ index e3a230369e0455ff57296757eee358ee8de6e998..96dacfc7e5c05bc54d0679d5d7f873a2
 +  StartThreadSettlementResult,
  } from "./types.js";
 diff --git a/packages/agent-runtime/src/provider-adapter.ts b/packages/agent-runtime/src/provider-adapter.ts
-index 6f4a088ba8068cae6d9a7de7667f94c47ca38025..3e454b340ce0844743e6092b16ad0813f69288b6 100644
+index 8dd53944993bcca4af3f961159afdfdf2b26f522..a614680f3bd6f38bbf2aed333ebc6f106d2ba732 100644
 --- a/packages/agent-runtime/src/provider-adapter.ts
 +++ b/packages/agent-runtime/src/provider-adapter.ts
-@@ -58,6 +58,7 @@ export type AdapterCommand =
+@@ -60,6 +60,7 @@ export type AdapterCommand =
        options: ProviderExecutionContext;
        dynamicTools?: DynamicTool[];
        instructionMode: InstructionMode;
@@ -516,7 +516,7 @@ index 6f4a088ba8068cae6d9a7de7667f94c47ca38025..3e454b340ce0844743e6092b16ad0813
      }
    | {
        type: "thread/resume";
-@@ -67,6 +68,7 @@ export type AdapterCommand =
+@@ -69,6 +70,7 @@ export type AdapterCommand =
        options: ProviderExecutionContext;
        dynamicTools?: DynamicTool[];
        instructionMode: InstructionMode;
@@ -524,7 +524,7 @@ index 6f4a088ba8068cae6d9a7de7667f94c47ca38025..3e454b340ce0844743e6092b16ad0813
      }
    | {
        type: "thread/fork";
-@@ -77,6 +79,7 @@ export type AdapterCommand =
+@@ -79,6 +81,7 @@ export type AdapterCommand =
        options: ProviderExecutionContext;
        dynamicTools?: DynamicTool[];
        instructionMode: InstructionMode;
@@ -533,7 +533,7 @@ index 6f4a088ba8068cae6d9a7de7667f94c47ca38025..3e454b340ce0844743e6092b16ad0813
    | {
        type: "turn/start";
 diff --git a/packages/agent-runtime/src/runtime.ts b/packages/agent-runtime/src/runtime.ts
-index 6c0a2fa0f2d9d5d33ca4074a0ea590ee0f8b1de3..f328fb718cb9e157e346330b37127f6b08e5eacd 100644
+index 79d74bfe44b3f77082245fc8c41484947d741c77..f45fdda8006d06862a6f5d072ab69451aab4d700 100644
 --- a/packages/agent-runtime/src/runtime.ts
 +++ b/packages/agent-runtime/src/runtime.ts
 @@ -14,6 +14,7 @@ import {
@@ -552,7 +552,7 @@ index 6c0a2fa0f2d9d5d33ca4074a0ea590ee0f8b1de3..f328fb718cb9e157e346330b37127f6b
  } from "./types.js";
  import {
    resolveThreadEnvironment,
-@@ -1499,7 +1501,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1509,7 +1511,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
        });
      },
  
@@ -561,7 +561,7 @@ index 6c0a2fa0f2d9d5d33ca4074a0ea590ee0f8b1de3..f328fb718cb9e157e346330b37127f6b
        environmentId,
        threadId,
        projectId,
-@@ -1513,6 +1515,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1523,6 +1525,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
        instructions,
        dynamicTools,
        instructionMode = "append",
@@ -569,7 +569,7 @@ index 6c0a2fa0f2d9d5d33ca4074a0ea590ee0f8b1de3..f328fb718cb9e157e346330b37127f6b
        fork,
      }) {
        return runThreadOperation({
-@@ -1585,6 +1588,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1595,6 +1598,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
                  options: providerExecutionContext,
                  dynamicTools,
                  instructionMode,
@@ -577,7 +577,7 @@ index 6c0a2fa0f2d9d5d33ca4074a0ea590ee0f8b1de3..f328fb718cb9e157e346330b37127f6b
                }
              : {
                  type: "thread/start",
-@@ -1593,8 +1597,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1603,8 +1607,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
                  options: providerExecutionContext,
                  dynamicTools,
                  instructionMode,
@@ -588,7 +588,7 @@ index 6c0a2fa0f2d9d5d33ca4074a0ea590ee0f8b1de3..f328fb718cb9e157e346330b37127f6b
            try {
              const cmd = requireProviderRequestPlan({
                commandType: adapterCommand.type,
-@@ -1604,7 +1610,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1614,7 +1620,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
              const result = await sendCommand({
                proc,
                message: cmd,
@@ -597,7 +597,7 @@ index 6c0a2fa0f2d9d5d33ca4074a0ea590ee0f8b1de3..f328fb718cb9e157e346330b37127f6b
                timeoutMs: threadCreationRequestTimeoutMs,
                ...(fork
                  ? {
-@@ -1616,13 +1622,21 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1626,13 +1632,21 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
                    }
                  : {}),
              });
@@ -626,7 +626,7 @@ index 6c0a2fa0f2d9d5d33ca4074a0ea590ee0f8b1de3..f328fb718cb9e157e346330b37127f6b
              emitResolvedProviderEnvironment({
                droppedContributions: resolvedEnvironment.droppedContributions,
                entries: resolvedEnvironment.entries,
-@@ -1651,11 +1665,19 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1661,11 +1675,19 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
            }
  
            markHostedProviderSessionIdle(threadId);
@@ -876,10 +876,10 @@ index 64e804de3c582ae9a03960b5f82d8158248eb099..068b616f1642755db3964a9d196fc51d
        id: snapshot.id,
        operationSeqHighWatermark: snapshot.operationSeqHighWatermark,
 diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
-index bb2d783b63158560aeaa133fa36b322ae0a2c43f..747e4d37a7e1de2c4fcc467cd1c13f5e67454167 100644
+index 0585fdc75c265e792e2165030ea7c3e7b9d565c9..8dc05c178de53eca00958b0e9cb078339b95e293 100644
 --- a/packages/db/src/data/index.ts
 +++ b/packages/db/src/data/index.ts
-@@ -180,6 +180,8 @@ export {
+@@ -183,6 +183,8 @@ export {
  } from "./ui-preferences.js";
  export {
    appendContextMagnetContributionTrace,
@@ -901,10 +901,10 @@ index e81f19e866e0a9e2ba7a9be05b43b4dddcfa0a7d..2b80bb035e2c3acba8e7428ffe4ec62f
  export function createPromptHistoryEntryId(): string {
    return createId("phist");
 diff --git a/packages/db/src/schema.ts b/packages/db/src/schema.ts
-index dd8a1e3c8473ff59a323509e3a3faf1a37d45bb4..1b08f3067c318d0ac9c1fd6089a0dd215d55949a 100644
+index b8d5f86480efa7f655b7eb5848439da0ab7feee8..7435d1d5106fca734786b17a54ae198000da5fe7 100644
 --- a/packages/db/src/schema.ts
 +++ b/packages/db/src/schema.ts
-@@ -753,6 +753,9 @@ export const contextMagnetContributionTraceSnapshots = sqliteTable(
+@@ -761,6 +761,9 @@ export const contextMagnetContributionTraceSnapshots = sqliteTable(
      receiptHighWaterSequence: integer("receipt_high_water_sequence")
        .notNull()
        .default(0),
@@ -914,7 +914,7 @@ index dd8a1e3c8473ff59a323509e3a3faf1a37d45bb4..1b08f3067c318d0ac9c1fd6089a0dd21
      capturedAt: integer("captured_at").notNull(),
    },
    (table) => [
-@@ -763,6 +766,60 @@ export const contextMagnetContributionTraceSnapshots = sqliteTable(
+@@ -771,6 +774,60 @@ export const contextMagnetContributionTraceSnapshots = sqliteTable(
    ],
  );
  
@@ -976,7 +976,7 @@ index dd8a1e3c8473ff59a323509e3a3faf1a37d45bb4..1b08f3067c318d0ac9c1fd6089a0dd21
    "thread_plugin_metadata",
    {
 diff --git a/packages/db/test/data/context-magnet-contribution-traces.test.ts b/packages/db/test/data/context-magnet-contribution-traces.test.ts
-index 1b2c356612c7fb929fbce8f2b084d15da6e18ffa..710b9fe436fe10014df90ef117e483acf022bf0a 100644
+index 202abd6e90cd5b66ea018dda173d3f787675dc93..5f6fb5165e442cc21744ffe11003d71bb7a8b019 100644
 --- a/packages/db/test/data/context-magnet-contribution-traces.test.ts
 +++ b/packages/db/test/data/context-magnet-contribution-traces.test.ts
 @@ -1,6 +1,9 @@
@@ -995,7 +995,7 @@ index 1b2c356612c7fb929fbce8f2b084d15da6e18ffa..710b9fe436fe10014df90ef117e483ac
  import { noopNotifier } from "../../src/notifier.js";
 -import { events } from "../../src/schema.js";
 +import { contextMagnetContributionTraces, contextMagnetProviderAdmissionAttempts, contextMagnetProviderAdmissionObservations, contextMagnetProviderAdmissionRetention, events } from "../../src/schema.js";
- import { createMigratedConnection } from "../helpers/migrated-connection.js";
+ import { createMigratedConnection } from "../../src/testing.js";
  
  function setup() {
 @@ -70,6 +73,99 @@ function appendReceiptOperation(
@@ -1176,10 +1176,10 @@ index 3f6bd7aeb0e241cb9e3a7ce54198deb733688793..ec616b9133eb5b09dacda8cb79dc0581
      expect(contextMagnetContributionTraceDeclarationSchema.parse(declaration)).toMatchObject({
        operation: { kind: "unmatched" },
 diff --git a/packages/host-daemon-contract/src/commands.ts b/packages/host-daemon-contract/src/commands.ts
-index c5d33b0e121beedf5dade9badc6b70e6fe88789e..f1f7ec2b53949a530fb09a7645e64f4dce59c8e9 100644
+index f47340a73fc60d73db161305498b47af23ac1dcb..1af4689efab10a5d98943aa43895ef5ffb154490 100644
 --- a/packages/host-daemon-contract/src/commands.ts
 +++ b/packages/host-daemon-contract/src/commands.ts
-@@ -290,6 +290,7 @@ const threadStartCommandSchema = hostDaemonThreadTargetSchema
+@@ -291,6 +291,7 @@ const threadStartCommandSchema = hostDaemonThreadTargetSchema
          sourceProviderCheckpointId: z.string().min(1).optional(),
        })
        .optional(),
@@ -1187,7 +1187,7 @@ index c5d33b0e121beedf5dade9badc6b70e6fe88789e..f1f7ec2b53949a530fb09a7645e64f4d
    })
    .strict()
    .superRefine((value, ctx) => {
-@@ -1214,9 +1215,16 @@ const providerListModelsResultSchema = z.object({
+@@ -1268,9 +1269,16 @@ const providerListModelsResultSchema = z.object({
    selectedOnlyModels: z.array(availableModelSchema),
  });
  
@@ -1207,7 +1207,7 @@ index c5d33b0e121beedf5dade9badc6b70e6fe88789e..f1f7ec2b53949a530fb09a7645e64f4d
  export const COMPETING_TURN_ERROR_CODE = "competing_turn" as const;
  
  const threadStopResultSchema = z
-@@ -1455,7 +1463,7 @@ export const hostDaemonCommandRegistry = {
+@@ -1534,7 +1542,7 @@ export const hostDaemonCommandRegistry = {
    "thread.rewind.prepare": defineHostDaemonCommandDescriptor({
      type: "thread.rewind.prepare",
      schema: threadRewindPrepareCommandSchema,
@@ -1217,10 +1217,10 @@ index c5d33b0e121beedf5dade9badc6b70e6fe88789e..f1f7ec2b53949a530fb09a7645e64f4d
      retryable: false,
      flushEventsBeforeResult: true,
 diff --git a/packages/host-daemon-contract/test/contract.test.ts b/packages/host-daemon-contract/test/contract.test.ts
-index a85ea698b323d8ccceed3155fc49d5e093186a74..3d6a02fee5ab22da955530c7f58cf2a3f6e0cfc7 100644
+index 0fc739b24e2c0fe9948db94d8aa2236da3006143..d16ca69352adf646d96afe095d4ab64d3290b391 100644
 --- a/packages/host-daemon-contract/test/contract.test.ts
 +++ b/packages/host-daemon-contract/test/contract.test.ts
-@@ -555,6 +555,8 @@ const SETTLED_RESPONSE_RESULT_FIXTURES: SettledResponseResultFixtures = {
+@@ -571,6 +571,8 @@ const SETTLED_RESPONSE_RESULT_FIXTURES: SettledResponseResultFixtures = {
      providerThreadId: "provider-thread-rewind",
    },
    "thread.start": {
@@ -1228,8 +1228,8 @@ index a85ea698b323d8ccceed3155fc49d5e093186a74..3d6a02fee5ab22da955530c7f58cf2a3
 +    observations: [],
      providerThreadId: "provider-thread-123",
    },
-   "turn.submit": {},
-@@ -898,6 +900,8 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
+   "turn.submit": {
+@@ -921,6 +923,8 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
      "thread.start.fork names a checkpoint only when the clone should stop at an earlier source turn; absent means clone the session tip.",
    "hostDaemonCommandSchema.inputGroups":
      "thread.start and turn.submit omit inputGroups for ordinary single user-message turns; presence preserves grouped user messages within one turn.",
@@ -1237,8 +1237,8 @@ index a85ea698b323d8ccceed3155fc49d5e093186a74..3d6a02fee5ab22da955530c7f58cf2a3
 +    "thread.start carries Context Magnet admission attempts only when a plugin contribution was admitted for this launch; absence means no contribution was admitted and never authorizes a client-supplied admission.",
    "hostDaemonCommandSchema.options.promptMode":
      "thread runtime options carry a prompt mode only when the prompt entered one through the provider's declared composer action.",
- };
-@@ -2014,6 +2018,78 @@ describe("host-daemon command schemas", () => {
+   "hostDaemonCommandSchema.options.sessionOptions":
+@@ -2064,6 +2068,78 @@ describe("host-daemon command schemas", () => {
      });
    });
  
@@ -1317,7 +1317,7 @@ index a85ea698b323d8ccceed3155fc49d5e093186a74..3d6a02fee5ab22da955530c7f58cf2a3
    it.each([
      {
        permissionMode: "accept-edits" as const,
-@@ -3657,6 +3733,46 @@ describe("host-daemon session schemas", () => {
+@@ -3708,6 +3784,46 @@ describe("host-daemon session schemas", () => {
      }
    });
  
@@ -1861,10 +1861,10 @@ index 413cf0dad44adf994c931a2213521cada74f6618..f3cdd4306bb6b535841f31105721313c
    expect(response.error?.data).toBeUndefined();
  }, 30_000);
 diff --git a/plugins/provider-codex/src/bridge/bridge.ts b/plugins/provider-codex/src/bridge/bridge.ts
-index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7acc87f46 100644
+index b48c46cdb21393392ed8249d28393030747e21c6..530a459354a1949b3db1c665ea3843aece4060f8 100644
 --- a/plugins/provider-codex/src/bridge/bridge.ts
 +++ b/plugins/provider-codex/src/bridge/bridge.ts
-@@ -83,8 +83,9 @@ import {
+@@ -90,8 +90,9 @@ import {
  } from "../translator.js";
  import {
    createCodexAppServerConnection,
@@ -1875,7 +1875,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
    type CodexAppServerConnection,
    type CodexAppServerExitInfo,
    type CodexAppServerRequestResponder,
-@@ -288,14 +289,7 @@ const RATE_LIMIT_RECOVERY_TIMEOUT_MS = 5_000;
+@@ -295,14 +296,7 @@ const RATE_LIMIT_RECOVERY_TIMEOUT_MS = 5_000;
  const INTERRUPT_SETTLEMENT_TIMEOUT_MS = 5_000;
  const CODEX_ARCHIVED_SESSION_ERROR_PATTERN =
    /\b(?:session|thread)\s+\S+\s+is archived\b/i;
@@ -1890,7 +1890,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
  const CODEX_RENAME_RETRY_DELAYS_MS = [50, 200] as const;
  const CODEX_AUTH_REQUIRED_TEXT_PATTERN =
    /\b(?:40[13]|auth(?:entication|orization)?|unauthori[sz]ed)\b/i;
-@@ -333,6 +327,17 @@ function archivedSessionHint(message: string): ProviderRecoveryHint | null {
+@@ -340,6 +334,17 @@ function archivedSessionHint(message: string): ProviderRecoveryHint | null {
      : null;
  }
  
@@ -1908,7 +1908,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
  async function delay(ms: number): Promise<void> {
    await new Promise<void>((resolve) => {
      setTimeout(resolve, ms);
-@@ -1027,8 +1032,7 @@ async function requestThreadConstructionWithWriterRetry(
+@@ -1145,8 +1150,7 @@ async function requestThreadConstructionWithWriterRetry(
      try {
        return await sendOnce();
      } catch (error) {
@@ -1918,7 +1918,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
          throw error;
        }
        process.stderr.write(
-@@ -1056,6 +1060,8 @@ interface ConstructThreadSessionArgs {
+@@ -1174,6 +1178,8 @@ interface ConstructThreadSessionArgs {
    instructionMode: "append" | "replace";
    dynamicTools?: DynamicTool[];
    request: CodexSessionConstructionRequest;
@@ -1927,7 +1927,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
  }
  
  interface ConstructedCodexSession {
-@@ -1235,12 +1241,16 @@ async function constructThreadSession(
+@@ -1359,12 +1365,16 @@ async function constructThreadSession(
        }
      }
  
@@ -1944,7 +1944,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
      session.codexThreadId = codexThreadId;
      translator.activateThreadGitWritableRoots({
        providerThreadId: codexThreadId,
-@@ -1264,6 +1274,18 @@ async function constructThreadSession(
+@@ -1405,6 +1415,18 @@ async function constructThreadSession(
    }
  }
  
@@ -1963,7 +1963,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
  class CodexSessionReleasedError extends Error {
    constructor(cause: unknown) {
      super(cause instanceof Error ? cause.message : String(cause));
-@@ -1271,6 +1293,13 @@ class CodexSessionReleasedError extends Error {
+@@ -1412,6 +1434,13 @@ class CodexSessionReleasedError extends Error {
    }
  }
  
@@ -1977,7 +1977,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
  function registerResumableSession(session: CodexBridgeSession): void {
    if (
      session.codexThreadId === null ||
-@@ -1332,6 +1361,9 @@ async function rebuildThreadSession(
+@@ -1476,6 +1505,9 @@ async function rebuildThreadSession(
      if (!(error instanceof CodexSessionReleasedError)) {
        registerResumableSession(session);
      }
@@ -1987,7 +1987,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
      throw error;
    }
    sendNotification(BRIDGE_NOTIFICATION_METHODS.sessionReplaced, {
-@@ -1508,13 +1540,39 @@ async function handleModelList(id: string | number): Promise<void> {
+@@ -1652,13 +1684,39 @@ async function handleModelList(id: string | number): Promise<void> {
  function sendConstructionError(
    id: string | number,
    error: unknown,
@@ -2029,7 +2029,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
        ? BRIDGE_JSON_RPC_ERRORS.SESSION_NOT_RESTORABLE
        : BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
      message,
-@@ -1527,8 +1585,12 @@ async function handleThreadConstruction(
+@@ -1671,8 +1729,12 @@ async function handleThreadConstruction(
    params: ThreadStartParamsShape,
    request: CodexSessionConstructionRequest,
  ): Promise<void> {
@@ -2043,7 +2043,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
        threadId: params.threadId,
        cwd: params.cwd,
        options: params.options,
-@@ -1537,13 +1599,35 @@ async function handleThreadConstruction(
+@@ -1681,13 +1743,35 @@ async function handleThreadConstruction(
          ? { dynamicTools: params.dynamicTools }
          : {}),
        request,
@@ -2082,7 +2082,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
    }
  }
  
-@@ -2096,9 +2180,7 @@ async function interruptCodexTurn(
+@@ -2247,9 +2331,7 @@ async function interruptCodexTurn(
    if (
      failure === null ||
      !awaitingNativeStart ||
@@ -2093,7 +2093,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
    ) {
      return failure;
    }
-@@ -2160,7 +2242,7 @@ async function handleThreadMaintenance(
+@@ -2311,7 +2393,7 @@ async function handleThreadMaintenance(
    request: { method: string; params: Record<string, unknown> },
    options?: {
      releaseAfter?: boolean;
@@ -2102,7 +2102,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
    },
  ): Promise<void> {
    const settle = async (): Promise<void> => {
-@@ -2179,8 +2261,8 @@ async function handleThreadMaintenance(
+@@ -2330,8 +2412,8 @@ async function handleThreadMaintenance(
      await settle();
    } catch (error) {
      if (
@@ -2113,7 +2113,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
      ) {
        await settle();
        return;
-@@ -2189,7 +2271,17 @@ async function handleThreadMaintenance(
+@@ -2340,7 +2422,17 @@ async function handleThreadMaintenance(
    }
  }
  
@@ -2132,7 +2132,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
    const message = describeCodexLaunchError(error);
    const recovery = archivedSessionHint(message);
    if (recovery !== null) {
-@@ -2220,8 +2312,7 @@ async function sendMaintenanceRequestWithRetries(
+@@ -2371,8 +2463,7 @@ async function sendMaintenanceRequestWithRetries(
        return;
      } catch (error) {
        if (
@@ -2142,7 +2142,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
        ) {
          throw error;
        }
-@@ -2358,7 +2449,7 @@ async function handleRequest(
+@@ -2509,7 +2600,7 @@ async function handleRequest(
          },
          {
            releaseAfter: true,
@@ -2151,7 +2151,7 @@ index ffa3fbcb12c7483a92f7a08abd6da29be7d21a56..94001683c7d91c38a8a1597e23453ba7
          },
        );
        break;
-@@ -2370,7 +2461,7 @@ async function handleRequest(
+@@ -2521,7 +2612,7 @@ async function handleRequest(
            method: "thread/unarchive",
            params: { threadId: request.params.providerThreadId },
          },
@@ -2209,7 +2209,7 @@ index 4b856d71b3d8811de5245f65f7c2fb39aff502a6..e9da2c83136e5f92d709bd596545d84e
    expect(
      threadEvents().filter(
 diff --git a/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs b/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
-index 4ce6eeb1c48f28d63a32df3d6a6989f438d6152c..9376d7e8fd397f4e6109d50b0a1a67c153424551 100644
+index 408bfd3a1147c4399d751678bc88391a62fca201..8b47f799bae5d2a0803eb8fb27c44f12d6bcb134 100644
 --- a/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
 +++ b/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
 @@ -220,6 +220,11 @@ const archivedThreadIds = new Set();
@@ -2224,7 +2224,7 @@ index 4ce6eeb1c48f28d63a32df3d6a6989f438d6152c..9376d7e8fd397f4e6109d50b0a1a67c1
  const sigtermDelayMs = script?.sigtermDelayMs ?? 0;
  const stdinCloseDelayMs = script?.stdinCloseDelayMs ?? 0;
  let ownsWriterLock = false;
-@@ -467,9 +472,26 @@ async function handleRequest(message) {
+@@ -470,9 +475,26 @@ async function handleRequest(message) {
        if (stallThreadStart) {
          await new Promise(() => undefined);
        }
@@ -2253,5 +2253,5 @@ index 4ce6eeb1c48f28d63a32df3d6a6989f438d6152c..9376d7e8fd397f4e6109d50b0a1a67c1
        return;
      }
 -- 
-2.53.0
+2.43.0
 

@@ -1,4 +1,4 @@
-From 5a229ce551eaab07d8d51423ec1a4f8fc74dbba3 Mon Sep 17 00:00:00 2001
+From 7311321d34a57b907623a98cd43b24c2197843f1 Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:56 +0200
 Subject: [PATCH] feat(mentions): add verified mention targets
@@ -14,7 +14,7 @@ Subject: [PATCH] feat(mentions): add verified mention targets
  .../src/services/plugins/plugin-service.ts    |  54 ++++-
  .../src/services/threads/dispatch-attempt.ts  |   4 +
  .../src/services/threads/queued-messages.ts   |  31 ++-
- .../src/services/threads/thread-create.ts     |  18 +-
+ .../src/services/threads/thread-create.ts     |  13 +-
  .../src/services/threads/thread-events.ts     |  19 ++
  .../services/threads/thread-facet-query.ts    |  13 ++
  .../services/threads/thread-provisioning.ts   |   9 +-
@@ -24,22 +24,22 @@ Subject: [PATCH] feat(mentions): add verified mention targets
  .../p6r/mention-target-service-paths.test.ts  | 102 ++++++++++
  .../test/services/p6r/mention-targets.test.ts | 192 ++++++++++++++++++
  .../services/p6r/provider-registry.test.ts    | 114 ++++++++++-
- docs/api_to_audit.md                          |  12 ++
+ docs/api_to_audit.md                          |  11 +
  packages/db/src/data/events.ts                |   3 +
  packages/domain/src/thread-events.ts          |  28 +++
  packages/plugin-sdk/src/backend-contract.ts   |   8 +-
  plugins/plugin-api-docs/src/surfaces.ts       |  16 ++
- 25 files changed, 1101 insertions(+), 124 deletions(-)
+ 25 files changed, 1099 insertions(+), 120 deletions(-)
  create mode 100644 apps/server/src/services/p6r/participant-projection.ts
  create mode 100644 apps/server/test/internal/daemon-forged-mention-http.test.ts
  create mode 100644 apps/server/test/services/p6r/mention-target-service-paths.test.ts
  create mode 100644 apps/server/test/services/p6r/mention-targets.test.ts
 
 diff --git a/apps/server/src/internal/events.ts b/apps/server/src/internal/events.ts
-index 044672ad8a5b7bf5b9a3c58961f4361c5e73b653..7ae418e09b98b098cd6e02c2accfd3140e78790d 100644
+index db187a964d1305138bc16e671a03add01b72be18..adcc1f98ab1f371eead1841e80678088c3c1a85f 100644
 --- a/apps/server/src/internal/events.ts
 +++ b/apps/server/src/internal/events.ts
-@@ -1065,6 +1065,9 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
+@@ -1101,6 +1101,9 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
          throw error;
        }
        const events = ungroupHostDaemonEvents(payload.eventGroups);
@@ -543,7 +543,7 @@ index 1d6340f3af3a68f135cbbf575640c5d916fe9521..3730f01754c1c0f32cffd756bd7b7347
 +  return (await resolvePluginMentionInputs(input)).contextInputs;
  }
 diff --git a/apps/server/src/services/plugins/plugin-service-internal.ts b/apps/server/src/services/plugins/plugin-service-internal.ts
-index 3e8aee6e8a9adb3061d5d93a08be3caca4ec8397..baec7aabdb1f4caeaa0d1323c94f53860dedf0fe 100644
+index d1f53a3e60749529dde259c031b40e27150d4740..9c0e3985c05286c8b2335c92357f53114a0c1d3a 100644
 --- a/apps/server/src/services/plugins/plugin-service-internal.ts
 +++ b/apps/server/src/services/plugins/plugin-service-internal.ts
 @@ -1,5 +1,6 @@
@@ -553,7 +553,7 @@ index 3e8aee6e8a9adb3061d5d93a08be3caca4ec8397..baec7aabdb1f4caeaa0d1323c94f5386
  import type { AiServiceRegistry } from "../ai/ai-service-registry.js";
  import type { DbConnection, HostRow } from "@bb/db";
  import type {
-@@ -223,6 +224,7 @@ export type PluginMentionResolveResult =
+@@ -227,6 +228,7 @@ export type PluginMentionResolveResult =
          | { type: "image"; url: string; context?: string }
          | { type: "localImage"; path: string; context?: string }
        >;
@@ -562,10 +562,10 @@ index 3e8aee6e8a9adb3061d5d93a08be3caca4ec8397..baec7aabdb1f4caeaa0d1323c94f5386
    | { ok: false; error: string };
  
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index a3ef3f8932a5f6925b9463cbbd6df66c5ea0841a..fb28a6835e6b2e484c2c0953ab5e72c8ac9ccee8 100644
+index 7ad0564a5bc592279afa43b126403d4a225c3035..600bc612125b0b53a0dfea22eff90e623cbdd1a4 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
-@@ -2668,8 +2668,23 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2741,8 +2741,23 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
            const record = result as {
              context?: unknown;
              experimental_images?: unknown;
@@ -589,7 +589,7 @@ index a3ef3f8932a5f6925b9463cbbd6df66c5ea0841a..fb28a6835e6b2e484c2c0953ab5e72c8
            if (typeof context !== "string" || context.trim().length === 0) {
              throw new Error(
                `mention provider "${providerId}" resolve() must return { context: string }`,
-@@ -2717,10 +2732,45 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2790,10 +2805,45 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
                      : { context: candidate.context as string }),
                  };
            });
@@ -638,7 +638,7 @@ index a3ef3f8932a5f6925b9463cbbd6df66c5ea0841a..fb28a6835e6b2e484c2c0953ab5e72c8
      },
  
 diff --git a/apps/server/src/services/threads/dispatch-attempt.ts b/apps/server/src/services/threads/dispatch-attempt.ts
-index ee726ba80185ac81ea8bbe14e88bebed3c3540c8..2efff95436986618e62ff71d2760eea44e1133f7 100644
+index 4dbe3adaba830e07966123ed37284875ca85f689..c4fb3593fe6e29d4f97f46b7331fcb1fd3675f5e 100644
 --- a/apps/server/src/services/threads/dispatch-attempt.ts
 +++ b/apps/server/src/services/threads/dispatch-attempt.ts
 @@ -3,6 +3,7 @@ import {
@@ -649,15 +649,15 @@ index ee726ba80185ac81ea8bbe14e88bebed3c3540c8..2efff95436986618e62ff71d2760eea4
  import {
    deleteClaimedQueuedThreadMessageBatchInTransaction,
    getEnvironment,
-@@ -94,6 +95,7 @@ import type { TurnRequestRetryMarker } from "./thread-events.js";
- import { restoreInterruptedThreadStartupRequest } from "./thread-provisioning.js";
+@@ -96,6 +97,7 @@ import { restoreInterruptedThreadStartupRequest } from "./thread-provisioning.js
+ import { markTurnTraceSpan } from "../system/turn-trace.js";
  
  export const pendingThreadStartContextSchema = z.object({
 +  p6rMentionedTargets: z.array(p6rMentionTargetSchema).max(256).optional(),
    environmentIntent: threadProvisionEnvironmentIntentSchema,
    fork: threadForkDescriptorSchema.nullable(),
    /** Provider-facing input when it differs from the persisted start seed. */
-@@ -792,6 +794,7 @@ async function admitPendingThread(
+@@ -801,6 +803,7 @@ async function admitPendingThread(
      environmentIntent: startContext.environmentIntent,
      execution,
      fork: startContext.fork,
@@ -665,7 +665,7 @@ index ee726ba80185ac81ea8bbe14e88bebed3c3540c8..2efff95436986618e62ff71d2760eea4
      input: args.payload.input,
      ...(args.payload.inputGroups === undefined
        ? {}
-@@ -873,6 +876,7 @@ async function launchAdmittedThread(
+@@ -882,6 +885,7 @@ async function launchAdmittedThread(
      environmentIntent: startContext.environmentIntent,
      execution: admission.execution,
      fork: startContext.fork,
@@ -674,7 +674,7 @@ index ee726ba80185ac81ea8bbe14e88bebed3c3540c8..2efff95436986618e62ff71d2760eea4
      ...(inputGroups === undefined ? {} : { inputGroups }),
      ...(startContext.providerInput !== undefined
 diff --git a/apps/server/src/services/threads/queued-messages.ts b/apps/server/src/services/threads/queued-messages.ts
-index f8b1e4d290cabbcf39d69c0db16a500cbe5670dc..3745a0cc494c1be028823edbc596e831df46b775 100644
+index 6045e07cc7fedbc65229e5f28626d62afed605bd..79adb331586b8a432088203988f485693e5fb1e9 100644
 --- a/apps/server/src/services/threads/queued-messages.ts
 +++ b/apps/server/src/services/threads/queued-messages.ts
 @@ -1,3 +1,4 @@
@@ -682,7 +682,7 @@ index f8b1e4d290cabbcf39d69c0db16a500cbe5670dc..3745a0cc494c1be028823edbc596e831
  import {
    getLatestThreadSequence,
    claimNextQueuedThreadMessageGroup,
-@@ -58,6 +59,7 @@ import {
+@@ -59,6 +60,7 @@ import {
    buildExecutionOptions,
    prepareTurnSubmitCommandPayload,
  } from "./thread-commands.js";
@@ -690,7 +690,7 @@ index f8b1e4d290cabbcf39d69c0db16a500cbe5670dc..3745a0cc494c1be028823edbc596e831
  import {
    prependDeferredFirstTurnContext,
    requireDeferredFirstTurnContextCurrent,
-@@ -84,7 +86,6 @@ import {
+@@ -85,7 +87,6 @@ import {
  } from "./queue-waits.js";
  import { recordQueuedMessageDrainFailure } from "./queue-drain-failure.js";
  import {
@@ -698,7 +698,7 @@ index f8b1e4d290cabbcf39d69c0db16a500cbe5670dc..3745a0cc494c1be028823edbc596e831
    captureUserMessageSentTelemetry,
    ensureThreadQueueIsWritable,
    formatAgentThreadInput,
-@@ -493,10 +494,25 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
+@@ -495,10 +496,25 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
      }),
    );
    let input = flattenPromptInputGroups(inputGroups);
@@ -728,7 +728,7 @@ index f8b1e4d290cabbcf39d69c0db16a500cbe5670dc..3745a0cc494c1be028823edbc596e831
    const deferredFirstTurnContext = resolveDeferredFirstTurnContext(
      deps.db,
      thread.id,
-@@ -562,13 +578,14 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
+@@ -564,13 +580,14 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
          queuedMessages: args.queuedMessages,
        });
        if (!consumed) {
@@ -746,30 +746,26 @@ index f8b1e4d290cabbcf39d69c0db16a500cbe5670dc..3745a0cc494c1be028823edbc596e831
          requestMethod: "turn/start",
          senderThreadId,
 diff --git a/apps/server/src/services/threads/thread-create.ts b/apps/server/src/services/threads/thread-create.ts
-index 35e850ca1a786f002504a39e2f8b69e4e8cce370..e7a6a475cc6c6cd93163c401eebd748e9cfb8422 100644
+index 1db87dc1f687ad7486bfa108db066ab45018ebc2..51f466b0af0cc52070fe61ea5ccf1814712944ef 100644
 --- a/apps/server/src/services/threads/thread-create.ts
 +++ b/apps/server/src/services/threads/thread-create.ts
-@@ -1,5 +1,6 @@
- import { requestThreadStorageDeletion } from "./thread-lifecycle.js";
+@@ -2,6 +2,7 @@ import { requestThreadStorageDeletion } from "./thread-lifecycle.js";
+ import { seedThreadSessionOptionSelections } from "./thread-session-options.js";
  import { assertEnvironmentPathAvailable } from "../environments/path-admission.js";
+ import { markThreadDeleted, getEnvironment, getThread } from "@bb/db";
 +import type { P6rMentionTarget } from "@bb/domain";
  import {
-   markThreadDeleted,
-   getEnvironment,
-@@ -30,10 +31,8 @@ import {
-   resolveProjectExecutionDefaultsForCreate,
- } from "./project-execution-defaults.js";
- import { resolvePromptAttachmentReferences } from "../projects/attachments.js";
--import {
--  appendPluginMentionContext,
--  captureUserMessageSentTelemetry,
--} from "./thread-send.js";
-+import { captureUserMessageSentTelemetry } from "./thread-send.js";
+   describeSessionOptionConflict,
+   modelSessionOptionConflict,
+@@ -31,6 +32,7 @@ import {
+   appendPluginMentionContext,
+   captureUserMessageSentTelemetry,
+ } from "./thread-send.js";
 +import { resolvePluginMentionInputs } from "../plugins/plugin-mentions.js";
  import {
    attemptDispatch,
    hostIdForEnvironmentIntent,
-@@ -74,6 +73,7 @@ import {
+@@ -71,6 +73,7 @@ import {
  type ThreadCreateDeps = LoggedPendingInteractionWorkSessionDeps;
  
  interface CreateProvisioningThreadArgs {
@@ -777,7 +773,7 @@ index 35e850ca1a786f002504a39e2f8b69e4e8cce370..e7a6a475cc6c6cd93163c401eebd748e
    environmentId: string | null;
    executionDefaults: Parameters<
      typeof buildExecutionOptions
-@@ -384,6 +384,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
+@@ -429,6 +432,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
      });
    }
    const startContext: PendingThreadStartContext = {
@@ -785,7 +781,7 @@ index 35e850ca1a786f002504a39e2f8b69e4e8cce370..e7a6a475cc6c6cd93163c401eebd748e
      environmentIntent: args.environmentIntent,
      fork: args.fork?.descriptor ?? null,
      ...(args.providerInput !== undefined
-@@ -541,9 +542,11 @@ export async function createThreadFromRequest(
+@@ -590,9 +594,11 @@ export async function createThreadFromRequest(
    }
    const pluginMetadata = resolveCreateThreadPluginMetadata(rawRequestInput);
    const requestInput = { ...rawRequestInput };
@@ -800,7 +796,7 @@ index 35e850ca1a786f002504a39e2f8b69e4e8cce370..e7a6a475cc6c6cd93163c401eebd748e
    assertProjectWorkspaceCompatibility(project, requestInput);
    const originKind = requestInput.originKind ?? null;
    const sourceThreadId =
-@@ -778,6 +781,7 @@ export async function createThreadFromRequest(
+@@ -836,6 +842,7 @@ export async function createThreadFromRequest(
    }
  
    const createArgs = {
@@ -1688,14 +1684,13 @@ index 88dc269d9bc6a238bfc807500530724ecb1c2a22..6bd657717b50cabe2a49c51e490638ed
 +  });
 +});
 diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
-index b993fee714b0995fdbe8cbda8fa74904b24e9aa0..f1659702c39991720bbf88fee4eedcfa8e9d6f28 100644
+index 1159a9a4d38f82ff12b01822a8a5b4876bb1cd02..84693b1c337c06a274caa443af84333f374ff8c4 100644
 --- a/docs/api_to_audit.md
 +++ b/docs/api_to_audit.md
-@@ -3843,3 +3843,15 @@ Stabilization requires exercising reconnect/reload, concurrent deduplication, ro
- `hosts.experimental_discoverRepos({ hostId })` asks the machine for git repositories under the user's home directory with local activity in the last 30 days, newest first, capped at 10. Each entry has `path`, `name`, `lastActivityAt`, `originUrl`, and `projectId` (the bb project already bound to that path on that machine, or null). `truncated` is true when the three-second walk budget ran out. The walk stops at each repository root, skips dot-directories, common build directories, scratch directories (`tmp`, `temp`, `tmp-*`, `Downloads`), linked worktrees, and submodules. The first-run setup guide and `bb project discover` use it. Host-daemon wire change: the `host.discover_repos` command (protocol 230).
- 
- Stabilize after deciding whether depth, recency window, and limit should be caller options, and after exercising slow or network-mounted home directories and Windows hosts.
-+
+@@ -2976,3 +2976,14 @@ directories, linked worktrees, and submodules. Core callers: the setup guide
+ Stabilize after deciding whether depth, recency window, and limit should be
+ caller options, and after exercising slow or network-mounted home directories
+ and Windows hosts.
 +## `PluginMentionProviderRegistration.resolve().experimental_target`
 +
 +Selects a person by issuer and subject from the resolver plugin's active P6R
@@ -1708,7 +1703,7 @@ index b993fee714b0995fdbe8cbda8fa74904b24e9aa0..f1659702c39991720bbf88fee4eedcfa
 +revocation/deadlines, durable operation finality, and exact request/tool linkage.
 +Ordinary native UI attribution and presence are separate capabilities.
 diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
-index b660a8dee5ff07bae80f18b5b8ce3471e217dc00..d4b20ef11cc8c3416c9ae2a7be9c15e87acae3b7 100644
+index 5585625f79a58209693a615c8b8fb35f93ca5f12..68313850c89bd0ec97f32446f7e9dd80030c1172 100644
 --- a/packages/db/src/data/events.ts
 +++ b/packages/db/src/data/events.ts
 @@ -747,6 +747,9 @@ export function appendDaemonEventsInTransaction(
@@ -1768,10 +1763,10 @@ index 72e43511af2c65f544fbe1b5e3406db9e6757dfe..497f9f815f5e25f4b9ab6e01823d6a0f
    request: z.object({
      method: z.enum(["thread/start", "turn/start"]),
 diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
-index e11032fa3dd68c1f3145cc01dddd270463a189c8..4295cf4372686cf7d3c8bcf7b2c3f790d1565fa1 100644
+index 0119fd309fcdb6997ad6909ea76c1f849ce04443..45b14f806a40928b12f7e6946834470e1eb4ff72 100644
 --- a/packages/plugin-sdk/src/backend-contract.ts
 +++ b/packages/plugin-sdk/src/backend-contract.ts
-@@ -1784,6 +1784,8 @@ export type ExperimentalPluginMentionImage =
+@@ -1803,6 +1803,8 @@ export type ExperimentalPluginMentionImage =
    | { type: "image"; url: string; context?: string }
    | { type: "localImage"; path: string; context?: string };
  
@@ -1780,7 +1775,7 @@ index e11032fa3dd68c1f3145cc01dddd270463a189c8..4295cf4372686cf7d3c8bcf7b2c3f790
  export interface PluginMentionProviderRegistration {
    /** Unique within this plugin: [a-zA-Z0-9_-]+ (no ":" — the host composes
     * wire item ids as "<providerId>:<itemId>"). */
-@@ -1808,16 +1810,20 @@ export interface PluginMentionProviderRegistration {
+@@ -1827,16 +1829,20 @@ export interface PluginMentionProviderRegistration {
     * Resolves one picked item into agent context, called once per unique
     * item at message send time. The returned `context` is attached to the
     * message as an agent-visible (user-hidden) prompt input. Throwing blocks
@@ -1803,10 +1798,10 @@ index e11032fa3dd68c1f3145cc01dddd270463a189c8..4295cf4372686cf7d3c8bcf7b2c3f790
  }
  
 diff --git a/plugins/plugin-api-docs/src/surfaces.ts b/plugins/plugin-api-docs/src/surfaces.ts
-index dfae589822fd839abbb48e6cfa1cfff668bd4e52..f40e9337942d84d1d0fb4bb6550f0dfbe4a9ed3a 100644
+index 3ee9d1ee17e14568476e0a5bb0940b7bc221d7f1..6c9cbbf9f1b36171eeaaaf4068cbc56306ab52b7 100644
 --- a/plugins/plugin-api-docs/src/surfaces.ts
 +++ b/plugins/plugin-api-docs/src/surfaces.ts
-@@ -484,9 +484,11 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+@@ -497,9 +497,11 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
            "Search the plugin's own data as the person types",
            "Claim its own trigger, such as # or $",
            "Turn a pick into a chip whose content reaches the agent on send",
@@ -1818,7 +1813,7 @@ index dfae589822fd839abbb48e6cfa1cfff668bd4e52..f40e9337942d84d1d0fb4bb6550f0dfb
            "PluginMentionSearchContext",
            "PluginMentionItem",
          ],
-@@ -748,6 +750,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+@@ -762,6 +764,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
        {
          title: "Data & platform",
          surfaceIds: [
@@ -1826,7 +1821,7 @@ index dfae589822fd839abbb48e6cfa1cfff668bd4e52..f40e9337942d84d1d0fb4bb6550f0dfb
            "storage",
            "bb-sdk",
            "thread-plugin-metadata",
-@@ -1202,6 +1205,19 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+@@ -1217,6 +1220,19 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
          ],
          experimental: true,
        },
@@ -1847,5 +1842,5 @@ index dfae589822fd839abbb48e6cfa1cfff668bd4e52..f40e9337942d84d1d0fb4bb6550f0dfb
          id: "storage",
          tagline: "Namespaced KV plus your own SQLite",
 -- 
-2.53.0
+2.43.0
 

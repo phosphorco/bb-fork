@@ -414,4 +414,32 @@ publication and build do not activate it in an already-running server.
 
 ## Reviewed external inference relay (0058)
 
-Patch 0058 requires the external inference relay for selected BB sessions, disables local account management and provider probes in that profile, and carries authenticated model facts through host protocol 231 (required external contract version 1). Claude SDK start/resume also rejects a required profile without a nonblank contributed base URL and auth token before invoking the SDK, including startup recovery while Account Pool is disabled. Ordinary profiles and caller settings retain their behavior. The optional candidate 0059 is excluded from this composition. Live acceptance remains required.
+Patch 0058 requires the external inference relay for selected BB sessions, disables local account management and provider probes in that profile, and carries authenticated model facts through host protocol 239 (required external contract version 1). Claude SDK start/resume also rejects a required profile without a nonblank contributed base URL and auth token before invoking the SDK, including startup recovery while Account Pool is disabled. Ordinary profiles and caller settings retain their behavior. The optional candidate 0059 is excluded from this composition. Live acceptance remains required.
+
+## Upstream refresh — 2026-10-16
+
+Base `01affc197dc621cddc7343e09b1c5c10a5b9efcb`, result tree
+`975e38f02f1a615bd1da36f6dd21f6fd546a103a`, BB 0.46.1 / SDK 0.6.52.
+All 49 selected logical patches remain; 0060 aligns fixtures with the migrated
+DB and attribution behavior. Historical gaps and optional 0059 remain excluded.
+
+- Identity compaction passes captured authors through the new dispatch attempt.
+  Current trace/queue-state producers and upstream question/replay tests remain.
+- 0018 retains only the layout-provider data seam; removed nav/header APIs stay
+  removed. Plugin consumers use native public APIs and plugin-owned surfaces.
+- Generated bridge 0145 follows upstream 0142–0144. Exact prior bridge hashes and
+  timestamps, including selected 1791422663905, remain accepted without rewriting
+  original ledger rows. A durable temporary table preserves queued attribution
+  across upstream 0143 and is removed after restoration, including reopen recovery.
+- 0052 coexists with native parentNotifications. Its failure-only policy is not
+  equivalent to native `stuck` (also interruptions/questions) or `off`.
+- 0058 reconciles protocol 238 to 239. The new provider-literal ratchet inventories
+  existing relay references with ownership and retirement documentation rather
+  than weakening the guard. The account-pool overview meets the template budget.
+
+Final typecheck/build passed 164 tasks; test graph passed 106 tasks, including
+5,932 app and 3,757 server tests. Bridge migration cases passed 88/88; separate
+sequential integration passed 74/74. Desktop tests are excluded. The separate
+upstream live Marketplace schema comparison failed despite core CI passing;
+that external compatibility boundary is retained. This receipt does not activate
+an updated service or promote workspace gitlinks.

@@ -1,4 +1,4 @@
-From 2a406d7dd9e8952cfa2438b90a0f4b7d0dd2f019 Mon Sep 17 00:00:00 2001
+From 2b3ce97e1e36568ce4c33802c4f06375d7b97c07 Mon Sep 17 00:00:00 2001
 From: bb-fork <bb-fork@invalid.local>
 Date: Wed, 23 Sep 2026 15:57:33 +0200
 Subject: [PATCH] feat(p6r): serve owned Tailnet ingress with machine fallback
@@ -10,9 +10,9 @@ requests without usable person evidence continue with a stable machine actor.
  .../server/src/services/p6r/native-request.ts | 12 +++--
  apps/server/src/start-server.ts               | 46 ++++++++++++++++---
  .../p6r/native-message-authorship.test.ts     | 28 ++++++++++-
- .../src/templates/bb-guide-customization.md   | 12 +++--
+ .../src/templates/bb-guide-customization.md   |  6 ++-
  plugins/bb-guide/skills/bb-cli/SKILL.md       |  6 ++-
- 5 files changed, 84 insertions(+), 20 deletions(-)
+ 5 files changed, 81 insertions(+), 17 deletions(-)
 
 diff --git a/apps/server/src/services/p6r/native-request.ts b/apps/server/src/services/p6r/native-request.ts
 index e49ad91253e3677f15be9e6c442c1db1021c4447..5b61e1b1177119bbbe2082f66fc8af09b143d901 100644
@@ -54,10 +54,10 @@ index e49ad91253e3677f15be9e6c442c1db1021c4447..5b61e1b1177119bbbe2082f66fc8af09
      };
      return context.json(result);
 diff --git a/apps/server/src/start-server.ts b/apps/server/src/start-server.ts
-index de39a7711c87068ca5cce044d14b14713c49521a..847d3a97023d5684090f53481a95487a569af0aa 100644
+index 63831909f0e1bc3835c15194c23b8a5631f1e8cd..45e6bdafd6c571e4db7abf00f06770108fac6697 100644
 --- a/apps/server/src/start-server.ts
 +++ b/apps/server/src/start-server.ts
-@@ -375,11 +375,6 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+@@ -405,11 +405,6 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
      pendingServerMove === null
        ? installProviderModelCatalogPrewarm(sweepDeps)
        : null;
@@ -69,7 +69,7 @@ index de39a7711c87068ca5cce044d14b14713c49521a..847d3a97023d5684090f53481a95487a
  
    if (!isLoopbackHostname(serverConfig.BB_SERVER_BIND_HOST)) {
      logger.warn(
-@@ -394,6 +389,31 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+@@ -424,6 +419,31 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
    });
    injectWebSocket(server);
  
@@ -101,7 +101,7 @@ index de39a7711c87068ca5cce044d14b14713c49521a..847d3a97023d5684090f53481a95487a
    logger.info(
      {
        bindHost: serverConfig.BB_SERVER_BIND_HOST,
-@@ -425,6 +445,11 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+@@ -455,6 +475,11 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
        });
      }
      pluginCatalogService.startPeriodicRefresh();
@@ -113,7 +113,7 @@ index de39a7711c87068ca5cce044d14b14713c49521a..847d3a97023d5684090f53481a95487a
      sweepInterval = setInterval(() => {
        if (!isServerMoveFrozen(db)) {
          void runPeriodicSweeps(sweepDeps);
-@@ -469,8 +494,17 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+@@ -499,8 +524,17 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
            resolve();
          });
        });
@@ -199,40 +199,27 @@ index b935cc19af60e125bee15a76bdd08977c5c5958d..f95dceaf3126e88207c5b0c51047a9ae
    const f = await fixture();
    try {
 diff --git a/packages/templates/src/templates/bb-guide-customization.md b/packages/templates/src/templates/bb-guide-customization.md
-index c5117c0c0234345132343c0e089b83c7e0ca4962..070cdfa667920f9e57cfa2a5b0d7eda809ad97e0 100644
+index 1714f2f4a0b70142ceed35ddb2c1e3786f47e73e..2d4b6af0fa8ee1145db4ffc7c53c081ee81ddfd6 100644
 --- a/packages/templates/src/templates/bb-guide-customization.md
 +++ b/packages/templates/src/templates/bb-guide-customization.md
-@@ -204,18 +204,20 @@ when they do. `test` runs a sample title or commit message through the current
- choice. Settings → AI services has the same controls. Each plugin chooses its
- own model.
- 
--Settings → Identity (`/settings/p6rIdentity`) shows the provider-verified identity
-+Settings → Identity (`/settings/p6rIdentity`) shows the resolved identity
- for your current connection. `bb settings p6r-identity --json` and
- `sdk.system.p6rIdentity()` expose the same check for their own request; a local CLI
- connection need not resolve to the same person as a browser behind a trusted
--proxy. An unconfigured instance retains native local behavior. An unavailable
--configured provider does not fall back to a claimed name.
-+proxy. An unconfigured instance retains native local behavior. Requests through
-+the owned Tailnet listener use a stable machine actor when verified person
-+evidence is unavailable. Local CLI requests use the separate loopback listener.
+@@ -211,8 +211,10 @@ intact. Appearance settings are shared; personal theme overrides are not offered
  
  For Tailscale Serve deployments, `BB_TAILNET_IDENTITY_OWNED_HOST` automatically
  selects the installed Identity Boundaries provider and standard loopback ingress.
- No separate `BB_P6R_IDENTITY_BOUNDARY` opt-in is needed; an explicit custom boundary
--still takes precedence. Requests without verified person evidence use machine
--attribution. Validate your own identity through your browser connection.
-+still takes precedence. Set `BB_TAILNET_INGRESS_PORT` to the distinct loopback
-+port served by Tailscale Serve. Validate your own identity through your browser
-+connection; the local CLI connection can retain machine attribution.
+-An explicit custom boundary still takes precedence. Requests without usable person
+-evidence retain machine attribution.
++An explicit custom boundary still takes precedence. Set `BB_TAILNET_INGRESS_PORT`
++to the distinct loopback port served by Tailscale Serve. Requests without usable
++person evidence retain machine attribution. Local CLI requests use the separate
++loopback listener; inspect browser identity through the admitted Tailnet connection.
  
- New browser sends retain their verified author separately from message text,
- including queued sends and retries. Older unattributed messages remain unknown.
+ Keyboard shortcuts
+ 
 diff --git a/plugins/bb-guide/skills/bb-cli/SKILL.md b/plugins/bb-guide/skills/bb-cli/SKILL.md
-index 183c127cac81b075dadd7d78d097160fe2dfaf26..47ea80ec11d24e9093943d95627270152209b2b7 100644
+index bc16c1af08267f8d361c6f99eed26f4f6c8256c7..679766d0d7f8008eb8a544ce14acef95f98b9c6b 100644
 --- a/plugins/bb-guide/skills/bb-cli/SKILL.md
 +++ b/plugins/bb-guide/skills/bb-cli/SKILL.md
-@@ -147,8 +147,10 @@ list`, `get`, `set`, and `reset`.
+@@ -107,8 +107,10 @@ A plugin's commands and settings are documented in that plugin's own skill.
  On Tailscale Serve deployments, an existing `BB_TAILNET_IDENTITY_OWNED_HOST`
  automatically selects the installed Identity Boundaries provider. Do not add a
  second boundary opt-in unless custom ingress or another provider requires it.
@@ -246,5 +233,5 @@ index 183c127cac81b075dadd7d78d097160fe2dfaf26..47ea80ec11d24e9093943d9562727015
  ```sh
  bb project list --json
 -- 
-2.53.0
+2.43.0
 

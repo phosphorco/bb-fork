@@ -36,7 +36,7 @@ justification.
 
 This is a thin, auditable deployment overlay for [get-bb/bb](https://github.com/get-bb/bb). It does not carry a second copy of upstream source and it does not treat a long-lived Git branch as the release definition.
 
-The current base is exact upstream commit `c9649eae71edd2a9da097f8325dde25d8260e5b1`. The lock records a reviewed source receipt rather than a moving branch or inferred release tag.
+The current base is exact upstream commit `01affc197dc621cddc7343e09b1c5c10a5b9efcb` (BB 0.46.1, SDK 0.6.52). The lock records a reviewed source receipt rather than a moving branch or inferred release tag.
 
 The deployable source is exactly:
 
@@ -71,7 +71,7 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The forty-eight patches listed in `patches/series` form the current implementation
+The fifty patches listed in `patches/series` form the current implementation
 candidate. Queue numbers 0022, 0027, 0030 and 0048 are intentionally absent: 0022 is a
 historical gap, the former 0027 Monaco routing backport is supplied by
 upstream commit `283e6d7`, and 0030 and 0048 were retired at the 2026-10-08
@@ -113,9 +113,8 @@ Patch 16 automatically selects the installed Tailnet identity provider when
 without person evidence retain machine attribution.
 
 Patch 17 isolates ACP native-root tests from the caller workspace. Patch 18
-adds the native sidebar layout-provider seam while retaining the existing
-plugin layout contract, native behavior, and generic Plugins/Skills resource
-helper. Patch 19 preserves the additive Codex agent-message
+retains the native sidebar layout-provider data seam in the current rail.
+Removed upstream navigation and header slots are not restored. Patch 19 preserves the additive Codex agent-message
 phase. Patch 20 keeps workflow-shell tests independent of ambient loaded state,
 and patch 21 settles virtualized path-browser cleanup.
 Patch 34 adds the configured owned Tailnet listener and preserves the approved
@@ -130,8 +129,8 @@ and agent-runtime tests aligned with the current artifact and error contracts.
 Patch 40 bridges the exact historical bb-machine core migration ledger and
 identity column order observed in the private migration rehearsal.
 Patch 41 regenerates the downstream schema snapshot after upstream migration
-0141; the identity/context bridge now follows it as migration 0142. Patch 42
-recognizes the exact preceding fork bridge receipts (BB 0.43 and BB 0.44) when
+0141; the identity/context bridge now follows upstream 0144 as migration 0145. Patch 42
+recognizes the exact preceding fork bridge receipts (including the selected BB 0.45 receipt) when
 upgrading an already bridged database, without rewriting its migration history. Patch 43 aligns
 host dispatch tests with the downstream result contract.
 Patch 44 gives Codex thread resume the configured thread construction deadline,
@@ -154,7 +153,31 @@ ordering context on top of upstream's split ordering cache.
 Patch 52 adds a persistent creation-time opt-out for automatic parent notices;
 see [behavior and maintenance](docs/no-automatic-parent-followups.md).
 
-## Current source verification receipt
+## Current source verification receipt — 2026-10-16
+
+The 223-commit upstream refresh retains all 49 selected logical patches, narrows
+0018 to its existing layout data seam, and adds fixture-only follow-up 0060.
+The queue replays to `975e38f02f1a615bd1da36f6dd21f6fd546a103a`.
+Frozen install, 164 typecheck/build tasks, and 106 test-graph tasks passed.
+The app passed 5,932 tests and the server 3,757; the bridge migration suite
+passed 88 cases. A separate sequential integration run passed 74 tests.
+Desktop tests are excluded. Earlier timing failures remain separate observations;
+the final stable graph passed. Queue replay and namespace verification are required
+by `scripts/verify`.
+
+The bridge follows upstream 0144 as 0145 and preserves exact historical bridge
+receipts. It stages queued-message attribution durably across upstream 0143's
+queue rebuild and restores it after success or on reopen. Upstream parent
+notification settings coexist with 0052 because neither `stuck` nor `off`
+implements the selected failure-only opt-out. Required inference uses downstream
+host protocol 239 after upstream's 238. SDK artifacts must bind to the result tree.
+See [refresh dispositions](DOWNSTREAM.md#upstream-refresh--2026-10-16).
+
+This is a source receipt. The normal materialization and running service have
+not been replaced or restarted; plugin and combined-host acceptance remain
+separate gates before promotion.
+
+## Previous source verification receipt — parent followups
 
 Patch 52 now allows failed child outcomes through the opt-out. The updated queue
 replays to `2371fec864b822532f71ce52069301f13d36b820`. The server/CLI
@@ -168,7 +191,7 @@ existing child-outcome failures also reproduced against the original notificatio
 implementation. See [the complete verification boundary](docs/no-automatic-parent-followups.md#verification--2026-10-09).
 The running server has not been restarted for this source change.
 
-## Previous source verification receipt
+## Earlier source verification receipt
 
 The preceding source (tree `81da17d778dcf19648c77a726b7f5cd41ec2d3f0`) passed
 workspace typecheck and build (165 tasks), a per-patch typecheck of every

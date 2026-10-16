@@ -1,4 +1,4 @@
-From 516c00799c1b7a050e18fabc9db921ae90e090a2 Mon Sep 17 00:00:00 2001
+From 6c25e6005061c9e6937a1c938581a991227ce1d0 Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Tue, 22 Sep 2026 15:29:53 +0200
 Subject: [PATCH] feat(plugins): serve versioned lazy frontend artifacts
@@ -254,7 +254,7 @@ index 03f44c5d93267b26edba78929703dee93e6ebc54..ae054bcae9a94e27d206093987f9195d
    });
  });
 diff --git a/apps/demo-server/scripts/build-assets.ts b/apps/demo-server/scripts/build-assets.ts
-index 5a94c658a818e2b3a849c7a1975e6b1aef6fb3ad..53ee4b3ac9202acc8a728dd5764bba27bbbd3a5e 100644
+index 4355eb4b155a0caf3e6ddb5af9b191263d1b5687..6539882b913ed441f47821cdc6a11bb5b443644a 100644
 --- a/apps/demo-server/scripts/build-assets.ts
 +++ b/apps/demo-server/scripts/build-assets.ts
 @@ -31,6 +31,13 @@ const plugins: InstalledPlugin[] = [];
@@ -269,9 +269,9 @@ index 5a94c658a818e2b3a849c7a1975e6b1aef6fb3ad..53ee4b3ac9202acc8a728dd5764bba27
 +    })
 +    .optional(),
  });
- for (const id of ["navigation", "thread-list"]) {
+ for (const id of ["thread-list"]) {
    const source = new URL(
-@@ -45,8 +52,24 @@ for (const id of ["navigation", "thread-list"]) {
+@@ -45,8 +52,24 @@ for (const id of ["thread-list"]) {
    );
    const assetDir = new URL(`demo-plugins/${id}/`, destination);
    await mkdir(assetDir, { recursive: true });
@@ -729,10 +729,10 @@ index 0e2cfbf5541ca3078a2ab06cb8b1ae06fd816c99..a3faacbdaa5c9b08b3b82728e39e08b7
      bindSdk,
      resolveRpcCaller: rpcCallers.resolve,
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index 1f3093c4f54115ac32d14656ed91a1dd3f3ff0ff..4a34f08506cbe310ea2375af8e109edf6f4bfb40 100644
+index 6edea1bdc0e62453dc0eccf458eb9e63b74f22a3..b93dd8f81da9b2f8321ea275e53d9cfde5ac2d6f 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
-@@ -325,20 +325,12 @@ export interface PluginService {
+@@ -330,20 +330,12 @@ export interface PluginService {
     * and its waits clear.
     */
    isPluginExpectedToRun(id: string): boolean;
@@ -757,7 +757,7 @@ index 1f3093c4f54115ac32d14656ed91a1dd3f3ff0ff..4a34f08506cbe310ea2375af8e109edf
    getBrandingAsset(
      id: string,
      variant: PluginBrandingAssetVariant,
-@@ -676,6 +668,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -683,6 +675,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
      REGISTRATION_MUTATION_KEY,
      agentToolProblems,
      appBundles,
@@ -765,7 +765,7 @@ index 1f3093c4f54115ac32d14656ed91a1dd3f3ff0ff..4a34f08506cbe310ea2375af8e109edf
      bindSdk: bindRuntimeSdk,
      resolveRpcCaller,
      buildThreadDto,
-@@ -1861,23 +1854,17 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -1934,23 +1927,17 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
        return row !== undefined && getStatus(row).status === "starting";
      },
  
@@ -799,10 +799,10 @@ index 1f3093c4f54115ac32d14656ed91a1dd3f3ff0ff..4a34f08506cbe310ea2375af8e109edf
  
      getBrandingAsset(id, variant) {
 diff --git a/apps/server/test/services/plugins/builtin-plugins.test.ts b/apps/server/test/services/plugins/builtin-plugins.test.ts
-index 4835285eafb4b41028d82c51a5e435e5d583635a..f3af296f249f58e4f85c25688634731bbec45c62 100644
+index 0e804652a9a6c2e6b46624e7d0834b076e529d52..fc68a3270c5b4f2d80eab7c19458595f7090df76 100644
 --- a/apps/server/test/services/plugins/builtin-plugins.test.ts
 +++ b/apps/server/test/services/plugins/builtin-plugins.test.ts
-@@ -67,6 +67,17 @@ function packagedLoadCount(): number {
+@@ -66,6 +66,17 @@ function packagedLoadCount(): number {
    return (globals.__packagedBuiltinLoads as number | undefined) ?? 0;
  }
  
@@ -820,7 +820,7 @@ index 4835285eafb4b41028d82c51a5e435e5d583635a..f3af296f249f58e4f85c25688634731b
  async function writePackagedBuiltinSource(
    workDir: string,
    names: readonly string[],
-@@ -838,18 +849,13 @@ describe("builtin plugin reconciliation", () => {
+@@ -837,18 +848,13 @@ describe("builtin plugin reconciliation", () => {
      await service.start();
      const beforeHash = service.list()[0]?.app.bundle?.hash;
      expect(beforeHash).toBeTruthy();
@@ -842,7 +842,7 @@ index 4835285eafb4b41028d82c51a5e435e5d583635a..f3af296f249f58e4f85c25688634731b
      service = createService({
        db,
        dataDir: join(workDir, "data"),
-@@ -860,9 +866,10 @@ describe("builtin plugin reconciliation", () => {
+@@ -859,9 +865,10 @@ describe("builtin plugin reconciliation", () => {
      await service.start();
  
      expect(service.list()[0]?.app.bundle?.hash).not.toBe(beforeHash);
@@ -856,7 +856,7 @@ index 4835285eafb4b41028d82c51a5e435e5d583635a..f3af296f249f58e4f85c25688634731b
    }, 30_000);
  
    it("surfaces builtin app build failures in status until the next successful build", async () => {
-@@ -936,7 +943,7 @@ describe("builtin plugin reconciliation", () => {
+@@ -935,7 +942,7 @@ describe("builtin plugin reconciliation", () => {
      expect(after?.statusDetail).toBeNull();
      expect(after?.app.bundle?.hash).not.toBe(before?.hash);
      await expect(
@@ -1031,10 +1031,10 @@ index 2315e221ceb672ae85a029cdde3692899ae09a93..2c48ea477fed5512108555fa7e6904fe
      for (const badMeta of badMetas) {
        await writeFile(
 diff --git a/apps/server/test/services/plugins/plugin-install.test.ts b/apps/server/test/services/plugins/plugin-install.test.ts
-index 4e9e7264258cfaa0c64e59b3cfa139f852d04527..e11d60131fefb7da8e746018680202bb9f75a0a0 100644
+index f6023b05da59321611f7c1d264de9bcc5bf44cb0..d6b4da1353c529538236a95b5c5c99dcd1e66f94 100644
 --- a/apps/server/test/services/plugins/plugin-install.test.ts
 +++ b/apps/server/test/services/plugins/plugin-install.test.ts
-@@ -1569,13 +1569,15 @@ describe("plugin install flows", () => {
+@@ -1567,13 +1567,15 @@ describe("plugin install flows", () => {
          validatePluginArtifactMeta({
            artifact: "server",
            raw: artifactMeta({
@@ -1053,7 +1053,7 @@ index 4e9e7264258cfaa0c64e59b3cfa139f852d04527..e11d60131fefb7da8e746018680202bb
    });
  
 diff --git a/packages/plugin-build/src/build-plugin-app.test.ts b/packages/plugin-build/src/build-plugin-app.test.ts
-index 6a92e438dbbbcde3f3c012d12f844fb36d9e9da6..0ef1aec7098f6032e9781ae91e1f0d4dc81a93da 100644
+index 8f4f1ab1a4370db8a23b45545e14491c2f9670b7..d06866d170179de37cd64446a5e80baa06d2b4ca 100644
 --- a/packages/plugin-build/src/build-plugin-app.test.ts
 +++ b/packages/plugin-build/src/build-plugin-app.test.ts
 @@ -1,6 +1,7 @@
@@ -1064,7 +1064,7 @@ index 6a92e438dbbbcde3f3c012d12f844fb36d9e9da6..0ef1aec7098f6032e9781ae91e1f0d4d
    readFile,
    rm,
    symlink,
-@@ -471,6 +472,62 @@ describe("plugin app runtime shim", () => {
+@@ -489,6 +490,62 @@ describe("plugin app runtime shim", () => {
      expect(css).not.toContain("--color-background:");
    });
  
@@ -1326,5 +1326,5 @@ index ac27e38fb3bc58cab3262ba60a475b5f8923f310..d3c7816a04810f13e7e4eb9dd613314e
    } as const;
  }
 -- 
-2.53.0
+2.43.0
 

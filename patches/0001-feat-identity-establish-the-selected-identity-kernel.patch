@@ -1,4 +1,4 @@
-From 8bdc5d91d889c45ce232b98795f3281410c5314f Mon Sep 17 00:00:00 2001
+From 2b0b77cb8bd5b26aa7d5bd0e374649a0ea72c0ba Mon Sep 17 00:00:00 2001
 From: Phosphor <engineering@phosphor.co>
 Date: Tue, 8 Sep 2026 17:35:55 +0200
 Subject: [PATCH] feat(identity): establish the selected identity kernel
@@ -124,10 +124,10 @@ index d7c1a0c9859b42db9e62717b6e3e8e7bc28e6c0e..2169d549dae4c5c483d9c0614da4e415
    } catch (error) {
      db.$client.close();
 diff --git a/apps/server/src/internal/events.ts b/apps/server/src/internal/events.ts
-index 2b73030b471bcac3a0fb1e4dd40ba73deaed805d..044672ad8a5b7bf5b9a3c58961f4361c5e73b653 100644
+index 9679d32a8a620cd3c37bf00650e69710f63e9390..db187a964d1305138bc16e671a03add01b72be18 100644
 --- a/apps/server/src/internal/events.ts
 +++ b/apps/server/src/internal/events.ts
-@@ -14,6 +14,7 @@ import type {
+@@ -15,6 +15,7 @@ import type {
    AcceptedDaemonEvent,
    AppendDaemonEventInput,
    AppendDaemonEventsResult,
@@ -135,15 +135,15 @@ index 2b73030b471bcac3a0fb1e4dd40ba73deaed805d..044672ad8a5b7bf5b9a3c58961f4361c
  } from "@bb/db";
  import {
    hostDaemonEventBatchRequestSchema,
-@@ -61,6 +62,7 @@ import {
- import { getAuthenticatedDaemon } from "./auth.js";
- import { validateExtensionPayloads } from "./extension-payloads.js";
- import { validatePresentationIcons } from "./presentation-icons.js";
+@@ -72,6 +73,7 @@ import {
+   observeStreamTraceEventBatch,
+   observeTurnTraceEventBatch,
+ } from "../services/system/turn-trace.js";
 +import { linkP6rNativeTurnForRequest } from "../services/p6r/sidecar-store.js";
  
  interface ToStoredEventArgs {
    envelope: HostDaemonEventEnvelope;
-@@ -360,6 +362,27 @@ function notifyInsertedEventThreads(
+@@ -371,6 +373,27 @@ function notifyInsertedEventThreads(
    }
  }
  
@@ -171,7 +171,7 @@ index 2b73030b471bcac3a0fb1e4dd40ba73deaed805d..044672ad8a5b7bf5b9a3c58961f4361c
  function addParentTurnNotificationFollowUp(
    args: AddParentTurnNotificationFollowUpArgs,
  ): void {
-@@ -1100,7 +1123,11 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
+@@ -1136,7 +1159,11 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
        let appendResult: AppendDaemonEventsResult;
        try {
          appendResult = deps.db.transaction(
@@ -363,10 +363,10 @@ index 6b445aafb50b721a95bb8070e8cd3054988b030b..25eed49c81b8c0f9bbeded5984f51f77
      if (!outcome.ok) {
        return context.json(
 diff --git a/apps/server/src/routes/threads/actions.ts b/apps/server/src/routes/threads/actions.ts
-index 5c16a01e1fdabbf75c3f197788699fd5f03c359f..8a6fe74cde7a9ef1bebaf966006fc0a15a3702b7 100644
+index c318393bc7a2f20a75e2a4f1e37b5024a58906bc..8b91b18fa23b73e7d6b8ecb9026759eb3131d64d 100644
 --- a/apps/server/src/routes/threads/actions.ts
 +++ b/apps/server/src/routes/threads/actions.ts
-@@ -60,6 +60,10 @@ import {
+@@ -58,6 +58,10 @@ import {
  import { acceptThreadSendRequest } from "../../services/threads/thread-send-request.js";
  import { editThreadMessage } from "../../services/threads/thread-edit-message.js";
  import { clearThreadContext } from "../../services/threads/thread-context-clear.js";
@@ -377,7 +377,7 @@ index 5c16a01e1fdabbf75c3f197788699fd5f03c359f..8a6fe74cde7a9ef1bebaf966006fc0a1
  import {
    buildExecutionOptions,
    dispatchThreadUnarchiveCommand,
-@@ -333,6 +337,18 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
+@@ -299,6 +303,18 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
        projectId: thread.projectId,
        hostId: threadTargetHostId(deps, thread),
      });
@@ -396,7 +396,7 @@ index 5c16a01e1fdabbf75c3f197788699fd5f03c359f..8a6fe74cde7a9ef1bebaf966006fc0a1
      const result = updateQueuedThreadMessage(deps.db, deps.hub, {
        content: input,
        expectedUpdatedAt: payload.expectedUpdatedAt,
-@@ -397,6 +413,11 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
+@@ -363,6 +379,11 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
        deps.db,
        deps.hub,
        context.req.param("queuedMessageId"),
@@ -4581,7 +4581,7 @@ index 0000000000000000000000000000000000000000..27054cfe96a64936dae912ccf5baa966
 +  return serverToolCorrelationRegistry;
 +}
 diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
-index c7b09bc1c84db7fc730f87de150e8d459ead310b..0171926443c23051a75ac579194ac3a0054b8c7e 100644
+index a0841481fbe094d3b92a71a4a733f9c66bdaad35..040ee30a08a38df970daf5338564b1abd08b3d86 100644
 --- a/apps/server/src/services/plugins/plugin-api.ts
 +++ b/apps/server/src/services/plugins/plugin-api.ts
 @@ -53,6 +53,7 @@ import type {
@@ -4592,7 +4592,7 @@ index c7b09bc1c84db7fc730f87de150e8d459ead310b..0171926443c23051a75ac579194ac3a0
    PluginProviderDeclaration,
    ExperimentalPluginProviderEnvContext,
    ExperimentalPluginProviderEnvEntry,
-@@ -290,7 +291,9 @@ export interface PluginApiHandle {
+@@ -291,7 +292,9 @@ export interface PluginApiHandle {
    agentConfigurationProvider: PluginAgentConfigurationProvider | null;
    instructionProvider: PluginInstructionProvider | null;
    mentionProviders: PluginMentionProviderRecord[];
@@ -4602,7 +4602,7 @@ index c7b09bc1c84db7fc730f87de150e8d459ead310b..0171926443c23051a75ac579194ac3a0
    closeWebSockets(): void;
    invalidate(): void;
  }
-@@ -536,6 +539,11 @@ export function createPluginApi(options: {
+@@ -547,6 +550,11 @@ export function createPluginApi(options: {
    };
    isProviderIdTaken: (providerId: string) => boolean;
    assertProviderRegistrable: (providerId: string) => void;
@@ -4614,7 +4614,7 @@ index c7b09bc1c84db7fc730f87de150e8d459ead310b..0171926443c23051a75ac579194ac3a0
  }): PluginApiHandle {
    const {
      pluginId,
-@@ -564,6 +572,7 @@ export function createPluginApi(options: {
+@@ -575,6 +583,7 @@ export function createPluginApi(options: {
      registerAiService,
      isProviderIdTaken,
      assertProviderRegistrable,
@@ -4622,7 +4622,7 @@ index c7b09bc1c84db7fc730f87de150e8d459ead310b..0171926443c23051a75ac579194ac3a0
    } = options;
    let invalidated = false;
    let activated = false;
-@@ -1332,6 +1341,9 @@ export function createPluginApi(options: {
+@@ -1344,6 +1353,9 @@ export function createPluginApi(options: {
      server,
      hosts,
      experimental_aiServices,
@@ -4632,7 +4632,7 @@ index c7b09bc1c84db7fc730f87de150e8d459ead310b..0171926443c23051a75ac579194ac3a0
      get sdk(): PluginBbSdk {
        assertLive();
        const sdk = getSdk();
-@@ -1396,6 +1408,10 @@ export function createPluginApi(options: {
+@@ -1408,6 +1420,10 @@ export function createPluginApi(options: {
        return instructionProvider;
      },
      mentionProviders,
@@ -4643,7 +4643,7 @@ index c7b09bc1c84db7fc730f87de150e8d459ead310b..0171926443c23051a75ac579194ac3a0
      activate() {
        if (activated) return;
        assertLive();
-@@ -1419,6 +1435,9 @@ export function createPluginApi(options: {
+@@ -1431,6 +1447,9 @@ export function createPluginApi(options: {
          pendingNeedsConfiguration = null;
        }
      },
@@ -5001,10 +5001,10 @@ index 4b5cc668f08d4b53d59a265a16040886f8b416db..c23bc61c822889fca63c108f30663f38
        const hostArtifact = hostArtifacts.get(id);
        if (hostArtifact !== undefined && deps.disposePluginHost) {
 diff --git a/apps/server/src/services/plugins/plugin-service-internal.ts b/apps/server/src/services/plugins/plugin-service-internal.ts
-index e8736a9bf1808e42770ed4a9b7e46519a44abd6c..3e8aee6e8a9adb3061d5d93a08be3caca4ec8397 100644
+index 5af80ba8d72e18467bd6017cfa1b2ff4ceeef5cb..d1f53a3e60749529dde259c031b40e27150d4740 100644
 --- a/apps/server/src/services/plugins/plugin-service-internal.ts
 +++ b/apps/server/src/services/plugins/plugin-service-internal.ts
-@@ -29,6 +29,15 @@ import type {
+@@ -32,6 +32,15 @@ import type {
  import type { HostSharedPortCoordinator } from "../../ws/host-shared-ports.js";
  import type { ProviderRegistryService } from "../providers/provider-registry.js";
  import type { PluginHostArtifactRegistry } from "./plugin-host-artifact-registry.js";
@@ -5020,7 +5020,7 @@ index e8736a9bf1808e42770ed4a9b7e46519a44abd6c..3e8aee6e8a9adb3061d5d93a08be3cac
  
  type PluginServiceState = "running" | "backoff" | "stopped";
  
-@@ -71,6 +80,9 @@ export interface PluginServiceDeps {
+@@ -74,6 +83,9 @@ export interface PluginServiceDeps {
      hostId: string,
    ) => Promise<HostDaemonConnectTunnelIdentity>;
    providerRegistry?: ProviderRegistryService;
@@ -5030,7 +5030,7 @@ index e8736a9bf1808e42770ed4a9b7e46519a44abd6c..3e8aee6e8a9adb3061d5d93a08be3cac
    pluginHostArtifacts?: PluginHostArtifactRegistry;
    aiServices: AiServiceRegistry;
    onSettingsChanged?: (pluginId: string) => void;
-@@ -157,6 +169,11 @@ export interface PluginAgentToolContribution {
+@@ -161,6 +173,11 @@ export interface PluginAgentToolContribution {
    instructions: string | null;
  }
  
@@ -5043,7 +5043,7 @@ index e8736a9bf1808e42770ed4a9b7e46519a44abd6c..3e8aee6e8a9adb3061d5d93a08be3cac
    pluginId: string;
    provider: (ctx: { threadId: string; projectId: string }) => string | null;
 diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
-index d1685f1df546625c3f83fab43024d03943ec115c..a3ef3f8932a5f6925b9463cbbd6df66c5ea0841a 100644
+index 25b050d10c407366824c6252ffd470930076425d..7ad0564a5bc592279afa43b126403d4a225c3035 100644
 --- a/apps/server/src/services/plugins/plugin-service.ts
 +++ b/apps/server/src/services/plugins/plugin-service.ts
 @@ -3,6 +3,7 @@ import type {
@@ -5054,7 +5054,7 @@ index d1685f1df546625c3f83fab43024d03943ec115c..a3ef3f8932a5f6925b9463cbbd6df66c
  import { readFile, rm } from "node:fs/promises";
  import { join } from "node:path";
  import { homedir } from "node:os";
-@@ -167,12 +168,16 @@ import {
+@@ -172,12 +173,16 @@ import {
    settledWithin,
  } from "./plugin-time-box.js";
  import { createPluginUpdates } from "./plugin-updates.js";
@@ -5071,7 +5071,7 @@ index d1685f1df546625c3f83fab43024d03943ec115c..a3ef3f8932a5f6925b9463cbbd6df66c
    PluginMentionProviderContribution,
    PluginMentionResolveResult,
    PluginMentionSearchGroup,
-@@ -399,9 +404,22 @@ export interface PluginService {
+@@ -404,9 +409,22 @@ export interface PluginService {
      handler: PluginRpcHandler,
      input: unknown,
      caller: ExperimentalPluginRpcCaller,
@@ -5094,7 +5094,7 @@ index d1685f1df546625c3f83fab43024d03943ec115c..a3ef3f8932a5f6925b9463cbbd6df66c
    httpToken(
      id: string,
      options?: { rotate?: boolean },
-@@ -2019,8 +2037,55 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2092,8 +2110,55 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
          id,
          `http ${route.method} ${route.path}`,
          async () => {
@@ -5152,7 +5152,7 @@ index d1685f1df546625c3f83fab43024d03943ec115c..a3ef3f8932a5f6925b9463cbbd6df66c
          },
        );
        if (outcome.ok) return outcome.value;
-@@ -2068,7 +2133,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2141,7 +2206,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
        await invokeWrapped(id, `websocket ${route.path} ${event}`, run);
      },
  
@@ -5161,7 +5161,7 @@ index d1685f1df546625c3f83fab43024d03943ec115c..a3ef3f8932a5f6925b9463cbbd6df66c
        const outcome = await invokeWrapped(id, `rpc ${method}`, async () => {
          const parsedInput = await validateRpcValue(
            handler.inputSchema,
-@@ -2076,9 +2141,57 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2149,9 +2214,57 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
            "input",
            throwRpcBoundaryError,
          );
@@ -5221,7 +5221,7 @@ index d1685f1df546625c3f83fab43024d03943ec115c..a3ef3f8932a5f6925b9463cbbd6df66c
          const parsedOutput = await validateRpcValue(
            handler.outputSchema,
            result,
-@@ -2097,6 +2210,65 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+@@ -2170,6 +2283,65 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
        };
      },
  
@@ -5288,7 +5288,7 @@ index d1685f1df546625c3f83fab43024d03943ec115c..a3ef3f8932a5f6925b9463cbbd6df66c
        if (!getInstalledPlugin(deps.db, id)) return undefined;
        const dir = pluginSecretsDir(deps.dataDir, id);
 diff --git a/apps/server/src/services/threads/dispatch-attempt.ts b/apps/server/src/services/threads/dispatch-attempt.ts
-index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed3c3540c8 100644
+index 6bfc131339bf44082feeba2a410b12e8a7da71ad..4dbe3adaba830e07966123ed37284875ca85f689 100644
 --- a/apps/server/src/services/threads/dispatch-attempt.ts
 +++ b/apps/server/src/services/threads/dispatch-attempt.ts
 @@ -10,6 +10,8 @@ import {
@@ -5300,7 +5300,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
    type RunningThreadRow,
  } from "@bb/db";
  import {
-@@ -60,8 +62,10 @@ import { getActiveTurnId, isManualCompactionActive } from "./thread-events.js";
+@@ -61,8 +63,10 @@ import { getActiveTurnId, isManualCompactionActive } from "./thread-events.js";
  import { requireThreadCommandEnvironment } from "./thread-command-environment.js";
  import { assertThreadHostAcceptsWork } from "./thread-host-admission.js";
  import {
@@ -5311,7 +5311,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
  } from "./thread-provisioning.js";
  import {
    threadForkDescriptorSchema,
-@@ -82,6 +86,7 @@ import {
+@@ -83,6 +87,7 @@ import {
    ensureThreadIsWritable,
    resolveMessageSenderThreadId,
    sendThreadMessage,
@@ -5319,7 +5319,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
    type SendThreadMessageTransactionPreflight,
  } from "./thread-send.js";
  import { resolveDispatchAuthor } from "./dispatch-author.js";
-@@ -235,7 +240,7 @@ export interface DispatchAttemptArgs {
+@@ -237,7 +242,7 @@ export interface DispatchAttemptArgs {
    startContext?: PendingThreadStartContext;
    /** What the queued row would carry; `retry` for a re-submitted failed turn. */
    queuePayload: QueuedMessagePayload;
@@ -5328,7 +5328,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
    /** Retry provenance, when this attempt re-submits a failed turn. */
    retryOf?: TurnRequestRetryMarker;
    origin: ThreadCreateOrigin | null;
-@@ -243,6 +248,16 @@ export interface DispatchAttemptArgs {
+@@ -245,6 +250,16 @@ export interface DispatchAttemptArgs {
    startedOnBehalfOf: StartedOnBehalfOf | null;
    /** Execution defaults resolved by creation, which the thread row lacks. */
    executionDefaults?: Parameters<typeof buildExecutionOptions>[2];
@@ -5345,7 +5345,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
    trigger: "auto-dispatch" | "user";
  }
  
-@@ -384,6 +399,9 @@ async function runDispatchAttempt(
+@@ -392,6 +407,9 @@ async function runDispatchAttempt(
        waitingOn,
        sendAt,
        claimed,
@@ -5355,7 +5355,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
      });
      if (entry === null) {
        // The row vanished under a re-queue (the user deleted it). Nothing is
-@@ -396,7 +414,8 @@ async function runDispatchAttempt(
+@@ -404,7 +422,8 @@ async function runDispatchAttempt(
  
    // --- 1. plugin policy ---------------------------------------------------
  
@@ -5365,7 +5365,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
      value: null,
    };
    const continued: {
-@@ -509,10 +528,12 @@ async function runDispatchAttempt(
+@@ -517,10 +536,12 @@ async function runDispatchAttempt(
      }
  
      if (firstDispatch) {
@@ -5378,7 +5378,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
          startContext: args.startContext ?? retryStartContext,
          thread,
        });
-@@ -553,7 +574,7 @@ async function runDispatchAttempt(
+@@ -561,7 +582,7 @@ async function runDispatchAttempt(
        startedOnBehalfOf: args.startedOnBehalfOf,
        parentThreadId: thread.parentThreadId,
        queuedMessages: claimed?.map(toThreadQueuedMessage) ?? [],
@@ -5387,7 +5387,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
        continueAfterHooks: continueThroughCoreWaits,
      });
      if (outcome.kind === "wait") {
-@@ -588,7 +609,18 @@ async function runDispatchAttempt(
+@@ -596,7 +617,18 @@ async function runDispatchAttempt(
    // --- 2. dispatch --------------------------------------------------------
  
    if (firstDispatch) {
@@ -5407,7 +5407,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
      if (admission === null) {
        // The thread left `pending` underneath this attempt — a concurrent
        // attempt admitted it, or it was archived. Nothing was consumed and
-@@ -611,10 +643,14 @@ async function runDispatchAttempt(
+@@ -620,10 +652,14 @@ async function runDispatchAttempt(
        thread,
        trigger: args.trigger,
        ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
@@ -5422,7 +5422,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
          if (claimed !== null) {
            consumeClaimedRows(
              claimed,
-@@ -689,6 +725,7 @@ function consumeClaimedRows(
+@@ -698,6 +734,7 @@ function consumeClaimedRows(
  interface AdmitPendingThreadArgs {
    claimed: ClaimedQueuedThreadMessageRow[] | null;
    payload: SendMessageRequest & { inputGroups?: PromptInput[][] };
@@ -5430,7 +5430,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
    respectManualStopPause: boolean;
    /** Creation's own record; null on a re-attempt, which reads it back. */
    startContext: PendingThreadStartContext | null;
-@@ -697,6 +734,11 @@ interface AdmitPendingThreadArgs {
+@@ -706,6 +743,11 @@ interface AdmitPendingThreadArgs {
  
  interface PendingThreadAdmission {
    claimedRow: ClaimedQueuedThreadMessageRow | null;
@@ -5442,7 +5442,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
    startingThread: Thread;
  }
  
-@@ -746,8 +788,24 @@ async function admitPendingThread(
+@@ -755,8 +797,24 @@ async function admitPendingThread(
    const execution = await buildExecutionOptions(deps, args.payload, {
      threadId: args.thread.id,
    });
@@ -5468,7 +5468,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
    try {
      startingThread = deps.db.transaction(
        (tx) => {
-@@ -755,6 +813,8 @@ async function admitPendingThread(
+@@ -764,6 +822,8 @@ async function admitPendingThread(
          // flip that loses to a concurrent attempt rolls the consumption back,
          // so the row stays claimed for the caller to hand back rather than
          // being deleted under a message that never dispatched.
@@ -5477,7 +5477,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
          if (args.claimed !== null && args.claimed.length > 0) {
            consumeClaimedRows(
              args.claimed,
-@@ -771,18 +831,6 @@ async function admitPendingThread(
+@@ -780,18 +840,6 @@ async function admitPendingThread(
          }
          const starting = getThread(tx, args.thread.id);
          if (starting === null) throw new PendingThreadAdmissionLost();
@@ -5496,7 +5496,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
          return starting;
        },
        { behavior: "immediate" },
-@@ -806,6 +854,11 @@ async function admitPendingThread(
+@@ -815,6 +863,11 @@ async function admitPendingThread(
    );
    return {
      claimedRow,
@@ -5508,7 +5508,7 @@ index ada20ac28bf8886e3cceaab6233523dda9ff3cff..ee726ba80185ac81ea8bbe14e88bebed
      startingThread,
    };
  }
-@@ -814,7 +867,23 @@ async function launchAdmittedThread(
+@@ -823,7 +876,23 @@ async function launchAdmittedThread(
    deps: LoggedPendingInteractionWorkSessionDeps,
    admission: PendingThreadAdmission,
  ): Promise<void> {
@@ -5575,18 +5575,18 @@ index c16ea497889d0ec46a11cb5ce6db80a9e76e4de2..b241cb8afb653d7c095ef36fab169116
        { behavior: "immediate" },
      );
 diff --git a/apps/server/src/services/threads/queued-messages.ts b/apps/server/src/services/threads/queued-messages.ts
-index 4ac86fd8f61e8a821890b1ef832c85d9f057f33e..f8b1e4d290cabbcf39d69c0db16a500cbe5670dc 100644
+index 73eed8472cb508683ce1fd78b81d661946967cbf..6045e07cc7fedbc65229e5f28626d62afed605bd 100644
 --- a/apps/server/src/services/threads/queued-messages.ts
 +++ b/apps/server/src/services/threads/queued-messages.ts
-@@ -21,6 +21,7 @@ import {
- } from "@bb/db";
+@@ -22,6 +22,7 @@ import {
  import {
    flattenPromptInputGroups,
+   isQueuedMessageFailedState,
 +  promptInputSchema,
    queuedMessageSystemNoticeSchema,
  } from "@bb/domain";
  import type {
-@@ -101,6 +102,11 @@ import {
+@@ -102,6 +103,11 @@ import {
  import { resolvePromptAttachmentReferences } from "../projects/attachments.js";
  import { requestQueuedMessageDispatch } from "./queued-message-dispatch.js";
  import { assertThreadHostAcceptsWork } from "./thread-host-admission.js";
@@ -5598,7 +5598,7 @@ index 4ac86fd8f61e8a821890b1ef832c85d9f057f33e..f8b1e4d290cabbcf39d69c0db16a500c
  import {
    ThreadContextClearInProgressError,
    withThreadSendGuard,
-@@ -700,6 +706,68 @@ async function sendClaimedQueuedMessageForThread(
+@@ -702,6 +708,68 @@ async function sendClaimedQueuedMessageForThread(
    );
    const input = flattenPromptInputGroups(inputGroups);
    const lead = args.queuedMessages[0]!;
@@ -5667,7 +5667,7 @@ index 4ac86fd8f61e8a821890b1ef832c85d9f057f33e..f8b1e4d290cabbcf39d69c0db16a500c
    const outcome = await attemptDispatch(deps, {
      thread: args.thread,
      payload: {
-@@ -730,6 +798,7 @@ async function sendClaimedQueuedMessageForThread(
+@@ -732,6 +800,7 @@ async function sendClaimedQueuedMessageForThread(
      originPluginId: lead.originPluginId,
      startedOnBehalfOf: storedQueuedThreadMessageRequestedBy(lead),
      trigger: "auto-dispatch",
@@ -5934,10 +5934,10 @@ index bd31d5fdd55dc42f76bd25c6c8f0eaea604eca97..8304066c3dec9c422f68585451ebbf4b
      beforeAppendInTransaction,
      db: deps.db,
 diff --git a/apps/server/src/start-server.ts b/apps/server/src/start-server.ts
-index a15edf20460164baedb9b0db177da53c7aadb037..de39a7711c87068ca5cce044d14b14713c49521a 100644
+index d25a4d3b29ef63714c210f75360dd3d1a63d79b5..63831909f0e1bc3835c15194c23b8a5631f1e8cd 100644
 --- a/apps/server/src/start-server.ts
 +++ b/apps/server/src/start-server.ts
-@@ -164,6 +164,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+@@ -171,6 +171,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
      inheritedSkillsRootPaths: serverConfig.BB_INHERITED_SKILLS_ROOTS,
      isDevelopment: !isProduction,
      performanceDiagnosticsAvailable: serverConfig.BB_PERF_DIAGNOSTICS,
@@ -5946,7 +5946,7 @@ index a15edf20460164baedb9b0db177da53c7aadb037..de39a7711c87068ca5cce044d14b1471
      sharedSkillRoots: { user: [], project: [] },
    };
 diff --git a/apps/server/src/types.ts b/apps/server/src/types.ts
-index 7e8832539982a2691fb31930341f651f04067183..42c1fd7be6444fa73a925f22ecb865ca242b6686 100644
+index a1c985474a0f9ccd5c4216de2fb295fccf817d52..baeb159d4d28b65bfb1d34dcb07cac42b6860d3e 100644
 --- a/apps/server/src/types.ts
 +++ b/apps/server/src/types.ts
 @@ -1,4 +1,5 @@
@@ -5955,7 +5955,7 @@ index 7e8832539982a2691fb31930341f651f04067183..42c1fd7be6444fa73a925f22ecb865ca
  import type { DbConnection } from "@bb/db";
  import type { FeatureFlags, ProviderNativeSkillRoots } from "@bb/domain";
  import type { Logger } from "@bb/logger";
-@@ -23,6 +24,7 @@ import type { ProviderNativeRootsCache } from "./services/providers/native-roots
+@@ -24,6 +25,7 @@ import type { ProviderNativeRootsCache } from "./services/providers/native-roots
  export type ServerLogger = Pick<Logger, "debug" | "error" | "info" | "warn">;
  
  export interface ServerRuntimeConfig {
@@ -8256,7 +8256,7 @@ index 0000000000000000000000000000000000000000..b0a62a4324c163fe05b2c0ef466b6a12
 +  });
 +});
 diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-index fb1c5d5ad188b629786c49e16bc2b60874751d92..713cb628324927b090a2c060a59df8ff90af26e7 100644
+index 1d46f9cff0a990b5d6ffe2e07eba83780cbf81e4..f4be3b48521224a3bd73438f4b477295b060c3e4 100644
 --- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
 +++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
 @@ -176,6 +176,7 @@ const BB_PLUGIN_API_KEYS = [
@@ -8268,10 +8268,10 @@ index fb1c5d5ad188b629786c49e16bc2b60874751d92..713cb628324927b090a2c060a59df8ff
    "onDispose",
    "onInstall",
 diff --git a/apps/server/test/services/threads/thread-runtime-display.test.ts b/apps/server/test/services/threads/thread-runtime-display.test.ts
-index 61d76affe5f094770c4c16c2d80d6684fe96da3b..3fce50772c3a5d85d73f69e139c7338022bb8aab 100644
+index 0e7c68d8a6c75eb773c1dc115242edf2340ef93f..7d3da3612d4e544d2acfb1b582db051746c5f429 100644
 --- a/apps/server/test/services/threads/thread-runtime-display.test.ts
 +++ b/apps/server/test/services/threads/thread-runtime-display.test.ts
-@@ -231,6 +231,7 @@ function createThreadListEntry(
+@@ -229,6 +229,7 @@ function createThreadListEntry(
      modelOverride: null,
      reasoningLevelOverride: null,
      storageDeletedAt: null,
@@ -8280,10 +8280,10 @@ index 61d76affe5f094770c4c16c2d80d6684fe96da3b..3fce50772c3a5d85d73f69e139c73380
      environmentPath: null,
      environmentProviderId: null,
 diff --git a/packages/config/src/env-vars.ts b/packages/config/src/env-vars.ts
-index dffe34c2ec7318cc01aae5eb4938673083a6fda5..8ee97dc2c5232d710ff1ca34f3b83c1e39c064f3 100644
+index ff57c2c4e34bfa03e77f7c27c4ba4f352bae8f8a..340a7c1b26226001e452b3d771e78129f81e1ace 100644
 --- a/packages/config/src/env-vars.ts
 +++ b/packages/config/src/env-vars.ts
-@@ -167,6 +167,151 @@ function parseLogLevelValue(args: EnvVarParseArgs): string {
+@@ -168,6 +168,151 @@ function parseLogLevelValue(args: EnvVarParseArgs): string {
    return validateLogLevel(args.value);
  }
  
@@ -8435,7 +8435,7 @@ index dffe34c2ec7318cc01aae5eb4938673083a6fda5..8ee97dc2c5232d710ff1ca34f3b83c1e
  export const BB_LOG_LEVEL_ENV = defineEnvVar<string>({
    description: "Log level: trace, debug, info, warn, error, fatal",
    name: "BB_LOG_LEVEL",
-@@ -239,6 +384,13 @@ export const BB_APP_SOURCE_COMMIT_ENV = defineEnvVar<string>({
+@@ -247,6 +392,13 @@ export const BB_APP_SOURCE_COMMIT_ENV = defineEnvVar<string>({
    parse: parseNonEmptyStringEnvValue,
  });
  
@@ -8450,7 +8450,7 @@ index dffe34c2ec7318cc01aae5eb4938673083a6fda5..8ee97dc2c5232d710ff1ca34f3b83c1e
    description:
      "Internal launcher marker for telemetry attribution. Set by bb-app and desktop launchers.",
 diff --git a/packages/config/src/server.ts b/packages/config/src/server.ts
-index b6ad19e9fe7eafd47ffc790edd44d0d2c6b14cbb..07731ad66d26407d1b89599f917e91f0d13688be 100644
+index c53ceb16189a06380b139382d924b027b0b4bd71..0a45d68ad1dbae58267a1944fabaab8e55f67616 100644
 --- a/packages/config/src/server.ts
 +++ b/packages/config/src/server.ts
 @@ -24,6 +24,7 @@ import {
@@ -8461,7 +8461,7 @@ index b6ad19e9fe7eafd47ffc790edd44d0d2c6b14cbb..07731ad66d26407d1b89599f917e91f0
    BB_POSTHOG_API_KEY_ENV,
    BB_SERVER_BIND_HOST_ENV,
    BB_SERVER_LAUNCH_ID_ENV,
-@@ -60,6 +61,7 @@ export interface ServerConfig
+@@ -61,6 +62,7 @@ export interface ServerConfig
    BB_INHERITED_SKILLS_ROOTS: string[];
    BB_POSTHOG_API_KEY: string;
    BB_MARKETPLACE_URL: string;
@@ -8469,7 +8469,7 @@ index b6ad19e9fe7eafd47ffc790edd44d0d2c6b14cbb..07731ad66d26407d1b89599f917e91f0
    BB_SERVER_BIND_HOST: ServerBindHost;
    BB_SERVER_LAUNCH_ID?: string;
    BB_APP_UPDATE_MODE?: AppUpdateMode;
-@@ -68,6 +70,30 @@ export interface ServerConfig
+@@ -70,6 +72,30 @@ export interface ServerConfig
    featureFlags: FeatureFlags;
  }
  
@@ -8500,7 +8500,7 @@ index b6ad19e9fe7eafd47ffc790edd44d0d2c6b14cbb..07731ad66d26407d1b89599f917e91f0
  type LoadServerConfigArgs = LoadCommonConfigArgs;
  
  export { parseServerBindHost };
-@@ -147,6 +173,12 @@ export function loadServerConfig(
+@@ -149,6 +175,12 @@ export function loadServerConfig(
        definition: BB_MARKETPLACE_URL_ENV,
        env: loader.env,
      }),
@@ -8514,10 +8514,10 @@ index b6ad19e9fe7eafd47ffc790edd44d0d2c6b14cbb..07731ad66d26407d1b89599f917e91f0
        context: loader.context,
        defaultValue: DEFAULT_BB_POSTHOG_API_KEY,
 diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
-index 24faa26a74ca0b93288ad3be7d89e0c86bfdfdf9..d75ad8aa10600dbf587f5e0cb819bc9193ef857c 100644
+index b666478abf44bea81d0482acf7fc8cfba719b978..f249f8b1341ed9626d484d635681060889177154 100644
 --- a/packages/db/src/data/index.ts
 +++ b/packages/db/src/data/index.ts
-@@ -70,11 +70,14 @@ export {
+@@ -71,11 +71,14 @@ export {
    countNonDeletedAssignedChildThreads,
    getThread,
    getThreadExecutionOverride,
@@ -8532,7 +8532,7 @@ index 24faa26a74ca0b93288ad3be7d89e0c86bfdfdf9..d75ad8aa10600dbf587f5e0cb819bc91
    listHostThreadIds,
    listActiveHostThreads,
    listActiveVisiblePinnedThreadRootsWithPendingInteractionState,
-@@ -107,6 +110,35 @@ export {
+@@ -110,6 +113,35 @@ export {
    THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT,
    THREAD_SEARCH_LIMIT_PER_GROUP_MAX,
  } from "./threads.js";
@@ -8568,7 +8568,7 @@ index 24faa26a74ca0b93288ad3be7d89e0c86bfdfdf9..d75ad8aa10600dbf587f5e0cb819bc91
  export type {
    ApplyThreadLifecycleEventArgs,
    ApplyThreadLifecycleEventOutcome,
-@@ -115,6 +147,9 @@ export type {
+@@ -118,6 +150,9 @@ export type {
    ThreadSearchResultGroup,
    ThreadWithPendingInteractionState,
    ThreadExecutionOverride,
@@ -8579,10 +8579,10 @@ index 24faa26a74ca0b93288ad3be7d89e0c86bfdfdf9..d75ad8aa10600dbf587f5e0cb819bc91
  } from "./threads.js";
  
 diff --git a/packages/db/src/data/queued-thread-messages.ts b/packages/db/src/data/queued-thread-messages.ts
-index 022e9c0bf70fe4783aee518decbf0fda3da9f643..290911ee7a305bf88cbc621090547d44d5f4028f 100644
+index bcabdcca5ad7ecf9230d6ecc11be4c0df9bf187a..304dab182c7433a37883bcbb89fb7048e6e0df83 100644
 --- a/packages/db/src/data/queued-thread-messages.ts
 +++ b/packages/db/src/data/queued-thread-messages.ts
-@@ -2167,11 +2167,18 @@ export function deleteQueuedThreadMessage(
+@@ -2258,11 +2258,18 @@ export function deleteQueuedThreadMessage(
    db: DbConnection,
    notifier: DbNotifier,
    id: string,
@@ -9074,10 +9074,10 @@ index 0000000000000000000000000000000000000000..741625deacd2a17c86d9af5223d3165b
 +  return { threadIds: page, hasMore: rows.length > page.length };
 +}
 diff --git a/packages/db/src/data/threads.ts b/packages/db/src/data/threads.ts
-index a710281c0993294f243045b95571f09b478d06e7..be3c50ddc6726450b3b84269e6f3605b0838ca87 100644
+index 6a391a974a6dda578518f460c9c7cd9427654d66..61e36f5e572d32880db34773835023f1a5db2728 100644
 --- a/packages/db/src/data/threads.ts
 +++ b/packages/db/src/data/threads.ts
-@@ -1884,6 +1884,69 @@ export interface ThreadExecutionOverride {
+@@ -1926,6 +1926,69 @@ export interface ThreadExecutionOverride {
    reasoningLevelOverride: ReasoningLevel | null;
  }
  
@@ -9147,7 +9147,7 @@ index a710281c0993294f243045b95571f09b478d06e7..be3c50ddc6726450b3b84269e6f3605b
  export function getThreadExecutionOverride(
    db: ThreadWriteConnection,
    id: string,
-@@ -1905,20 +1968,90 @@ export interface SetThreadExecutionOverrideInput {
+@@ -1947,20 +2010,90 @@ export interface SetThreadExecutionOverrideInput {
    reasoningLevelOverride?: ReasoningLevel | null;
  }
  
@@ -9247,10 +9247,10 @@ index a710281c0993294f243045b95571f09b478d06e7..be3c50ddc6726450b3b84269e6f3605b
      .returning()
      .get();
 diff --git a/packages/db/src/schema.ts b/packages/db/src/schema.ts
-index 183bc2a5075744f94737cbbdef9b9d4983fb4019..0293283afe3a2dddf5560f46d3716899e3985502 100644
+index 3e801301d069d4b408da49ceeb2631417e67b28e..6243d2228c977c5965f01315117f2027aae82a2e 100644
 --- a/packages/db/src/schema.ts
 +++ b/packages/db/src/schema.ts
-@@ -35,6 +35,10 @@ import type {
+@@ -37,6 +37,10 @@ import type {
    ThreadEventItemType,
    ThreadEventScopeKind,
    ThreadEventType,
@@ -9261,7 +9261,7 @@ index 183bc2a5075744f94737cbbdef9b9d4983fb4019..0293283afe3a2dddf5560f46d3716899
    ProjectKind,
  } from "@bb/domain";
  import type { RetainedEventOutputPath } from "./retained-event-output.js";
-@@ -604,6 +608,7 @@ export const threads = sqliteTable(
+@@ -607,6 +611,7 @@ export const threads = sqliteTable(
      reasoningLevelOverride: text(
        "reasoning_level_override",
      ).$type<ReasoningLevel>(),
@@ -9269,7 +9269,7 @@ index 183bc2a5075744f94737cbbdef9b9d4983fb4019..0293283afe3a2dddf5560f46d3716899
      title: text("title"),
      titleFallback: text("title_fallback"),
      sectionId: text("section_id").references(() => threadSections.id, {
-@@ -745,6 +750,133 @@ export const threadSearchSegments = sqliteTable(
+@@ -753,6 +758,133 @@ export const threadSearchSegments = sqliteTable(
    ],
  );
  
@@ -9404,7 +9404,7 @@ index 183bc2a5075744f94737cbbdef9b9d4983fb4019..0293283afe3a2dddf5560f46d3716899
    "thread_conversation_outlines",
    {
 diff --git a/packages/db/test/data/threads.test.ts b/packages/db/test/data/threads.test.ts
-index d04a06b57ea32f9ab8da531d92e213622e606531..816ac1ed9b8daca46d0863b0ae836efe7df253bf 100644
+index 4521c3df00685e7f01d59b6421db05b012d29845..ae9245a79a6e239f801ab401022f4c6c40eada4e 100644
 --- a/packages/db/test/data/threads.test.ts
 +++ b/packages/db/test/data/threads.test.ts
 @@ -11,8 +11,11 @@ import {
@@ -9521,10 +9521,10 @@ index d04a06b57ea32f9ab8da531d92e213622e606531..816ac1ed9b8daca46d0863b0ae836efe
      vi.useFakeTimers();
      try {
 diff --git a/packages/domain/src/index.ts b/packages/domain/src/index.ts
-index a0734687a3d2a0a86d09a5ca500a6a19dfea74f2..5967ff4dec31c330c4aa2e4c6e530d365b18b7c2 100644
+index 749d11ad52b616ef2c0b79a6b04210f87ef2a8c2..6189be98d8af7a67fc6d10ec1ddc9bb64303ab1d 100644
 --- a/packages/domain/src/index.ts
 +++ b/packages/domain/src/index.ts
-@@ -59,6 +59,7 @@ export * from "./terminal.js";
+@@ -61,6 +61,7 @@ export * from "./terminal.js";
  export * from "./thread-dynamic-context.js";
  export * from "./thread-event-scope.js";
  export * from "./thread-events.js";
@@ -9698,10 +9698,10 @@ index d0679a22128c133486c1a5e544a1f9da7c1a8fe6..167aac19f424f9156e50294f6f4e975a
    | "http"
    | "log"
 diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
-index 514a35e7721414997fdd1fbaba2b6738fcd08776..54736196d8c965dc54bd536410b0115076a8431c 100644
+index f0de6d2ea67f9f0bb5cc2b771ac3c83dcc755835..0ac8fb03cfbe70c5ad78c80322b6bdf67bb2d6c0 100644
 --- a/packages/plugin-sdk/src/backend-contract.ts
 +++ b/packages/plugin-sdk/src/backend-contract.ts
-@@ -34,6 +34,7 @@ import type {
+@@ -36,6 +36,7 @@ import type {
    TerminalSession,
  } from "@bb/server-contract";
  import type { JsonValue, ReadonlyJsonValue } from "./json-value.js";
@@ -9709,7 +9709,7 @@ index 514a35e7721414997fdd1fbaba2b6738fcd08776..54736196d8c965dc54bd536410b01150
  import type {
    ExperimentalPluginRpcHandlersWithContext,
    PluginRpcContract,
-@@ -2062,6 +2063,7 @@ export type PluginBbSdk = Omit<BbSdk, "threads"> & {
+@@ -2087,6 +2088,7 @@ export type PluginBbSdk = Omit<BbSdk, "threads"> & {
   * against.
   */
  export interface BbPluginApi {
@@ -9917,7 +9917,7 @@ index 0000000000000000000000000000000000000000..61637ef702ca672545212149384af476
 +  subscribe(listener: (event: Event) => void): Subscription;
 +}
 diff --git a/packages/plugin-sdk/src/index.ts b/packages/plugin-sdk/src/index.ts
-index d994de5f17d124e3817e0b07662ed0254e8afbe7..735a422ab92847535e8a6489aa5618d833434f65 100644
+index 110e99bc0d01da8321494de392b8b96300424d64..ad7c12ba5acf4c3fe66b9a6536d544873e67582f 100644
 --- a/packages/plugin-sdk/src/index.ts
 +++ b/packages/plugin-sdk/src/index.ts
 @@ -10,6 +10,7 @@
@@ -9929,10 +9929,10 @@ index d994de5f17d124e3817e0b07662ed0254e8afbe7..735a422ab92847535e8a6489aa5618d8
  export type * from "./json-value.js";
  export * from "./rpc-contract.js";
 diff --git a/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md b/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
-index 16f62a8c33d79e8563b0c849480e95b56ba1ad43..aa19e8afc72a758be807e3b97454f2ee4284932a 100644
+index 4428565fdaa641626c557723c3beb0ac4e0e5287..8b1e226e17224a5e699364f967fab2ea7fcfc130 100644
 --- a/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
 +++ b/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
-@@ -437,3 +437,13 @@ Read the installed declarations for exact current signatures.
+@@ -418,3 +418,13 @@ Read the installed declarations for exact current signatures.
  - `ExperimentalCreateHostEntryHarnessOptions`
  - `ExperimentalHostEntryHarness`
  - `ExperimentalHostHarnessSignal`
@@ -9947,5 +9947,5 @@ index 16f62a8c33d79e8563b0c849480e95b56ba1ad43..aa19e8afc72a758be807e3b97454f2ee
 +package's documented baseline behavior. Native app presence and ordinary-message
 +attribution are separate host features, not implied by this capability.
 -- 
-2.53.0
+2.43.0
 

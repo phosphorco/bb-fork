@@ -1,4 +1,4 @@
-From 03ac7a0dd6b1558fb10b7f40e20fe6d4a2fc41f8 Mon Sep 17 00:00:00 2001
+From 200da64855536c33b7995a27f8be7dfb5a389ab0 Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Sat, 26 Sep 2026 03:41:59 +0200
 Subject: [PATCH] fix(db): accept exact prior fork bridge after upstream sync
@@ -8,12 +8,12 @@ upstream allocated those indexes. Accept exactly those two receipts
 (same SQL hash) when upgrading an already-bridged database, without
 rewriting its ledger. Any other timestamp or hash still fails closed.
 ---
- packages/db/src/migrate.ts       |  19 ++-
- packages/db/test/migrate.test.ts | 224 +++++++++++++++++++++++++++++++
- 2 files changed, 241 insertions(+), 2 deletions(-)
+ packages/db/src/migrate.ts       |  50 +++++-
+ packages/db/test/migrate.test.ts | 264 +++++++++++++++++++++++++++++++
+ 2 files changed, 312 insertions(+), 2 deletions(-)
 
 diff --git a/packages/db/src/migrate.ts b/packages/db/src/migrate.ts
-index dcc625203b227ff8934a4cdcd3166613ab3dd58a..369c9faea6d54227c7fcffd7be1360b0f4206536 100644
+index 747a3ba232531ac6f231c9c7c9169f33bd982b59..acd7e8cb6f8d10e42c789740e018b7a8f221c832 100644
 --- a/packages/db/src/migrate.ts
 +++ b/packages/db/src/migrate.ts
 @@ -212,6 +212,20 @@ const legacyIdentityAndContextMagnetMigrations = [
@@ -25,7 +25,7 @@ index dcc625203b227ff8934a4cdcd3166613ab3dd58a..369c9faea6d54227c7fcffd7be1360b0
 +// upstream allocated those indexes. Preserve their exact receipts when
 +// upgrading an already-bridged database.
 +const priorIdentityContextBridgeCreatedAts: ReadonlySet<number> = new Set([
-+  1790103658751, 1790230932026,
++  1790103658751, 1790230932026, 1791422663905,
 +]);
 +
 +function isPriorIdentityContextBridge(migration: AppliedMigrationIdentityRow): boolean {
@@ -37,16 +37,52 @@ index dcc625203b227ff8934a4cdcd3166613ab3dd58a..369c9faea6d54227c7fcffd7be1360b0
  const targetMigrationsThatMayBeSkippedByLegacyIdentityHistory = [
    "0119_provider_model_catalogs",
    "0120_perfect_clint_barton",
-@@ -1362,7 +1376,7 @@ function applyTargetMigrationsSkippedByLegacyIdentityHistory(
+@@ -1285,6 +1299,35 @@ function stageQueuedMessageGroups(
+   );
+ }
+ 
++function stageP6rQueuedAuthors(db: DbConnection, migrationsFolder: string): void {
++  if (!tableExists(db, "queued_thread_messages") ||
++      !columnExists(db, "queued_thread_messages", "p6r_authors")) return;
++  const migration = requireExpectedAppliedMigration(
++    readExpectedAppliedMigrations(migrationsFolder), "0143_queued_message_state",
++  );
++  if (readAppliedMigrationCreatedAts(db).has(migration.createdAt)) return;
++  db.$client.exec(`
++    CREATE TABLE IF NOT EXISTS bb_p6r_migration_queued_authors (id TEXT PRIMARY KEY, authors TEXT NOT NULL);
++    INSERT OR REPLACE INTO bb_p6r_migration_queued_authors (id, authors)
++      SELECT id, p6r_authors FROM queued_thread_messages WHERE p6r_authors IS NOT NULL;
++  `);
++}
++
++function restoreP6rQueuedAuthors(db: DbConnection): void {
++  if (!tableExists(db, "bb_p6r_migration_queued_authors")) return;
++  db.$client.transaction(() => {
++    if (!columnExists(db, "queued_thread_messages", "p6r_authors")) {
++      db.$client.exec("ALTER TABLE queued_thread_messages ADD p6r_authors TEXT");
++    }
++    db.$client.exec(`
++      UPDATE queued_thread_messages SET p6r_authors = (
++        SELECT authors FROM bb_p6r_migration_queued_authors WHERE id = queued_thread_messages.id
++      ) WHERE id IN (SELECT id FROM bb_p6r_migration_queued_authors);
++      DROP TABLE bb_p6r_migration_queued_authors;
++    `);
++  })();
++}
++
+ function applyTargetMigrationsSkippedByLegacyIdentityHistory(
+   db: DbConnection,
+   migrationsFolder: string,
+@@ -1375,7 +1418,7 @@ function applyTargetMigrationsSkippedByLegacyIdentityHistory(
    assertLegacyIdentityAndContextMagnetSchema(
      db,
      legacyPrefixLength,
 -    expectedMigrations.some(
 +    appliedMigrations.some(isPriorIdentityContextBridge) || expectedMigrations.some(
        (migration) =>
-         migration.tag === "0142_zippy_reavers" &&
+         migration.tag === "0145_identity_context_bridge" &&
          appliedMigrations.some(
-@@ -1383,7 +1397,8 @@ function applyTargetMigrationsSkippedByLegacyIdentityHistory(
+@@ -1396,7 +1439,8 @@ function applyTargetMigrationsSkippedByLegacyIdentityHistory(
    for (const migration of appliedMigrations) {
      if (
        migration.createdAt === null ||
@@ -56,11 +92,27 @@ index dcc625203b227ff8934a4cdcd3166613ab3dd58a..369c9faea6d54227c7fcffd7be1360b0
      ) {
        continue;
      }
+@@ -2394,6 +2438,7 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
+     applyDeferredDestructiveLegacyCleanup(db, migrationsFolder);
+     skipEventLargeValuesRoundTripForInlineEvents(db, migrationsFolder);
+     stageQueuedMessageGroups(db, migrationsFolder);
++    stageP6rQueuedAuthors(db, migrationsFolder);
+     const stagedConnectMachineId = stageExistingConnectMachineIdColumn(
+       db,
+       migrationsFolder,
+@@ -2404,6 +2449,7 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
+     try {
+       drizzleMigrate(db, { migrationsFolder });
+     } finally {
++      restoreP6rQueuedAuthors(db);
+       if (stagedConnectMachineId) restoreStagedConnectMachineIdColumn(db);
+       if (stagedThreadStorageDeletedAt)
+         restoreStagedThreadStorageDeletedAtColumn(db);
 diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
-index 47d442c5b409459eb2098ea9752b8d8d6adad7c0..cba7f775eb1c34055cb3eef2647a2ef5d8973e87 100644
+index 3de477a228cf5b0460772e34d8ba71707d5a2232..6a26cb72059e1cd12cbe1e82a1a0d5c002ad6ea6 100644
 --- a/packages/db/test/migrate.test.ts
 +++ b/packages/db/test/migrate.test.ts
-@@ -290,6 +290,114 @@ function applyLegacyIdentityAndContextMagnetFixture(
+@@ -293,6 +293,128 @@ function applyLegacyIdentityAndContextMagnetFixture(
    }
  }
  
@@ -92,10 +144,15 @@ index 47d442c5b409459eb2098ea9752b8d8d6adad7c0..cba7f775eb1c34055cb3eef2647a2ef5
 +  db.$client
 +    .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
 +    .run(createdAt);
-+  dropIdleLifecycleIndexes(db);
-+  rewindThreadPruningWork(db);
-+  dropPluginEnabledFollowsDefaultColumn(db);
-+  dropQueuedMessageEditHeldUntilColumn(db);
++  dropMarketplaceSourceGitSubdirectoryColumn(db);
++  rewindQueuedMessageStateMigration(db);
++  dropThreadParentNotificationsColumn(db);
++  if (createdAt < 1791422663905) {
++    dropIdleLifecycleIndexes(db);
++    rewindThreadPruningWork(db);
++    dropPluginEnabledFollowsDefaultColumn(db);
++    dropQueuedMessageEditHeldUntilColumn(db);
++  }
 +}
 +
 +function insertPriorForkBridgeReceipt(db: DbConnection, createdAt: number): void {
@@ -143,6 +200,14 @@ index 47d442c5b409459eb2098ea9752b8d8d6adad7c0..cba7f775eb1c34055cb3eef2647a2ef5
 +    );
 +    UPDATE threads SET execution_revision = 7 WHERE id = 'thr_legacy';
 +  `);
++  createQueuedThreadMessage(db, noopNotifier, {
++    threadId: "thr_legacy",
++    content: [{ type: "text", text: "preserve attribution", mentions: [] }],
++    model: "gpt-5", permissionMode: "full", reasoningLevel: "medium",
++    serviceTier: "default", waitingOn: null, sendAt: null,
++    payload: { kind: "inline" }, systemNotice: null,
++  });
++  db.$client.exec(`UPDATE queued_thread_messages SET p6r_authors = '{"authors":[{"kind":"machine","id":"migration-test"}]}'`);
 +  rewindToBeforeUpstreamMigration(db, 1790322211064);
 +  db.$client
 +    .prepare("DELETE FROM __drizzle_migrations WHERE created_at = ?")
@@ -156,6 +221,7 @@ index 47d442c5b409459eb2098ea9752b8d8d6adad7c0..cba7f775eb1c34055cb3eef2647a2ef5
 +
 +function readRepresentativeBridgeRows(db: DbConnection) {
 +  return {
++    queued: db.$client.prepare("SELECT id, content, p6r_authors FROM queued_thread_messages ORDER BY id").all(),
 +    profiles: db.$client
 +      .prepare(
 +        "SELECT principal_key, identity_kind, display_name FROM thread_facet_principal_profiles ORDER BY principal_key",
@@ -175,17 +241,17 @@ index 47d442c5b409459eb2098ea9752b8d8d6adad7c0..cba7f775eb1c34055cb3eef2647a2ef5
  function createLegacyIdentityAndContextMagnetHistory(
    db: DbConnection,
    legacyPrefixLength: number = legacyIdentityAndContextMagnetFixtureFiles.length,
-@@ -4973,6 +5081,122 @@ describe("identity and context magnet migration bridge", () => {
+@@ -4985,6 +5107,148 @@ describe("identity and context magnet migration bridge", () => {
      },
    );
  
-+  it("upgrades the 0.43 fork bridge receipt before upstream retention indexes", () => {
++  it.each([1790103658751, 1791422663905])("upgrades prior fork bridge receipt %i before upstream migrations", (createdAt) => {
 +    const db = createConnection(":memory:");
 +    try {
 +      createLegacyIdentityAndContextMagnetHistory(db, 1);
 +      migrate(db);
-+      rewindToBeforeUpstreamMigration(db, 1790230932025);
-+      insertPriorForkBridgeReceipt(db, 1790103658751);
++      rewindToBeforeUpstreamMigration(db, createdAt === 1791422663905 ? 1791840325007 : 1790230932025);
++      insertPriorForkBridgeReceipt(db, createdAt);
 +      migrate(db);
 +      migrate(db);
 +      expect(readLatestAppliedMigrationCreatedAt(db)).toBe(latestMigrationWhen);
@@ -216,6 +282,32 @@ index 47d442c5b409459eb2098ea9752b8d8d6adad7c0..cba7f775eb1c34055cb3eef2647a2ef5
 +      expect(readRepresentativeBridgeRows(db)).toEqual(representative);
 +    } finally {
 +      closeConnection(db);
++    }
++  });
++
++  it("restores durably staged queued attribution after reopening an already migrated database", () => {
++    const directory = mkdtempSync(join(tmpdir(), "bb-queued-attribution-recovery-"));
++    const path = join(directory, "state.sqlite");
++    let db = createConnection(path);
++    try {
++      createLiveShapedForkBridgeLedger(db);
++      migrate(db);
++      const before = readRepresentativeBridgeRows(db);
++      db.$client.exec(`
++        CREATE TABLE bb_p6r_migration_queued_authors (id TEXT PRIMARY KEY, authors TEXT NOT NULL);
++        INSERT INTO bb_p6r_migration_queued_authors SELECT id, p6r_authors FROM queued_thread_messages;
++        UPDATE queued_thread_messages SET p6r_authors = NULL;
++      `);
++      closeConnection(db);
++      db = createConnection(path);
++      migrate(db);
++      expect(readRepresentativeBridgeRows(db)).toEqual(before);
++      expect(db.$client.prepare("SELECT name FROM sqlite_master WHERE name = 'bb_p6r_migration_queued_authors'").all()).toEqual([]);
++      migrate(db);
++      expect(readRepresentativeBridgeRows(db)).toEqual(before);
++    } finally {
++      closeConnection(db);
++      rmSync(directory, { recursive: true, force: true });
 +    }
 +  });
 +
@@ -299,5 +391,5 @@ index 47d442c5b409459eb2098ea9752b8d8d6adad7c0..cba7f775eb1c34055cb3eef2647a2ef5
      const db = createConnection(":memory:");
      try {
 -- 
-2.53.0
+2.43.0
 

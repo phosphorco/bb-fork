@@ -1,4 +1,4 @@
-From 2402113bec373a785e17b72d7bee2b83553a0e46 Mon Sep 17 00:00:00 2001
+From 04654a3d3f880ad9f735ded383c33ca52d31dab0 Mon Sep 17 00:00:00 2001
 From: Codex <codex@openai.com>
 Date: Thu, 10 Sep 2026 13:42:08 -0400
 Subject: [PATCH] fix: activate Tailnet identity from configured Serve host
@@ -8,19 +8,18 @@ Subject: [PATCH] fix: activate Tailnet identity from configured Serve host
  packages/config/src/server.ts                 |  3 +-
  packages/config/src/tailnet-default.ts        | 27 +++++++++
  packages/config/test/tailnet-default.test.ts  | 57 +++++++++++++++++++
- .../src/templates/bb-guide-customization.md   |  6 ++
+ .../src/templates/bb-guide-customization.md   |  5 ++
  plugins/bb-guide/skills/bb-cli/SKILL.md       |  6 ++
- 6 files changed, 112 insertions(+), 1 deletion(-)
+ 6 files changed, 111 insertions(+), 1 deletion(-)
  create mode 100644 packages/config/src/tailnet-default.ts
  create mode 100644 packages/config/test/tailnet-default.test.ts
 
 diff --git a/docs/configuration.md b/docs/configuration.md
-index 689c1e5dd718218eb33ec716849ff37cb2b2445b..3edc3d0905366904c2e497f3ec3d168599e752a9 100644
+index ec3d61e47e3f034a60f2ca0f38df05a308a3128a..e756229737a9dad7c69c19624c950cd2035a4246 100644
 --- a/docs/configuration.md
 +++ b/docs/configuration.md
-@@ -4,6 +4,20 @@ Launcher status output is plain when stdout is redirected, including in CI.
- Set `FORCE_COLOR=1` to request color or `NO_COLOR=1` to disable it; `NO_COLOR`
- takes precedence. In-place progress updates require a stdout TTY.
+@@ -1,5 +1,19 @@
+ # Configuration
  
 +## Tailnet identity
 +
@@ -40,10 +39,10 @@ index 689c1e5dd718218eb33ec716849ff37cb2b2445b..3edc3d0905366904c2e497f3ec3d1685
  `~/.bb/config.json`, provider environment values under `~/.bb/env.json`, and
  client SSH target mappings under `~/.bb/client.json`.
 diff --git a/packages/config/src/server.ts b/packages/config/src/server.ts
-index 457418803e9d930daf03f55a9929f24d4d507303..5e9d37aa5ff8d01b3dc55eabb4124b5cf8eb0c79 100644
+index f364cd878e034ade2c6ad4e992fa0c9ad9e69a84..73a1803eed9216e8843ebc982ce9b02764c45c88 100644
 --- a/packages/config/src/server.ts
 +++ b/packages/config/src/server.ts
-@@ -46,6 +46,7 @@ import { loadFeatureFlags } from "./feature-flags.js";
+@@ -47,6 +47,7 @@ import { loadFeatureFlags } from "./feature-flags.js";
  import { assignIfDefined } from "./objects.js";
  import { loadHostDaemonPortValue } from "./ports.js";
  import { loadServerPortConfig, type ServerPortConfig } from "./server-port.js";
@@ -51,7 +50,7 @@ index 457418803e9d930daf03f55a9929f24d4d507303..5e9d37aa5ff8d01b3dc55eabb4124b5c
  
  export interface ServerConfig
    extends CommonConfig, DatabaseConfig, ServerPortConfig {
-@@ -174,7 +175,7 @@ export function loadServerConfig(
+@@ -176,7 +177,7 @@ export function loadServerConfig(
      }),
      BB_P6R_IDENTITY_BOUNDARY: readEnvVarWithDefault({
        context: loader.context,
@@ -157,27 +156,26 @@ index 0000000000000000000000000000000000000000..f826993fe84bc010a2dfa837b601c500
 +  });
 +});
 diff --git a/packages/templates/src/templates/bb-guide-customization.md b/packages/templates/src/templates/bb-guide-customization.md
-index e3797c3c64a5eab9ebe1b088ab0ef1013a40d201..c5117c0c0234345132343c0e089b83c7e0ca4962 100644
+index 02e00ed43d8b626fa07da4ceec88aefbc062aa04..1714f2f4a0b70142ceed35ddb2c1e3786f47e73e 100644
 --- a/packages/templates/src/templates/bb-guide-customization.md
 +++ b/packages/templates/src/templates/bb-guide-customization.md
-@@ -211,6 +211,12 @@ connection need not resolve to the same person as a browser behind a trusted
- proxy. An unconfigured instance retains native local behavior. An unavailable
- configured provider does not fall back to a claimed name.
+@@ -209,6 +209,11 @@ Original authors and later editors remain distinct through queueing and retry.
+ Older unattributed messages remain unknown. Native `/compact` dispatch remains
+ intact. Appearance settings are shared; personal theme overrides are not offered.
  
 +For Tailscale Serve deployments, `BB_TAILNET_IDENTITY_OWNED_HOST` automatically
 +selects the installed Identity Boundaries provider and standard loopback ingress.
-+No separate `BB_P6R_IDENTITY_BOUNDARY` opt-in is needed; an explicit custom boundary
-+still takes precedence. Requests without verified person evidence use machine
-+attribution. Validate your own identity through your browser connection.
++An explicit custom boundary still takes precedence. Requests without usable person
++evidence retain machine attribution.
 +
- New browser sends retain their verified author separately from message text,
- including queued sends and retries. Older unattributed messages remain unknown.
- Native `/compact` handling is preserved. The Appearance setting is currently
+ Keyboard shortcuts
+ 
+ Settings → Keyboard records per-command shortcut overrides, persisted
 diff --git a/plugins/bb-guide/skills/bb-cli/SKILL.md b/plugins/bb-guide/skills/bb-cli/SKILL.md
-index 807f8f0c536b874927fea982d6010b2166eefee0..183c127cac81b075dadd7d78d097160fe2dfaf26 100644
+index bd2528b8f7e31dc466b4fc9e1c2a12950fda452e..bc16c1af08267f8d361c6f99eed26f4f6c8256c7 100644
 --- a/plugins/bb-guide/skills/bb-cli/SKILL.md
 +++ b/plugins/bb-guide/skills/bb-cli/SKILL.md
-@@ -144,6 +144,12 @@ list`, `get`, `set`, and `reset`.
+@@ -104,6 +104,12 @@ A plugin's commands and settings are documented in that plugin's own skill.
  
  ## Common checks
  
@@ -191,5 +189,5 @@ index 807f8f0c536b874927fea982d6010b2166eefee0..183c127cac81b075dadd7d78d097160f
  bb project list --json
  bb machine list --json
 -- 
-2.53.0
+2.43.0
 

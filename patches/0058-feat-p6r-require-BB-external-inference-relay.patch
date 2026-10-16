@@ -1,4 +1,4 @@
-From 262dd9129bd84592660e117c674a088d72d7b0a6 Mon Sep 17 00:00:00 2001
+From 75b81ee61d7237b261d18676edc052b4e2bf3842 Mon Sep 17 00:00:00 2001
 From: BB delivery <bb-fork@invalid.local>
 Date: Thu, 15 Oct 2026 14:00:00 +0000
 Subject: [PATCH] feat(p6r): require BB-scoped external inference relay
@@ -10,15 +10,17 @@ Subject: [PATCH] feat(p6r): require BB-scoped external inference relay
  .../required-external-model-catalog.ts        |  71 +++++++
  .../provider-model-catalog-store.test.ts      |  25 +++
  .../required-external-model-catalog.test.ts   |  65 ++++++
+ docs/p6r-required-inference-upstreaming.md    |  16 ++
  packages/host-daemon-contract/src/commands.ts |   4 +
  packages/host-daemon-contract/src/protocol.ts |   2 +-
- .../test/contract.test.ts                     |  20 +-
- plugins/account-pool/PLUGIN_OVERVIEW.md       |   2 +
- .../references/accounts-and-routing.md        |   7 +
+ .../test/contract.test.ts                     |  48 ++++-
+ plugins/account-pool/PLUGIN_OVERVIEW.md       |   3 +-
+ .../account-pool/skills/account-pool/SKILL.md |   3 +
+ .../references/accounts-and-routing.md        |   6 +
  .../references/required-external-inference.md |  32 +++
  .../src/required-external-pool.test.ts        | 133 +++++++++++++
  .../src/required-external-pool.ts             | 185 ++++++++++++++++++
- plugins/account-pool/src/server.ts            |  20 +-
+ plugins/account-pool/src/server.ts            |  14 ++
  .../src/bridge/__tests__/bridge.test.ts       |  32 +++
  .../src/bridge/__tests__/sdk-session.test.ts  | 115 +++++++++++
  .../src/bridge/model-list.ts                  |   3 +
@@ -29,19 +31,21 @@ Subject: [PATCH] feat(p6r): require BB-scoped external inference relay
  plugins/provider-codex/src/bridge/bridge.ts   |  36 +++-
  .../src/bridge/provider-maintenance.test.ts   |   9 +
  .../src/bridge/provider-maintenance.ts        |   3 +
- 25 files changed, 895 insertions(+), 28 deletions(-)
+ scripts/provider-literal-baseline.json        |  23 ++-
+ 28 files changed, 960 insertions(+), 27 deletions(-)
  create mode 100644 apps/server/src/services/providers/required-external-model-catalog.ts
  create mode 100644 apps/server/test/providers/required-external-model-catalog.test.ts
+ create mode 100644 docs/p6r-required-inference-upstreaming.md
  create mode 100644 plugins/account-pool/skills/account-pool/references/required-external-inference.md
  create mode 100644 plugins/account-pool/src/required-external-pool.test.ts
  create mode 100644 plugins/account-pool/src/required-external-pool.ts
  create mode 100644 plugins/provider-claude-code/src/bridge/required-external-maintenance.test.ts
 
 diff --git a/apps/host-daemon/src/command-dispatch.test.ts b/apps/host-daemon/src/command-dispatch.test.ts
-index 7b3af3b6c..7f2322ff3 100644
+index 433713a8bd906743de60427f0c3f0354a10941ca..0f6a4a91ab4b91c0724958cac33dfc0623d69701 100644
 --- a/apps/host-daemon/src/command-dispatch.test.ts
 +++ b/apps/host-daemon/src/command-dispatch.test.ts
-@@ -2485,3 +2485,19 @@ describe("dispatchCommand", () => {
+@@ -2478,3 +2478,19 @@ describe("dispatchCommand", () => {
      });
    });
  });
@@ -55,17 +59,17 @@ index 7b3af3b6c..7f2322ff3 100644
 +    const fetchPluginHostArtifact = vi.fn(async () => { throw new Error("native bridge must not be started"); });
 +    const options = makeDispatchOptions({ runtimeManager: manager, listModels, fetchPluginHostArtifact });
 +    const catalogue = { models: [{ id: "gpt-5.3-codex", model: "gpt-5.3-codex", displayName: "gpt-5.3-codex", description: "", supportedReasoningEfforts: [], defaultReasoningEffort: "low" as const, isDefault: false }], selectedOnlyModels: [] };
-+    await expect(dispatchOnlineRpcCommand({ type: "provider.list_models", providerId: "codex", bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH, requiredExternalCatalog: catalogue }, options)).resolves.toEqual(catalogue);
-+    await expect(dispatchOnlineRpcCommand({ type: "provider.list_models", providerId: "codex", bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH }, options)).rejects.toThrow(/catalogue is unavailable/);
++    await expect(dispatchOnlineRpcCommand({ type: "provider.list_models", providerId: "codex", bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH, requiredExternalCatalog: catalogue }, options, new AbortController().signal)).resolves.toEqual(catalogue);
++    await expect(dispatchOnlineRpcCommand({ type: "provider.list_models", providerId: "codex", bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH }, options, new AbortController().signal)).rejects.toThrow(/catalogue is unavailable/);
 +    expect(listModels).not.toHaveBeenCalled();
 +    expect(fetchPluginHostArtifact).not.toHaveBeenCalled();
 +  } finally { vi.unstubAllEnvs(); }
 +});
 diff --git a/apps/host-daemon/src/command-dispatch.ts b/apps/host-daemon/src/command-dispatch.ts
-index f19a9a180..0dfacbb21 100644
+index 60120434c5a280548b60c69d63a4f74da70408a1..41ebf209a9c4dcee4b79f34525b87487f6b6f867 100644
 --- a/apps/host-daemon/src/command-dispatch.ts
 +++ b/apps/host-daemon/src/command-dispatch.ts
-@@ -657,10 +657,23 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
+@@ -662,10 +662,23 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
    "host.read_file_chunk": readHostFileChunk,
    "host.read_file_relative": readHostRelativeFile,
    "host.write_file": writeHostFile,
@@ -93,7 +97,7 @@ index f19a9a180..0dfacbb21 100644
      withResolvedBridgeLaunch(command, options, (args) =>
        options.providerHealth(args),
 diff --git a/apps/server/src/services/providers/provider-model-catalog-store.ts b/apps/server/src/services/providers/provider-model-catalog-store.ts
-index 89097c885..3d272e8e5 100644
+index 89097c885c1bec11604bf06137f90ae0c12013dd..3d272e8e5791ad62dfc51a2c2d2f23a6b0a067ab 100644
 --- a/apps/server/src/services/providers/provider-model-catalog-store.ts
 +++ b/apps/server/src/services/providers/provider-model-catalog-store.ts
 @@ -1,3 +1,4 @@
@@ -157,7 +161,7 @@ index 89097c885..3d272e8e5 100644
            ok: true,
 diff --git a/apps/server/src/services/providers/required-external-model-catalog.ts b/apps/server/src/services/providers/required-external-model-catalog.ts
 new file mode 100644
-index 000000000..04660a04a
+index 0000000000000000000000000000000000000000..04660a04ae01da8de9b5815bfa97744009add65c
 --- /dev/null
 +++ b/apps/server/src/services/providers/required-external-model-catalog.ts
 @@ -0,0 +1,71 @@
@@ -233,10 +237,10 @@ index 000000000..04660a04a
 +  }
 +}
 diff --git a/apps/server/test/providers/provider-model-catalog-store.test.ts b/apps/server/test/providers/provider-model-catalog-store.test.ts
-index 3afe7ec9a..6c3df7130 100644
+index 495545ae338bc970b3c7b62f3f39ef5a3e3eab7c..3cd2ab72f6045a08bef2d9b2b9f39152b350222d 100644
 --- a/apps/server/test/providers/provider-model-catalog-store.test.ts
 +++ b/apps/server/test/providers/provider-model-catalog-store.test.ts
-@@ -951,3 +951,28 @@ describe("provider model catalog store", () => {
+@@ -981,3 +981,28 @@ describe("provider model catalog store", () => {
      });
    });
  });
@@ -267,7 +271,7 @@ index 3afe7ec9a..6c3df7130 100644
 +});
 diff --git a/apps/server/test/providers/required-external-model-catalog.test.ts b/apps/server/test/providers/required-external-model-catalog.test.ts
 new file mode 100644
-index 000000000..e278fce67
+index 0000000000000000000000000000000000000000..e278fce6758b2f1005f835c6365b75cb08894266
 --- /dev/null
 +++ b/apps/server/test/providers/required-external-model-catalog.test.ts
 @@ -0,0 +1,65 @@
@@ -336,11 +340,33 @@ index 000000000..e278fce67
 +  ).rejects.toThrow("Required BB external model catalogue is unavailable.");
 +  expect(request).toHaveBeenCalledTimes(1);
 +});
+diff --git a/docs/p6r-required-inference-upstreaming.md b/docs/p6r-required-inference-upstreaming.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..9532a51dd53cf027030c8df84b59d79d7497ab01
+--- /dev/null
++++ b/docs/p6r-required-inference-upstreaming.md
+@@ -0,0 +1,16 @@
++# Required inference provider-contract follow-up
++
++Owner: Phosphor fork maintainers. Status: open.
++
++The upstream refresh retains already selected patch 0058. Its eight provider-ID
++references enforce the existing required external Claude/Codex policy, invalidate
++cached model facts on route changes, and translate authenticated catalogue facts.
++They do not add a new provider policy. The new upstream literal ratchet accounts
++for this pre-existing downstream behavior explicitly.
++
++Remove these references and their baseline entries when the provider SDK exposes
++required external model catalogue admission and route-scoped cache invalidation.
++Move the adapter into Account Pooler, preserve child credential isolation and
++fail-closed start/resume behavior, and prove the existing required inference
++suites before retiring the core implementation. Do not remove the guard by
++allowing local credential fallback.
 diff --git a/packages/host-daemon-contract/src/commands.ts b/packages/host-daemon-contract/src/commands.ts
-index f1f7ec2b5..0a0aaa10f 100644
+index 1af4689efab10a5d98943aa43895ef5ffb154490..ba64c460d93889b5027cd141fcd8abfcb74ba8f5 100644
 --- a/packages/host-daemon-contract/src/commands.ts
 +++ b/packages/host-daemon-contract/src/commands.ts
-@@ -859,6 +859,10 @@ const hostListBranchOptionsCommandSchema = z
+@@ -903,6 +903,10 @@ const hostListBranchOptionsCommandSchema = z
    .strict();
  
  const providerListModelsCommandSchema = z.object({
@@ -352,25 +378,39 @@ index f1f7ec2b5..0a0aaa10f 100644
    providerId: z.string().min(1),
    bridgeLaunch: hostDaemonBridgeLaunchSchema,
 diff --git a/packages/host-daemon-contract/src/protocol.ts b/packages/host-daemon-contract/src/protocol.ts
-index bc94cb68d..0c0fcda05 100644
+index 6b204eb4f4b3322ac578a93878ae4c5ae13f6292..a20ee880b0842f86b07fef85f2b896a238ff0645 100644
 --- a/packages/host-daemon-contract/src/protocol.ts
 +++ b/packages/host-daemon-contract/src/protocol.ts
 @@ -1,4 +1,4 @@
--export const HOST_DAEMON_PROTOCOL_VERSION = 230 as const;
-+export const HOST_DAEMON_PROTOCOL_VERSION = 231 as const;
+-export const HOST_DAEMON_PROTOCOL_VERSION = 238 as const;
++export const HOST_DAEMON_PROTOCOL_VERSION = 239 as const;
  
  export const HOST_ARTIFACT_MAX_BYTES = 256 * 1024 * 1024;
  
 diff --git a/packages/host-daemon-contract/test/contract.test.ts b/packages/host-daemon-contract/test/contract.test.ts
-index 3d6a02fee..493560084 100644
+index d16ca69352adf646d96afe095d4ab64d3290b391..e6fc04fedc4085c9234e4fd91622711abc2719c1 100644
 --- a/packages/host-daemon-contract/test/contract.test.ts
 +++ b/packages/host-daemon-contract/test/contract.test.ts
-@@ -782,6 +782,24 @@ function terminalDataBase64(byteLength: number): string {
+@@ -801,6 +801,52 @@ function terminalDataBase64(byteLength: number): string {
  }
  
  const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
 +  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog":
 +    "present only when the BB server has fetched the required shared-pool catalogue; absence selects native discovery only outside the required profile.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.sessionOptions":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.sessionOptions.category":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.sessionOptions.description":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.sessionOptions.fixed":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.sessionOptions.values.description":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.sessionOptions.values.group":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.supportedReasoningEfforts.label":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
 +  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.routeProviderId":
 +    "pooled catalogue models can omit a separate route-provider identity; the existing AvailableModel contract defines the same omission semantics.",
 +  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.supportedServiceTiers":
@@ -379,6 +419,20 @@ index 3d6a02fee..493560084 100644
 +    "service tier descriptions are optional display metadata; the existing AvailableModel contract defines the same omission semantics.",
 +  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.supportedServiceTiers.label":
 +    "service tier labels are optional display metadata; the existing AvailableModel contract defines the same omission semantics.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.sessionOptions":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.sessionOptions.category":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.sessionOptions.description":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.sessionOptions.fixed":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.sessionOptions.values.description":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.sessionOptions.values.group":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.supportedReasoningEfforts.label":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
 +  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.routeProviderId":
 +    "pooled catalogue models can omit a separate route-provider identity; the existing AvailableModel contract defines the same omission semantics.",
 +  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.supportedServiceTiers":
@@ -390,34 +444,49 @@ index 3d6a02fee..493560084 100644
    "hostDaemonCommandSchema.resolution.description":
      "the interaction.resolve command's resolution is the persisted union, so it also admits the plugin_submitted arm and the description a plugin's describeSubmission returned. It never reaches the wire: a plugin interaction is settled in the server against its waiting requestInput promise and never queues a daemon command, so an older daemon never sees the field.",
    "hostDaemonCommandSchema.resolution.description.detail":
-@@ -1210,7 +1228,7 @@ const CONTRIBUTED_ENV = [
+@@ -1259,7 +1305,7 @@ describe("host-daemon command schemas", () => {
+   });
  
- describe("host-daemon command schemas", () => {
    it("uses the current host-daemon protocol version", () => {
--    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(230);
-+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(231);
+-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(238);
++    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(239);
      expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
    });
  
 diff --git a/plugins/account-pool/PLUGIN_OVERVIEW.md b/plugins/account-pool/PLUGIN_OVERVIEW.md
-index 299098924..8aa3efb56 100644
+index a3348428628b2b616763ee74e43a8d502dd28018..7482e136f20e7532044765f4c21262bda4122608 100644
 --- a/plugins/account-pool/PLUGIN_OVERVIEW.md
 +++ b/plugins/account-pool/PLUGIN_OVERVIEW.md
-@@ -34,3 +34,5 @@ Experimental: routing, storage, and CLI may change.
+@@ -33,8 +33,9 @@ Experimental: routing, storage, and CLI may change.
+ 
  ## For agents
  
- `bb pool account add|list|remove|enable|disable|priority|reorder`, `bb pool status`, `bb pool routing <claude|codex> [--off]`, `bb pool config`, `bb pool config set`, `bb pool parent [proxy|isolate]`, `bb pool token rotate`, and `bb pool bypass <thread-id>`. Every command takes `--json` and `--help`; `bb pool --help` lists the commands and `bb pool <command> --help` prints its arguments, options, and rules.
+-`bb pool account add|list|remove|enable|disable|priority|reorder`, `bb pool status`, `bb pool routing <claude|codex> [--off]`, `bb pool config`, `bb pool config set`, `bb pool parent [proxy|isolate]`, `bb pool token rotate`, and `bb pool bypass <thread-id>`. Every command takes `--json` and `--help`; `bb pool --help` lists the commands and `bb pool <command> --help` prints its arguments, options, and rules.
++`bb pool account add|list|remove|enable|disable|priority|reorder`, `bb pool status`, `bb pool routing <claude|codex> [--off]`, `bb pool config`, `bb pool config set`, `bb pool parent [proxy|isolate]`, `bb pool token rotate`, and `bb pool bypass <thread-id>`.
+ 
+ ## Automatic retries
+ 
+ Provider Retry uses pool recovery times. Inspect `bb provider-retry status` or `bb provider-retry explain <thread-id>`.
++Required external deployments use shared inference; see the skill references.
+diff --git a/plugins/account-pool/skills/account-pool/SKILL.md b/plugins/account-pool/skills/account-pool/SKILL.md
+index 8704d721afc6f2c1dfba9ced4a16c014b41bc9f4..519146c1a814c2078517d4f11cb4af163eb7ec74 100644
+--- a/plugins/account-pool/skills/account-pool/SKILL.md
++++ b/plugins/account-pool/skills/account-pool/SKILL.md
+@@ -21,3 +21,6 @@ Pooled rate-limit failures can be retried by Provider Retry using the pool’s
+ earliest usable account, even if the provider omits structured quota events.
+ Inspect `bb provider-retry explain <thread-id> --json` for the last decision
+ and `bb provider-retry status <thread-id> --json` for pending retries.
 +
-+Required external deployments route BB clients through a shared inference service. See the Account Pooler skill references for operator configuration.
++For required external inference deployments, read
++[references/required-external-inference.md](references/required-external-inference.md).
 diff --git a/plugins/account-pool/skills/account-pool/references/accounts-and-routing.md b/plugins/account-pool/skills/account-pool/references/accounts-and-routing.md
-index 8ac140d44..7da95b627 100644
+index 6f140f048dfe4e02954c2207b023d268a6bfc379..72d061949f26b341289bae44d312981d2a9d9539 100644
 --- a/plugins/account-pool/skills/account-pool/references/accounts-and-routing.md
 +++ b/plugins/account-pool/skills/account-pool/references/accounts-and-routing.md
-@@ -149,3 +149,10 @@ accounts or to each provider's own credentials.
- Proxied traffic authenticates as the parent machine's token, so `bb pool status`
- on the parent attributes it to the parent host rather than to the nested
- instance.
-+
+@@ -159,3 +159,9 @@ instance.
+ Provider Retry discovers Account Pooler’s `provider-retry.v1.availability` RPC. It accepts `{ threadId, requestId }` and reports `not-routed`, `ready`, `blocked` with `retryAt` in epoch milliseconds, or `unavailable` with a reason. Pool routing must have been recorded when the provider environment was prepared. The request must still be the thread’s latest request; its recorded model determines which quota windows apply. The pool uses the same recovery calculation for its HTTP 429 response and this RPC. Parent pools expose the authenticated `/retry-availability?provider=claude|codex&family=<family>` endpoint.
+ 
+ The retry plugin remains responsible for queueing, maximum waits, and attempt limits. Inspect a skipped decision with `bb provider-retry explain <thread-id>` and pending work with `bb provider-retry status <thread-id>`.
 +Required external deployments are selected by the server environment
 +`BB_ACCOUNT_POOL_EXTERNAL_REQUIRED=1`, `BB_ACCOUNT_POOL_EXTERNAL_URL` and
 +`BB_ACCOUNT_POOL_EXTERNAL_TOKEN`. This operator policy routes BB clients only;
@@ -426,7 +495,7 @@ index 8ac140d44..7da95b627 100644
 +configuration and the separate provider-node administration boundary.
 diff --git a/plugins/account-pool/skills/account-pool/references/required-external-inference.md b/plugins/account-pool/skills/account-pool/references/required-external-inference.md
 new file mode 100644
-index 000000000..8846f78b0
+index 0000000000000000000000000000000000000000..8846f78b0f1a629d888cceb947d2fde8d9009871
 --- /dev/null
 +++ b/plugins/account-pool/skills/account-pool/references/required-external-inference.md
 @@ -0,0 +1,32 @@
@@ -464,7 +533,7 @@ index 000000000..8846f78b0
 +service mapping remain owned by rosetta-machine apply/check/verify.
 diff --git a/plugins/account-pool/src/required-external-pool.test.ts b/plugins/account-pool/src/required-external-pool.test.ts
 new file mode 100644
-index 000000000..a495f8a9c
+index 0000000000000000000000000000000000000000..a495f8a9ccc1278a9cc22df960c85df4abdbef97
 --- /dev/null
 +++ b/plugins/account-pool/src/required-external-pool.test.ts
 @@ -0,0 +1,133 @@
@@ -603,7 +672,7 @@ index 000000000..a495f8a9c
 +});
 diff --git a/plugins/account-pool/src/required-external-pool.ts b/plugins/account-pool/src/required-external-pool.ts
 new file mode 100644
-index 000000000..9d9963103
+index 0000000000000000000000000000000000000000..9d9963103b04e0b4754e8505e523dc324ceeb624
 --- /dev/null
 +++ b/plugins/account-pool/src/required-external-pool.ts
 @@ -0,0 +1,185 @@
@@ -793,10 +862,13 @@ index 000000000..9d9963103
 +  }
 +}
 diff --git a/plugins/account-pool/src/server.ts b/plugins/account-pool/src/server.ts
-index 1d3d27f3b..85166f75b 100644
+index 1a02c316dd247232b6b5e7ce1ae1a492d134cfdb..b9123142bd11da5f21e2351ff33d9902865e9d4d 100644
 --- a/plugins/account-pool/src/server.ts
 +++ b/plugins/account-pool/src/server.ts
-@@ -1,3 +1,7 @@
+@@ -5,6 +5,10 @@ import {
+ } from "./retry-contract.js";
+ import { modelFamily } from "./quota.js";
+ import { modelFamilySchema } from "./contracts.js";
 +import {
 +  registerRequiredExternalPool,
 +  externalPoolSelected,
@@ -804,13 +876,10 @@ index 1d3d27f3b..85166f75b 100644
  import { registerUsageSource } from "./usage-source.js";
  import {
    createUpstreamTransport,
-@@ -88,9 +92,19 @@ export function createAccountPoolPlugin(
+@@ -95,6 +99,16 @@ export function createAccountPoolPlugin(
    options: AccountPoolPluginOptions = {},
  ) {
    return async function accountPoolPlugin(bb: BbPluginApi): Promise<void> {
--    const storedConfig = z.record(z.string(), z.unknown()).parse(
--      (await bb.storage.kv.get("config")) ?? {},
--    );
 +    const launchEnv = options.env ?? process.env;
 +    if (externalPoolSelected(launchEnv)) {
 +      await registerRequiredExternalPool(
@@ -821,17 +890,14 @@ index 1d3d27f3b..85166f75b 100644
 +      );
 +      return;
 +    }
-+    const storedConfig = z
-+      .record(z.string(), z.unknown())
-+      .parse((await bb.storage.kv.get("config")) ?? {});
-     const hasRemovedSettings =
-       "cacheMissDebug" in storedConfig || "cacheMissMinTokens" in storedConfig;
-     delete storedConfig.cacheMissDebug;
+     const storedConfig = z
+       .record(z.string(), z.unknown())
+       .parse((await bb.storage.kv.get("config")) ?? {});
 diff --git a/plugins/provider-claude-code/src/bridge/__tests__/bridge.test.ts b/plugins/provider-claude-code/src/bridge/__tests__/bridge.test.ts
-index 435dac069..b3a3ab8ae 100644
+index be3f6eac77cbc2072b02e0c8a56982242b12a73c..f872d9daf162bb9479517a351c5b0193018ed20f 100644
 --- a/plugins/provider-claude-code/src/bridge/__tests__/bridge.test.ts
 +++ b/plugins/provider-claude-code/src/bridge/__tests__/bridge.test.ts
-@@ -3130,6 +3130,38 @@ describe("bridge", () => {
+@@ -3220,6 +3220,38 @@ describe("bridge", () => {
      expect(close).toHaveBeenCalledOnce();
    });
  
@@ -871,7 +937,7 @@ index 435dac069..b3a3ab8ae 100644
      const bridge = createBridgeJsonRpcTestHarness(handleLine);
      const queries: ControlledClaudeQuery[] = [];
 diff --git a/plugins/provider-claude-code/src/bridge/__tests__/sdk-session.test.ts b/plugins/provider-claude-code/src/bridge/__tests__/sdk-session.test.ts
-index 242a08574..df7a7f732 100644
+index 242a08574c9152a15a8dc3966288b637deee9e4f..df7a7f732ee53f11a3c6c4d60c64779f8842f192 100644
 --- a/plugins/provider-claude-code/src/bridge/__tests__/sdk-session.test.ts
 +++ b/plugins/provider-claude-code/src/bridge/__tests__/sdk-session.test.ts
 @@ -87,9 +87,124 @@ describe("SdkSession", () => {
@@ -1000,7 +1066,7 @@ index 242a08574..df7a7f732 100644
      const session = new SdkSession(defaultOptions, vi.fn(), vi.fn());
      const consumed = session.pushInput("hello");
 diff --git a/plugins/provider-claude-code/src/bridge/model-list.ts b/plugins/provider-claude-code/src/bridge/model-list.ts
-index b5bb73ea7..9c16a73df 100644
+index b5bb73ea71ed07c7d4c9f6af43f3832f79e2ec39..9c16a73dfc0073d5129c6fc9ea72121bc426b555 100644
 --- a/plugins/provider-claude-code/src/bridge/model-list.ts
 +++ b/plugins/provider-claude-code/src/bridge/model-list.ts
 @@ -46,6 +46,9 @@ async function probeClaudeCodeModels(env: NodeJS.ProcessEnv): Promise<{
@@ -1014,7 +1080,7 @@ index b5bb73ea7..9c16a73df 100644
      return await probeClaudeCodeModels(env);
    } catch (error) {
 diff --git a/plugins/provider-claude-code/src/bridge/provider-maintenance.ts b/plugins/provider-claude-code/src/bridge/provider-maintenance.ts
-index 45af151cb..9e96764f1 100644
+index 45af151cbf4cdff53af1011d76dda42e1ac98924..9e96764f1c4ee7556357f3e6ff3f4444b024005d 100644
 --- a/plugins/provider-claude-code/src/bridge/provider-maintenance.ts
 +++ b/plugins/provider-claude-code/src/bridge/provider-maintenance.ts
 @@ -524,6 +524,9 @@ function normalizeUsage(
@@ -1029,7 +1095,7 @@ index 45af151cb..9e96764f1 100644
      return { supported: true, usage: { status: "not_installed" } };
 diff --git a/plugins/provider-claude-code/src/bridge/required-external-maintenance.test.ts b/plugins/provider-claude-code/src/bridge/required-external-maintenance.test.ts
 new file mode 100644
-index 000000000..702a43ab1
+index 0000000000000000000000000000000000000000..702a43ab1c2d3e143c9a552afabe303cd24067a0
 --- /dev/null
 +++ b/plugins/provider-claude-code/src/bridge/required-external-maintenance.test.ts
 @@ -0,0 +1,12 @@
@@ -1046,7 +1112,7 @@ index 000000000..702a43ab1
 +  expect(fetch).not.toHaveBeenCalled();
 +});
 diff --git a/plugins/provider-claude-code/src/bridge/sdk-session.ts b/plugins/provider-claude-code/src/bridge/sdk-session.ts
-index d87b1abda..9a361d67f 100644
+index d87b1abdaed3ae5fac8a9dc97da69bf487708f99..9a361d67fb7d08b2833ff75ad9a3b20b0e57ba7f 100644
 --- a/plugins/provider-claude-code/src/bridge/sdk-session.ts
 +++ b/plugins/provider-claude-code/src/bridge/sdk-session.ts
 @@ -22,6 +22,15 @@ import {
@@ -1109,7 +1175,7 @@ index d87b1abda..9a361d67f 100644
          ...this.options.extraArgs,
          "replay-user-messages": null,
 diff --git a/plugins/provider-codex/src/bridge/app-server-launch.test.ts b/plugins/provider-codex/src/bridge/app-server-launch.test.ts
-index 19c36321b..36a199b9a 100644
+index 19c36321b0d192beb44c4086ca6fff543aebeed4..36a199b9a705296793f2100d6cbb8c7f82047798 100644
 --- a/plugins/provider-codex/src/bridge/app-server-launch.test.ts
 +++ b/plugins/provider-codex/src/bridge/app-server-launch.test.ts
 @@ -1,5 +1,5 @@
@@ -1159,10 +1225,10 @@ index 19c36321b..36a199b9a 100644
 +  expect(buildAppServerEnv({ BB_ACCOUNT_POOL_EXTERNAL_REQUIRED: "0" }).BB_ACCOUNT_POOL_EXTERNAL_REQUIRED).toBeUndefined();
 + });
 diff --git a/plugins/provider-codex/src/bridge/bridge.ts b/plugins/provider-codex/src/bridge/bridge.ts
-index b77e374d0..5ee307cc8 100644
+index 2c6e8e870b2fc122976cb9769031b94ff6f02f71..6e5d3af142f18ef568e29bbbad313715afca976e 100644
 --- a/plugins/provider-codex/src/bridge/bridge.ts
 +++ b/plugins/provider-codex/src/bridge/bridge.ts
-@@ -361,6 +361,10 @@ export function resolveAppServerLaunch(env: NodeJS.ProcessEnv = process.env): {
+@@ -368,6 +368,10 @@ export function resolveAppServerLaunch(env: NodeJS.ProcessEnv = process.env): {
      : ["app-server"];
    const poolBaseUrl = env[CODEX_POOL_BASE_URL_ENV];
    const poolToken = env[CODEX_POOL_AUTH_TOKEN_ENV];
@@ -1173,7 +1239,7 @@ index b77e374d0..5ee307cc8 100644
    if (!poolBaseUrl || !poolToken) return { command: command ?? "codex", args };
    return {
      command: command ?? "codex",
-@@ -377,7 +381,13 @@ export function resolveAppServerLaunch(env: NodeJS.ProcessEnv = process.env): {
+@@ -384,7 +388,13 @@ export function resolveAppServerLaunch(env: NodeJS.ProcessEnv = process.env): {
        "-c",
        'model_providers.bb-account-pool.wire_api="responses"',
        "-c",
@@ -1188,7 +1254,7 @@ index b77e374d0..5ee307cc8 100644
        "-c",
        "model_providers.bb-account-pool.supports_websockets=false",
        "-c",
-@@ -391,8 +401,17 @@ function appServerLaunchEnv(
+@@ -398,8 +408,17 @@ function appServerLaunchEnv(
  ): NodeJS.ProcessEnv {
    const poolBaseUrl = envVars?.[CODEX_POOL_BASE_URL_ENV];
    const poolAuthToken = envVars?.[CODEX_POOL_AUTH_TOKEN_ENV];
@@ -1207,7 +1273,7 @@ index b77e374d0..5ee307cc8 100644
      ...(poolBaseUrl === undefined
        ? {}
        : { [CODEX_POOL_BASE_URL_ENV]: poolBaseUrl }),
-@@ -402,14 +421,17 @@ function appServerLaunchEnv(
+@@ -409,14 +428,17 @@ function appServerLaunchEnv(
    };
  }
  
@@ -1231,7 +1297,7 @@ index b77e374d0..5ee307cc8 100644
  
  function isCodexSpawnFailure(error: unknown): boolean {
 diff --git a/plugins/provider-codex/src/bridge/provider-maintenance.test.ts b/plugins/provider-codex/src/bridge/provider-maintenance.test.ts
-index 32bd0e4c1..a6d0b771a 100644
+index 32bd0e4c14710b74a1fbf8719e290a57d62a52c4..a6d0b771a53e79e3b5a1fd51ad1f9ff63a4ec0d9 100644
 --- a/plugins/provider-codex/src/bridge/provider-maintenance.test.ts
 +++ b/plugins/provider-codex/src/bridge/provider-maintenance.test.ts
 @@ -367,3 +367,12 @@ describe("Codex credential health and usage", () => {
@@ -1248,7 +1314,7 @@ index 32bd0e4c1..a6d0b771a 100644
 +  expect(fetch).not.toHaveBeenCalled();
 +});
 diff --git a/plugins/provider-codex/src/bridge/provider-maintenance.ts b/plugins/provider-codex/src/bridge/provider-maintenance.ts
-index 1101b64da..744ef0147 100644
+index 1101b64da40df87b01f4b8267cc718f75619510f..744ef0147eb3493c1c046403c0490964e44d32b5 100644
 --- a/plugins/provider-codex/src/bridge/provider-maintenance.ts
 +++ b/plugins/provider-codex/src/bridge/provider-maintenance.ts
 @@ -320,6 +320,9 @@ function normalizeUsage(raw: unknown, email: string | null): ProviderUsage {
@@ -1261,6 +1327,49 @@ index 1101b64da..744ef0147 100644
    if ((await resolveExecutablePath("codex")) === null) {
      return { supported: true, usage: { status: "not_installed" } };
    }
+diff --git a/scripts/provider-literal-baseline.json b/scripts/provider-literal-baseline.json
+index e01a26c67c2755f2412e608edec4b1e173dde74a..2bbd7e4f390aabba625a62328f6ea586792470f9 100644
+--- a/scripts/provider-literal-baseline.json
++++ b/scripts/provider-literal-baseline.json
+@@ -1,9 +1,12 @@
+ {
+   "_comment": "Provider-literal ratchet (G1). Per-file occurrence count of provider-ID references in core. May only go DOWN. Regenerate: node scripts/check-provider-literal-ratchet.mjs --write. Every counted file must have an `allowlist` entry (count, reason, owner, diesAt); the entries are authored by hand and survive --write. Delete this file and the guard when empty.",
+-  "total": 14,
++  "total": 22,
+   "files": {
+     "apps/demo-server/src/fixtures/providers.ts": 3,
+     "apps/demo-server/src/fixtures/world.ts": 2,
++    "apps/host-daemon/src/command-dispatch.ts": 2,
++    "apps/server/src/services/providers/provider-model-catalog-store.ts": 4,
++    "apps/server/src/services/providers/required-external-model-catalog.ts": 2,
+     "apps/server/src/services/threads/thread-edit-message.ts": 1,
+     "packages/config/src/bb-app-managed-config.ts": 4,
+     "packages/scripts/src/commands/archive-codex-tmp-bb-sessions.ts": 1,
+@@ -45,6 +48,24 @@
+       "reason": "perf fixture generator: seeds threads for two providers so the timeline benchmark covers both shapes.",
+       "owner": "owner-accepted (fixture)",
+       "diesAt": "never (fixture)"
++    },
++    "apps/host-daemon/src/command-dispatch.ts": {
++      "count": 2,
++      "reason": "Existing downstream required external inference relay (0058): preserve fail-closed Claude/Codex admission and server-authenticated model catalogues across this upstream refresh.",
++      "owner": "Phosphor fork maintainers",
++      "diesAt": "Remove with patch 0058 when upstream exposes required external catalog admission through a provider contract; follow-up: docs/p6r-required-inference-upstreaming.md."
++    },
++    "apps/server/src/services/providers/provider-model-catalog-store.ts": {
++      "count": 4,
++      "reason": "Existing downstream required external inference relay (0058): preserve fail-closed Claude/Codex admission and server-authenticated model catalogues across this upstream refresh.",
++      "owner": "Phosphor fork maintainers",
++      "diesAt": "Remove with patch 0058 when upstream exposes required external catalog admission through a provider contract; follow-up: docs/p6r-required-inference-upstreaming.md."
++    },
++    "apps/server/src/services/providers/required-external-model-catalog.ts": {
++      "count": 2,
++      "reason": "Existing downstream required external inference relay (0058): preserve fail-closed Claude/Codex admission and server-authenticated model catalogues across this upstream refresh.",
++      "owner": "Phosphor fork maintainers",
++      "diesAt": "Remove with patch 0058 when upstream exposes required external catalog admission through a provider contract; follow-up: docs/p6r-required-inference-upstreaming.md."
+     }
+   }
+ }
 -- 
-2.50.1 (Apple Git-155)
+2.43.0
 

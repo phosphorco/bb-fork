@@ -1,4 +1,4 @@
-From 7dafd8540c3cb75c05dfc952073112dc56c99a03 Mon Sep 17 00:00:00 2001
+From a185815c8bf38cab4480b19935b4e9826a2b4179 Mon Sep 17 00:00:00 2001
 From: BB fork integration <bb-fork@invalid.local>
 Date: Mon, 5 Oct 2026 22:04:38 +0200
 Subject: [PATCH] feat(p6r): adapt owned runtime and message prompt producers
@@ -456,10 +456,10 @@ index d44f295eb371f7db54bf6bf70d034993d44163cf..36b363f558e0537746a0976cf6f381dc
        { kind: "text", text: parts.prefix },
        ...args.segments,
 diff --git a/apps/server/src/services/threads/thread-ownership.ts b/apps/server/src/services/threads/thread-ownership.ts
-index 60ab25785507071f1747f4a15eee351b7db6e4d8..ce4865d2c8a498c917c7a817a1795e34d583472c 100644
+index 60e2b43d2a493e1493320ac0784de4736c46538f..bdee97cea472a3fab787b66686decf5192eb8612 100644
 --- a/apps/server/src/services/threads/thread-ownership.ts
 +++ b/apps/server/src/services/threads/thread-ownership.ts
-@@ -105,12 +105,15 @@ async function queueParentSystemMessageBestEffort(
+@@ -106,12 +106,15 @@ async function queueParentSystemMessageBestEffort(
  function buildThreadOwnershipSystemInput(
    templateId: ThreadOwnershipTemplateId,
    thread: ThreadLabelSource,
@@ -475,7 +475,7 @@ index 60ab25785507071f1747f4a15eee351b7db6e4d8..ce4865d2c8a498c917c7a817a1795e34
      renderedText,
      slot: THREAD_OWNERSHIP_MENTION_SLOT,
      segments: [{ kind: "mention", mention }],
-@@ -186,6 +189,7 @@ async function sendThreadOwnershipNotices(
+@@ -191,6 +194,7 @@ async function sendThreadOwnershipNotices(
        input: buildThreadOwnershipSystemInput(
          "systemMessageThreadOwnershipAssigned",
          thread,
@@ -483,7 +483,7 @@ index 60ab25785507071f1747f4a15eee351b7db6e4d8..ce4865d2c8a498c917c7a817a1795e34
        ),
        reason: "assigned",
        templateId: "systemMessageThreadOwnershipAssigned",
-@@ -199,6 +203,7 @@ async function sendThreadOwnershipNotices(
+@@ -204,6 +208,7 @@ async function sendThreadOwnershipNotices(
        input: buildThreadOwnershipSystemInput(
          "systemMessageThreadOwnershipRemoved",
          thread,
@@ -492,13 +492,13 @@ index 60ab25785507071f1747f4a15eee351b7db6e4d8..ce4865d2c8a498c917c7a817a1795e34
        reason: "removed",
        templateId: "systemMessageThreadOwnershipRemoved",
 diff --git a/apps/server/src/services/threads/thread-runtime-config.ts b/apps/server/src/services/threads/thread-runtime-config.ts
-index 1b3d95fe99f8eb13dda9e597e21991bcfddb4922..17f3715674cc25f2680cef1edde67484baf30b2b 100644
+index a059483f5af8ebb72284531812af88ecd27893c7..4e9105c3640b749f833b527a7d331fd2a23b18a2 100644
 --- a/apps/server/src/services/threads/thread-runtime-config.ts
 +++ b/apps/server/src/services/threads/thread-runtime-config.ts
-@@ -38,6 +38,11 @@ import {
-   readWorkspaceAgentInstructions,
- } from "./workspace-agent-instructions.js";
+@@ -37,6 +37,11 @@ import {
+ import { readWorkspaceAgentContext } from "./workspace-agent-context.js";
  import { resolveDeprecatedWorkspaceProvisionType } from "../environments/environment-response.js";
+ import { markTurnTraceSpan } from "../system/turn-trace.js";
 +import { renderToolPrompts } from "../prompts/render-tool-prompts.js";
 +import {
 +  renderInstructionPrompt,
@@ -507,7 +507,7 @@ index 1b3d95fe99f8eb13dda9e597e21991bcfddb4922..17f3715674cc25f2680cef1edde67484
  
  const UPDATE_ENVIRONMENT_DIRECTORY_INSTRUCTIONS =
    "If the user asks you to move this thread to another checkout, worktree, or directory, make sure the target directory exists, then call `update_environment_directory` with its absolute path. After it succeeds, stop work in the current turn; future turns will run in the updated environment.";
-@@ -221,18 +226,42 @@ export async function resolveThreadRuntimeCommandConfig(
+@@ -214,18 +219,42 @@ export async function resolveThreadRuntimeCommandConfig(
    const dynamicToolContributions = resolveDynamicTools(
      conditionalConfiguration.tools,
    );
@@ -555,7 +555,7 @@ index 1b3d95fe99f8eb13dda9e597e21991bcfddb4922..17f3715674cc25f2680cef1edde67484
        );
      }
    }
-@@ -259,29 +288,56 @@ export async function resolveThreadRuntimeCommandConfig(
+@@ -252,29 +281,56 @@ export async function resolveThreadRuntimeCommandConfig(
        text = text.slice(0, PLUGIN_INSTRUCTION_CONTRIBUTION_MAX_CHARS);
      }
      instructionSections.push(
@@ -600,7 +600,7 @@ index 1b3d95fe99f8eb13dda9e597e21991bcfddb4922..17f3715674cc25f2680cef1edde67484
        dataDirAgentInstructions,
      );
    }
-   if (workspaceAgentInstructions) {
+   if (workspaceAgentContext.agentInstructions) {
      instructionSections.push(
 -      `The following workspace instructions come from ${WORKSPACE_AGENT_INSTRUCTIONS_RELATIVE_PATH}:`,
 +      renderInstructionPrompt(
@@ -608,7 +608,7 @@ index 1b3d95fe99f8eb13dda9e597e21991bcfddb4922..17f3715674cc25f2680cef1edde67484
 +        `The following workspace instructions come from ${WORKSPACE_AGENT_INSTRUCTIONS_RELATIVE_PATH}:`,
 +        promptContext,
 +      ),
-       workspaceAgentInstructions,
+       workspaceAgentContext.agentInstructions,
      );
    }
 -  const instructions = instructionSections.join("\n\n");
@@ -1617,11 +1617,11 @@ index 839a2795af881e7bda3dcc8d939feb8e7b4337f8..1790a7776e657a9b233ee84c874788db
      await withOwnershipFixture(async ({ childId, parents: [a, b], move }) => {
        await move(childId, b);
 diff --git a/apps/server/test/threads/thread-runtime-config.test.ts b/apps/server/test/threads/thread-runtime-config.test.ts
-index 188a85c403ec6f38b74d6de4bd5c22c7cfc9943e..c3cf244adeb07c465ab05197c4ecdf0fd9287048 100644
+index 3c4c6e35e4b9372013233bc963452b2034a3d50a..fe0e4ae67a2c033748db739b7c8c8b3ceaa45365 100644
 --- a/apps/server/test/threads/thread-runtime-config.test.ts
 +++ b/apps/server/test/threads/thread-runtime-config.test.ts
 @@ -12,12 +12,17 @@ import {
-   encodeClientTurnRequestIdNumber,
+   normalizeProviderNativeRoots,
  } from "@bb/domain";
  import { validatePluginProviderDeclaration } from "@get-bb/plugin-sdk/internal/host-policy";
 -import type { PluginAgentConfigurationContext } from "@get-bb/plugin-sdk";
@@ -1639,7 +1639,7 @@ index 188a85c403ec6f38b74d6de4bd5c22c7cfc9943e..c3cf244adeb07c465ab05197c4ecdf0f
  import { resolveThreadRuntimeCommandConfig } from "../../src/services/threads/thread-runtime-config.js";
  import {
    buildExecutionOptions,
-@@ -1557,10 +1562,13 @@ describe("thread runtime config", () => {
+@@ -1555,10 +1560,13 @@ describe("thread runtime config", () => {
    describe("plugin contributeInstructions assembly", () => {
      afterEach(() => {
        setPluginAgentContributions(undefined);
@@ -1653,7 +1653,7 @@ index 188a85c403ec6f38b74d6de4bd5c22c7cfc9943e..c3cf244adeb07c465ab05197c4ecdf0f
        instructions?: Array<{
          pluginId: string;
          provider: (ctx: {
-@@ -1572,6 +1580,11 @@ describe("thread runtime config", () => {
+@@ -1570,6 +1578,11 @@ describe("thread runtime config", () => {
        setPluginAgentContributions({
          listSkillRootContributions: () => [],
          listAgentTools: () => args.tools ?? [],
@@ -1665,7 +1665,7 @@ index 188a85c403ec6f38b74d6de4bd5c22c7cfc9943e..c3cf244adeb07c465ab05197c4ecdf0f
          listInstructionContributions: () => args.instructions ?? [],
          findAgentTool: () => undefined,
          invokeAgentTool: async () => ({
-@@ -1585,6 +1598,267 @@ describe("thread runtime config", () => {
+@@ -1583,6 +1596,267 @@ describe("thread runtime config", () => {
        });
      }
  
@@ -1934,10 +1934,10 @@ index 188a85c403ec6f38b74d6de4bd5c22c7cfc9943e..c3cf244adeb07c465ab05197c4ecdf0f
        await withTestHarness(async (harness) => {
          const hostId = "host-runtime-plugin-instr";
 diff --git a/apps/server/test/threads/thread-send-dispatch.test.ts b/apps/server/test/threads/thread-send-dispatch.test.ts
-index 238213128d7b0709599a0646aeba74e6da0d5042..d846f620f8e2c50efd074f9fc0df75a0b5fa0774 100644
+index 24008cbd450b6af018a531461c3d740dbac982a7..3dc074ec8e007425041851a0037813bb3edeb492 100644
 --- a/apps/server/test/threads/thread-send-dispatch.test.ts
 +++ b/apps/server/test/threads/thread-send-dispatch.test.ts
-@@ -21,6 +21,7 @@ import {
+@@ -22,6 +22,7 @@ import {
  } from "@bb/domain";
  import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
  import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1945,7 +1945,7 @@ index 238213128d7b0709599a0646aeba74e6da0d5042..d846f620f8e2c50efd074f9fc0df75a0
  import type { TelemetryService } from "../../src/services/system/telemetry.js";
  import * as queuedDispatch from "../../src/services/threads/queued-message-dispatch.js";
  import * as threadEvents from "../../src/services/threads/thread-events.js";
-@@ -1781,3 +1782,82 @@ describe("competing turn refusals", () => {
+@@ -1867,3 +1868,82 @@ describe("competing turn refusals", () => {
      });
    });
  });
@@ -2029,5 +2029,5 @@ index 238213128d7b0709599a0646aeba74e6da0d5042..d846f620f8e2c50efd074f9fc0df75a0
 +  });
 +});
 -- 
-2.53.0
+2.43.0
 

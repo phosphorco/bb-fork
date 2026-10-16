@@ -1,4 +1,4 @@
-From 8dd58ed550d0efa1952ea28e08fdb81c345f73b0 Mon Sep 17 00:00:00 2001
+From d0439d3538f8934b55c83d7aa52b234a785c0474 Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Mon, 28 Sep 2026 19:50:34 +0200
 Subject: [PATCH] fix(codex): share the resume construction deadline
@@ -18,10 +18,10 @@ the stalled rate-limit regression keeps that true.
  7 files changed, 97 insertions(+), 9 deletions(-)
 
 diff --git a/packages/agent-runtime/src/bridge-protocol-adapter.ts b/packages/agent-runtime/src/bridge-protocol-adapter.ts
-index 3e7fc4c03a8708362a8742fa44d8032131a83786..527061ec0f15ac4f53ede58d310b3e294f8f59ef 100644
+index 8e76360223b89e96779796be05589c31dff15692..fc6b5ced7b18c71ba7a6e5aa770fb98571accc97 100644
 --- a/packages/agent-runtime/src/bridge-protocol-adapter.ts
 +++ b/packages/agent-runtime/src/bridge-protocol-adapter.ts
-@@ -275,6 +275,7 @@ export function createBridgeProtocolAdapter(
+@@ -289,6 +289,7 @@ export function createBridgeProtocolAdapter(
                threadId: command.threadId,
                cwd: command.cwd,
                providerThreadId: command.providerThreadId,
@@ -30,10 +30,10 @@ index 3e7fc4c03a8708362a8742fa44d8032131a83786..527061ec0f15ac4f53ede58d310b3e29
              },
            };
 diff --git a/packages/agent-runtime/src/provider-adapter.ts b/packages/agent-runtime/src/provider-adapter.ts
-index 3e454b340ce0844743e6092b16ad0813f69288b6..7575c5061d29afd846006cfb631039063dbe9cd4 100644
+index a614680f3bd6f38bbf2aed333ebc6f106d2ba732..79efcb0f7f76a1d4d5bc6b23f1812284012606c2 100644
 --- a/packages/agent-runtime/src/provider-adapter.ts
 +++ b/packages/agent-runtime/src/provider-adapter.ts
-@@ -65,6 +65,7 @@ export type AdapterCommand =
+@@ -67,6 +67,7 @@ export type AdapterCommand =
        threadId: string;
        cwd: string;
        providerThreadId: string;
@@ -138,10 +138,10 @@ index fd60ace78e08797eeec8fd3b995dac5070f993c7..653bec1314406edba84d338fe94104de
  
    it("refuses to resume a provider thread that another hosted thread already owns", async () => {
 diff --git a/packages/agent-runtime/src/runtime.ts b/packages/agent-runtime/src/runtime.ts
-index f328fb718cb9e157e346330b37127f6b08e5eacd..0097a5f5b2c28ff8843cd9a5cdb9716f28040997 100644
+index f45fdda8006d06862a6f5d072ab69451aab4d700..34aa7eec9977003fb8ea47879d605f869b434936 100644
 --- a/packages/agent-runtime/src/runtime.ts
 +++ b/packages/agent-runtime/src/runtime.ts
-@@ -1930,10 +1930,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1940,10 +1940,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
              recordProviderThreadIdentity(proc, threadId, providerThreadId);
            }
  
@@ -154,7 +154,7 @@ index f328fb718cb9e157e346330b37127f6b08e5eacd..0097a5f5b2c28ff8843cd9a5cdb9716f
              providerThreadId:
                providerThreadId ?? requireProviderThreadId(threadId),
              options: toProviderExecutionContext({
-@@ -1961,7 +1963,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1971,7 +1973,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
                proc,
                message: plan,
                resultSchema: threadIdentityResultSchema,
@@ -176,10 +176,10 @@ index e707681afbdc8151f183b13f9f1effc4438b80d9..e3aa3659dcdd3ee136824897388fd6e7
    dynamicTools: z.array(dynamicToolSchema).optional(),
    disallowedTools: z.array(z.string().min(1)).optional(),
 diff --git a/plugins/provider-codex/src/bridge/bridge.ts b/plugins/provider-codex/src/bridge/bridge.ts
-index 94001683c7d91c38a8a1597e23453ba7acc87f46..b77e374d056d7e205de3c917fd2495fc6add9064 100644
+index 530a459354a1949b3db1c665ea3843aece4060f8..2c6e8e870b2fc122976cb9769031b94ff6f02f71 100644
 --- a/plugins/provider-codex/src/bridge/bridge.ts
 +++ b/plugins/provider-codex/src/bridge/bridge.ts
-@@ -286,6 +286,8 @@ const CODEX_INITIALIZE_PARAMS = {
+@@ -293,6 +293,8 @@ const CODEX_INITIALIZE_PARAMS = {
  
  const CHILD_REQUEST_TIMEOUT_MS = 60_000;
  const RATE_LIMIT_RECOVERY_TIMEOUT_MS = 5_000;
@@ -188,7 +188,7 @@ index 94001683c7d91c38a8a1597e23453ba7acc87f46..b77e374d056d7e205de3c917fd2495fc
  const INTERRUPT_SETTLEMENT_TIMEOUT_MS = 5_000;
  const CODEX_ARCHIVED_SESSION_ERROR_PATTERN =
    /\b(?:session|thread)\s+\S+\s+is archived\b/i;
-@@ -1015,16 +1017,26 @@ async function requestThreadConstructionWithWriterRetry(
+@@ -1133,16 +1135,26 @@ async function requestThreadConstructionWithWriterRetry(
    connection: CodexAppServerConnection,
    method: string,
    params: BbThreadStartParams | BbThreadResumeParams | BbThreadForkParams,
@@ -218,7 +218,7 @@ index 94001683c7d91c38a8a1597e23453ba7acc87f46..b77e374d056d7e205de3c917fd2495fc
    for (const [
      retryIndex,
      retryDelayMs,
-@@ -1056,6 +1068,7 @@ type CodexSessionConstructionRequest =
+@@ -1174,6 +1186,7 @@ type CodexSessionConstructionRequest =
  interface ConstructThreadSessionArgs {
    threadId: string;
    cwd: string;
@@ -226,7 +226,7 @@ index 94001683c7d91c38a8a1597e23453ba7acc87f46..b77e374d056d7e205de3c917fd2495fc
    options: BridgeExecutionOptions;
    instructionMode: "append" | "replace";
    dynamicTools?: DynamicTool[];
-@@ -1246,6 +1259,7 @@ async function constructThreadSession(
+@@ -1370,6 +1383,7 @@ async function constructThreadSession(
        connection,
        method,
        params,
@@ -234,7 +234,7 @@ index 94001683c7d91c38a8a1597e23453ba7acc87f46..b77e374d056d7e205de3c917fd2495fc
      );
      const codexThreadId = result.thread.id;
      // A validated non-empty provider ID is the sole acceptance checkpoint.
-@@ -1593,6 +1607,7 @@ async function handleThreadConstruction(
+@@ -1737,6 +1751,7 @@ async function handleThreadConstruction(
      const sessionResult = await constructThreadSession({
        threadId: params.threadId,
        cwd: params.cwd,
@@ -243,7 +243,7 @@ index 94001683c7d91c38a8a1597e23453ba7acc87f46..b77e374d056d7e205de3c917fd2495fc
        instructionMode: params.instructionMode,
        ...(params.dynamicTools !== undefined
 diff --git a/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs b/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
-index 86ee2a0950141b65e226033d796313eb154444e8..c3e9d32497da63e9b702a913a5074d0f170fccde 100644
+index 7c19bdf0e2bcfcb2ebc927c69bf42cbc3f42ec32..7fc0f35dae945f42d8fdcce44f8c6c1cee8c48f5 100644
 --- a/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
 +++ b/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
 @@ -220,6 +220,8 @@ const archivedThreadIds = new Set();
@@ -263,7 +263,7 @@ index 86ee2a0950141b65e226033d796313eb154444e8..c3e9d32497da63e9b702a913a5074d0f
        if (script?.rateLimitRead) {
          if (script.rateLimitRead.hang) return;
          setTimeout(() => {
-@@ -508,6 +511,9 @@ async function handleRequest(message) {
+@@ -511,6 +514,9 @@ async function handleRequest(message) {
          );
          return;
        }
@@ -274,5 +274,5 @@ index 86ee2a0950141b65e226033d796313eb154444e8..c3e9d32497da63e9b702a913a5074d0f
        if (
          String(params.threadId).startsWith("archived-") ||
 -- 
-2.53.0
+2.43.0
 

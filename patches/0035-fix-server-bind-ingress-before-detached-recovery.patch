@@ -1,4 +1,4 @@
-From 67e19ea402cc0637e7d7e069d6332a9707cd927e Mon Sep 17 00:00:00 2001
+From de5dee4c5deab29427a697791a8ffbff26cb84d7 Mon Sep 17 00:00:00 2001
 From: bb-fork <bb-fork@invalid.local>
 Date: Fri, 25 Sep 2026 16:31:01 +0200
 Subject: [PATCH] fix(server): bind ingress before detached recovery
@@ -10,16 +10,18 @@ Subject: [PATCH] fix(server): bind ingress before detached recovery
  3 files changed, 269 insertions(+), 51 deletions(-)
 
 diff --git a/apps/server/src/start-server.ts b/apps/server/src/start-server.ts
-index 847d3a97023d5684090f53481a95487a569af0aa..e97f24781d702b5cafbf1167ab3bb083bbee7777 100644
+index 45e6bdafd6c571e4db7abf00f06770108fac6697..6c8a9ea030b4b108df047425296aa13d698a8c42 100644
 --- a/apps/server/src/start-server.ts
 +++ b/apps/server/src/start-server.ts
-@@ -1,4 +1,5 @@
+@@ -1,6 +1,7 @@
+ import { createDesktopAppUpdateService } from "./services/system/desktop-app-update.js";
+ import { createDesktopUpdateChannel } from "./services/system/desktop-update-channel.js";
  import { serve } from "@hono/node-server";
 +import { once } from "node:events";
  import { existsSync } from "node:fs";
+ import { homedir } from "node:os";
  import { dirname, join, resolve } from "node:path";
- import { fileURLToPath } from "node:url";
-@@ -79,6 +80,95 @@ export function startHttpListener(args: StartHttpListenerArgs) {
+@@ -86,6 +87,95 @@ export function startHttpListener(args: StartHttpListenerArgs) {
    });
  }
  
@@ -115,7 +117,7 @@ index 847d3a97023d5684090f53481a95487a569af0aa..e97f24781d702b5cafbf1167ab3bb083
  export interface StartServerPluginsArgs {
    dataDir: string;
    logger: Pick<ServerLogger, "error" | "warn">;
-@@ -383,35 +473,12 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+@@ -413,35 +503,12 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
      );
    }
  
@@ -153,7 +155,7 @@ index 847d3a97023d5684090f53481a95487a569af0aa..e97f24781d702b5cafbf1167ab3bb083
    if (tailnetServer !== null) injectWebSocket(tailnetServer);
  
    logger.info(
-@@ -447,8 +514,12 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+@@ -477,8 +544,12 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
      pluginCatalogService.startPeriodicRefresh();
      // Recovery is independent of listener binding. Keep startup responsive
      // while preserving the sweep on every ordinary server start.
@@ -168,7 +170,7 @@ index 847d3a97023d5684090f53481a95487a569af0aa..e97f24781d702b5cafbf1167ab3bb083
      });
      sweepInterval = setInterval(() => {
        if (!isServerMoveFrozen(db)) {
-@@ -485,26 +556,8 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+@@ -515,26 +586,8 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
            logger.warn({ err: error }, "Plugin shutdown failed");
          });
        }
@@ -406,5 +408,5 @@ index 2970c559c06c84feb5b4659a5dd7a4a81285d4f3..f739785e831a059c4a6e3a4d30e78f3d
      );
    });
 -- 
-2.53.0
+2.43.0
 

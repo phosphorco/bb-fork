@@ -1,4 +1,4 @@
-From 0e12256535ac138af6dae2c1dfc1623e1766635e Mon Sep 17 00:00:00 2001
+From 9459449f1d691ebc137f827e34cc8dac46233044 Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Tue, 22 Sep 2026 23:45:38 +0200
 Subject: [PATCH] fix(provider-bridge-protocol): bound first-party recorded
@@ -6,9 +6,9 @@ Subject: [PATCH] fix(provider-bridge-protocol): bound first-party recorded
 
 ---
  .../src/testing/first-party-replay.ts         |   1 +
- .../src/testing/parity.test.ts                | 208 +++++++++++++++++-
+ .../src/testing/parity.test.ts                | 202 +++++++++++++++++-
  .../src/testing/parity.ts                     |  98 ++++++---
- 3 files changed, 275 insertions(+), 32 deletions(-)
+ 3 files changed, 269 insertions(+), 32 deletions(-)
 
 diff --git a/packages/provider-bridge-protocol/src/testing/first-party-replay.ts b/packages/provider-bridge-protocol/src/testing/first-party-replay.ts
 index b2c419856fe1f0060d0868324128f13e05c50114..4a5577601852e7b9c74503717ac9c0953e179ac2 100644
@@ -23,20 +23,14 @@ index b2c419856fe1f0060d0868324128f13e05c50114..4a5577601852e7b9c74503717ac9c095
      onStderr: (text) => process.stderr.write(`[bridge] ${text}`),
      recordingsRoot: COMMITTED_RECORDINGS_ROOT,
 diff --git a/packages/provider-bridge-protocol/src/testing/parity.test.ts b/packages/provider-bridge-protocol/src/testing/parity.test.ts
-index 92db14be5f224b491ff30b0de19deff84d53ed74..99369db1bcfb9ad52a92729cb33583d9509cbca6 100644
+index ea49bcfe47dc26741f4b2cb2762e4ff148e06527..0f6da99bf996f4b1e42d9d6f8cf022ee2ca1d7a9 100644
 --- a/packages/provider-bridge-protocol/src/testing/parity.test.ts
 +++ b/packages/provider-bridge-protocol/src/testing/parity.test.ts
-@@ -1,11 +1,17 @@
+@@ -1,11 +1,11 @@
  import { ChildProcess } from "node:child_process";
  import { channel } from "node:diagnostics_channel";
--import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-+import {
-+  mkdirSync,
-+  mkdtempSync,
-+  readFileSync,
-+  rmSync,
-+  writeFileSync,
-+} from "node:fs";
+-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
++import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
  import { tmpdir } from "node:os";
  import { join } from "node:path";
  import { expect, it } from "vitest";
@@ -46,7 +40,7 @@ index 92db14be5f224b491ff30b0de19deff84d53ed74..99369db1bcfb9ad52a92729cb33583d9
  
  function writeLane(
    dir: string,
-@@ -31,6 +37,204 @@ function writeLane(
+@@ -31,6 +31,204 @@ function writeLane(
    );
  }
  
@@ -248,14 +242,14 @@ index 92db14be5f224b491ff30b0de19deff84d53ed74..99369db1bcfb9ad52a92729cb33583d9
 +  }
 +});
 +
- it("waits for the exact planned tail and a quiet period before closing", async () => {
-   const dir = mkdtempSync(join(tmpdir(), "bb-parity-tail-test-"));
-   const bridgePath = join(dir, "delayed-tail-bridge.mjs");
+ it.each(["valid", "rejected"])(
+   "waits for the planned tail and reports %s events",
+   async (mode) => {
 diff --git a/packages/provider-bridge-protocol/src/testing/parity.ts b/packages/provider-bridge-protocol/src/testing/parity.ts
-index d1fc0f1191a690ea8f74486fa9d2ab4a3b2b6fe4..2c154df66de2a9cf634968051460520159bb7df2 100644
+index a8bf87f9236d7113395504dcadc74f07979642d6..fd700b0a5ceafe00c3a4b8932c858f61f5f17eca 100644
 --- a/packages/provider-bridge-protocol/src/testing/parity.ts
 +++ b/packages/provider-bridge-protocol/src/testing/parity.ts
-@@ -1049,46 +1049,84 @@ export interface ReplayRecordedCellsOptions {
+@@ -1125,46 +1125,84 @@ export interface ReplayRecordedCellsOptions {
    createAssembler: CreateParityAssembler;
    timeoutMs?: number;
    onStderr?: (text: string) => void;
@@ -371,5 +365,5 @@ index d1fc0f1191a690ea8f74486fa9d2ab4a3b2b6fe4..2c154df66de2a9cf6349680514605201
 +  return results;
  }
 -- 
-2.53.0
+2.43.0
 
