@@ -1,0 +1,35 @@
+From 241e8338c3ec67f5ee38cb1d68579fcad77ec9db Mon Sep 17 00:00:00 2001
+From: BB upstream refresh <bb-fork@invalid.local>
+Date: Mon, 19 Oct 2026 14:05:43 +0200
+Subject: [PATCH] test(upstream): allow concurrent replay workers to start in
+ either order
+
+---
+ .../provider-bridge-protocol/src/testing/parity.test.ts    | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/packages/provider-bridge-protocol/src/testing/parity.test.ts b/packages/provider-bridge-protocol/src/testing/parity.test.ts
+index 0f6da99bf996f4b1e42d9d6f8cf022ee2ca1d7a9..80b0714a82aae61fcc243f44852193aad68740f0 100644
+--- a/packages/provider-bridge-protocol/src/testing/parity.test.ts
++++ b/packages/provider-bridge-protocol/src/testing/parity.test.ts
+@@ -118,13 +118,14 @@ it("bounds recorded replays and preserves selected order", async () => {
+ 
+     const trace = readFileSync(tracePath, "utf8").trim().split("\n");
+     expect(tracePeak(trace)).toBeLessThanOrEqual(2);
+-    expect(trace.filter((entry) => entry.startsWith("start:"))).toEqual([
++    // Concurrent child processes may reach their trace writes in either order.
++    expect(trace.filter((entry) => entry.startsWith("start:")).sort()).toEqual([
+       "start:alpha",
+       "start:beta",
+       "start:gamma",
+     ]);
+-    expect(trace.indexOf("finish:beta")).toBeLessThan(
+-      trace.indexOf("finish:alpha"),
++    expect(trace.indexOf("start:gamma")).toBeGreaterThan(
++      Math.min(trace.indexOf("finish:alpha"), trace.indexOf("finish:beta")),
+     );
+     expect(replays.map((replay) => replay.cell)).toEqual([
+       "alpha",
+-- 
+2.43.0
+

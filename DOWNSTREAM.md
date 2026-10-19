@@ -443,3 +443,11 @@ sequential integration passed 74/74. Desktop tests are excluded. The separate
 upstream live Marketplace schema comparison failed despite core CI passing;
 that external compatibility boundary is retained. This receipt does not activate
 an updated service or promote workspace gitlinks.
+
+## 0062 — Concurrent replay fixture ordering
+
+The replay pool schedules two child processes concurrently, so their trace writes
+may arrive in either order. The test now checks that every selected child starts,
+peak concurrency stays within the bound, the third child waits for an earlier
+worker to finish, and returned results preserve selection order. No runtime code
+changes. Retire this test-only patch when upstream corrects its fixture.
