@@ -451,3 +451,11 @@ may arrive in either order. The test now checks that every selected child starts
 peak concurrency stays within the bound, the third child waits for an earlier
 worker to finish, and returned results preserve selection order. No runtime code
 changes. Retire this test-only patch when upstream corrects its fixture.
+
+## External person contribution V1 (patch 63)
+
+Adds an optional contribution subprotocol under identity protocol1. It retains an integration-asserted canonical person in native author metadata alongside the external origin in durable contribution/attempt history. Legacy send/lookup and payload hashes remain unchanged. It reuses acceptance transactions and existing JSON/queue storage; no new database schema or Slack mapping policy enters core.
+
+The public bb-identity0.3 API negotiates support before fresh reservation and confirms the stored snapshot in receipts. Rosetta stores its selected format and contribution before dispatch. Unknown outcomes reconcile the same operation through its stored version. Producer prompts remain byte-for-byte intact.
+
+Native history written with integration-asserted person evidence requires this capable reader on rollback. Draining queues or downgrading plugins does not permit older native readers. See [the scope and compatibility note](docs/external-person-attribution.md) for the approved fork justification and verification boundary.

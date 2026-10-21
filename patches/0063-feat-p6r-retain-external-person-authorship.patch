@@ -1,0 +1,1101 @@
+From ff05112a0cda8b84dcc801b409e66a41046348d4 Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Wed, 21 Oct 2026 04:38:36 +0200
+Subject: [PATCH] feat(p6r): retain external person authorship through native
+ acceptance
+
+---
+ .../src/services/p6r/external-contribution.ts |  84 +++
+ .../src/services/p6r/identity-protocol.ts     | 306 ++++++++--
+ .../src/services/p6r/native-acceptance.ts     |  12 +-
+ .../src/services/p6r/native-authorship.ts     |   2 +-
+ .../p6r/external-contribution.test.ts         | 521 ++++++++++++++++++
+ packages/domain/src/p6r-message-author.ts     |   2 +-
+ 6 files changed, 872 insertions(+), 55 deletions(-)
+ create mode 100644 apps/server/src/services/p6r/external-contribution.ts
+ create mode 100644 apps/server/test/services/p6r/external-contribution.test.ts
+
+diff --git a/apps/server/src/services/p6r/external-contribution.ts b/apps/server/src/services/p6r/external-contribution.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..a5c6cecdb54df3d714ddf58b1fa472c522ff6287
+--- /dev/null
++++ b/apps/server/src/services/p6r/external-contribution.ts
+@@ -0,0 +1,84 @@
++import { z } from "zod";
++import {
++  p6rMessageAuthorSchema,
++  promptInputSchema,
++  type P6rMessageAuthor,
++} from "@bb/domain";
++import type { P6rJson } from "./identity-protocol.js";
++
++const presentation = z
++  .object({
++    displayName: z.string().min(1).max(512),
++    handle: z.string().min(1).max(512).nullable(),
++    avatarUrl: z.string().min(1).max(2048).nullable(),
++  })
++  .strict();
++const person = z
++  .object({
++    identity: z
++      .object({
++        kind: z.literal("person"),
++        key: z.string().min(1).max(512),
++        issuer: z.string().min(1).max(512),
++        subject: z.string().min(1).max(512),
++      })
++      .strict(),
++    presentation,
++    evidence: z.literal("integration-asserted"),
++  })
++  .strict();
++export const p6rExternalContributionV1Schema = z
++  .object({
++    version: z.literal(1),
++    author: z
++      .object({ subject: z.string().min(1).max(256), presentation })
++      .strict(),
++    personAttribution: person.optional(),
++  })
++  .strict();
++export const p6rExternalContributionRequestV1Schema = z
++  .object({
++    contribution: p6rExternalContributionV1Schema,
++    input: z
++      .object({
++        operationId: z.string().min(1).max(256),
++        threadId: z.string().min(1).max(256),
++        mode: z.enum(["auto", "start", "steer-if-active", "queue-if-active"]),
++        input: z.array(promptInputSchema).min(1),
++      })
++      .strict(),
++  })
++  .strict();
++export type P6rExternalContributionV1 = z.infer<
++  typeof p6rExternalContributionV1Schema
++>;
++export type P6rExternalPersonSnapshotV1 = z.infer<typeof person>;
++
++export function readP6rExternalContribution(
++  value: unknown,
++): P6rExternalContributionV1 | null {
++  if (value === null || typeof value !== "object" || Array.isArray(value))
++    return null;
++  const parsed = p6rExternalContributionV1Schema.safeParse(
++    (value as Record<string, unknown>).externalContribution,
++  );
++  return parsed.success ? parsed.data : null;
++}
++
++export function p6rExternalContributionEvidence(
++  author: P6rJson,
++  contribution: P6rExternalContributionV1,
++): P6rJson {
++  if (author === null || typeof author !== "object" || Array.isArray(author))
++    throw new Error("External origin is required");
++  return { ...author, externalContribution: contribution };
++}
++
++export function p6rExternalContributionAuthor(
++  value: unknown,
++): P6rMessageAuthor | undefined {
++  const attribution = readP6rExternalContribution(value)?.personAttribution;
++  return attribution === undefined
++    ? undefined
++    : p6rMessageAuthorSchema.parse(attribution);
++}
+diff --git a/apps/server/src/services/p6r/identity-protocol.ts b/apps/server/src/services/p6r/identity-protocol.ts
+index 876eddd0fbce9ea021f6894eedfe1c52510bf79e..ae1e254d10252345395a10b70fc5d8884eab31e2 100644
+--- a/apps/server/src/services/p6r/identity-protocol.ts
++++ b/apps/server/src/services/p6r/identity-protocol.ts
+@@ -1,3 +1,10 @@
++import {
++  p6rExternalContributionRequestV1Schema,
++  p6rExternalContributionEvidence,
++  readP6rExternalContribution,
++  type P6rExternalContributionV1,
++  type P6rExternalPersonSnapshotV1,
++} from "./external-contribution.js";
+ import { createHash } from "node:crypto";
+ import type { DbConnection } from "@bb/db";
+ import type { ExperimentalP6rIdentityProtocol, ExperimentalP6rInvocationContext, ExperimentalP6rInvocationRegistration, ExperimentalP6rInvocationRouteClass } from "@get-bb/plugin-sdk";
+@@ -29,7 +36,11 @@ export interface P6rIdentityProfile { readonly identity: P6rAttributionReference
+ export interface P6rRequestExpectation { readonly actor: string; readonly session: string; }
+ export interface P6rReadOptions { readonly signal?: AbortSignal; }
+ export interface P6rSendInput { readonly input: readonly P6rJson[]; readonly mode: "auto" | "start" | "steer-if-active" | "queue-if-active"; readonly operationId: string; readonly threadId: string; }
+-export interface P6rAcceptanceReceipt { readonly acceptedAt: string; readonly deduplication: "guaranteed"; readonly evidence: "host-accepted"; readonly native: { readonly deliveryId: string | null; readonly queuedMessageId: string | null; readonly turnId: string | null }; readonly operationId: string; readonly provenance: "structured"; readonly references: readonly { readonly contributionId: string; readonly threadId: string }[]; readonly retainedUntil: string; }
++export interface P6rAcceptanceReceipt { readonly acceptedAt: string; readonly deduplication: "guaranteed"; readonly evidence: "host-accepted"; readonly native: { readonly deliveryId: string | null; readonly queuedMessageId: string | null; readonly turnId: string | null;
++  }; readonly operationId: string; readonly provenance: "structured"; readonly references: readonly { readonly contributionId: string; readonly threadId: string;
++  }[]; readonly retainedUntil: string;
++  readonly externalContribution?: P6rExternalContributionV1;
++}
+ export type P6rAcceptanceOutcome = { readonly status: "submitted"; readonly receipt: P6rAcceptanceReceipt } | { readonly status: "rejected"; readonly error: P6rIdentityError } | { readonly status: "indeterminate"; readonly operationId: string; readonly message: string; };
+ export type P6rOperationLookup = { readonly status: "final"; readonly outcome: P6rAcceptanceOutcome } | { readonly status: "pending" } | { readonly status: "absent-final"; readonly retry: "same-operation-only" } | { readonly status: "unknown"; readonly reason: "unsupported" | "expired" | "unavailable" };
+ export type P6rToolContext = object;
+@@ -44,14 +55,28 @@ export interface P6rActorSnapshot { readonly evidence: "provider-verified" | "lo
+ export interface P6rExternalIdentity { readonly key: string; readonly kind: "external"; readonly pluginId: string; readonly subject: string; }
+ export interface P6rExternalActorSnapshot { readonly evidence: "provider-verified" | "local-user" | "upstream-default" | "integration-asserted" | "legacy" | "machine"; readonly identity: P6rExternalIdentity; readonly presentation: P6rProfilePresentation; }
+ export type P6rOrigin = { readonly kind: "machine"; readonly actor: P6rActorSnapshot & { readonly identity: P6rMachineReference } } | { readonly kind: "person"; readonly actor: P6rActorSnapshot & { readonly identity: P6rPersonReference } } | { readonly kind: "external"; readonly actor: P6rActorSnapshot & { readonly identity: P6rExternalIdentity } } | { readonly kind: "agent"; readonly agentId: string | null } | { readonly kind: "system"; readonly reason: string } | { readonly kind: "unknown"; readonly reason: "legacy" | "upstream-unattributed" | "missing-source" };
+-export interface P6rContribution { readonly acceptedAt: string; readonly author: P6rOrigin; readonly latestEditor: P6rActorSnapshot | null; readonly mentionedPeople: readonly P6rPersonReference[]; readonly reference: P6rContributionReference; }
++export interface P6rContribution {
++  readonly personAttribution?: P6rExternalPersonSnapshotV1;
++  readonly acceptedAt: string; readonly author: P6rOrigin; readonly latestEditor: P6rActorSnapshot | null; readonly mentionedPeople: readonly P6rPersonReference[]; readonly reference: P6rContributionReference; }
+ export type P6rEvidencePage<T> = { readonly status: "known" | "partial"; readonly items: readonly T[]; readonly missing: readonly string[]; readonly nextCursor: string | null; readonly traversal: "complete" | "continued" } | { readonly status: "pending" } | { readonly status: "unavailable"; readonly reason: "unsupported" | "missing-history" | "outage" };
+ export interface P6rParticipantQuery { readonly cursor?: string; readonly limit: number; readonly threadId: string; }
+ export interface P6rParticipant { readonly identity: P6rAttributionReference | P6rExternalIdentity; readonly presentation: P6rProfilePresentation; readonly roles: readonly ("author" | "editor" | "mentioned" | "interaction-resolver")[]; }
+ export interface P6rParticipantPage { readonly coverage: "complete-history" | "partial-history"; readonly items: readonly P6rParticipant[]; readonly nextCursor: string | null; readonly revision: string; }
+ export type P6rHostInvalidation = { readonly kind: "session"; readonly reason: "actor" | "provider" | "capabilities" } | { readonly kind: "directory"; readonly keys: readonly string[] } | { readonly kind: "participants"; readonly threadIds: readonly string[] } | { readonly kind: "disconnected" | "reconnected" | "disposed" };
+ 
+-export type P6rRawProtocol = ExperimentalP6rIdentityProtocol<object, P6rToolContext, P6rSendInput, P6rExternalAuthor, P6rServerSession, P6rResult<P6rIdentityProfile>, P6rReadySession, P6rResult<void>, P6rRequestExpectation, P6rIdentityError, P6rAcceptanceOutcome, P6rResult<P6rOperationLookup>, P6rResult<P6rExecutionProvenance>, P6rContributionQuery, P6rResult<P6rEvidencePage<P6rContribution>>, P6rAttemptQuery, P6rResult<P6rEvidencePage<P6rExecutionProvenance>>, P6rProviderDirectorySource, P6rParticipantQuery, P6rResult<P6rParticipantPage>, P6rJson, P6rForkIdentityProvider, P6rForkProviderRegistration, P6rHostInvalidation, () => void, P6rReadOptions, P6rJson> & { readonly experimental_useProducerMessageRendering?: () => void };
++export type P6rRawProtocol = ExperimentalP6rIdentityProtocol<object, P6rToolContext, P6rSendInput, P6rExternalAuthor, P6rServerSession, P6rResult<P6rIdentityProfile>, P6rReadySession, P6rResult<void>, P6rRequestExpectation, P6rIdentityError, P6rAcceptanceOutcome, P6rResult<P6rOperationLookup>, P6rResult<P6rExecutionProvenance>, P6rContributionQuery, P6rResult<P6rEvidencePage<P6rContribution>>, P6rAttemptQuery, P6rResult<P6rEvidencePage<P6rExecutionProvenance>>, P6rProviderDirectorySource, P6rParticipantQuery, P6rResult<P6rParticipantPage>, P6rJson, P6rForkIdentityProvider, P6rForkProviderRegistration, P6rHostInvalidation, () => void, P6rReadOptions, P6rJson> & { readonly experimental_useProducerMessageRendering?: () => void;
++  readonly externalContributions: {
++    readonly versions: readonly [1];
++    readonly personKinds: readonly ["person"];
++    readonly history: "accepted-and-queued";
++    readonly rollback: "requires-capable-host";
++    acceptV1(request: {
++      readonly contribution: P6rExternalContributionV1;
++      readonly input: P6rSendInput;
++    }): Promise<P6rAcceptanceOutcome>;
++    lookupV1(operationId: string): Promise<P6rResult<P6rOperationLookup>>;
++  };
++};
+ 
+ export interface P6rIdentityGeneration { readonly generation: string; readonly lifetime: AbortSignal; readonly pluginId: string; }
+ export interface P6rIdentityExtension { readonly protocol: P6rRawProtocol; readonly producerMessageRenderingEnabled: () => boolean; activate(): void; retire(): void; }
+@@ -88,7 +113,10 @@ export interface P6rIdentityService { captureInvocation(input: { readonly genera
+ function failure(code: P6rIdentityError["code"], message: string): P6rIdentityError { return { code, message, retry: code === "expired" ? "same-operation" : code === "unavailable" ? "after-reconnect" : "never" }; }
+ function unavailableSession(): P6rServerSession { return { error: failure("unavailable", "Identity is unavailable for this request"), instanceId: "p6r-unavailable", status: "unavailable" }; }
+ function isRecord(value: P6rJson): value is { readonly [key: string]: P6rJson } { return value !== null && typeof value === "object" && !Array.isArray(value); }
+-function canonical(value: P6rJson): string { if (value === null || typeof value !== "object") return JSON.stringify(value); if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`; if (!isRecord(value)) throw new Error("P6r JSON record required"); return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key]!)}`).join(",")}}`; }
++function canonical(value: P6rJson): string { if (value === null || typeof value !== "object") return JSON.stringify(value); if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`; if (!isRecord(value)) throw new Error("P6r JSON record required"); return `{${Object.keys(value)
++    .sort()
++    .map((key) => `${JSON.stringify(key)}:${canonical(value[key]!)}`)
++    .join(",")}}`; }
+ function payloadHash(input: P6rSendInput, source: "external" | "scope", authorEvidence: P6rJson, instanceId: string, pluginId: string): string { return createHash("sha256").update(canonical({ authorEvidence, input: { input: input.input, mode: input.mode, operationId: input.operationId, threadId: input.threadId }, namespace: { instanceId, pluginId }, source })).digest("hex"); }
+ function tupleKey(...parts: readonly string[]): string { return parts.map((part) => `${part.length}:${part}`).join(""); }
+ function operationNamespace(instanceId: string, pluginId: string): string { return tupleKey(instanceId, pluginId); }
+@@ -128,10 +156,20 @@ function origin(value: unknown): P6rOrigin {
+     ? { kind: "person", actor: { ...actor, identity: actor.identity } }
+     : { kind: "external", actor: { ...actor, identity: actor.identity } };
+ }
+-function contribution(value: ReturnType<typeof listP6rContributions>[number]): P6rContribution { return { acceptedAt: new Date(value.acceptedAt).toISOString(), author: origin(value.acceptedAuthorship), latestEditor: actorSnapshot(value.latestEditor), mentionedPeople: [], reference: { contributionId: value.id, threadId: value.threadId } }; }
++function contribution(value: ReturnType<typeof listP6rContributions>[number]): P6rContribution {
++  const personAttribution = readP6rExternalContribution(
++    value.acceptedAuthorship,
++  )?.personAttribution;
++  return {
++    ...(personAttribution === undefined ? {} : { personAttribution }),
++    acceptedAt: new Date(value.acceptedAt).toISOString(), author: origin(value.acceptedAuthorship), latestEditor: actorSnapshot(value.latestEditor), mentionedPeople: [], reference: { contributionId: value.id, threadId: value.threadId } }; }
+ function queryFingerprint(value: unknown): string { return createHash("sha256").update(JSON.stringify(value)).digest("base64url"); }
+-function historyPage<T>(items: readonly T[], input: { readonly cursor?: string; readonly limit?: number }, fingerprint: string, revision: string): P6rResult<{ readonly items: readonly T[]; readonly nextCursor: string | null }> { const limit = input.limit ?? 50; if (!Number.isInteger(limit) || limit < 1 || limit > 200) return { ok: false, error: failure("invalid-input", "History page limit must be between 1 and 200") }; let offset = 0; if (input.cursor !== undefined) { try { const token = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")) as { readonly fingerprint?: unknown; readonly offset?: unknown; readonly revision?: unknown }; const tokenOffset = token.offset; if (token.fingerprint !== fingerprint || token.revision !== revision || typeof tokenOffset !== "number" || !Number.isInteger(tokenOffset) || tokenOffset < 0 || tokenOffset > items.length) return { ok: false, error: failure("conflict", "History cursor is stale or does not match this query") }; offset = tokenOffset; } catch { return { ok: false, error: failure("invalid-input", "History cursor is malformed") }; } } const nextOffset = offset + limit; return { ok: true, value: { items: items.slice(offset, nextOffset), nextCursor: nextOffset >= items.length ? null : Buffer.from(JSON.stringify({ fingerprint, offset: nextOffset, revision })).toString("base64url") } }; }
+-function attemptProvenance(db: DbConnection, attempt: P6rStoredAttempt): P6rExecutionProvenance { if (attempt.inputs.some((input) => input.sourceKind !== "contribution" || input.contributionId === null)) return { status: "partial", correlation: null, contributions: [], inputGroups: [], missing: [], reason: "Retained attempt has generated or interaction context without a normalized causal mapping" }; const references = attempt.inputs.map((input) => ({ contributionId: input.contributionId!, threadId: attempt.threadId })); const records = listP6rContributions(db, "", { references }); const contributions = records.map(contribution); const byReference = new Set(contributions.map((entry) => `${entry.reference.threadId}\u0000${entry.reference.contributionId}`)); const missing = references.filter((reference) => !byReference.has(`${reference.threadId}\u0000${reference.contributionId}`)); const groups = new Map<number, { readonly sources: { readonly kind: "contribution"; readonly reference: P6rContributionReference }[] }>(); for (const input of attempt.inputs) { const group = groups.get(input.groupIndex) ?? { sources: [] }; group.sources.push({ kind: "contribution", reference: { contributionId: input.contributionId!, threadId: attempt.threadId } }); groups.set(input.groupIndex, group); } const inputGroups = [...groups.entries()].sort(([left], [right]) => left - right).map(([, group]) => ({ sources: group.sources })); const correlation = attempt.nativeTurnId === null ? null : { attemptId: attempt.id, threadId: attempt.threadId, toolCallId: null, turnId: attempt.nativeTurnId }; if (correlation !== null && missing.length === 0) return { status: "known", correlation, contributions, inputGroups }; return { status: "partial", correlation, contributions, inputGroups, missing, reason: correlation === null ? "Retained attempt has no native turn correlation" : "Retained attempt references unavailable contributions" }; }
++function historyPage<T>(items: readonly T[], input: { readonly cursor?: string; readonly limit?: number }, fingerprint: string, revision: string): P6rResult<{ readonly items: readonly T[]; readonly nextCursor: string | null;
++}> { const limit = input.limit ?? 50; if (!Number.isInteger(limit) || limit < 1 || limit > 200) return { ok: false, error: failure("invalid-input", "History page limit must be between 1 and 200") }; let offset = 0; if (input.cursor !== undefined) { try { const token = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")) as { readonly fingerprint?: unknown; readonly offset?: unknown; readonly revision?: unknown;
++      }; const tokenOffset = token.offset; if (token.fingerprint !== fingerprint || token.revision !== revision || typeof tokenOffset !== "number" || !Number.isInteger(tokenOffset) || tokenOffset < 0 || tokenOffset > items.length) return { ok: false, error: failure("conflict", "History cursor is stale or does not match this query") }; offset = tokenOffset; } catch { return { ok: false, error: failure("invalid-input", "History cursor is malformed") }; } } const nextOffset = offset + limit; return { ok: true, value: { items: items.slice(offset, nextOffset), nextCursor: nextOffset >= items.length ? null : Buffer.from(JSON.stringify({ fingerprint, offset: nextOffset, revision })).toString("base64url") } }; }
++function attemptProvenance(db: DbConnection, attempt: P6rStoredAttempt): P6rExecutionProvenance { if (attempt.inputs.some((input) => input.sourceKind !== "contribution" || input.contributionId === null)) return { status: "partial", correlation: null, contributions: [], inputGroups: [], missing: [], reason: "Retained attempt has generated or interaction context without a normalized causal mapping" }; const references = attempt.inputs.map((input) => ({ contributionId: input.contributionId!, threadId: attempt.threadId })); const records = listP6rContributions(db, "", { references }); const contributions = records.map(contribution); const byReference = new Set(contributions.map((entry) => `${entry.reference.threadId}\u0000${entry.reference.contributionId}`)); const missing = references.filter((reference) => !byReference.has(`${reference.threadId}\u0000${reference.contributionId}`)); const groups = new Map<number, { readonly sources: { readonly kind: "contribution"; readonly reference: P6rContributionReference;
++      }[];
++    }>(); for (const input of attempt.inputs) { const group = groups.get(input.groupIndex) ?? { sources: [] }; group.sources.push({ kind: "contribution", reference: { contributionId: input.contributionId!, threadId: attempt.threadId } }); groups.set(input.groupIndex, group); } const inputGroups = [...groups.entries()].sort(([left], [right]) => left - right).map(([, group]) => ({ sources: group.sources })); const correlation = attempt.nativeTurnId === null ? null : { attemptId: attempt.id, threadId: attempt.threadId, toolCallId: null, turnId: attempt.nativeTurnId }; if (correlation !== null && missing.length === 0) return { status: "known", correlation, contributions, inputGroups }; return { status: "partial", correlation, contributions, inputGroups, missing, reason: correlation === null ? "Retained attempt has no native turn correlation" : "Retained attempt references unavailable contributions" }; }
+ 
+ function toolProvenance(db: DbConnection, context: object): P6rExecutionProvenance {
+   const call = getServerP6rToolCorrelationRegistry().lookupContext(context);
+@@ -203,7 +241,212 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
+       let producerMessageRenderingEnabled = false;
+       const retire = (): void => { if (retired) return; retired = true; notify(generation, { kind: "disposed" }); subscribers.delete(generation); if (generations.get(generation) === identityGeneration) generations.delete(generation); lease?.retire(); root.retireBindings(identityGeneration); const key = generationKey(pluginId, generation); const provider = preparedProviders.get(key); if (provider !== undefined) { preparedProviders.delete(key); root.providerRegistry.retire(provider); } };
+       lifetime.addEventListener("abort", retire, { once: true });
++      const accept = async (
++        request: Parameters<P6rRawProtocol["accept"]>[0],
++        contribution?: P6rExternalContributionV1,
++      ): Promise<P6rAcceptanceOutcome> => {
++        const source = request.source.kind;
++        const immutableInput = snapshotInput(request.input);
++        const authorEvidence: P6rJson | null =
++          source === "external"
++            ? externalEvidence(
++                request.source.author,
++                identityGeneration.pluginId,
++              )
++            : (() => {
++                const session = scopeSessions.get(request.source.scope);
++                return session?.status === "ready"
++                  ? sessionEvidence(session)
++                  : null;
++              })();
++        if (authorEvidence === null)
++          return {
++            status: "rejected",
++            error: failure(
++              "stale-context",
++              "The invocation scope has no captured person identity",
++            ),
++          };
++        const immutableAuthor = snapshotJson(
++          contribution === undefined
++            ? authorEvidence
++            : p6rExternalContributionEvidence(authorEvidence, contribution),
++        );
++        const hash = payloadHash(
++          immutableInput,
++          source,
++          immutableAuthor,
++          root.instanceId,
++          identityGeneration.pluginId,
++        );
++        const namespace = operationNamespace(
++          root.instanceId,
++          identityGeneration.pluginId,
++        );
++        const existing = lookupP6rOperationReceipt(
++          root.db,
++          namespace,
++          immutableInput.operationId,
++        );
++        if (existing !== null && existing.payloadHash !== hash)
++          return {
++            status: "rejected",
++            error: failure(
++              "invalid-operation",
++              "Operation identifier was reused with different immutable acceptance data",
++            ),
++          };
++        if (existing !== null) {
++          return p6rOutcomeFromStoredReceipt(existing);
++        }
++        if (
++          generations.get(identityGeneration.generation) !== identityGeneration
++        )
++          return {
++            status: "rejected",
++            error: failure(
++              "stale-context",
++              "The plugin generation is no longer active",
++            ),
++          };
++        const validate = (): P6rValidity => {
++          if (
++            generations.get(identityGeneration.generation) !==
++              identityGeneration ||
++            identityGeneration.lifetime.aborted
++          ) {
++            return { ok: false, code: "retired" };
++          }
++          return source === "scope"
++            ? root.invocationRegistry.validateScope(request.source.scope)
++            : { ok: true };
++        };
++        const validity = validate();
++        if (!validity.ok)
++          return {
++            status: "rejected",
++            error: failure(
++              "stale-context",
++              "The invocation scope is no longer live",
++            ),
++          };
++        if (root.native.accept === undefined)
++          return {
++            status: "rejected",
++            error: failure(
++              "unavailable",
++              "Native transactional acceptance is not configured",
++            ),
++          };
++        const outcome = await root.native.accept({
++          authorEvidence: immutableAuthor,
++          input: immutableInput,
++          operationNamespace: namespace,
++          payloadHash: hash,
++          source,
++          validate,
++        });
++        if (outcome.status === "submitted") {
++          notify(identityGeneration.generation, {
++            kind: "participants",
++            threadIds: [immutableInput.threadId],
++          });
++        }
++        return outcome;
++      };
++      const attributedOutcome = (
++        operationId: string,
++      ): P6rAcceptanceOutcome | null => {
++        const receipt = lookupP6rOperationReceipt(
++          root.db,
++          operationNamespace(root.instanceId, identityGeneration.pluginId),
++          operationId,
++        );
++        if (receipt === null) return null;
++        const outcome = p6rOutcomeFromStoredReceipt(receipt);
++        if (outcome.status !== "submitted") return outcome;
++        const stored =
++          receipt.contributionId === null
++            ? undefined
++            : listP6rContributions(root.db, receipt.operationNamespace, {
++                references: [
++                  {
++                    contributionId: receipt.contributionId,
++                    threadId: receipt.threadId,
++                  },
++                ],
++              })[0];
++        const frozen =
++          stored === undefined
++            ? null
++            : readP6rExternalContribution(stored.acceptedAuthorship);
++        return frozen === null
++          ? null
++          : {
++              ...outcome,
++              receipt: { ...outcome.receipt, externalContribution: frozen },
++            };
++      };
+       const protocol: P6rRawProtocol = {
++        externalContributions: {
++          versions: [1],
++          personKinds: ["person"],
++          history: "accepted-and-queued",
++          rollback: "requires-capable-host",
++          async acceptV1(request) {
++            const parsed =
++              p6rExternalContributionRequestV1Schema.safeParse(request);
++            if (!parsed.success)
++              return {
++                status: "rejected",
++                error: failure(
++                  "invalid-input",
++                  "Invalid V1 external contribution",
++                ),
++              };
++            const outcome = await accept(
++              {
++                source: {
++                  kind: "external",
++                  author: parsed.data.contribution.author,
++                },
++                input: parsed.data.input,
++              },
++              parsed.data.contribution,
++            );
++            if (outcome.status !== "submitted") return outcome;
++            return (
++              attributedOutcome(parsed.data.input.operationId) ?? {
++                status: "indeterminate",
++                operationId: parsed.data.input.operationId,
++                message:
++                  "Native acceptance has no retained V1 attribution receipt",
++              }
++            );
++          },
++          async lookupV1(operationId) {
++            const receipt = lookupP6rOperationReceipt(
++              root.db,
++              operationNamespace(root.instanceId, identityGeneration.pluginId),
++              operationId,
++            );
++            if (receipt === null)
++              return {
++                ok: true,
++                value: { status: "absent-final", retry: "same-operation-only" },
++              };
++            if (receipt.status === "pending")
++              return { ok: true, value: { status: "pending" } };
++            const outcome = attributedOutcome(operationId);
++            return {
++              ok: true,
++              value:
++                outcome === null
++                  ? { status: "unknown", reason: "unsupported" }
++                  : { status: "final", outcome },
++            };
++          },
++        },
+         instanceId: root.instanceId,
+         version: 1,
+         experimental_useProducerMessageRendering() { if (!retired) producerMessageRenderingEnabled = true; },
+@@ -242,45 +485,7 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
+             },
+           } };
+         },
+-        accept: async (request) => {
+-          const source = request.source.kind;
+-          const immutableInput = snapshotInput(request.input);
+-          const authorEvidence: P6rJson | null = source === "external"
+-            ? externalEvidence(request.source.author, identityGeneration.pluginId)
+-            : (() => { const session = scopeSessions.get(request.source.scope); return session?.status === "ready" ? sessionEvidence(session) : null; })();
+-          if (authorEvidence === null) return { status: "rejected", error: failure("stale-context", "The invocation scope has no captured person identity") };
+-          const immutableAuthor = snapshotJson(authorEvidence);
+-          const hash = payloadHash(immutableInput, source, immutableAuthor, root.instanceId, identityGeneration.pluginId);
+-          const namespace = operationNamespace(root.instanceId, identityGeneration.pluginId);
+-          const existing = lookupP6rOperationReceipt(root.db, namespace, immutableInput.operationId);
+-          if (existing !== null && existing.payloadHash !== hash) return { status: "rejected", error: failure("invalid-operation", "Operation identifier was reused with different immutable acceptance data") };
+-          if (existing !== null) {
+-            return p6rOutcomeFromStoredReceipt(existing);
+-          }
+-          if (generations.get(identityGeneration.generation) !== identityGeneration) return { status: "rejected", error: failure("stale-context", "The plugin generation is no longer active") };
+-          const validate = (): P6rValidity => {
+-            if (
+-              generations.get(identityGeneration.generation) !== identityGeneration ||
+-              identityGeneration.lifetime.aborted
+-            ) {
+-              return { ok: false, code: "retired" };
+-            }
+-            return source === "scope"
+-              ? root.invocationRegistry.validateScope(request.source.scope)
+-              : { ok: true };
+-          };
+-          const validity = validate();
+-          if (!validity.ok) return { status: "rejected", error: failure("stale-context", "The invocation scope is no longer live") };
+-          if (root.native.accept === undefined) return { status: "rejected", error: failure("unavailable", "Native transactional acceptance is not configured") };
+-          const outcome = await root.native.accept({ authorEvidence: immutableAuthor, input: immutableInput, operationNamespace: namespace, payloadHash: hash, source, validate });
+-          if (outcome.status === "submitted") {
+-            notify(identityGeneration.generation, {
+-              kind: "participants",
+-              threadIds: [immutableInput.threadId],
+-            });
+-          }
+-          return outcome;
+-        },
++        accept: (request) => accept(request),
+         lookup: async (operationId) => {
+           const receipt = lookupP6rOperationReceipt(root.db, operationNamespace(root.instanceId, identityGeneration.pluginId), operationId);
+           if (receipt === null) return { ok: true, value: { status: "absent-final", retry: "same-operation-only" } };
+@@ -332,7 +537,8 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
+             attempts.length > 0 &&
+             attempts.every((attempt, index) => {
+               const entry = entries[index];
+-              return entry !== undefined &&
++              return (
++                entry !== undefined &&
+                 isP6rAttemptAwaitingNativeTurnLink(root.db, attempt) &&
+                 attempt.inputs.length > 0 &&
+                 attempt.inputs.every((source) =>
+@@ -341,7 +547,8 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
+                 entry.status === "partial" &&
+                 entry.correlation === null &&
+                 entry.missing.length === 0 &&
+-                entry.contributions.length > 0;
++                entry.contributions.length > 0
++              );
+             });
+           if (awaitingExactTurnLink) {
+             return { ok: true, value: { status: "pending" } };
+@@ -351,7 +558,8 @@ export function createP6rIdentityService(root: P6rIdentityServiceRoot): P6rIdent
+         directorySources: () => root.providerRegistry.directorySources(),
+         participants: async (input) => {
+           const records = listP6rContributions(root.db, operationNamespace(root.instanceId, identityGeneration.pluginId), { threadId: input.threadId });
+-          const entries = new Map<string, { identity: P6rParticipant["identity"]; presentation: P6rProfilePresentation; roles: Set<"author" | "editor"> }>();
++          const entries = new Map<string, { identity: P6rParticipant["identity"]; presentation: P6rProfilePresentation; roles: Set<"author" | "editor">;
++            }>();
+           const add = (actor: P6rActorSnapshot | null, role: "author" | "editor") => { if (actor === null) return; const entry = entries.get(actor.identity.key) ?? { identity: actor.identity, presentation: actor.presentation, roles: new Set<"author" | "editor">() }; entry.roles.add(role); entries.set(actor.identity.key, entry); };
+           for (const record of records) { const contributionValue = contribution(record); const authored = contributionValue.author.kind === "person" || contributionValue.author.kind === "external" || contributionValue.author.kind === "machine" ? contributionValue.author.actor : null; add(authored, "author"); add(contributionValue.latestEditor, "editor"); }
+           const roleOrder = ["author", "editor", "mentioned", "interaction-resolver"] as const;
+diff --git a/apps/server/src/services/p6r/native-acceptance.ts b/apps/server/src/services/p6r/native-acceptance.ts
+index f49a4e27959975b36977b42f72a2c53762dbf692..f199efadfcd4bfea22f6935a265ec064aed820c1 100644
+--- a/apps/server/src/services/p6r/native-acceptance.ts
++++ b/apps/server/src/services/p6r/native-acceptance.ts
+@@ -1,6 +1,7 @@
++import { p6rExternalContributionAuthor } from "./external-contribution.js";
+ import { projectP6rParticipantsInTransaction } from "./participant-projection.js";
+ import { getThread, type DbConnection } from "@bb/db";
+-import { promptInputSchema, type JsonObject, type JsonValue, type PromptInput, type Thread } from "@bb/domain";
++import { promptInputSchema, type P6rMessageAuthor, type JsonObject, type JsonValue, type PromptInput, type Thread } from "@bb/domain";
+ import type { SendMessageRequest } from "@bb/server-contract";
+ import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
+ import { requireThreadCommandEnvironment } from "../threads/thread-command-environment.js";
+@@ -14,7 +15,7 @@ import { lookupP6rOperationReceipt, acceptP6rOperationInTransaction, reserveP6rQ
+ export interface P6rNativeAcceptanceFactoryOptions {
+   readonly deps?: LoggedPendingInteractionWorkSessionDeps;
+   readonly db?: DbConnection;
+-  readonly dispatch?: (input: { readonly afterAppendInTransaction: SendThreadMessageTransactionCommit; readonly beforeAppendInTransaction: SendThreadMessageTransactionPreflight; readonly payload: SendMessageRequest; readonly thread: Thread }) => Promise<void>;
++  readonly dispatch?: (input: { readonly afterAppendInTransaction: SendThreadMessageTransactionCommit; readonly beforeAppendInTransaction: SendThreadMessageTransactionPreflight; readonly payload: SendMessageRequest; readonly p6rAuthors?: (P6rMessageAuthor | null)[]; readonly thread: Thread }) => Promise<void>;
+   readonly findThread?: (threadId: string) => Thread | null;
+   readonly now: () => number;
+   readonly retentionMs: number;
+@@ -44,6 +45,8 @@ export function createP6rNativeAcceptance(options: P6rNativeAcceptanceFactoryOpt
+     if (promptInput === null) return rejected("invalid-input", "P6r send input must contain native prompt inputs");
+     const thread = options.findThread?.(input.input.threadId) ?? (options.deps === undefined ? null : getThread(options.deps.db, input.input.threadId));
+     if (thread === null) return rejected("not-found", "P6r target thread was not found");
++    const personAuthor = p6rExternalContributionAuthor(input.authorEvidence);
++    const p6rAuthors = personAuthor === undefined ? undefined : [personAuthor];
+     const payload: SendMessageRequest = { input: promptInput, mode: input.input.mode };
+     const contributionId = `p6r-contribution:${input.payloadHash}`;
+     const beforeAppendInTransaction: SendThreadMessageTransactionPreflight = ({ tx }) => {
+@@ -75,6 +78,7 @@ export function createP6rNativeAcceptance(options: P6rNativeAcceptanceFactoryOpt
+       if (dispatchQueuedOperation) {
+         if (options.deps === undefined) return rejected("unavailable", "Native P6r pending-thread acceptance dependencies are unavailable");
+         await attemptDispatch(options.deps, {
++          p6rAuthors,
+           thread,
+           payload,
+           source: { kind: "inline" },
+@@ -115,11 +119,11 @@ export function createP6rNativeAcceptance(options: P6rNativeAcceptanceFactoryOpt
+           queuedBeforeAppendInTransaction: beforeAppendInTransaction,
+           queuedAfterAppendInTransaction: afterAppendInTransaction,
+         });
+-      } else if (options.dispatch !== undefined) await options.dispatch({ afterAppendInTransaction, beforeAppendInTransaction, payload, thread });
++      } else if (options.dispatch !== undefined) await options.dispatch({ afterAppendInTransaction, beforeAppendInTransaction, payload, p6rAuthors, thread });
+       else {
+         if (options.deps === undefined) return rejected("unavailable", "Native P6r acceptance dependencies are unavailable");
+         const environment = await requireThreadCommandEnvironment(options.deps, { thread });
+-        await sendThreadMessage(options.deps, { afterAppendInTransaction, beforeAppendInTransaction, environment, payload, thread, trigger: "user" });
++        await sendThreadMessage(options.deps, { p6rAuthors, afterAppendInTransaction, beforeAppendInTransaction, environment, payload, thread, trigger: "user" });
+       }
+     } catch (error) {
+       if (error instanceof ExistingP6rOperation) return p6rOutcomeFromStoredReceipt(error.receipt);
+diff --git a/apps/server/src/services/p6r/native-authorship.ts b/apps/server/src/services/p6r/native-authorship.ts
+index 277476c5b399e60d47bf68f5ab41408822168e1a..9d9e3295afa629f02b4a2af9b177fa8263b3920f 100644
+--- a/apps/server/src/services/p6r/native-authorship.ts
++++ b/apps/server/src/services/p6r/native-authorship.ts
+@@ -69,7 +69,7 @@ export function withP6rNativeAuthorContext(
+     return { input, ...(groups === undefined ? {} : { inputGroups: groups }) };
+   const enriched = (groups ?? [input]).map((group, index) => {
+     const sender = authors?.[index] ?? editors?.[index];
+-    if (!sender) return group;
++    if (!sender || sender.evidence === "integration-asserted") return group;
+     const from = senderLabel(sender);
+     const marker = (text: string): PromptInput => ({
+       type: "text",
+diff --git a/apps/server/test/services/p6r/external-contribution.test.ts b/apps/server/test/services/p6r/external-contribution.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..1a05d486e2a411dec735ffe5de9a2a7e4b31c9cf
+--- /dev/null
++++ b/apps/server/test/services/p6r/external-contribution.test.ts
+@@ -0,0 +1,521 @@
++import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
++import { join } from "node:path";
++import { tmpdir } from "node:os";
++import { describe, expect, it } from "vitest";
++import { createMigratedConnection } from "@bb/db/testing";
++import {
++  createConnection,
++  listEvents,
++  listQueuedThreadMessages,
++  listCoreParticipantProfilePage,
++  setThreadExecutionOverride,
++  setQueuedThreadMessageGroupBoundary,
++} from "@bb/db";
++import { turnRequestEventDataSchema } from "@bb/domain";
++import {
++  createP6rIdentityService,
++  type P6rNativeAcceptance,
++} from "../../../src/services/p6r/identity-protocol.js";
++import { createP6rInvocationRegistry } from "../../../src/services/p6r/invocation-registry.js";
++import { createP6rProviderRegistry } from "../../../src/services/p6r/provider-registry.js";
++import { createP6rNativeAcceptance } from "../../../src/services/p6r/native-acceptance.js";
++import { migrateP6rSidecars } from "../../../src/services/p6r/sidecar-migrate.js";
++import { p6rExternalContributionV1Schema } from "../../../src/services/p6r/external-contribution.js";
++import { withP6rNativeAuthorContext } from "../../../src/services/p6r/native-authorship.js";
++import {
++  createQueuedMessageForThread,
++  sendNextQueuedMessageIfPresent,
++} from "../../../src/services/threads/queued-messages.js";
++import { applyLoggedThreadLifecycleEvent } from "../../../src/services/threads/lifecycle-outcome.js";
++import { clearQueuedMessageWait } from "../../../src/services/threads/queue-waits.js";
++import {
++  seedHostSession,
++  seedProjectWithSource,
++  seedEnvironment,
++  seedThread,
++  seedThreadRuntimeState,
++} from "../../helpers/seed.js";
++import { withTestHarness } from "../../helpers/test-app.js";
++
++const contribution = {
++  version: 1 as const,
++  author: {
++    subject: "T/U",
++    presentation: {
++      displayName: "Slack user U",
++      handle: null,
++      avatarUrl: null,
++    },
++  },
++  personAttribution: {
++    identity: {
++      kind: "person" as const,
++      key: "person:cole",
++      issuer: "tailnet",
++      subject: "cole",
++    },
++    presentation: { displayName: "Cole", handle: "cole", avatarUrl: null },
++    evidence: "integration-asserted" as const,
++  },
++};
++const input = {
++  operationId: "operation-1",
++  threadId: "thread-1",
++  mode: "start" as const,
++  input: [
++    {
++      type: "text" as const,
++      text: "[sender=slack:cole]\nHello\n[/sender=slack:cole]",
++      mentions: [],
++    },
++  ],
++};
++
++function service(
++  db: ReturnType<typeof createMigratedConnection>,
++  accept: (
++    value: P6rNativeAcceptance,
++  ) => ReturnType<ReturnType<typeof createP6rNativeAcceptance>>,
++) {
++  const root = createP6rIdentityService({
++    db,
++    instanceId: "instance",
++    invocationRegistry: createP6rInvocationRegistry(),
++    providerRegistry: createP6rProviderRegistry({ now: () => 100 }),
++    providerConfiguration: () => null,
++    native: { accept },
++    now: () => 100,
++    bindInvocation: () => ({
++      handler: () => {
++        throw new Error("Unused fixture binding");
++      },
++      registration: { generation: "g", status: "active", dispose() {} },
++    }),
++    activateBindings() {},
++    retireBindings() {},
++    trustedInvocation: async () => null,
++  });
++  const extension = root.forPluginGeneration(
++    "plugin",
++    "generation",
++    new AbortController().signal,
++  );
++  extension.activate();
++  return { root, extension, protocol: extension.protocol };
++}
++
++describe("versioned external person attribution", () => {
++  it("rejects malformed and unsupported identities before native dispatch; legacy hash stays unchanged", async () => {
++    const db = createMigratedConnection();
++    migrateP6rSidecars(db);
++    const calls: P6rNativeAcceptance[] = [];
++    const { protocol } = service(db, async (value) => {
++      calls.push(value);
++      return {
++        status: "rejected",
++        error: { code: "unavailable", message: "fixture", retry: "never" },
++      };
++    });
++    for (const person of [
++      null,
++      { ...contribution.personAttribution, evidence: "provider-verified" },
++      {
++        ...contribution.personAttribution,
++        identity: { kind: "default-user", key: "local:i", instanceId: "i" },
++      },
++    ]) {
++      const result = await protocol.externalContributions.acceptV1({
++        contribution: {
++          ...contribution,
++          personAttribution: person,
++        } as unknown as typeof contribution,
++        input,
++      });
++      expect(result).toMatchObject({
++        status: "rejected",
++        error: { code: "invalid-input" },
++      });
++    }
++    expect(calls).toHaveLength(0);
++    await protocol.accept({
++      source: { kind: "external", author: contribution.author },
++      input,
++    });
++    const legacy = calls[0]!;
++    expect(legacy.authorEvidence).not.toHaveProperty("externalContribution");
++    expect(legacy.payloadHash).toBe(
++      "1be74263f8a067d072c55e3a9dd4edb9a87db3bfcaa2e7bfea7c7f614828ad52",
++    );
++    await protocol.externalContributions.acceptV1({ contribution, input });
++    expect(calls[1]!.payloadHash).not.toBe(legacy.payloadHash);
++    expect(calls[1]!.authorEvidence).toMatchObject({
++      identity: { kind: "external", subject: "T/U" },
++      externalContribution: contribution,
++    });
++    await protocol.accept({
++      source: { kind: "external", author: contribution.author },
++      input,
++    });
++    expect(calls[2]!.payloadHash).toBe(legacy.payloadHash);
++  });
++
++  it("person issuer and subject match the public 512-character boundary", () => {
++    for (const field of ["issuer", "subject"] as const) {
++      const value = structuredClone(contribution);
++      value.personAttribution.identity[field] = "a".repeat(512);
++      expect(p6rExternalContributionV1Schema.safeParse(value).success).toBe(true);
++      value.personAttribution.identity[field] += "a";
++      expect(p6rExternalContributionV1Schema.safeParse(value).success).toBe(false);
++    }
++  });
++
++  it("native metadata does not wrap producer input a second time", () => {
++    const result = withP6rNativeAuthorContext(input.input, [
++      contribution.personAttribution,
++    ]);
++    expect(result.input).toEqual(input.input);
++  });
++
++  it("mixed ordinary/external queues retain group-local people, origin, prompt bytes and receipts", async () => {
++    await withTestHarness(async (harness) => {
++      const { host } = seedHostSession(harness.deps, {
++        id: "person-queue-host",
++      });
++      const { project } = seedProjectWithSource(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/person-queue",
++      });
++      const environment = seedEnvironment(harness.deps, {
++        hostId: host.id,
++        path: "/tmp/person-queue",
++        projectId: project.id,
++        status: "ready",
++      });
++      const thread = seedThread(harness.deps, {
++        environmentId: environment.id,
++        projectId: project.id,
++        status: "active",
++      });
++      seedThreadRuntimeState(harness.deps, {
++        environmentId: environment.id,
++        providerThreadId: "person-queue-provider",
++        threadId: thread.id,
++      });
++      setThreadExecutionOverride(harness.db, {
++        modelOverride: "gpt-5",
++        threadId: thread.id,
++      });
++      const native = createP6rNativeAcceptance({
++        deps: harness.deps,
++        now: () => 100,
++        retentionMs: 1000,
++      });
++      const { root, protocol } = service(harness.db, native);
++      const ordinary = await createQueuedMessageForThread(harness.deps, {
++        thread,
++        payload: {
++          input: [{ type: "text", text: "ordinary lead", mentions: [] }],
++          model: "gpt-5",
++          permissionMode: "full",
++          reasoningLevel: "medium",
++          serviceTier: "default",
++        },
++      });
++      const request = {
++        contribution: structuredClone(contribution),
++        input: {
++          ...input,
++          threadId: thread.id,
++          mode: "queue-if-active" as const,
++        },
++      };
++      expect(
++        await protocol.externalContributions.acceptV1(request),
++      ).toMatchObject({ status: "indeterminate" });
++      const legacyInput = {
++        ...request.input,
++        operationId: "operation-legacy",
++        input: [
++          { type: "text" as const, text: "legacy external", mentions: [] },
++        ],
++      };
++      expect(
++        await protocol.accept({
++          source: { kind: "external", author: contribution.author },
++          input: legacyInput,
++        }),
++      ).toMatchObject({ status: "indeterminate" });
++      const queued = listQueuedThreadMessages(harness.db, thread.id);
++      expect(queued).toHaveLength(3);
++      expect(
++        setQueuedThreadMessageGroupBoundary({
++          db: harness.db,
++          notifier: harness.hub,
++          groupBoundaryQueuedMessageId: queued[2]!.id,
++          expectedGroupedPrefixQueuedMessageIds: queued.map((row) => row.id),
++          threadId: thread.id,
++        }),
++      ).toMatchObject({ kind: "updated" });
++      request.contribution.personAttribution.presentation.displayName =
++        "Changed after enqueue";
++      expect(
++        await protocol.externalContributions.acceptV1(request),
++      ).toMatchObject({
++        status: "rejected",
++        error: { code: "invalid-operation" },
++      });
++      expect(
++        await protocol.externalContributions.lookupV1(input.operationId),
++      ).toEqual({ ok: true, value: { status: "pending" } });
++      applyLoggedThreadLifecycleEvent(harness.deps, {
++        event: { type: "run.succeeded" },
++        threadId: thread.id,
++      });
++      for (const row of queued)
++        clearQueuedMessageWait(harness.deps, {
++          queuedMessageId: row.id,
++          threadId: thread.id,
++        });
++      expect(
++        await sendNextQueuedMessageIfPresent(harness.deps, {
++          threadId: thread.id,
++        }),
++      ).toBe(true);
++      const events = listEvents(harness.db, { threadId: thread.id }).filter(
++        (event) => event.type === "client/turn/requested",
++      );
++      const acceptedEvent = turnRequestEventDataSchema.parse(
++        JSON.parse(events.at(-1)!.data),
++      );
++      expect(acceptedEvent.p6rAuthors).toEqual([
++        null,
++        contribution.personAttribution,
++        null,
++      ]);
++      expect(JSON.stringify(acceptedEvent)).toContain("[sender=slack:cole]");
++      expect(JSON.stringify(acceptedEvent)).not.toContain("[sender=cole]");
++      const outcome = await protocol.externalContributions.acceptV1({
++        contribution,
++        input: { ...input, threadId: thread.id, mode: "queue-if-active" },
++      });
++      expect(outcome.status).toBe("submitted");
++      if (outcome.status !== "submitted")
++        throw new Error("Expected native acceptance");
++      expect(outcome.receipt.externalContribution).toEqual(contribution);
++      const replacement = root.forPluginGeneration(
++        "plugin",
++        "generation-next",
++        new AbortController().signal,
++      );
++      replacement.activate();
++      expect(
++        await replacement.protocol.externalContributions.lookupV1(
++          input.operationId,
++        ),
++      ).toEqual({ ok: true, value: { status: "final", outcome } });
++      const history = await replacement.protocol.historyContributions({
++        kind: "references",
++        references: outcome.receipt.references,
++      });
++      expect(history).toMatchObject({
++        ok: true,
++        value: {
++          status: "known",
++          items: [
++            {
++              author: {
++                kind: "external",
++                actor: { identity: { subject: "T/U" } },
++              },
++              personAttribution: contribution.personAttribution,
++            },
++          ],
++        },
++      });
++      expect(
++        listCoreParticipantProfilePage(harness.db, {
++          threadId: thread.id,
++          pageSize: 20,
++        }).profiles,
++      ).toEqual(
++        expect.arrayContaining([
++          expect.objectContaining({ p6rPrincipalKey: "person:cole" }),
++        ]),
++      );
++      expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
++      expect(ordinary.id).toBe(queued[0]!.id);
++    });
++  });
++  it
++    .skipIf(!process.env.P6R_IDENTITY_PACKAGE_ROOT)
++    .each(["host", "producer"] as const)(
++    "installed public binding on native acceptance preserves %s rendering and lost-response recovery",
++    async (rendering) => {
++      const packageRoot = process.env.P6R_IDENTITY_PACKAGE_ROOT!;
++      const { bindBbIdentity } = await import(
++        `${packageRoot}/dist/bb-entry-runtime.js`
++      );
++      await withTestHarness(async (harness) => {
++        const { host } = seedHostSession(harness.deps, {
++          id: `packed-${rendering}`,
++        });
++        const { project } = seedProjectWithSource(harness.deps, {
++          hostId: host.id,
++          path: "/tmp/packed-attribution",
++        });
++        const environment = seedEnvironment(harness.deps, {
++          hostId: host.id,
++          path: "/tmp/packed-attribution",
++          projectId: project.id,
++          status: "ready",
++        });
++        const thread = seedThread(harness.deps, {
++          environmentId: environment.id,
++          projectId: project.id,
++          status: "idle",
++        });
++        seedThreadRuntimeState(harness.deps, {
++          environmentId: environment.id,
++          providerThreadId: "packed-provider",
++          threadId: thread.id,
++        });
++        setThreadExecutionOverride(harness.db, {
++          modelOverride: "gpt-5",
++          threadId: thread.id,
++        });
++        const { protocol } = service(
++          harness.db,
++          createP6rNativeAcceptance({
++            deps: harness.deps,
++            now: () => 100,
++            retentionMs: 1000,
++          }),
++        );
++        const baseline = listEvents(harness.db, { threadId: thread.id }).filter(
++          (event) => event.type === "client/turn/requested",
++        ).length;
++        let loseResponse = true;
++        const original = protocol.externalContributions.acceptV1;
++        const extension = {
++          ...protocol,
++          externalContributions: {
++            ...protocol.externalContributions,
++            async acceptV1(request: Parameters<typeof original>[0]) {
++              const result = await original(request);
++              if (loseResponse) {
++                loseResponse = false;
++                throw new Error("lost response after native commit");
++              }
++              return result;
++            },
++          },
++        };
++        const bound = bindBbIdentity(
++          {
++            pluginId: "plugin",
++            experimental_p6rIdentity: extension,
++            rpc: { register() {} },
++            realtime: { publish() {} },
++            onDispose() {},
++            sdk: {
++              threads: {
++                async send() {
++                  throw new Error("Must use native acceptance");
++                },
++              },
++              plugins: { async callRpc() {} },
++            },
++          },
++          { externalMessageRendering: rendering },
++        );
++        expect(bound.ok).toBe(true);
++        if (!bound.ok) throw new Error(bound.error.message);
++        const binding = bound.value;
++        let closePlugin = () => {};
++        try {
++          const request = { ...input, threadId: thread.id };
++          let send = () => binding.server.sendExternalContribution(contribution, request);
++          let lookup = () => binding.server.lookupExternalContribution(input.operationId);
++          const pluginRoot = process.env.P6R_ROSETTA_SOURCE_ROOT;
++          if (pluginRoot) {
++            const stateModule = await import(`${pluginRoot}/state.ts`);
++            const { queueHealthMigration } = await import(`${pluginRoot}/queue-health.ts`);
++            const external = await import(`${pluginRoot}/external-submission.ts`);
++            const db = Reflect.construct(harness.db.$client.constructor, [":memory:"]);
++            closePlugin = () => db.close();
++            for (const migration of [stateModule.durableStateMigration, stateModule.conversationExecutionTargetMigration,
++              stateModule.conversationAgentSnapshotMigration, queueHealthMigration, stateModule.slackExternalSubmissionMigration,
++              stateModule.slackExternalContributionMigration]) db.exec(migration);
++            const state = new stateModule.SlackState(db, () => 100);
++            state.enqueueWork({ id: "work-1", eventId: "event-1", teamId: "T", userId: "U", channelId: "C",
++              rootTs: "1", triggerTs: "1", triggerHash: "revision-1", threadId: thread.id });
++            const submission = state.reserveExternalSubmission({ operation_id: input.operationId, work_id: "work-1", team_id: "T",
++              slack_user_id: "U", source_channel_id: "C", source_ts: "1", source_revision: "revision-1",
++              author_json: JSON.stringify(contribution.author), submission_format: "v1", contribution_json: JSON.stringify(contribution),
++              thread_id: thread.id, mode: "start", input_json: JSON.stringify(request.input), fingerprint: "packed-native-fixture" });
++            const run = (fresh: boolean) => external.submitReservedSlackContribution({ state, gateway: binding.server, submission,
++              threadId: thread.id, prompts: request.input, mode: "start", fresh, inFlight: new Map() });
++            send = async () => ({ status: await run(true) });
++            lookup = async () => {
++              expect(await run(false)).toBe("submitted");
++              return await external.lookupReservedSlackContribution(binding.server, state.externalSubmissionByOperation(input.operationId));
++            };
++          }
++          const result = await send();
++          expect(result.status).toBe("indeterminate");
++          const recovered = await lookup();
++          expect(recovered).toMatchObject({
++            ok: true,
++            value: {
++              status: "final",
++              outcome: {
++                status: "submitted",
++                receipt: { externalContribution: contribution },
++              },
++            },
++          });
++          const restartDirectory = mkdtempSync(
++            join(tmpdir(), "external-person-restart-"),
++          );
++          try {
++            const path = join(restartDirectory, "state.sqlite");
++            writeFileSync(path, harness.db.$client.serialize());
++            for (let restart = 0; restart < 2; restart++) {
++              const reopened = createConnection(path);
++              try {
++                const recoveredHost = service(reopened, async () => {
++                  throw new Error("Recovery must not dispatch");
++                });
++                expect(
++                  await recoveredHost.protocol.externalContributions.lookupV1(
++                    input.operationId,
++                  ),
++                ).toEqual(recovered);
++              } finally {
++                reopened.$client.close();
++              }
++            }
++          } finally {
++            rmSync(restartDirectory, { recursive: true, force: true });
++          }
++          const requests = listEvents(harness.db, { threadId: thread.id })
++            .filter((event) => event.type === "client/turn/requested")
++            .slice(baseline);
++          expect(requests).toHaveLength(1);
++          const event = turnRequestEventDataSchema.parse(
++            JSON.parse(requests[0]!.data),
++          );
++          expect(event.p6rAuthors).toEqual([contribution.personAttribution]);
++          const serialized = JSON.stringify(event.input);
++          expect(serialized).toContain("[sender=slack:cole]");
++          if (rendering === "producer")
++            expect(event.input).toEqual(input.input);
++          else expect(serialized).toContain("Slack user U");
++        } finally {
++          binding.dispose();
++          closePlugin();
++        }
++      });
++    },
++  );
++});
+diff --git a/packages/domain/src/p6r-message-author.ts b/packages/domain/src/p6r-message-author.ts
+index 5d0c2c16796f248678cf1791ed9f6b5d2cfc98b0..13fd7ebb24699ec9bdef7b8cded5d5851ed9addd 100644
+--- a/packages/domain/src/p6r-message-author.ts
++++ b/packages/domain/src/p6r-message-author.ts
+@@ -1,7 +1,7 @@
+ import { z } from "zod";
+ 
+ const personAuthorSchema = z.object({
+-  evidence: z.literal("provider-verified"),
++  evidence: z.enum(["provider-verified", "integration-asserted"]),
+   identity: z.object({
+     kind: z.literal("person"),
+     key: z.string().min(1),
+-- 
+2.53.0
+
