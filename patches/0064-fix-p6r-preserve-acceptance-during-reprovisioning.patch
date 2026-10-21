@@ -1,0 +1,207 @@
+From 40719526c2a5b268588064dcc7b7ae99c890d3eb Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Wed, 21 Oct 2026 13:38:00 +0200
+Subject: [PATCH] fix(p6r): preserve acceptance during thread reprovisioning
+
+---
+ .../services/threads/thread-provisioning.ts   |  5 ++
+ .../src/services/threads/thread-send.ts       |  1 +
+ .../services/threads/thread-turn-dispatch.ts  |  5 ++
+ .../p6r/external-contribution.test.ts         | 74 +++++++++++++++++++
+ .../test/threads/thread-turn-dispatch.test.ts | 34 +++++++++
+ 5 files changed, 119 insertions(+)
+
+diff --git a/apps/server/src/services/threads/thread-provisioning.ts b/apps/server/src/services/threads/thread-provisioning.ts
+index fd53601de82888092183fdeb0908cd5f00764a97..936911de8e659b2294e36e1ac6763617c7ecd689 100644
+--- a/apps/server/src/services/threads/thread-provisioning.ts
++++ b/apps/server/src/services/threads/thread-provisioning.ts
+@@ -1,3 +1,4 @@
++import type { SendThreadMessageTransactionCommit } from "./thread-send.js";
+ import {
+   getLatestThreadSequence,
+   getNonDestroyedHostByLaunchKey,
+@@ -88,6 +89,7 @@ interface RequestThreadTargetReprovisionArgs {
+   p6rAuthors?: P6rMessageAuthors;
+   p6rEditors?: P6rMessageEditors;
+   p6rMentionedTargets?: P6rMentionTarget[];
++  afterRequestAppendInTransaction?: SendThreadMessageTransactionCommit;
+   beforeRequestAppendInTransaction?: (args: { tx: DbTransaction }) => void;
+   environment: EnvironmentRow;
+   execution: ResolvedThreadExecutionOptions;
+@@ -562,6 +564,9 @@ function appendReprovisionTurnRequest(
+           requestSequence: request.sequence,
+         },
+       );
++      args.afterRequestAppendInTransaction?.({
++        inputGroups: args.inputGroups ?? [args.input], request, tx,
++      });
+       return request;
+     },
+     { behavior: "immediate" },
+diff --git a/apps/server/src/services/threads/thread-send.ts b/apps/server/src/services/threads/thread-send.ts
+index c2c51c90cf060d4822b9714da6f06239922dbdd9..5097979d171d9849d9348f7de2eb1d09a8b30453 100644
+--- a/apps/server/src/services/threads/thread-send.ts
++++ b/apps/server/src/services/threads/thread-send.ts
+@@ -656,6 +656,7 @@ async function sendThreadMessageWithoutContextClear(
+       p6rEditors,
+       p6rMentionedTargets,
+       beforeRequestAppendInTransaction: beforeAppendInTransaction,
++      afterRequestAppendInTransaction: afterAppendInTransaction,
+       deps,
+       environment,
+       execution,
+diff --git a/apps/server/src/services/threads/thread-turn-dispatch.ts b/apps/server/src/services/threads/thread-turn-dispatch.ts
+index 469f69290eeaf7b75b72d1fdd3e696da0ed4b191..c4390186e71519d387fa7290dee1fe2ad2ac5126 100644
+--- a/apps/server/src/services/threads/thread-turn-dispatch.ts
++++ b/apps/server/src/services/threads/thread-turn-dispatch.ts
+@@ -1,3 +1,4 @@
++import type { SendThreadMessageTransactionCommit } from "./thread-send.js";
+ import type { P6rMentionTarget } from "@bb/domain";
+ import type {
+   P6rMessageAuthors,
+@@ -34,6 +35,7 @@ interface DispatchTurnDuringReprovisionArgs {
+   p6rAuthors?: P6rMessageAuthors;
+   p6rEditors?: P6rMessageEditors;
+   p6rMentionedTargets?: P6rMentionTarget[];
++  afterRequestAppendInTransaction?: SendThreadMessageTransactionCommit;
+   beforeRequestAppendInTransaction?: (args: { tx: DbTransaction }) => void;
+   deps: LoggedPendingInteractionWorkSessionDeps;
+   environment: EnvironmentRow;
+@@ -88,6 +90,9 @@ export async function dispatchTurnDuringReprovision(
+           throwEnvironmentNotReady(args.environment);
+         }
+       },
++      p6rAuthors: args.p6rAuthors,
++      p6rEditors: args.p6rEditors,
++      afterRequestAppendInTransaction: args.afterRequestAppendInTransaction,
+       p6rMentionedTargets: args.p6rMentionedTargets,
+       environment: args.environment,
+       execution: args.execution,
+diff --git a/apps/server/test/services/p6r/external-contribution.test.ts b/apps/server/test/services/p6r/external-contribution.test.ts
+index 1a05d486e2a411dec735ffe5de9a2a7e4b31c9cf..b80e14cdefe8814f4b16180c3cb8be656b15888b 100644
+--- a/apps/server/test/services/p6r/external-contribution.test.ts
++++ b/apps/server/test/services/p6r/external-contribution.test.ts
+@@ -518,4 +518,78 @@ describe("versioned external person attribution", () => {
+       });
+     },
+   );
++  it.skipIf(!process.env.P6R_IDENTITY_PACKAGE_ROOT || !process.env.P6R_ROSETTA_SOURCE_ROOT).each([false, true])(
++    "composed Rosetta restart before receipt persistence (reprovision=%s)", async reprovision => {
++      const { bindBbIdentity } = await import(`${process.env.P6R_IDENTITY_PACKAGE_ROOT!}/dist/bb-entry-runtime.js`);
++      const root = process.env.P6R_ROSETTA_SOURCE_ROOT!;
++      const stateModule = await import(`${root}/state.ts`);
++      const external = await import(`${root}/external-submission.ts`);
++      const { queueHealthMigration } = await import(`${root}/queue-health.ts`);
++      await withTestHarness(async harness => {
++        const directory = mkdtempSync(join(tmpdir(), "composed-attribution-restart-"));
++        const slackPath = join(directory, "slack.sqlite"), nativePath = join(directory, "native.sqlite");
++        let slackDb = Reflect.construct(harness.db.$client.constructor, [slackPath]);
++        let reopenedNative: ReturnType<typeof createConnection> | undefined;
++        let dispose = () => {};
++        try {
++          for (const migration of [stateModule.durableStateMigration, stateModule.conversationExecutionTargetMigration,
++            stateModule.conversationAgentSnapshotMigration, queueHealthMigration, stateModule.slackExternalSubmissionMigration,
++            stateModule.slackExternalContributionMigration]) slackDb.exec(migration);
++          let state = new stateModule.SlackState(slackDb, () => 100);
++          const { host } = seedHostSession(harness.deps, { id: "composed-restart-host" });
++          const { project } = seedProjectWithSource(harness.deps, { hostId: host.id, path: directory });
++          const environment = seedEnvironment(harness.deps, { hostId: host.id, path: directory, projectId: project.id,
++            status: reprovision ? "error" : "ready", isGitRepo: false,
++            ...(reprovision ? { environmentProviderId: "personal-workspace", environmentProviderPluginId: "bb-plugin-environment-personal-workspace" } : {}) });
++          const thread = seedThread(harness.deps, { environmentId: environment.id, projectId: project.id, status: "idle" });
++          seedThreadRuntimeState(harness.deps, { environmentId: environment.id, providerThreadId: "restart-provider", threadId: thread.id });
++          setThreadExecutionOverride(harness.db, { modelOverride: "gpt-5", threadId: thread.id });
++          const baseline = listEvents(harness.db, { threadId: thread.id }).filter(e => e.type === "client/turn/requested").length;
++          const initialProtocol = service(harness.db, createP6rNativeAcceptance({ deps: harness.deps, now: () => 100, retentionMs: 1000 })).protocol;
++          const bind = (protocol: typeof initialProtocol) => {
++            const result = bindBbIdentity({ pluginId: "plugin", experimental_p6rIdentity: protocol,
++              rpc: { register() {} }, realtime: { publish() {} }, onDispose() {},
++              sdk: { threads: { async send() { throw new Error("No fallback dispatch"); } }, plugins: { async callRpc() {} } },
++            }, { externalMessageRendering: "producer" });
++            expect(result.ok).toBe(true); if (!result.ok) throw new Error(result.error.message);
++            return result.value;
++          };
++          const extension = { ...initialProtocol, externalContributions: { ...initialProtocol.externalContributions,
++            async acceptV1(request: Parameters<typeof initialProtocol.externalContributions.acceptV1>[0]) {
++              await initialProtocol.externalContributions.acceptV1(request);
++              throw new Error("Native commit response lost");
++            } } };
++          let binding = bind(extension); dispose = () => binding.dispose();
++          state.enqueueWork({ id: "work-1", eventId: "event-1", teamId: "T", userId: "U", channelId: "C",
++            rootTs: "1", triggerTs: "1", triggerHash: "revision-1", threadId: thread.id });
++          const reserved = state.reserveExternalSubmission({ operation_id: input.operationId, work_id: "work-1", team_id: "T",
++            slack_user_id: "U", source_channel_id: "C", source_ts: "1", source_revision: "revision-1",
++            author_json: JSON.stringify(contribution.author), submission_format: "v1", contribution_json: JSON.stringify(contribution),
++            thread_id: thread.id, mode: "start", input_json: JSON.stringify(input.input), fingerprint: "composed-restart" });
++          const run = (fresh: boolean) => external.submitReservedSlackContribution({ state, gateway: binding.server, submission: reserved,
++            threadId: thread.id, prompts: input.input, mode: "start", fresh, inFlight: new Map() });
++          expect(await run(true)).toBe("indeterminate");
++          expect(state.externalSubmissionByOperation(input.operationId).status).toBe("indeterminate");
++          binding.dispose(); slackDb.close();
++          writeFileSync(nativePath, harness.db.$client.serialize());
++          reopenedNative = createConnection(nativePath);
++          const recovered = service(reopenedNative, async () => { throw new Error("Restart recovery must not dispatch"); });
++          binding = bind(recovered.protocol);
++          slackDb = Reflect.construct(harness.db.$client.constructor, [slackPath]);
++          state = new stateModule.SlackState(slackDb, () => 200);
++          expect(await run(false)).toBe("submitted");
++          const stored = JSON.parse(state.externalSubmissionByOperation(input.operationId).outcome_json);
++          expect(stored.receipt.externalContribution).toEqual(contribution);
++          const events = listEvents(reopenedNative, { threadId: thread.id }).filter(e => e.type === "client/turn/requested").slice(baseline);
++          expect(events).toHaveLength(1);
++          const accepted = turnRequestEventDataSchema.parse(JSON.parse(events[0]!.data));
++          expect(accepted.p6rAuthors).toEqual([contribution.personAttribution]);
++          expect(accepted.input).toEqual(input.input);
++        } finally {
++          dispose(); if (slackDb.open) slackDb.close(); reopenedNative?.$client.close();
++          rmSync(directory, { recursive: true, force: true });
++        }
++      });
++    });
++
+ });
+diff --git a/apps/server/test/threads/thread-turn-dispatch.test.ts b/apps/server/test/threads/thread-turn-dispatch.test.ts
+index cd874c2d630241ad494546c6e778a98c58f138ee..78f98dbba8f155ae1a78b8f4956d62b276987ff6 100644
+--- a/apps/server/test/threads/thread-turn-dispatch.test.ts
++++ b/apps/server/test/threads/thread-turn-dispatch.test.ts
+@@ -74,3 +74,37 @@ it("leaves reprovision unstarted when dispatch admission rejects the request", a
+     expect(notifyThread).not.toHaveBeenCalled();
+   });
+ });
++
++it("reprovision keeps captured authors/editors and rolls back when acceptance commit fails", async () => {
++  await withTestHarness(async harness => {
++    const { host } = seedHostSession(harness.deps);
++    const { project } = seedProjectWithSource(harness.deps, { hostId: host.id });
++    const environment = seedEnvironment(harness.deps, { hostId: host.id, projectId: project.id, status: "error",
++      path: "/tmp/reprovision-acceptance", environmentProviderId: "personal-workspace",
++      environmentProviderPluginId: "bb-plugin-environment-personal-workspace", isGitRepo: false });
++    const thread = seedThread(harness.deps, { projectId: project.id, environmentId: environment.id, status: "idle" });
++    const execution = await buildExecutionOptions(harness.deps,
++      { model: "gpt-5", reasoningLevel: "medium", serviceTier: "default", permissionMode: "full" }, { threadId: thread.id });
++    const person = { evidence: "integration-asserted" as const, identity: { kind: "person" as const, key: "person:test", issuer: "fixture", subject: "test" },
++      presentation: { displayName: "Test person", handle: null, avatarUrl: null } };
++    const editor = { ...person, evidence: "provider-verified" as const };
++    const input = textInput("frozen input"), before = listEvents(harness.db, { threadId: thread.id });
++    const failure = new Error("acceptance write failed");
++    let commits = 0;
++    await expect(dispatchTurnDuringReprovision({ deps: harness.deps, environment, execution, initiator: "user", input,
++      senderThreadId: null, thread, p6rAuthors: [person], p6rEditors: [editor],
++      afterRequestAppendInTransaction: ({request, inputGroups}) => {
++        commits++;
++        expect(inputGroups).toEqual([input]);
++        const event = listEvents(harness.db, { threadId: thread.id }).find(e => e.type === "client/turn/requested" && JSON.parse(e.data).requestId === request.requestId);
++        expect(event).toBeDefined();
++        expect(JSON.parse(event!.data)).toMatchObject({p6rAuthors:[person],p6rEditors:[editor]});
++        throw failure;
++      },
++    })).rejects.toBe(failure);
++    expect(commits).toBe(1);
++    expect(listEvents(harness.db, { threadId: thread.id })).toEqual(before);
++    expect(getThread(harness.db, thread.id)?.status).toBe("idle");
++    expect(readThreadProvisionContext(harness.db, thread.id)).toBeNull();
++  });
++});
+-- 
+2.53.0
+

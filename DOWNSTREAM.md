@@ -459,3 +459,7 @@ Adds an optional contribution subprotocol under identity protocol1. It retains a
 The public bb-identity0.3 API negotiates support before fresh reservation and confirms the stored snapshot in receipts. Rosetta stores its selected format and contribution before dispatch. Unknown outcomes reconcile the same operation through its stored version. Producer prompts remain byte-for-byte intact.
 
 Native history written with integration-asserted person evidence requires this capable reader on rollback. Draining queues or downgrading plugins does not permit older native readers. See [the scope and compatibility note](docs/external-person-attribution.md) for the approved fork justification and verification boundary.
+
+## Attribution recovery corrections (patch64)
+
+Reprovisioning now forwards the captured native authors/editors and existing acceptance callback, committing the receipt in the same transaction as the request. Callback failure rolls back both request and preparing transition. This closes a hole in patch63's native acceptance guarantee rather than adding another product capability. A separately named composed regression requires both registry-package and Rosetta roots, closes/reopens both stores after native response loss, and proves one attributed request in ready and reprovisioning paths. Cole owns subsequent service redeployment; these are source and test changes only.
