@@ -463,3 +463,11 @@ Native history written with integration-asserted person evidence requires this c
 ## Attribution recovery corrections (patch64)
 
 Reprovisioning now forwards the captured native authors/editors and existing acceptance callback, committing the receipt in the same transaction as the request. Callback failure rolls back both request and preparing transition. This closes a hole in patch63's native acceptance guarantee rather than adding another product capability. A separately named composed regression requires both registry-package and Rosetta roots, closes/reopens both stores after native response loss, and proves one attributed request in ready and reprovisioning paths. Cole owns subsequent service redeployment; these are source and test changes only.
+
+## Codex rejection diagnostics (patch65)
+
+Patch 0026 redacts provider response bodies so a rejected Codex request surfaced as one constant message. Provider-codex now classifies the rejection into a closed kind (`bridge/remote-error.ts`: a declarative rule table keyed by request method, JSON-RPC code, and message shape) and reports the request method, the numeric code, and an authored summary for recognized kinds, including the subscription router's no-capacity, ceilings, not-connected, and child-exited failures. The response body is read once to choose the kind and is never retained, so the redaction boundary is unchanged; free-text router reasons (account labels, usage figures) remain redacted. Malformed-response and timeout errors also name their method. Source and test changes only; the host bundle redeploy is separate.
+
+Router-owned JSON-RPC codes (-32080, -32081, -32084) are classified only against router rules and never fall through to lifecycle recovery rules, so a router envelope that interpolates account labels cannot be mistaken for a recoverable archive or writer-lock outcome. Router recognition still depends on message text; the router emitting an allowlisted `error.data.kind` would replace it.
+
+Removal condition: patch65 depends on patch26's redaction boundary and should be folded into 0026 at the next deliberate queue refresh, or dropped if upstream provides a redaction-safe typed rejection with method and code. Any replacement must keep the guarantee that provider response bodies are never retained in surfaced rejection errors.

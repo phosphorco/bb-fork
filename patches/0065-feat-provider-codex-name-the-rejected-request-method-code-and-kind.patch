@@ -1,0 +1,677 @@
+From 42ae09b3602c722d3b0ec771c4915507b2d69daf Mon Sep 17 00:00:00 2001
+From: its-rosetta <267385802+its-rosetta@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 11:49:52 -0400
+Subject: [PATCH] feat(provider-codex): name the rejected request's method,
+ code, and kind
+
+A provider rejection used to surface as the constant "codex app-server
+rejected the request", so a subscription-router capacity failure was
+indistinguishable from any other error. The remote error is now a closed,
+declaratively classified kind (remote-error.ts) whose message carries the
+request method, the numeric JSON-RPC code, and an authored summary for
+recognized kinds. The response body is read once to choose the kind and is
+never retained, preserving the provider-admission redaction boundary.
+
+Subscription-router rejections (no capacity, ceilings reached, not
+connected, child exited) are recognized by their router-owned JSON-RPC codes.
+Malformed-response and timeout errors also name the method.
+---
+ .../src/bridge/app-server-connection.test.ts  |  50 ++----
+ .../src/bridge/app-server-connection.ts       |  83 ++-------
+ .../src/bridge/bridge.admission.test.ts       |   9 +-
+ .../bridge/bridge.archive-idempotency.test.ts |   4 +-
+ .../src/bridge/bridge.recovery.test.ts        |   4 +-
+ plugins/provider-codex/src/bridge/bridge.ts   |   4 +-
+ .../src/bridge/bridge.writer-lock.test.ts     |   4 +-
+ .../src/bridge/bridge.zero-work-turn.test.ts  |   6 +-
+ .../src/bridge/remote-error.test.ts           | 116 +++++++++++++
+ .../provider-codex/src/bridge/remote-error.ts | 159 ++++++++++++++++++
+ 10 files changed, 317 insertions(+), 122 deletions(-)
+ create mode 100644 plugins/provider-codex/src/bridge/remote-error.test.ts
+ create mode 100644 plugins/provider-codex/src/bridge/remote-error.ts
+
+diff --git a/plugins/provider-codex/src/bridge/app-server-connection.test.ts b/plugins/provider-codex/src/bridge/app-server-connection.test.ts
+index a001886e5008c542738d3fb8f1d71fd20f4f523c..0c67ae7196d935956e44a5ce5bbb54430f191a47 100644
+--- a/plugins/provider-codex/src/bridge/app-server-connection.test.ts
++++ b/plugins/provider-codex/src/bridge/app-server-connection.test.ts
+@@ -4,13 +4,12 @@ import { z } from "zod";
+ import {
+   CodexAppServerExitedError,
+   CodexAppServerMalformedResponseError,
+-  CodexAppServerRemoteError,
+   CodexAppServerTimeoutError,
+-  classifyRemoteError,
+   createCodexAppServerConnection,
+   type CodexAppServerConnection,
+   type CodexAppServerExitInfo,
+ } from "./app-server-connection.js";
++import { CodexAppServerRemoteError } from "./remote-error.js";
+ 
+ const EPIPE_PAYLOAD_SIZE = 1024 * 1024;
+ 
+@@ -52,19 +51,25 @@ describe("codex app-server connection", () => {
+     const cases: Array<{
+       response: string;
+       expected: new (...args: any[]) => Error;
+-      remote?: boolean;
++      message: string;
+       timeoutMs?: number;
+     }> = [
+       {
+         response: JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32603, message: "private provider rejection secret=keep-out" } }),
+         expected: CodexAppServerRemoteError,
+-        remote: true,
++        message: "codex app-server rejected the request (thread/start, code -32603)",
+       },
+       {
+         response: JSON.stringify({ jsonrpc: "2.0", id: 1, result: { thread: {} } }),
+         expected: CodexAppServerMalformedResponseError,
++        message: "codex app-server returned a malformed response (thread/start)",
++      },
++      {
++        response: "",
++        expected: CodexAppServerTimeoutError,
++        message: "codex app-server request timed out (thread/start, 20ms)",
++        timeoutMs: 20,
+       },
+-      { response: "", expected: CodexAppServerTimeoutError, timeoutMs: 20 },
+     ];
+     for (const fixture of cases) {
+       const exited = deferred<CodexAppServerExitInfo>();
+@@ -90,12 +95,7 @@ describe("codex app-server connection", () => {
+         await expect(request).rejects.toBeInstanceOf(fixture.expected);
+         await expect(request).rejects.not.toThrow("private provider rejection");
+         await expect(request).rejects.not.toThrow("secret=keep-out");
+-        if (fixture.remote) {
+-          await expect(request).rejects.toMatchObject({
+-            kind: "generic",
+-            message: "codex app-server rejected the request",
+-          });
+-        }
++        await expect(request).rejects.toMatchObject({ message: fixture.message });
+       } finally {
+         await stopConnection(connection, exited.promise);
+       }
+@@ -103,34 +103,6 @@ describe("codex app-server connection", () => {
+   }, 30_000);
+ 
+ 
+-  it("classifies only allowlisted method-bound remote rejections", () => {
+-    const cases: ReadonlyArray<readonly [string, number, string]> = [
+-      ["thread/start", -32603, "session archived-provider is archived; unarchive it and retry"],
+-      ["thread/resume", -32603, "session archived-provider is archived; unarchive it and retry"],
+-      ["thread/archive", -32603, "session archived-provider is archived; unarchive it and retry"],
+-      ["thread/resume", -32603, "thread provider already has an active writer"],
+-      ["thread/archive", -32603, "no rollout found for thread id provider"],
+-      ["thread/unarchive", -32603, "no archived rollout found for thread id provider"],
+-      ["thread/name/set", -32603, "rollout at /private/provider.jsonl is empty"],
+-      ["turn/interrupt", -32600, "no active turn to interrupt"],
+-    ];
+-    expect(
+-      cases.map(([method, code, message]) =>
+-        classifyRemoteError(method, { code, message }),
+-      ),
+-    ).toEqual([
+-      "archived-session",
+-      "archived-session",
+-      "generic",
+-      "active-writer",
+-      "archive-already-done",
+-      "unarchive-already-done",
+-      "empty-rollout-rename",
+-      "interrupt-not-started",
+-    ]);
+-  });
+-
+-
+   it("allows stdin shutdown cleanup before terminating the provider", async () => {
+     const ready = deferred<void>();
+     const exited = deferred<CodexAppServerExitInfo>();
+diff --git a/plugins/provider-codex/src/bridge/app-server-connection.ts b/plugins/provider-codex/src/bridge/app-server-connection.ts
+index 19280090120be198cb08104204fe07be4b74bfc7..beb64c49858bc68854de06c9a1f971b1d5cf7536 100644
+--- a/plugins/provider-codex/src/bridge/app-server-connection.ts
++++ b/plugins/provider-codex/src/bridge/app-server-connection.ts
+@@ -6,6 +6,7 @@ import {
+   experimental_spawnPortableProcess,
+ } from "@get-bb/plugin-sdk/provider-bridge";
+ import type { z } from "zod";
++import { CodexAppServerRemoteError } from "./remote-error.js";
+ 
+ const STDERR_TAIL_MAX_CHUNKS = 40;
+ const CLOSE_AFTER_EXIT_GRACE_MS = 1_000;
+@@ -77,79 +78,19 @@ export class CodexAppServerRpcError extends Error {
+   }
+ }
+ 
+-export type CodexAppServerRemoteErrorKind =
+-  | "active-writer"
+-  | "archived-session"
+-  | "archive-already-done"
+-  | "unarchive-already-done"
+-  | "empty-rollout-rename"
+-  | "interrupt-not-started"
+-  | "generic";
+-
+-export function classifyRemoteError(
+-  method: string,
+-  error: { code?: number; message?: string },
+-): CodexAppServerRemoteErrorKind {
+-  const message = error.message ?? "";
+-  if (
+-    (method === "thread/start" ||
+-      method === "thread/resume" ||
+-      method === "thread/fork") &&
+-    /\b(?:session|thread)\s+\S+\s+is archived\b/i.test(message)
+-  ) {
+-    return "archived-session";
+-  }
+-  if (
+-    method === "thread/resume" &&
+-    /\bthread\s+\S+\s+already has an active writer\b/i.test(message)
+-  ) {
+-    return "active-writer";
+-  }
+-  if (
+-    method === "thread/archive" &&
+-    /\bno rollout found for thread id\b/i.test(message)
+-  ) {
+-    return "archive-already-done";
+-  }
+-  if (
+-    method === "thread/unarchive" &&
+-    /\bno archived rollout found for thread id\b/i.test(message)
+-  ) {
+-    return "unarchive-already-done";
+-  }
+-  if (
+-    method === "thread/name/set" &&
+-    /\brollout at .+ is empty\b/i.test(message)
+-  ) {
+-    return "empty-rollout-rename";
+-  }
+-  if (
+-    method === "turn/interrupt" &&
+-    error.code === -32600 &&
+-    message === "no active turn to interrupt"
+-  ) {
+-    return "interrupt-not-started";
+-  }
+-  return "generic";
+-}
+-
+-export class CodexAppServerRemoteError extends Error {
+-  constructor(readonly kind: CodexAppServerRemoteErrorKind) {
+-    super("codex app-server rejected the request");
+-    this.name = "CodexAppServerRemoteError";
+-  }
+-}
+-
+ export class CodexAppServerMalformedResponseError extends Error {
+-  constructor() {
+-    super("codex app-server returned a malformed response");
++  constructor(readonly method: string) {
++    super(`codex app-server returned a malformed response (${method})`);
+     this.name = "CodexAppServerMalformedResponseError";
+   }
+ }
+ 
+ export class CodexAppServerTimeoutError extends Error {
+-  constructor() {
+-    super("codex app-server request timed out");
++  constructor(
++    readonly method: string,
++    readonly timeoutMs: number,
++  ) {
++    super(`codex app-server request timed out (${method}, ${timeoutMs}ms)`);
+     this.name = "CodexAppServerTimeoutError";
+   }
+ }
+@@ -356,9 +297,7 @@ export function createCodexAppServerConnection(
+         }
+         if (message.error) {
+           request.reject(
+-            new CodexAppServerRemoteError(
+-              classifyRemoteError(request.method, message.error),
+-            ),
++            new CodexAppServerRemoteError(request.method, message.error),
+           );
+         } else {
+           request.resolve(message.result);
+@@ -456,7 +395,7 @@ export function createCodexAppServerConnection(
+             if (parsed.success) {
+               resolve(parsed.data);
+             } else {
+-              reject(new CodexAppServerMalformedResponseError());
++              reject(new CodexAppServerMalformedResponseError(method));
+             }
+           },
+           reject,
+@@ -465,7 +404,7 @@ export function createCodexAppServerConnection(
+         if (timeoutMs !== undefined) {
+           entry.timeout = setTimeout(() => {
+             pending.delete(id);
+-            reject(new CodexAppServerTimeoutError());
++            reject(new CodexAppServerTimeoutError(method, timeoutMs));
+           }, timeoutMs);
+           entry.timeout.unref?.();
+         }
+diff --git a/plugins/provider-codex/src/bridge/bridge.admission.test.ts b/plugins/provider-codex/src/bridge/bridge.admission.test.ts
+index 3476a815838b6cbc181f84d44ab2f1ef71926d0a..29af0e507d2f635a2977af08ca4828d71ce83eae 100644
+--- a/plugins/provider-codex/src/bridge/bridge.admission.test.ts
++++ b/plugins/provider-codex/src/bridge/bridge.admission.test.ts
+@@ -80,11 +80,13 @@ it("keeps a rejected ordinary start as a sanitized bridge error without admissio
+   });
+   const response = await harness.waitForResponse(8);
+   expect(response.result).toBeUndefined();
+-  expect(response.error?.message).toBe("codex app-server rejected the request");
++  expect(response.error?.message).toBe(
++    "codex app-server rejected the request (thread/start, code -32603)",
++  );
+   expect(JSON.stringify(response)).not.toContain("scripted thread start rejection");
+ });
+ 
+-it("keeps an archived-looking ordinary start rejection generic and unrecoverable", async () => {
++it("keeps an archived-looking ordinary start rejection unrecoverable and free of provider text", async () => {
+   stubArchivedThreadStart();
+   harness.sendRequest(9, "thread/start", {
+     cwd: workspaceDir,
+@@ -95,7 +97,8 @@ it("keeps an archived-looking ordinary start rejection generic and unrecoverable
+   const response = await harness.waitForResponse(9);
+   expect(response.result).toBeUndefined();
+   expect(response.error).toMatchObject({
+-    message: "codex app-server rejected the request",
++    message:
++      "codex app-server rejected the request: the session is archived (thread/start, code -32603)",
+   });
+   expect(response.error?.data).toBeUndefined();
+   expect(JSON.stringify(response)).not.toContain("private-provider-secret");
+diff --git a/plugins/provider-codex/src/bridge/bridge.archive-idempotency.test.ts b/plugins/provider-codex/src/bridge/bridge.archive-idempotency.test.ts
+index 386df736cb4c7aa0475cf7e893c578056b6def60..6fb9d6b6343714fcbb182eb190aea7f98fb95b88 100644
+--- a/plugins/provider-codex/src/bridge/bridge.archive-idempotency.test.ts
++++ b/plugins/provider-codex/src/bridge/bridge.archive-idempotency.test.ts
+@@ -83,5 +83,7 @@ it("keeps a discard of an already-archived rollout as a failure", async () => {
+ 
+   const response = await request(2, "thread/discard");
+   expect(response.result).toBeUndefined();
+-  expect(response.error?.message).toBe("codex app-server rejected the request");
++  expect(response.error?.message).toBe(
++    "codex app-server rejected the request: the thread has no active rollout to archive (thread/archive, code -32603)",
++  );
+ }, 30_000);
+diff --git a/plugins/provider-codex/src/bridge/bridge.recovery.test.ts b/plugins/provider-codex/src/bridge/bridge.recovery.test.ts
+index f3cdd4306bb6b535841f31105721313cc2575707..a7bb4da37c19b85475fc1f1ef01b8f360b7a35b9 100644
+--- a/plugins/provider-codex/src/bridge/bridge.recovery.test.ts
++++ b/plugins/provider-codex/src/bridge/bridge.recovery.test.ts
+@@ -229,6 +229,8 @@ it("fails a rename with a plain error once the ladder is exhausted", async () =>
+     title: "never flushed",
+   });
+   const response = await harness.waitForResponse(2);
+-  expect(response.error?.message).toBe("codex app-server rejected the request");
++  expect(response.error?.message).toBe(
++    "codex app-server rejected the request: the thread rollout is empty and cannot be renamed (thread/name/set, code -32603)",
++  );
+   expect(response.error?.data).toBeUndefined();
+ }, 30_000);
+diff --git a/plugins/provider-codex/src/bridge/bridge.ts b/plugins/provider-codex/src/bridge/bridge.ts
+index 789cd5414db342df58f830fed643a3ca118cb59f..2c88198710cdb9507e4ae422afca197cad47181f 100644
+--- a/plugins/provider-codex/src/bridge/bridge.ts
++++ b/plugins/provider-codex/src/bridge/bridge.ts
+@@ -91,12 +91,12 @@ import {
+ import {
+   createCodexAppServerConnection,
+   CodexAppServerMalformedResponseError,
+-  CodexAppServerRemoteError,
+   CodexAppServerExitedError,
+   type CodexAppServerConnection,
+   type CodexAppServerExitInfo,
+   type CodexAppServerRequestResponder,
+ } from "./app-server-connection.js";
++import { CodexAppServerRemoteError } from "./remote-error.js";
+ import {
+   getCodexProviderHealth,
+   getCodexProviderInstallationRun,
+@@ -2428,7 +2428,7 @@ async function handleThreadMaintenance(
+   request: { method: string; params: Record<string, unknown> },
+   options?: {
+     releaseAfter?: boolean;
+-    alreadyInRequestedState?: CodexAppServerRemoteError["kind"];
++    alreadyInRequestedState?: "archive-already-done" | "unarchive-already-done";
+   },
+ ): Promise<void> {
+   const settle = async (): Promise<void> => {
+diff --git a/plugins/provider-codex/src/bridge/bridge.writer-lock.test.ts b/plugins/provider-codex/src/bridge/bridge.writer-lock.test.ts
+index 2b9e90b6ab0a96e763610c0d1f356ba59030ab60..e939358bd93a01b403b2dcac2d7f38e7c7096adc 100644
+--- a/plugins/provider-codex/src/bridge/bridge.writer-lock.test.ts
++++ b/plugins/provider-codex/src/bridge/bridge.writer-lock.test.ts
+@@ -217,7 +217,9 @@ it("exhausts its retries on persistent writer contention and resumes after the o
+   expect(readFileSync(writerLockPath, "utf8")).toBe(String(process.pid));
+   rmSync(writerLockPath, { force: true });
+ 
+-  expect(blocked.error?.message).toBe("codex app-server rejected the request");
++  expect(blocked.error?.message).toBe(
++    "codex app-server rejected the request: another process is already writing this thread (thread/resume, code -32603)",
++  );
+   await resumeThread(2);
+ }, 30_000);
+ 
+diff --git a/plugins/provider-codex/src/bridge/bridge.zero-work-turn.test.ts b/plugins/provider-codex/src/bridge/bridge.zero-work-turn.test.ts
+index e9da2c83136e5f92d709bd596545d84e122f2c3d..e7d3959807fc0c8b9de2737519b1bd4fa341247e 100644
+--- a/plugins/provider-codex/src/bridge/bridge.zero-work-turn.test.ts
++++ b/plugins/provider-codex/src/bridge/bridge.zero-work-turn.test.ts
+@@ -537,7 +537,7 @@ it.each([
+     });
+     const stopped = await harness.waitForResponse(3);
+     expect(stopped.error).toMatchObject({
+-      message: "codex app-server rejected the request",
++      message: "codex app-server rejected the request (turn/interrupt, code -32603)",
+     });
+     expect(
+       readFileSync(requestLogPath, "utf8")
+@@ -655,7 +655,7 @@ it.each([
+       expect(stopped.error).toBeUndefined();
+     } else {
+       expect(stopped.error).toMatchObject({
+-        message: "codex app-server rejected the request",
++        message: "codex app-server rejected the request: there is no active turn to interrupt (turn/interrupt, code -32600)",
+       });
+       expect(
+         threadEvents().filter((event) => event.type === "turn/completed"),
+@@ -724,7 +724,7 @@ it("does not acknowledge a rejected compaction after an early idle status", asyn
+     options: { ...FULL_ACCESS_SESSION_OPTIONS },
+   });
+   expect((await harness.waitForResponse(2)).error).toMatchObject({
+-    message: "codex app-server rejected the request",
++    message: "codex app-server rejected the request (thread/compact/start, code -32600)",
+   });
+   expect(
+     threadEvents().filter(
+diff --git a/plugins/provider-codex/src/bridge/remote-error.test.ts b/plugins/provider-codex/src/bridge/remote-error.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..eb654591d85e4f7ee7a6da684d635d018697753a
+--- /dev/null
++++ b/plugins/provider-codex/src/bridge/remote-error.test.ts
+@@ -0,0 +1,116 @@
++import { describe, expect, it } from "vitest";
++import {
++  CodexAppServerRemoteError,
++  classifyRemoteError,
++  type CodexAppServerRemoteErrorKind,
++} from "./remote-error.js";
++
++describe("classifyRemoteError", () => {
++  const cases: ReadonlyArray<
++    readonly [
++      method: string,
++      code: number,
++      message: string,
++      kind: CodexAppServerRemoteErrorKind,
++    ]
++  > = [
++    ["thread/start", -32603, "session archived-provider is archived; unarchive it and retry", "archived-session"],
++    ["thread/resume", -32603, "session archived-provider is archived; unarchive it and retry", "archived-session"],
++    ["thread/archive", -32603, "session archived-provider is archived; unarchive it and retry", "generic"],
++    ["thread/resume", -32603, "thread provider already has an active writer", "active-writer"],
++    ["thread/archive", -32603, "no rollout found for thread id provider", "archive-already-done"],
++    ["thread/unarchive", -32603, "no archived rollout found for thread id provider", "unarchive-already-done"],
++    ["thread/name/set", -32603, "rollout at /private/provider.jsonl is empty", "empty-rollout-rename"],
++    ["turn/interrupt", -32600, "no active turn to interrupt", "interrupt-not-started"],
++    ["turn/interrupt", -32603, "no active turn to interrupt", "generic"],
++    ["turn/start", -32080, "no enabled ChatGPT subscription has capacity", "subscription-no-capacity"],
++    ["turn/start", -32080, "[subscription-router:no-capacity] no enabled ChatGPT subscription has capacity. primary: weekly 78% >= 75%", "subscription-no-capacity"],
++    ["turn/start", -32081, "no enabled ChatGPT subscription has capacity", "subscription-no-capacity"],
++    ["thread/start", -32080, "[subscription-router:bb-ceilings] All subscriptions reached their configured ceilings. primary 78%", "subscription-ceilings-reached"],
++    ["thread/start", -32080, "no enabled ChatGPT subscription is connected", "subscription-not-connected"],
++    ["turn/start", -32084, "Codex app-server for primary exited unexpectedly", "subscription-router-child-exited"],
++    ["turn/start", -32080, "All subscriptions reached their configured ceilings", "subscription-ceilings-reached"],
++    ["turn/start", -32081, "All subscriptions reached their configured ceilings", "subscription-ceilings-reached"],
++    ["turn/start", -32603, "All subscriptions reached their configured ceilings", "generic"],
++    ["thread/archive", -32084, "Codex app-server for no rollout found for thread id provider exited unexpectedly", "subscription-router-child-exited"],
++    ["thread/resume", -32084, "thread provider already has an active writer", "subscription-router-child-exited"],
++    ["thread/archive", -32080, "no rollout found for thread id provider", "generic"],
++    ["thread/resume", -32081, "session provider is archived", "generic"],
++    ["thread/archive", -32603, "no rollout found for thread id provider", "archive-already-done"],
++    ["thread/unarchive", -32603, "no rollout found for thread id provider", "generic"],
++    ["thread/start", -32603, "thread provider already has an active writer", "generic"],
++    ["turn/start", -32080, "prefix: no enabled ChatGPT subscription has capacity", "generic"],
++    ["turn/start", -32603, "no enabled ChatGPT subscription has capacity", "generic"],
++    ["turn/start", -32603, "anything else the provider says", "generic"],
++  ];
++
++  it.each(cases)("%s %i %j -> %s", (method, code, message, kind) => {
++    expect(classifyRemoteError(method, { code, message })).toBe(kind);
++  });
++
++  it("classifies a response with no code or message as generic", () => {
++    expect(classifyRemoteError("turn/start", {})).toBe("generic");
++  });
++});
++
++describe("CodexAppServerRemoteError", () => {
++  it("names the method and JSON-RPC code of an unclassified rejection", () => {
++    const error = new CodexAppServerRemoteError("thread/start", {
++      code: -32603,
++      message: "private provider rejection secret=keep-out",
++    });
++    expect(error).toMatchObject({
++      kind: "generic",
++      method: "thread/start",
++      code: -32603,
++      message: "codex app-server rejected the request (thread/start, code -32603)",
++    });
++  });
++
++  it("explains a recognized rejection with its authored summary", () => {
++    const error = new CodexAppServerRemoteError("turn/start", {
++      code: -32080,
++      message:
++        "[subscription-router:no-capacity] no enabled ChatGPT subscription has capacity. primary: weekly 78% >= 75%",
++    });
++    expect(error.kind).toBe("subscription-no-capacity");
++    expect(error.message).toBe(
++      "codex app-server rejected the request: no enabled ChatGPT subscription has capacity (turn/start, code -32080)",
++    );
++  });
++
++  it("omits the code when the response has no integer code", () => {
++    const error = new CodexAppServerRemoteError("turn/start", {
++      code: Number.NaN,
++      message: "x",
++    });
++    expect(error.code).toBeUndefined();
++    expect(error.message).toBe(
++      "codex app-server rejected the request (turn/start)",
++    );
++  });
++
++  it.each([
++    ["turn/start", -32080, "[subscription-router:no-capacity] no enabled ChatGPT subscription has capacity. account alice@example.com secret=keep-out"],
++    ["turn/start", -32080, "All subscriptions reached their configured ceilings. alice@example.com secret=keep-out"],
++    ["turn/start", -32084, "Codex app-server for alice@example.com exited secret=keep-out"],
++    ["thread/archive", -32603, "no rollout found for thread id alice@example.com secret=keep-out"],
++    ["turn/start", -32603, "alice@example.com secret=keep-out"],
++  ])("never retains the provider's response body (%s %i)", (method, code, message) => {
++    const error = new CodexAppServerRemoteError(method, {
++      code,
++      message,
++      data: { detail: "alice@example.com secret=keep-out" },
++    } as { code: number; message: string });
++    const retained = JSON.stringify({
++      message: error.message,
++      stack: error.stack?.split("\n")[0],
++      own: Object.getOwnPropertyNames(error).map((name) =>
++        name === "stack" ? null : Reflect.get(error, name),
++      ),
++    });
++    expect(retained).not.toContain("alice@example.com");
++    expect(retained).not.toContain("keep-out");
++    expect(error.cause).toBeUndefined();
++  });
++});
+diff --git a/plugins/provider-codex/src/bridge/remote-error.ts b/plugins/provider-codex/src/bridge/remote-error.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f36bef1441c4a2dc22cff78ac652249088519a1c
+--- /dev/null
++++ b/plugins/provider-codex/src/bridge/remote-error.ts
+@@ -0,0 +1,159 @@
++export type CodexAppServerRemoteErrorKind =
++  | "active-writer"
++  | "archived-session"
++  | "archive-already-done"
++  | "unarchive-already-done"
++  | "empty-rollout-rename"
++  | "interrupt-not-started"
++  | "subscription-no-capacity"
++  | "subscription-ceilings-reached"
++  | "subscription-not-connected"
++  | "subscription-router-child-exited"
++  | "generic";
++
++export interface CodexAppServerErrorResponse {
++  readonly code?: number;
++  readonly message?: string;
++}
++
++interface RejectionRule {
++  readonly kind: Exclude<CodexAppServerRemoteErrorKind, "generic">;
++  readonly methods?: readonly string[];
++  readonly codes?: readonly number[];
++  readonly message?: RegExp;
++}
++
++const SESSION_START_METHODS = ["thread/start", "thread/resume", "thread/fork"];
++
++const ROUTER_REQUEST_CODES = [-32080, -32081];
++const ROUTER_CHILD_EXIT_CODE = -32084;
++const ROUTER_CODES: readonly number[] = [
++  ...ROUTER_REQUEST_CODES,
++  ROUTER_CHILD_EXIT_CODE,
++];
++
++const LIFECYCLE_RULES: readonly RejectionRule[] = [
++  {
++    kind: "archived-session",
++    methods: SESSION_START_METHODS,
++    message: /\b(?:session|thread)\s+\S+\s+is archived\b/i,
++  },
++  {
++    kind: "active-writer",
++    methods: ["thread/resume"],
++    message: /\bthread\s+\S+\s+already has an active writer\b/i,
++  },
++  {
++    kind: "archive-already-done",
++    methods: ["thread/archive"],
++    message: /\bno rollout found for thread id\b/i,
++  },
++  {
++    kind: "unarchive-already-done",
++    methods: ["thread/unarchive"],
++    message: /\bno archived rollout found for thread id\b/i,
++  },
++  {
++    kind: "empty-rollout-rename",
++    methods: ["thread/name/set"],
++    message: /\brollout at .+ is empty\b/i,
++  },
++  {
++    kind: "interrupt-not-started",
++    methods: ["turn/interrupt"],
++    codes: [-32600],
++    message: /^no active turn to interrupt$/,
++  },
++];
++
++const ROUTER_RULES: readonly RejectionRule[] = [
++  {
++    kind: "subscription-no-capacity",
++    codes: ROUTER_REQUEST_CODES,
++    message:
++      /^(?:\[subscription-router:no-capacity\] )?no enabled ChatGPT subscription has capacity\b/,
++  },
++  {
++    kind: "subscription-ceilings-reached",
++    codes: ROUTER_REQUEST_CODES,
++    message:
++      /^(?:\[subscription-router:bb-ceilings\] )?All subscriptions reached their configured ceilings\b/,
++  },
++  {
++    kind: "subscription-not-connected",
++    codes: ROUTER_REQUEST_CODES,
++    message: /^no enabled ChatGPT subscription is connected\b/,
++  },
++  {
++    kind: "subscription-router-child-exited",
++    codes: [ROUTER_CHILD_EXIT_CODE],
++  },
++];
++
++const REJECTION_PREFIX = "codex app-server rejected the request";
++
++const REJECTION_SUMMARIES: Record<CodexAppServerRemoteErrorKind, string | null> =
++  {
++    "active-writer": "another process is already writing this thread",
++    "archived-session": "the session is archived",
++    "archive-already-done": "the thread has no active rollout to archive",
++    "unarchive-already-done": "the thread has no archived rollout to restore",
++    "empty-rollout-rename": "the thread rollout is empty and cannot be renamed",
++    "interrupt-not-started": "there is no active turn to interrupt",
++    "subscription-no-capacity": "no enabled ChatGPT subscription has capacity",
++    "subscription-ceilings-reached":
++      "every ChatGPT subscription reached its configured usage ceiling",
++    "subscription-not-connected": "no enabled ChatGPT subscription is connected",
++    "subscription-router-child-exited":
++      "the Codex subscription router lost its app-server process",
++    generic: null,
++  };
++
++function ruleMatches(
++  rule: RejectionRule,
++  method: string,
++  response: CodexAppServerErrorResponse,
++): boolean {
++  if (rule.methods !== undefined && !rule.methods.includes(method)) {
++    return false;
++  }
++  if (
++    rule.codes !== undefined &&
++    (response.code === undefined || !rule.codes.includes(response.code))
++  ) {
++    return false;
++  }
++  return rule.message === undefined || rule.message.test(response.message ?? "");
++}
++
++export function classifyRemoteError(
++  method: string,
++  response: CodexAppServerErrorResponse,
++): CodexAppServerRemoteErrorKind {
++  const routerOwned =
++    response.code !== undefined && ROUTER_CODES.includes(response.code);
++  const rules = routerOwned ? ROUTER_RULES : LIFECYCLE_RULES;
++  return (
++    rules.find((rule) => ruleMatches(rule, method, response))?.kind ?? "generic"
++  );
++}
++
++export class CodexAppServerRemoteError extends Error {
++  readonly kind: CodexAppServerRemoteErrorKind;
++  readonly method: string;
++  readonly code: number | undefined;
++
++  constructor(method: string, response: CodexAppServerErrorResponse) {
++    const kind = classifyRemoteError(method, response);
++    const code = Number.isInteger(response.code) ? response.code : undefined;
++    const summary = REJECTION_SUMMARIES[kind];
++    const context = code === undefined ? method : `${method}, code ${code}`;
++    super(
++      `${REJECTION_PREFIX}${summary === null ? "" : `: ${summary}`} (${context})`,
++    );
++    this.name = "CodexAppServerRemoteError";
++    this.kind = kind;
++    this.method = method;
++    this.code = code;
++  }
++}
+-- 
+2.43.0
+
