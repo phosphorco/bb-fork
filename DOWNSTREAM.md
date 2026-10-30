@@ -396,21 +396,23 @@ provider wrapper or service activation is included. The
 [maintainer map](plans/p6r-prompts-maintainer-map.md) records exact source and
 coverage boundaries.
 
-## Automatic parent followups (patch 52)
+## Native parent notifications (retired patch 52)
 
-`bb thread spawn --no-automatic-parent-followups` and SDK/API
-`noAutomaticParentFollowups: true` retain the native parent link while suppressing
-automatic completion, interruption, attention, and ownership notices. Child
-failures always use normal parent delivery, including setup failures and exhausted
-message retries. A reserved metadata row is seeded in the existing creation
-transaction; omitted settings preserve normal
-delivery. No migration, Thread field, or daemon protocol change is introduced.
-The setting is creation-only. Explicit delivery remains available.
+Cole selected base BB `parentNotifications: "stuck"` on 2026-10-30, retiring
+patch 0052 and its CLI flag/API field. Spawn strict children with
+`--parent-self --parent-notifications stuck`; SDK callers use
+`parentThreadId` and `parentNotifications: "stuck"`. Successful completion is
+silent; failures, interruptions and approval/question blockers can wake the
+parent. Reparenting notices remain. Explicit messages remain available.
 
-[Design and maintenance](docs/no-automatic-parent-followups.md) records the
-authorized fork justification, storage/default/error behavior, test boundaries,
-and upstream retirement path. Both server and CLI need this patch. Source
-publication and build do not activate it in an already-running server.
+The old `_p6r-core-parent-policy` metadata is inert after retirement. Review
+affected threads before activation, adopt native `stuck` where appropriate, and
+preserve deliberate `off` settings. Do not delete or repurpose the reserved
+namespace. The native default remains `auto`, so callers must request `stuck`
+explicitly. No compatibility shim, migration, protocol bump,
+new patch, runtime state edit or service restart is included. See
+[retirement and rollout](docs/no-automatic-parent-followups.md) for the inventory
+query, supported update command and historical verification receipts.
 
 ## Reviewed external inference relay (0058)
 

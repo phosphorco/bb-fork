@@ -1,4 +1,149 @@
-# Automatic parent followup opt-out
+# Native parent notifications: retirement of patch 0052
+
+Cole selected native `--parent-notifications stuck` as sufficient on 2026-10-30.
+Patch 0052 is removed from the selected queue, including its CLI option,
+`noAutomaticParentFollowups` request field, metadata writer/reader and custom
+tests. No replacement fork patch is needed.
+
+For new strict children, use:
+
+```sh
+bb thread spawn --project PROJECT_ID --parent-self \
+  --parent-notifications stuck --prompt-file /absolute/path/task.md
+```
+
+SDK callers use `parentThreadId` and `parentNotifications: "stuck"` with
+`threads.spawn`. Existing threads support:
+
+```sh
+bb thread update CHILD_ID --parent-notifications stuck
+```
+
+`stuck` suppresses successful completion notices and allows failures,
+interruptions and approval/question blockers to notify the parent. Reparenting
+assigned/removed notices remain. This is an accepted behavior change from the
+former failure-only policy. Explicit tells and plugin/workflow deliveries retain
+their own behavior. The native default remains `auto`; request `stuck` explicitly.
+Lifecycle ownership remains independent and need not be changed. Lifecycle-only
+delegation remains compatible and provides no native parent escalation: `stuck`
+notices require an actual `parentThreadId`. Choose strict parentage when native
+blocker/failure escalation is wanted; lifecycle ownership can still be retained
+for archive/delete behavior. Explicit result tells remain useful in either model.
+This retirement does not change existing delegation guidance or thread topology.
+
+## Rollout for existing opted-out threads
+
+Removing the patch does not convert existing `_p6r-core-parent-policy` metadata
+into native notification settings. Those rows become inert; preserve them and
+never reuse the reserved namespace. Before activating the retired-patch build,
+inventory affected nondeleted threads with a read-only query on an
+operator-authorized database connection or snapshot:
+
+```sql
+SELECT t.id, t.parent_thread_id, t.parent_notifications
+FROM threads AS t
+JOIN thread_plugin_metadata AS m ON m.thread_id = t.id
+WHERE t.deleted_at IS NULL
+  AND m.plugin_id = '_p6r-core-parent-policy'
+  AND CASE WHEN json_valid(m.metadata_json)
+    THEN json_extract(m.metadata_json, '$.noAutomaticParentFollowups') = 1
+      AND json_type(m.metadata_json, '$.noAutomaticParentFollowups') = 'true'
+    ELSE 0 END;
+```
+
+Review each thread's native policy and use the supported update command above
+for threads that should adopt `stuck`. Include lifecycle-only roots if they may
+later acquire a strict parent. A deliberately selected `off` should remain
+`off`; there is no blind bulk conversion. Update while the old build still runs
+so there is no intervening `auto` delivery window when it stops reading metadata.
+Read back each changed thread with `bb thread show CHILD_ID --json` and verify
+its `parentNotifications` value. Updating the policy does not require reparenting
+or a lifecycle-owner change. Already accepted or queued parent notices are not
+retroactively cancelled.
+
+This source retirement does not execute that inventory or modify operator runtime
+state, rebuild the active materialization, restart BB, or promote workspace
+revisions. CLI/server artifacts and any separately published SDK declarations
+must be regenerated from the new selected tree during their normal release.
+Remove the old CLI flag and request field from external integrations before
+activation, and explicitly send native `parentNotifications: "stuck"` where
+wanted. Repository caller searches do not cover every external client; an older
+client sending the retired field is not a policy handshake. Verify the stored
+native policy rather than assuming that the old field still selects suppression.
+
+## Rollback
+
+Before activation, record the actual deployed revision and reviewed native policy
+updates. The previous materialization inspected for this receipt is commit
+`40719526c2a5b268588064dcc7b7ae99c890d3eb`, tree
+`b5e5c287fa11b6f0275baeeee59cc404d628aeb8`; confirm the deployment rather than
+assuming every host uses it. Follow the normal authorized runtime rollout path
+when restoring a prior build; publishing this source does not authorize a restart.
+
+Preserve native policy updates and legacy metadata during rollback; do not reset
+policies to `auto` or blindly restore a database snapshot. Restoring code with
+0052 reactivates legacy suppression for old opted-out threads, so their
+interruptions/blockers become silent again unless native `off` already suppresses
+all outcomes. New native-`stuck` threads without legacy metadata retain native
+behavior. These are different notification behaviors, not an exact inverse
+migration.
+
+## Retirement verification — 2026-10-30
+
+Tree `5789e7b1c5405f4bd85b372bc6827716dec8f7a9` replays with 53 selected patches.
+The source delta is exactly the inverse of patch 0052: 15 files, 542 lines removed
+and four original upstream lines restored. No later patch needed a semantic port.
+Frozen install, standard queue and namespace verification, full typecheck and
+full build passed. Built CLI help, server bundle, guide and SDK declarations no
+longer contain the opt-out option, field or metadata policy. No plugin callers
+were found in either plugin repository, including untracked source files.
+
+Native child-outcome (9 tests), blocker (14), public parenting (19) and parent
+policy (11) suites passed. The broad graph completed 105 of 108 tasks successfully
+(73 cached); PR-workflow and Side Chat suites passed separate reruns (244 and 26 tests), and
+fault barriers passed under their required `/tmp` scratch root. Two installer
+assertions about the fixture's `~/.local/bin/bb` link still fail on isolated
+rerun. The exact two UID-501 cases also fail on the original selected source
+`40719526c2a5b268588064dcc7b7ae99c890d3eb` under the same minimal environment
+(one case passes, two fail, 50 unrelated tests are skipped in that targeted
+baseline run). This establishes that the failures predate removal, without
+diagnosing their cause; neither installer code nor its tests changed. Full test
+success is not claimed. Use a minimal test environment without inherited
+authentication; `/tmp` and `/var/tmp` have different fixture constraints on this host.
+
+The inventory query above was checked on an in-memory fixture for literal true,
+numeric/string lookalikes, false, malformed and missing metadata. Live metadata
+was neither queried nor converted. The canonical materialization and service
+remain on their previous source; normal activation and any SDK publication are
+separate from this receipt.
+
+### Credential-safe focused reproduction
+
+From a temporary materialization with locked dependencies installed, run the
+native policy suites with only the required environment. The empty GitHub config
+and scratch directory are task-owned; neither `HOME` nor `CODEX_HOME` is redirected.
+Do not reuse an environment-inheriting launcher or print unredacted failure logs.
+
+```sh
+parent_policy_tmp=$(mktemp -d /tmp/bb-parent-policy-check.XXXXXX)
+trap 'rm -rf -- "$parent_policy_tmp"' EXIT
+mkdir "$parent_policy_tmp/empty-gh"
+env -i PATH="$PATH" LANG=C.UTF-8 CI=true VITEST_MAX_WORKERS=2 \
+  TMPDIR="$parent_policy_tmp" GH_CONFIG_DIR="$parent_policy_tmp/empty-gh" \
+  pnpm exec turbo run test --filter=@bb/server --concurrency=1 --env-mode=loose -- \
+  test/threads/thread-parent.test.ts \
+  test/threads/child-outcome-gaps.test.ts \
+  test/public/public-thread-parenting.test.ts \
+  test/internal/internal-interactive-requests.test.ts
+```
+
+Inspect bounded, redacted excerpts on failure. The command above covers native
+policy behavior; it does not claim full-graph success or runtime activation.
+
+## Historical implementation and verification
+
+The following records describe the retired patch and its own source receipts;
+they are not current usage instructions or deployment evidence.
 
 Cole approved this implementation on 2026-10-09 after the metadata-based plan
 and four-lens review in thread `thr_ubmxu5kq62`. Cole subsequently requested

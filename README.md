@@ -71,9 +71,10 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The fifty-two patches listed in `patches/series` form the current implementation
-candidate. Queue numbers 0022, 0027, 0030 and 0048 are intentionally absent: 0022 is a
-historical gap, the former 0027 Monaco routing backport is supplied by
+The fifty-three patches listed in `patches/series` form the current implementation
+candidate. Queue numbers 0022, 0027, 0030, 0048 and 0052 are intentionally absent: 0022 is a
+historical gap, 0052 was retired in favor of native `parentNotifications: "stuck"`,
+and the former 0027 Monaco routing backport is supplied by
 upstream commit `283e6d7`, and 0030 and 0048 were retired at the 2026-10-08
 refresh because upstream #4976 and #5127 supersede them (see DOWNSTREAM.md). Obsolete
 compatibility-only follow-ups were folded into the logical patches they verify,
@@ -150,10 +151,37 @@ Patches 49–51 are performance changes: participant projection watermarks, the
 delegating-item partial-index hint, and incremental extension of the timeline
 ordering context on top of upstream's split ordering cache.
 
-Patch 52 adds a persistent creation-time opt-out for automatic parent notices;
-see [behavior and maintenance](docs/no-automatic-parent-followups.md).
+Patch 52 is retired. Use native `--parent-notifications stuck` for strict child
+threads; interruptions, failures, and blockers notify the parent while successful
+completion stays silent. Reparenting notices remain. See the
+[retirement and rollout notes](docs/no-automatic-parent-followups.md).
 
-## Current source verification receipt — 2026-10-16
+## Parent notification policy — 2026-10-30
+
+Cole selected native `stuck` as sufficient and approved removing patch 0052.
+The CLI flag and API/SDK `noAutomaticParentFollowups` field are removed from the
+selected source. Existing reserved metadata becomes inert; review affected threads
+before activation, adopt native `stuck` where appropriate, and preserve deliberate
+`off` settings. This source change does not migrate live threads or restart the
+service.
+
+The selected 53-patch queue replays to tree
+`5789e7b1c5405f4bd85b372bc6827716dec8f7a9`. Frozen install, queue/namespace
+verification, full typecheck (105 tasks) and full build (57 tasks) passed in a
+temporary verification checkout. Generated CLI help, guide and SDK declarations
+omit the retired option. Native parent outcome/blocker/creation/update tests passed.
+The full test graph (73 tasks cached) completed with failures in three packages;
+serial/scratch reruns cleared the PR-workflow, Side Chat and fault-barrier failures. Two installer
+fixture assertions about `~/.local/bin/bb` still fail on isolated rerun and also
+reproduce on the original selected source (`40719526c2a5b268588064dcc7b7ae99c890d3eb`)
+under the same minimal test environment. Their underlying cause is not diagnosed;
+the installer source and tests are unchanged by this retirement. This is not a fully
+green broad-test receipt. Test scratch requires `/tmp` for fault barriers and
+file-heavy Side Chat fixtures; `/var/tmp` avoids this host's unrelated `/tmp/.git`
+ancestor marker in command-discovery fixtures. Test with no inherited provider
+authentication. No workspace gitlink or active runtime was changed.
+
+## Previous source verification receipt — 2026-10-16
 
 The 223-commit upstream refresh retains all 49 selected logical patches, narrows
 0018 to its existing layout data seam, and adds fixture-only follow-up 0060 and CI portability correction 0061.
