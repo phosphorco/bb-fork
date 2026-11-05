@@ -1,0 +1,1000 @@
+From 440f7c3f56b71c64fd257e827d0f1ee87010a1da Mon Sep 17 00:00:00 2001
+From: Codex <codex@invalid.local>
+Date: Thu, 5 Nov 2026 19:54:18 +0000
+Subject: [PATCH] feat(claude): preserve bounded native response identities
+
+Preserve actual Anthropic response IDs through the existing declared suppressed
+extension item, retaining exact canonical BB turn scope and explicit unbound
+coverage without changing provider requests, sessions, core or SDK contracts.
+
+Bound ownership to 256 identities per resident SDK lifetime. Retain conflicts
+and use the pinned SDK result-ordering premise plus native resident fences.
+Cole explicitly approved this native-provider exception after plugin review.
+---
+ plugins/provider-claude-code/server.ts        |  10 +
+ .../__tests__/bridge.calibration.test.ts      |  17 +
+ .../src/bridge/__tests__/bridge.test.ts       | 152 +++++++++
+ .../src/delta-translation.test.ts             |  40 ++-
+ .../src/delta-translation.ts                  |  19 +-
+ .../src/response-identity.test.ts             | 298 ++++++++++++++++++
+ .../src/response-identity.ts                  | 285 +++++++++++++++++
+ 7 files changed, 802 insertions(+), 19 deletions(-)
+ create mode 100644 plugins/provider-claude-code/src/response-identity.test.ts
+ create mode 100644 plugins/provider-claude-code/src/response-identity.ts
+
+diff --git a/plugins/provider-claude-code/server.ts b/plugins/provider-claude-code/server.ts
+index f2e1693390d9d39baf36343db66aab8d6220f9c5..ae0617d9b1b05d2dd40a6523ad01b793c7d50a7b 100644
+--- a/plugins/provider-claude-code/server.ts
++++ b/plugins/provider-claude-code/server.ts
+@@ -1,6 +1,10 @@
+ import { registerUsageSource } from "./src/usage-source.js";
+ import type { BbPluginApi } from "@get-bb/plugin-sdk";
+ import { CLAUDE_NATIVE_ROOTS_DECLARATION } from "./src/native-roots.js";
++import {
++  claudeResponseIdentityItemSchema,
++  claudeResponseIdentityStateSchema,
++} from "./src/response-identity.js";
+ 
+ export default function plugin(bb: BbPluginApi) {
+   registerUsageSource(bb);
+@@ -51,6 +55,12 @@ export default function plugin(bb: BbPluginApi) {
+   bb.providers.register({
+     id: "claude-code",
+     displayName: "Claude Code",
++    extensionKinds: {
++      "response-identity": {
++        item: claudeResponseIdentityItemSchema,
++        state: claudeResponseIdentityStateSchema,
++      },
++    },
+     icon: "./icons/claude-code.svg",
+     strings: {
+       signInHint: "Run `claude` on the machine to sign in.",
+diff --git a/plugins/provider-claude-code/src/bridge/__tests__/bridge.calibration.test.ts b/plugins/provider-claude-code/src/bridge/__tests__/bridge.calibration.test.ts
+index 3c0324c725ae4f3809423ba581131348293cdfe6..28d20ee719f480e836e25d549eae50f4bf16b427 100644
+--- a/plugins/provider-claude-code/src/bridge/__tests__/bridge.calibration.test.ts
++++ b/plugins/provider-claude-code/src/bridge/__tests__/bridge.calibration.test.ts
+@@ -27,6 +27,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+ }));
+ 
+ import { handleLine } from "../bridge.js";
++import { claudeResponseIdentityItemSchema } from "../../response-identity.js";
+ import {
+   experimental_createBridgeDeltaEventCollector as createBridgeDeltaEventCollector,
+   experimental_createBridgeJsonRpcTestHarness as createBridgeJsonRpcTestHarness,
+@@ -456,16 +457,20 @@ const GOLDEN_EVENT_STREAM: string[] = [
+   "turn/input/accepted",
+   "item/started:agentMessage",
+   "item/agentMessage/delta",
++  "item/completed:extension",
+   "thread/contextWindowUsage/updated",
+   "item/completed:agentMessage",
++  "item/completed:extension",
+   "thread/contextWindowUsage/updated",
+   "item/started:commandExecution",
+   "item/completed:commandExecution",
+   "item/started:reasoning",
+   "item/reasoning/textDelta",
++  "item/completed:extension",
+   "thread/contextWindowUsage/updated",
+   "item/completed:reasoning",
+   "turn/input/accepted",
++  "item/completed:extension",
+   "thread/contextWindowUsage/updated",
+   "item/completed:agentMessage",
+   "thread/contextWindowUsage/updated",
+@@ -475,6 +480,7 @@ const GOLDEN_EVENT_STREAM: string[] = [
+   "turn/input/accepted",
+   "item/started:agentMessage",
+   "item/agentMessage/delta",
++  "item/completed:extension",
+   "thread/contextWindowUsage/updated",
+   "item/completed:agentMessage",
+   "thread/contextWindowUsage/updated",
+@@ -484,6 +490,7 @@ const GOLDEN_EVENT_STREAM: string[] = [
+   "turn/input/accepted",
+   "item/started:agentMessage",
+   "item/agentMessage/delta",
++  "item/completed:extension",
+   "thread/contextWindowUsage/updated",
+   "item/completed:agentMessage",
+   "thread/contextWindowUsage/updated",
+@@ -511,6 +518,16 @@ it("replays one scripted claude session onto the golden event stream", async ()
+     describeCalibrationEvents(normalizeCalibrationEvents(canonical.events)),
+   ).toEqual(GOLDEN_EVENT_STREAM);
+ 
++  const responses = canonical.events.flatMap(event =>
++    event.type === "item/completed" && event.item.type === "extension" && event.item.kind === "provider-claude-code/response-identity"
++      ? [{ scope: event.scope, payload: claudeResponseIdentityItemSchema.parse(event.item.payload) }] : []);
++  expect(responses.map(response => response.payload.messageId)).toEqual([
++    "msg_1", "msg_tool_1", "msg_thinking_1", "msg_2", `msg_for_${SECOND_PROMPT_TEXT}`, `msg_for_${RESUMED_PROMPT_TEXT}`,
++  ]);
++  expect(responses.slice(0, 4).map(response => response.scope)).toEqual(Array(4).fill(responses[0]?.scope));
++  expect(responses[4]?.scope).not.toEqual(responses[0]?.scope);
++  expect(responses[5]?.scope).not.toEqual(responses[4]?.scope);
++
+   expect(canonical.approval.payload).toMatchObject({
+     kind: "approval",
+     reason: "Automatic review requires user escalation",
+diff --git a/plugins/provider-claude-code/src/bridge/__tests__/bridge.test.ts b/plugins/provider-claude-code/src/bridge/__tests__/bridge.test.ts
+index f872d9daf162bb9479517a351c5b0193018ed20f..09fb65eb53de5e01b94ea38a84daa26b036b057a 100644
+--- a/plugins/provider-claude-code/src/bridge/__tests__/bridge.test.ts
++++ b/plugins/provider-claude-code/src/bridge/__tests__/bridge.test.ts
+@@ -713,6 +713,158 @@ describe("bridge", () => {
+     }
+   });
+ 
++  it.each(["interrupt", "replacement"])(
++    "does not attach delayed response identities from a %s resident to its successor",
++    async (change) => {
++      const bridge = createBridgeJsonRpcTestHarness(handleLine);
++      const queries: ControlledClaudeQuery[] = [];
++      let oldIteratorDeliveries = 0;
++      queryMock.mockImplementation(() => {
++        const query = createControlledClaudeQuery();
++        if (change === "replacement" && queries.length === 0) {
++          query.close.mockImplementation(() => {});
++          const iterator = query[Symbol.asyncIterator]();
++          const next = iterator.next.bind(iterator);
++          iterator.next = async (...args) => {
++            const result = await next(...args);
++            if (!result.done) oldIteratorDeliveries++;
++            return result;
++          };
++        }
++        queries.push(query);
++        return query;
++      });
++      const threadId = `thread-response-identity-${change}`;
++      const identities = () =>
++        assembleCapturedThreadEvents(bridge.messages, "claude-code").filter(
++          (event) =>
++            (event.type === "item/completed" &&
++              event.item.type === "extension" &&
++              event.item.kind === "provider-claude-code/response-identity") ||
++            (event.type === "thread/extensionState/updated" &&
++              event.kind === "provider-claude-code/response-identity"),
++        );
++      const response = (id: string) =>
++        createAssistantToolUseMessage({
++          parentToolUseId: null,
++          toolUseId: id,
++          toolName: "Bash",
++          toolInput: { command: "pwd" },
++        });
++      try {
++        await startBridgeThread({ bridge, threadId });
++        bridge.sendRequest(
++          2,
++          "turn/start",
++          canonicalTurnParams({
++            threadId,
++            input: [{ type: "text", text: "first" }],
++          }),
++        );
++        await readNextPrompt(getLatestQueryCall());
++        await bridge.waitForResponse(2);
++        queries[0]!.emit(response("response-before"));
++        await vi.waitFor(() =>
++          expect(JSON.stringify(identities())).toContain(
++            "message-response-before",
++          ),
++        );
++        if (change === "interrupt") {
++          bridge.sendRequest(3, "thread/stop", {
++            threadId,
++            providerThreadId: threadId,
++            intent: "interrupt",
++            activeTurnId: null,
++          });
++          await bridge.flushWork();
++          queries[0]!.emit(response("response-during-close"));
++          await bridge.flushWork();
++          queries[0]!.finish();
++          await bridge.waitForResponse(3);
++          sendResumeThread({
++            bridge,
++            providerThreadId: threadId,
++            requestId: 4,
++            threadId,
++          });
++          await bridge.waitForResponse(4);
++          bridge.sendRequest(
++            5,
++            "turn/start",
++            canonicalTurnParams({
++              threadId,
++              input: [{ type: "text", text: "after interruption" }],
++            }),
++          );
++          await readNextPrompt(getLatestQueryCall());
++          await bridge.waitForResponse(5);
++        } else {
++          queries[0]!.emit(createSuccessfulResultMessage(threadId));
++          await bridge.flushWork();
++          bridge.sendRequest(
++            3,
++            "turn/start",
++            canonicalTurnParams({
++              threadId,
++              input: [{ type: "text", text: "after replacement" }],
++              providerOptions: { chromeEnabled: true },
++            }),
++          );
++          await vi.waitFor(() => expect(queries).toHaveLength(2));
++          await readNextPrompt(getLatestQueryCall());
++          await bridge.waitForResponse(3);
++        }
++        const oldDeliveriesBeforeLateResponse = oldIteratorDeliveries;
++        queries[0]!.emit(response("response-from-old-resident"));
++        if (change === "replacement")
++          await vi.waitFor(() =>
++            expect(oldIteratorDeliveries).toBe(
++              oldDeliveriesBeforeLateResponse + 1,
++            ),
++          );
++        queries[1]!.emit(response("response-successor"));
++        await vi.waitFor(() =>
++          expect(JSON.stringify(identities())).toContain(
++            "message-response-successor",
++          ),
++        );
++        expect(JSON.stringify(identities())).not.toContain(
++          "message-response-during-close",
++        );
++        expect(JSON.stringify(identities())).not.toContain(
++          "message-response-from-old-resident",
++        );
++        const events = assembleCapturedThreadEvents(
++          bridge.messages,
++          "claude-code",
++        );
++        const input = events
++          .filter((event) => event.type === "turn/input/accepted")
++          .at(-1);
++        const identity = events.find(
++          (event) =>
++            event.type === "item/completed" &&
++            event.item.type === "extension" &&
++            JSON.stringify(event.item.payload).includes(
++              "message-response-successor",
++            ),
++        );
++        expect(identity?.scope).toEqual(input?.scope);
++      } finally {
++        bridge.sendRequest(99, "thread/stop", {
++          threadId,
++          providerThreadId: threadId,
++          intent: "interrupt",
++          activeTurnId: null,
++        });
++        await bridge.flushWork();
++        queries.forEach((query) => query.finish());
++        await bridge.waitForResponse(99);
++        bridge.restore();
++      }
++    },
++  );
++
+   it.each([
+     [200_000, false],
+     [1_000_000, false],
+diff --git a/plugins/provider-claude-code/src/delta-translation.test.ts b/plugins/provider-claude-code/src/delta-translation.test.ts
+index 632a7e431b63511cc780fb61c4698c709b1be4d5..58fb7bd439a509d12c96383f089c3fa8ed7e3e7d 100644
+--- a/plugins/provider-claude-code/src/delta-translation.test.ts
++++ b/plugins/provider-claude-code/src/delta-translation.test.ts
+@@ -511,23 +511,31 @@ describe("claude turn and checkpoint lifecycle", () => {
+     expect(taskCompleted).toContainEqual(
+       expect.objectContaining({ type: "item/backgroundTask/completed" }),
+     );
+-    expect(
+-      harness.translate(
+-        {
+-          type: "assistant",
+-          message: {
+-            id: "late-subagent-message",
+-            role: "assistant",
+-            content: [{ type: "text", text: "Late subagent output" }],
+-          },
+-          session_id: "claude-session-1",
+-        },
+-        {
+-          ...context,
+-          parentToolCallId: "toolu_01W1cLr7AsTRvbya9LM5LSAV",
++    const lateSubagent = harness.translate(
++      {
++        type: "assistant",
++        message: {
++          id: "late-subagent-message",
++          role: "assistant",
++          content: [{ type: "text", text: "Late subagent output" }],
+         },
+-      ),
+-    ).toEqual([]);
++        session_id: "claude-session-1",
++      },
++      {
++        ...context,
++        parentToolCallId: "toolu_01W1cLr7AsTRvbya9LM5LSAV",
++      },
++    );
++    expect(lateSubagent).toEqual([
++      expect.objectContaining({
++        type: "thread/extensionState/updated",
++        scope: threadScope(),
++        payload: expect.objectContaining({
++          binding: "unbound",
++          reason: "subagent_response",
++        }),
++      }),
++    ]);
+ 
+     const accepted = harness.acceptInput("creq_23456789ad", context.threadId);
+     const followUp = harness.translate(
+diff --git a/plugins/provider-claude-code/src/delta-translation.ts b/plugins/provider-claude-code/src/delta-translation.ts
+index 100e3d07ad3dfa771a562e99073ef827df9dc5ce..afe4dbd5e76d601dd1c210a310f1faef184c6b35 100644
+--- a/plugins/provider-claude-code/src/delta-translation.ts
++++ b/plugins/provider-claude-code/src/delta-translation.ts
+@@ -78,6 +78,7 @@ import {
+   resolveClaudeModelContextWindowHint,
+ } from "./sdk-extraction.js";
+ import { claudeCodeVisibilityMetadata } from "./visibility.js";
++import { ClaudeResponseIdentityTracker } from "./response-identity.js";
+ 
+ export interface ClaudeDeltaTranslationContext {
+   threadId?: string;
+@@ -385,6 +386,7 @@ interface HeldSkillOpen {
+ }
+ 
+ interface ClaudeThreadDialectState {
++  responseIdentities: ClaudeResponseIdentityTracker;
+   mirror: ClaudeTurnMirror;
+   cumulativeTokens: ThreadEventTokenUsageBreakdown;
+   promptCacheTtlMs: number | undefined;
+@@ -405,6 +407,7 @@ interface ClaudeThreadDialectState {
+ 
+ function createThreadState(): ClaudeThreadDialectState {
+   return {
++    responseIdentities: new ClaudeResponseIdentityTracker(),
+     mirror: { turnOpen: false, responseStarted: false, segment: 0 },
+     cumulativeTokens: ZERO_TOKEN_USAGE,
+     promptCacheTtlMs: undefined,
+@@ -465,6 +468,7 @@ export function createClaudeDeltaTranslator(
+   }
+ 
+   function mirrorCloseTurn(state: ClaudeThreadDialectState): void {
++    state.responseIdentities.settle();
+     state.mirror.turnOpen = false;
+     state.armedHardRateLimitRejection = undefined;
+     state.startedTools.clear();
+@@ -1185,13 +1189,21 @@ export function createClaudeDeltaTranslator(
+       return [];
+     }
+     const state = stateFor(context);
++    const responseIdentities = state.responseIdentities.observe(
++      event,
++      context?.parentToolCallId,
++    );
+     if (messageType.data.type === "stream_event") {
+       const deltas = translateStreamEvent(event, state, context);
+-      return deltas.length === 0
+-        ? deltas
+-        : [...releaseHeldSkillOpen(state, event), ...deltas];
++      return [
++        ...responseIdentities,
++        ...(deltas.length === 0
++          ? deltas
++          : [...releaseHeldSkillOpen(state, event), ...deltas]),
++      ];
+     }
+     return [
++      ...responseIdentities,
+       ...releaseHeldSkillOpen(state, event),
+       ...translateSdkMessageOfType(
+         event,
+@@ -1337,6 +1349,7 @@ export function createClaudeDeltaTranslator(
+     const state = stateFor({ threadId });
+     state.suppressUnacceptedTurnStart = false;
+     mirrorOpenTurn(state);
++    state.responseIdentities.acceptInput(state.mirror.segment);
+     return [{ kind: "turn.open" }, { kind: "input.accepted", clientRequestId }];
+   }
+ 
+diff --git a/plugins/provider-claude-code/src/response-identity.test.ts b/plugins/provider-claude-code/src/response-identity.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ef9d08515f4e3f975b0be2f7a0d81e1be0cd6d4b
+--- /dev/null
++++ b/plugins/provider-claude-code/src/response-identity.test.ts
+@@ -0,0 +1,298 @@
++import { describe, expect, it } from "vitest";
++import type { ThreadDelta } from "@get-bb/plugin-sdk/provider-bridge";
++import { experimental_createDeltaAssembler } from "@get-bb/plugin-sdk/provider-bridge/testing";
++import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
++import claudeCodePlugin from "../server.js";
++import {
++  CLAUDE_RESPONSE_IDENTITY_KIND,
++  CLAUDE_RESPONSE_IDENTITY_LIMIT,
++  ClaudeResponseIdentityTracker,
++  claudeResponseIdentityItemSchema,
++  claudeResponseIdentityStateSchema,
++} from "./response-identity.js";
++import { createClaudeDeltaHarness } from "./delta-test-harness.js";
++
++function start(id = "msg-1", session = "session-1") {
++  return {
++    type: "stream_event",
++    session_id: session,
++    parent_tool_use_id: null,
++    event: { type: "message_start", message: { id, model: "claude-probe" } },
++  };
++}
++function assistant(id = "msg-1", requestId: string | undefined = "request-1") {
++  return {
++    type: "assistant",
++    session_id: "session-1",
++    parent_tool_use_id: null,
++    uuid: "sdk-wrapper-uuid",
++    ...(requestId === undefined ? {} : { request_id: requestId }),
++    message: {
++      id,
++      model: "claude-probe",
++      content: [{ type: "text", text: "unchanged text" }],
++    },
++  };
++}
++function payload(deltas: ThreadDelta[]) {
++  const delta = deltas[0];
++  if (delta?.kind === "item.close" && delta.item.type === "extension")
++    return delta.item.payload;
++  if (delta?.kind === "extension.state") return delta.payload;
++  throw new Error("Expected response identity metadata");
++}
++describe("Claude response identity preservation", () => {
++  it("registers the exact item and unbound state schemas on the actual provider", () => {
++    const host = createFakePluginHost({ pluginId: "provider-claude-code" });
++    claudeCodePlugin(host.bb);
++    const declaration = host.harness.registrations.providerRegistrations.find(
++      (entry) => entry.id === "claude-code",
++    );
++    expect(declaration?.extensionKinds?.["response-identity"]).toEqual({
++      item: claudeResponseIdentityItemSchema,
++      state: claudeResponseIdentityStateSchema,
++    });
++  });
++  it("does not spend identity enrichment on a phase-only assistant block", () => {
++    const tracker = new ClaudeResponseIdentityTracker();
++    tracker.acceptInput(1);
++    tracker.observe(start());
++    const withoutRequest = assistant();
++    delete withoutRequest.request_id;
++    expect(tracker.observe(withoutRequest)).toEqual([]);
++    expect(payload(tracker.observe(assistant()))).toMatchObject({
++      binding: "turn_scope",
++      providerRequestId: "request-1",
++      phase: "assistant",
++    });
++    expect(tracker.observe(assistant())).toEqual([]);
++  });
++  it("preserves early message ID and one request-ID enrichment, deduplicating block UUIDs", () => {
++    const tracker = new ClaudeResponseIdentityTracker();
++    tracker.acceptInput(1);
++    const first = tracker.observe(start());
++    expect(
++      claudeResponseIdentityItemSchema.parse(payload(first)),
++    ).toMatchObject({
++      binding: "turn_scope",
++      messageId: "msg-1",
++      providerRequestId: null,
++      phase: "message_start",
++      aborted: null,
++    });
++    const enriched = tracker.observe(assistant());
++    expect(
++      claudeResponseIdentityItemSchema.parse(payload(enriched)),
++    ).toMatchObject({ providerRequestId: "request-1", phase: "assistant" });
++    expect(
++      tracker.observe({ ...assistant(), uuid: "another-content-block" }),
++    ).toEqual([]);
++    expect(tracker.observe(start())).toEqual([]);
++  });
++  it("uses exact existing canonical turn scope without changing text or creating a turn", () => {
++    const harness = createClaudeDeltaHarness();
++    const accepted = harness.acceptInput("canonical", "thread-1");
++    const observed = harness.translate(start(), { threadId: "thread-1" });
++    const response = observed.find(
++      (event) =>
++        event.type === "item/completed" && event.item.type === "extension",
++    );
++    const input = accepted.find(
++      (event) => event.type === "turn/input/accepted",
++    );
++    expect(response?.scope).toEqual(input?.scope);
++    expect(
++      response?.type === "item/completed" &&
++        response.item.type === "extension" &&
++        response.item.presentation?.suppress,
++    ).toBe(true);
++    const text = harness.translate(assistant(), { threadId: "thread-1" });
++    expect(text).toContainEqual(
++      expect.objectContaining({
++        type: "item/completed",
++        item: expect.objectContaining({
++          type: "agentMessage",
++          text: "unchanged text",
++        }),
++      }),
++    );
++    expect(observed.some((event) => event.type === "turn/started")).toBe(false);
++  });
++  it("keeps several tool-loop response IDs in one turn and steering adds no new owner", () => {
++    const tracker = new ClaudeResponseIdentityTracker();
++    tracker.acceptInput(1);
++    expect(payload(tracker.observe(start("msg-1")))).toMatchObject({
++      binding: "turn_scope",
++    });
++    tracker.acceptInput(1);
++    expect(payload(tracker.observe(start("msg-2")))).toMatchObject({
++      binding: "turn_scope",
++      messageId: "msg-2",
++    });
++  });
++  it("never assigns a delayed prior response to a newly accepted turn", () => {
++    const tracker = new ClaudeResponseIdentityTracker();
++    tracker.acceptInput(1);
++    tracker.observe(start());
++    tracker.settle();
++    tracker.acceptInput(2);
++    const late = tracker.observe(assistant());
++    expect(late[0]?.kind).toBe("extension.state");
++    expect(
++      claudeResponseIdentityStateSchema.parse(payload(late)),
++    ).toMatchObject({
++      binding: "unbound",
++      reason: "prior_turn_response",
++      messageId: "msg-1",
++    });
++    expect(payload(tracker.observe(start("msg-new")))).toMatchObject({
++      binding: "turn_scope",
++      messageId: "msg-new",
++    });
++  });
++  it("settled/no-input/subagent/session-conflict observations remain unbound", () => {
++    const empty = new ClaudeResponseIdentityTracker();
++    expect(payload(empty.observe(start()))).toMatchObject({
++      reason: "canonical_input_not_accepted",
++    });
++    const tracker = new ClaudeResponseIdentityTracker();
++    tracker.acceptInput(1);
++    tracker.observe(start());
++    expect(
++      payload(tracker.observe(start("nested"), "tool-parent")),
++    ).toMatchObject({
++      reason: "subagent_response",
++      parentToolUseId: "tool-parent",
++    });
++    expect(
++      payload(tracker.observe(start("other-session", "session-2"))),
++    ).toMatchObject({ reason: "native_session_conflict" });
++    tracker.settle();
++    expect(payload(tracker.observe(assistant()))).toMatchObject({
++      reason: "turn_settled",
++    });
++  });
++  it("retains aborted/superseded flags as observation, never inference completion", () => {
++    const tracker = new ClaudeResponseIdentityTracker();
++    tracker.acceptInput(1);
++    tracker.observe(start());
++    expect(
++      payload(
++        tracker.observe({
++          ...assistant(),
++          aborted: true,
++          supersedes: ["prior-sdk-uuid"],
++        }),
++      ),
++    ).toMatchObject({
++      binding: "turn_scope",
++      aborted: true,
++      supersedesSdkUuids: ["prior-sdk-uuid"],
++    });
++    expect(
++      payload(tracker.observe(assistant("msg-1", "contradictory-request"))),
++    ).toMatchObject({ binding: "unbound", reason: "identity_conflict" });
++    expect(tracker.observe(assistant())).toEqual([]);
++  });
++  it("does not evict old ownership at the resident bound or publish repeated overflow", () => {
++    const tracker = new ClaudeResponseIdentityTracker();
++    tracker.acceptInput(1);
++    for (let index = 0; index < CLAUDE_RESPONSE_IDENTITY_LIMIT; index++)
++      expect(tracker.observe(start(`msg-${index}`))).toHaveLength(1);
++    expect(payload(tracker.observe(start("overflow")))).toMatchObject({
++      binding: "unbound",
++      reason: "identity_capacity_exceeded",
++    });
++    expect(tracker.observe(start("overflow-again"))).toEqual([]);
++    tracker.settle();
++    tracker.acceptInput(2);
++    expect(payload(tracker.observe(assistant("msg-0")))).toMatchObject({
++      reason: "prior_turn_response",
++    });
++  });
++  it("bounds payloads and invalid Unicode without changing valid non-BMP identifiers", () => {
++    const tracker = new ClaudeResponseIdentityTracker();
++    tracker.acceptInput(1);
++    expect(payload(tracker.observe(start("msg-🧪")))).toMatchObject({
++      messageId: "msg-🧪",
++      binding: "turn_scope",
++    });
++    expect(payload(tracker.observe(start("msg-\ud800")))).toMatchObject({
++      messageId: null,
++      binding: "unbound",
++      reason: "invalid_identity",
++    });
++    const large = new ClaudeResponseIdentityTracker();
++    large.acceptInput(1);
++    const deltas = large.observe({
++      ...assistant(),
++      supersedes: Array.from({ length: 16 }, () => "🧪".repeat(128)),
++    });
++    expect(payload(deltas)).toMatchObject({
++      binding: "unbound",
++      reason: "payload_limit",
++      messageId: null,
++    });
++    expect(Buffer.byteLength(JSON.stringify(deltas))).toBeLessThan(4096);
++  });
++  it("validates declared extension schemas and uses public assembler persistence", () => {
++    const tracker = new ClaudeResponseIdentityTracker();
++    tracker.acceptInput(1);
++    const assembler = experimental_createDeltaAssembler({
++      providerId: "claude-code",
++      entropyPrefix: "identity-proof",
++    });
++    const events = assembler.assemble({
++      threadId: "thread",
++      deltas: [
++        { kind: "turn.open" },
++        { kind: "input.accepted", clientRequestId: "canonical" },
++        ...tracker.observe(start()),
++      ],
++    });
++    const extension = events.find(
++      (event) =>
++        event.type === "item/completed" && event.item.type === "extension",
++    );
++    expect(extension).toMatchObject({
++      scope: { kind: "turn", turnId: "identity-proof-t1" },
++      item: {
++        kind: CLAUDE_RESPONSE_IDENTITY_KIND,
++        presentation: { suppress: true },
++      },
++    });
++    const valid = claudeResponseIdentityItemSchema.parse(
++      payload(tracker.observe(start("second"))),
++    );
++    expect(
++      claudeResponseIdentityItemSchema.safeParse({ ...valid, surprise: true })
++        .success,
++    ).toBe(false);
++    expect(
++      claudeResponseIdentityStateSchema.safeParse(
++        payload(tracker.observe(start("third"))),
++      ).success,
++    ).toBe(false);
++  });
++  it("does not mutate native SDK bytes or infer identity from pre-response failures", () => {
++    const tracker = new ClaudeResponseIdentityTracker();
++    tracker.acceptInput(1);
++    const raw = {
++      ...assistant(),
++      diagnosticContext: {
++        headers: { "request-id": "actual-provider-context" },
++        instructions: "unchanged",
++      },
++    };
++    const before = JSON.stringify(raw);
++    tracker.observe(raw);
++    expect(JSON.stringify(raw)).toBe(before);
++    expect(
++      tracker.observe({
++        type: "result",
++        subtype: "error_during_execution",
++        is_error: true,
++      }),
++    ).toEqual([]);
++  });
++});
+diff --git a/plugins/provider-claude-code/src/response-identity.ts b/plugins/provider-claude-code/src/response-identity.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..1d3a18c0960bb238ac540530152c5128b2ebf6f6
+--- /dev/null
++++ b/plugins/provider-claude-code/src/response-identity.ts
+@@ -0,0 +1,285 @@
++import { z } from "zod";
++import type { ThreadDelta } from "@get-bb/plugin-sdk/provider-bridge";
++
++export const CLAUDE_RESPONSE_IDENTITY_KIND =
++  "provider-claude-code/response-identity";
++export const CLAUDE_RESPONSE_IDENTITY_LIMIT = 256;
++export const CLAUDE_RESPONSE_IDENTITY_BYTES = 4096;
++
++function wellFormedId(value: string): boolean {
++  if (
++    !value.length ||
++    value.length > 256 ||
++    /[\u0000-\u001f\u007f]/u.test(value)
++  )
++    return false;
++  for (let index = 0; index < value.length; index++) {
++    const unit = value.charCodeAt(index);
++    if (unit >= 0xd800 && unit <= 0xdbff) {
++      const next = value.charCodeAt(++index);
++      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
++    } else if (unit >= 0xdc00 && unit <= 0xdfff) return false;
++  }
++  return true;
++}
++const identity = z.string().refine(wellFormedId);
++const reasonSchema = z.enum([
++  "canonical_input_not_accepted",
++  "turn_settled",
++  "prior_turn_response",
++  "native_session_conflict",
++  "subagent_response",
++  "identity_conflict",
++  "identity_capacity_exceeded",
++  "identity_enrichment_limit",
++  "invalid_identity",
++  "synthetic_response",
++  "payload_limit",
++]);
++const payloadSchema = z
++  .object({
++    version: z.literal(1),
++    binding: z.enum(["turn_scope", "unbound"]),
++    reason: reasonSchema.nullable(),
++    phase: z.enum(["message_start", "assistant"]),
++    nativeSessionId: identity.nullable(),
++    messageId: identity.nullable(),
++    providerRequestId: identity.nullable(),
++    parentToolUseId: identity.nullable(),
++    aborted: z.literal(true).nullable(),
++    supersedesSdkUuids: z.array(identity).max(16),
++  })
++  .strict()
++  .refine(
++    (value) =>
++      Buffer.byteLength(JSON.stringify(value)) <=
++      CLAUDE_RESPONSE_IDENTITY_BYTES,
++  );
++export const claudeResponseIdentityItemSchema = payloadSchema.refine(
++  (value) =>
++    value.binding === "turn_scope" &&
++    value.reason === null &&
++    value.messageId !== null &&
++    value.nativeSessionId !== null &&
++    value.parentToolUseId === null,
++);
++export const claudeResponseIdentityStateSchema = payloadSchema.refine(
++  (value) => value.binding === "unbound" && value.reason !== null,
++);
++type Payload = z.infer<typeof payloadSchema>;
++type Reason = z.infer<typeof reasonSchema>;
++interface Observed {
++  payload: Payload;
++  issue: Reason | null;
++}
++interface Held {
++  owner: number | null;
++  payload: Payload;
++  emitted: number;
++  lastWire: string;
++  conflicted: boolean;
++}
++function record(value: unknown): Record<string, unknown> | undefined {
++  return value !== null && typeof value === "object" && !Array.isArray(value)
++    ? (value as Record<string, unknown>)
++    : undefined;
++}
++function extract(
++  raw: unknown,
++  parentToolUseId: string | undefined,
++): Observed | null {
++  const sdk = record(raw);
++  const streamed = sdk?.type === "stream_event" ? record(sdk.event) : undefined;
++  const message =
++    streamed?.type === "message_start"
++      ? record(streamed.message)
++      : sdk?.type === "assistant"
++        ? record(sdk.message)
++        : undefined;
++  if (message?.id === undefined || !sdk) return null;
++  let issue: Reason | null = null;
++  const read = (value: unknown, nullable: boolean): string | null => {
++    if (value === undefined || value === null) {
++      if (!nullable) issue = "invalid_identity";
++      return null;
++    }
++    const parsed = identity.safeParse(value);
++    if (!parsed.success) {
++      issue = "invalid_identity";
++      return null;
++    }
++    return parsed.data;
++  };
++  const nativeSessionId = read(sdk.session_id, false),
++    messageId = read(message.id, false);
++  const providerRequestId = read(sdk.request_id, true);
++  const parent = read(parentToolUseId ?? sdk.parent_tool_use_id, true);
++  let supersedesSdkUuids: string[] = [];
++  if (sdk.supersedes !== undefined) {
++    const supersedes = z.array(identity).max(16).safeParse(sdk.supersedes);
++    if (supersedes.success) supersedesSdkUuids = supersedes.data;
++    else issue = "invalid_identity";
++  }
++  if (message.model === "<synthetic>") issue = "synthetic_response";
++  return {
++    payload: {
++      version: 1,
++      binding: "unbound",
++      reason: null,
++      phase: streamed?.type === "message_start" ? "message_start" : "assistant",
++      nativeSessionId,
++      messageId,
++      providerRequestId,
++      parentToolUseId: parent,
++      aborted: sdk.aborted === true ? true : null,
++      supersedesSdkUuids,
++    },
++    issue,
++  };
++}
++
++export class ClaudeResponseIdentityTracker {
++  private current: { generation: number; nativeSession: string | null } | null =
++    null;
++  private everAccepted = false;
++  private readonly held = new Map<string, Held>();
++  private readonly coverageReasons = new Set<Reason>();
++
++  acceptInput(generation: number): void {
++    this.everAccepted = true;
++    if (this.current?.generation !== generation)
++      this.current = { generation, nativeSession: null };
++  }
++  settle(): void {
++    this.current = null;
++  }
++
++  private coverage(payload: Payload, reason: Reason): ThreadDelta[] {
++    const value: Payload = { ...payload, binding: "unbound", reason };
++    if (!payloadSchema.safeParse(value).success)
++      return this.coverage(
++        {
++          version: 1,
++          binding: "unbound",
++          reason: null,
++          phase: payload.phase,
++          nativeSessionId: null,
++          messageId: null,
++          providerRequestId: null,
++          parentToolUseId: null,
++          aborted: null,
++          supersedesSdkUuids: [],
++        },
++        "payload_limit",
++      );
++    if (this.coverageReasons.has(reason)) return [];
++    this.coverageReasons.add(reason);
++    return [
++      {
++        kind: "extension.state",
++        extensionKind: CLAUDE_RESPONSE_IDENTITY_KIND,
++        payload: value,
++      },
++    ];
++  }
++
++  observe(raw: unknown, parentToolUseId?: string): ThreadDelta[] {
++    const observation = extract(raw, parentToolUseId);
++    if (!observation) return [];
++    const payload = observation.payload;
++    if (observation.issue !== null)
++      return this.coverage(payload, observation.issue);
++    if (!payloadSchema.safeParse(payload).success)
++      return this.coverage(payload, "payload_limit");
++    const key = JSON.stringify([payload.nativeSessionId, payload.messageId]);
++    let held = this.held.get(key);
++    if (!held) {
++      if (this.held.size >= CLAUDE_RESPONSE_IDENTITY_LIMIT)
++        return this.coverage(payload, "identity_capacity_exceeded");
++      held = {
++        owner: this.current?.generation ?? null,
++        payload,
++        emitted: 0,
++        lastWire: "",
++        conflicted: false,
++      };
++      this.held.set(key, held);
++    }
++    if (held.conflicted) return this.coverage(payload, "identity_conflict");
++    let reason: Reason | null =
++      this.current === null
++        ? this.everAccepted
++          ? "turn_settled"
++          : "canonical_input_not_accepted"
++        : held.owner !== this.current.generation
++          ? "prior_turn_response"
++          : null;
++    if (payload.parentToolUseId !== null) reason = "subagent_response";
++    if (reason === null && this.current !== null) {
++      if (
++        this.current.nativeSession !== null &&
++        this.current.nativeSession !== payload.nativeSessionId
++      )
++        reason = "native_session_conflict";
++      else this.current.nativeSession = payload.nativeSessionId;
++    }
++    if (
++      held.payload.providerRequestId !== null &&
++      payload.providerRequestId !== null &&
++      held.payload.providerRequestId !== payload.providerRequestId
++    )
++      reason = "identity_conflict";
++    if (held.payload.parentToolUseId !== payload.parentToolUseId)
++      reason = "identity_conflict";
++    if (reason === "identity_conflict") held.conflicted = true;
++    if (reason !== null) return this.coverage(payload, reason);
++    const next: Payload = {
++      ...payload,
++      binding: "turn_scope",
++      reason: null,
++      providerRequestId:
++        payload.providerRequestId ?? held.payload.providerRequestId,
++      aborted: payload.aborted ?? held.payload.aborted,
++      supersedesSdkUuids: payload.supersedesSdkUuids.length
++        ? payload.supersedesSdkUuids
++        : held.payload.supersedesSdkUuids,
++    };
++    const wire = JSON.stringify(next);
++    const addedIdentity =
++      next.providerRequestId !== held.payload.providerRequestId ||
++      next.aborted !== held.payload.aborted ||
++      JSON.stringify(next.supersedesSdkUuids) !==
++        JSON.stringify(held.payload.supersedesSdkUuids);
++    if (held.emitted > 0 && !addedIdentity) return [];
++    if (
++      wire === held.lastWire ||
++      (payload.phase === "message_start" && held.emitted > 0)
++    )
++      return [];
++    if (held.emitted >= 2)
++      return this.coverage(payload, "identity_enrichment_limit");
++    held.payload = next;
++    held.lastWire = wire;
++    held.emitted++;
++    return [
++      {
++        kind: "item.close",
++        key: { providerItemId: `response-identity:${key}` },
++        status: "completed",
++        item: {
++          type: "extension",
++          kind: CLAUDE_RESPONSE_IDENTITY_KIND,
++          payload: next,
++        },
++        presentation: {
++          label: {
++            pending: "Provider response identity",
++            completed: "Provider response identity",
++          },
++          icon: { glyph: "activity" },
++          suppress: true,
++        },
++      },
++    ];
++  }
++}
+-- 
+2.50.1 (Apple Git-155)
+

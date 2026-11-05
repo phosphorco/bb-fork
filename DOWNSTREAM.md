@@ -490,3 +490,32 @@ hunks only after equivalent contract/byte-preservation proof. The finite
 source-attested read policy is an intentional product decision while originals
 are retained. No compatibility aliases, public event/report keys, secret registry,
 provider request changes, or runtime/source promotion are introduced.
+
+## 0066 — bounded Claude response identity preservation
+
+Cole explicitly approved this native-provider-only exception on November 5, 2026.
+A separate public-SDK provider plugin could preserve these IDs but would duplicate
+the existing Claude bridge; plugins cannot intercept this provider's translation.
+The patch retains actual `message_start.message.id`, `assistant.message.id` and
+optional provider `request_id` through an existing declared, suppressed extension
+item with exact canonical BB turn scope. Unsupported bindings remain explicit
+unbound coverage. There is no core/SDK, request, environment, credential, routing
+or native-session behavior change.
+
+Ownership is bounded to 256 distinct identities per resident SDK lifetime, with
+no eviction and one finite overflow signal; inference continues beyond the bound.
+Normal turn ownership relies on Agent SDK 0.3.245's documented result-after-all-
+turn-messages ordering plus existing resident serial/closing fences. Known delayed
+IDs cannot migrate to another turn. Pre-response failures and nested SDK subagents
+remain unbound rather than guessed. Metadata completion is not inference success.
+
+Component verification passed 413 tests, native typecheck, bundle preparation and
+lint; replacement/cancellation fixtures, actual declaration and public assembler
+persistence are covered. This is not live attribution or budget acceptance. CPA
+response observations and curated Analytics client-facts V2/Manager joins are a
+separate coordinated contract cohort; the frozen V1 is unchanged.
+
+Sync cost is the native provider's input/settlement and SDK translation seams plus
+its identity and bridge/calibration fixtures. Upstream equivalent finite response
+facts, then remove this patch as one producer/consumer cohort while retaining
+historical versioned evidence. Do not add fallback inference or dual live readers.

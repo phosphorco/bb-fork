@@ -71,7 +71,7 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The fifty-four patches listed in `patches/series` form the current implementation
+The fifty-five patches listed in `patches/series` form the current implementation
 candidate. Queue numbers 0022, 0027, 0030, 0048 and 0052 are intentionally absent: 0022 is a
 historical gap, 0052 was retired in favor of native `parentNotifications: "stuck"`,
 and the former 0027 Monaco routing backport is supplied by
