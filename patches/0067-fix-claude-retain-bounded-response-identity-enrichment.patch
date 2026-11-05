@@ -1,0 +1,113 @@
+From 7548cb4379c310614778b108480e48ffea55dda6 Mon Sep 17 00:00:00 2001
+From: Cole Lawrence <cole@colelawrence.com>
+Date: Thu, 5 Nov 2026 18:00:16 -0300
+Subject: [PATCH] fix(claude): retain bounded response identity enrichment
+
+---
+ .../src/response-identity.test.ts             | 76 +++++++++++++++++++
+ .../src/response-identity.ts                  |  2 +-
+ 2 files changed, 77 insertions(+), 1 deletion(-)
+
+diff --git a/plugins/provider-claude-code/src/response-identity.test.ts b/plugins/provider-claude-code/src/response-identity.test.ts
+index ef9d08515f4e3f975b0be2f7a0d81e1be0cd6d4b..1080c07676f7c1fc65d74411a4097974452e0911 100644
+--- a/plugins/provider-claude-code/src/response-identity.test.ts
++++ b/plugins/provider-claude-code/src/response-identity.test.ts
+@@ -42,6 +42,82 @@ function payload(deltas: ThreadDelta[]) {
+   throw new Error("Expected response identity metadata");
+ }
+ describe("Claude response identity preservation", () => {
++  it.each([
++    ["request ID", { request_id: "request-late" }],
++    ["aborted flag", { aborted: true }],
++    ["superseded IDs", { supersedes: ["superseded-sdk-uuid"] }],
++    [
++      "combined metadata",
++      {
++        request_id: "request-late",
++        aborted: true,
++        supersedes: ["superseded-sdk-uuid"],
++      },
++    ],
++  ])(
++    "retains late %s through the real translator and public assembler",
++    (_, extra) => {
++      const harness = createClaudeDeltaHarness();
++      const context = { threadId: "thread-late-enrichment" };
++      const accepted = harness.acceptInput(
++        "canonical-request",
++        context.threadId,
++      );
++      const first = harness.translate(start(), context);
++      const phaseOnly = assistant();
++      delete phaseOnly.request_id;
++      const phaseEvents = harness.translate(phaseOnly, context);
++      const late = { ...phaseOnly, ...extra };
++      const second = harness.translate(late, context);
++      const repeats = harness.translate(
++        { ...late, uuid: "another-sdk-block" },
++        context,
++      );
++      const isIdentity = (event: (typeof first)[number]) =>
++        event.type === "item/completed" &&
++        event.item.type === "extension" &&
++        event.item.kind === CLAUDE_RESPONSE_IDENTITY_KIND;
++      const initial = first.find(isIdentity);
++      const enriched = second.find(isIdentity);
++      expect(initial).toBeDefined();
++      expect(enriched).toBeDefined();
++      expect(phaseEvents.filter(isIdentity)).toEqual([]);
++      expect(repeats.filter(isIdentity)).toEqual([]);
++      const scope = accepted.find(
++        (event) => event.type === "turn/input/accepted",
++      )?.scope;
++      expect(initial?.scope).toEqual(scope);
++      expect(enriched?.scope).toEqual(scope);
++      if (
++        initial?.type !== "item/completed" ||
++        initial.item.type !== "extension" ||
++        enriched?.type !== "item/completed" ||
++        enriched.item.type !== "extension"
++      )
++        throw new Error(
++          "Expected both retained response metadata observations",
++        );
++      expect(enriched.item.id).not.toBe(initial.item.id);
++      expect(
++        claudeResponseIdentityItemSchema.parse(initial.item.payload),
++      ).toMatchObject({
++        messageId: "msg-1",
++        providerRequestId: null,
++        phase: "message_start",
++        aborted: null,
++        supersedesSdkUuids: [],
++      });
++      expect(
++        claudeResponseIdentityItemSchema.parse(enriched.item.payload),
++      ).toMatchObject({
++        messageId: "msg-1",
++        phase: "assistant",
++        providerRequestId: "request_id" in extra ? extra.request_id : null,
++        aborted: "aborted" in extra ? true : null,
++        supersedesSdkUuids: "supersedes" in extra ? extra.supersedes : [],
++      });
++    },
++  );
+   it("registers the exact item and unbound state schemas on the actual provider", () => {
+     const host = createFakePluginHost({ pluginId: "provider-claude-code" });
+     claudeCodePlugin(host.bb);
+diff --git a/plugins/provider-claude-code/src/response-identity.ts b/plugins/provider-claude-code/src/response-identity.ts
+index 1d3a18c0960bb238ac540530152c5128b2ebf6f6..003fd2623a8b002b10d96f3915c830cf57cb1e9a 100644
+--- a/plugins/provider-claude-code/src/response-identity.ts
++++ b/plugins/provider-claude-code/src/response-identity.ts
+@@ -264,7 +264,7 @@ export class ClaudeResponseIdentityTracker {
+     return [
+       {
+         kind: "item.close",
+-        key: { providerItemId: `response-identity:${key}` },
++        key: { providerItemId: `response-identity:${key}:${held.emitted}` },
+         status: "completed",
+         item: {
+           type: "extension",
+-- 
+2.50.1 (Apple Git-155)
+

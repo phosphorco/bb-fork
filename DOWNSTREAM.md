@@ -519,3 +519,7 @@ Sync cost is the native provider's input/settlement and SDK translation seams pl
 its identity and bridge/calibration fixtures. Upstream equivalent finite response
 facts, then remove this patch as one producer/consumer cohort while retaining
 historical versioned evidence. Do not add fallback inference or dual live readers.
+
+## Patch67: retain bounded Claude response enrichment
+
+Completes Cole's approved native response-identity preservation. The native assembler treats a completed item identity as final, so initial and later enrichment now use distinct bounded emission ordinals. The same closed metadata payload,256resident responses and two-emission cap remain; phase-only repeats are still suppressed. Four real translator/public-assembler regressions protect optional request IDs, abort status and superseded SDK IDs. No core, SDK, routing, session or inference behavior changes.
