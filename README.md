@@ -71,7 +71,7 @@ Run `./scripts/delta-report` to see the complete downstream footprint. See [DOWN
 5. Materialize with `--committer-date-is-author-date`, then record `git rev-parse HEAD^{tree}` in `result-tree.lock`.
 6. Run `./scripts/verify` and the full CI suite before tagging this overlay repository.
 
-The fifty-three patches listed in `patches/series` form the current implementation
+The fifty-four patches listed in `patches/series` form the current implementation
 candidate. Queue numbers 0022, 0027, 0030, 0048 and 0052 are intentionally absent: 0022 is a
 historical gap, 0052 was retired in favor of native `parentNotifications: "stuck"`,
 and the former 0027 Monaco routing backport is supplied by
@@ -165,7 +165,7 @@ before activation, adopt native `stuck` where appropriate, and preserve delibera
 `off` settings. This source change does not migrate live threads or restart the
 service.
 
-The selected 53-patch queue replays to tree
+The preceding 53-patch queue's historical verification receipt records tree
 `5789e7b1c5405f4bd85b372bc6827716dec8f7a9`. Frozen install, queue/namespace
 verification, full typecheck (105 tasks) and full build (57 tasks) passed in a
 temporary verification checkout. Generated CLI help, guide and SDK declarations
@@ -233,3 +233,21 @@ DOWNSTREAM.md. Electron desktop tests are excluded. Runtime, host policy, and
 browser acceptance are checked at activation.
 
 The CI follow-up 0061 removes seven comments rejected by provider lint policy, makes Monaco’s Pkl tokenizer self-contained using an identical local implementation, and scopes the forkable-import test exception to the Claude bridge acceptance fixture that intentionally composes Account Pool. No production cross-plugin import is exempted. SDK declarations and executable behavior are unchanged. Full lint passes all 48 tasks; Monaco typecheck passes. The existing SDK archive remains bound to its original 975e38f02f1a source receipt and identical SDK source tree.
+
+## Explicit environment diagnostic classification — 2026-11-05
+
+Patch 65 requires core `secret: boolean` and plugin `experimental_secret: boolean`,
+preserves ordinary diagnostics and actual provider environment bytes, and rejects
+invalid or failed routing/authentication contributions before provider launch.
+Managed shell values retain their immutable provenance across synchronization.
+Host-daemon protocol 240 and native migration 0146 are a coupled source cohort;
+populated unclassified environment stores stop before any migration mutation.
+
+The 54-patch candidate replays to tree `9441a1e0da4ff55072b4f5b68a00f08b649251d3`. Native
+build/typecheck passed 66 tasks across the selected product scopes, with focused
+runtime, recovery, daemon, SDK, account-pool and public-read tests. The prior
+53-patch receipt above remains historical evidence. This source candidate is not
+a deployment or workspace-gitlink promotion receipt. See the materialized
+`docs/environment-diagnostic-classification.md` for the finite source-attested
+credential-slot read policy, operator cutover obligation and upstream removal
+boundary.

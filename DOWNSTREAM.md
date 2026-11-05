@@ -465,3 +465,28 @@ Native history written with integration-asserted person evidence requires this c
 ## Attribution recovery corrections (patch64)
 
 Reprovisioning now forwards the captured native authors/editors and existing acceptance callback, committing the receipt in the same transaction as the request. Callback failure rolls back both request and preparing transition. This closes a hole in patch63's native acceptance guarantee rather than adding another product capability. A separately named composed regression requires both registry-package and Rosetta roots, closes/reopens both stores after native response loss, and proves one attributed request in ready and reprovisioning paths. Cole owns subsequent service redeployment; these are source and test changes only.
+
+## 0065 — explicit environment credential provenance
+
+Core and plugin environment producers explicitly distinguish authentication secret
+values from ordinary diagnostics. Native input/storage, SDK validation, daemon
+protocol 240, immutable managed-shell snapshots and runtime resolution carry one
+classification. Registered producer failure, invalid classification and unresolved
+server paths stop preparation instead of falling through to inherited routing.
+Native resume updates survive subsequent turn configuration; metadata-only changes
+produce truthful diagnostics without altering provider environment bytes.
+
+The shared event schema applies only the audited Account Pooler and Subscription
+Router authentication slots, preserving public empty/unresolved sentinels and all
+other diagnostic content. It rewrites no stored events and fabricates no values
+for previously masked history. Migration 0146 has no guessed classification
+default; populated unclassified current or native legacy stores fail before
+staging/data/schema/ledger mutation.
+
+Sync cost: native environment/SDK contracts, migration generation, host/runtime
+seams and their synthetic cross-layer fixtures. Upstream the generic required
+classification and fail-preparation seam, then remove corresponding downstream
+hunks only after equivalent contract/byte-preservation proof. The finite
+source-attested read policy is an intentional product decision while originals
+are retained. No compatibility aliases, public event/report keys, secret registry,
+provider request changes, or runtime/source promotion are introduced.
