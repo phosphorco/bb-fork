@@ -1,0 +1,295 @@
+From 6b3592a83ecb065c6d4fca3b4f0e141643450186 Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Sat, 7 Nov 2026 04:47:48 +0100
+Subject: [PATCH] fix(p6r): bound contribution lookup payload decoding
+
+Exact-reference history decoded every contribution payload twice before
+filtering. Read identity and replacement keys once, then hydrate matched
+physical rows while retaining namespace-blind identity, rowid tie order,
+replacement suppression and the existing decoder/sort.
+
+Matched malformed payloads still fail before suppression. Unrelated malformed
+payloads no longer poison other lookups. Global metadata scans, overflow-page
+I/O, per-match PK reads and selected payload decoding remain.
+
+Actual migrated-SQLite work-growth and preservation tests, private-data
+ordered parity, installed binding recovery cases and adversarial review pass.
+Source-only correction; live activation and restart are separately gated.
+---
+ apps/server/src/services/p6r/sidecar-store.ts |  21 +-
+ .../services/p6r/contribution-lookup.test.ts  | 224 ++++++++++++++++++
+ 2 files changed, 240 insertions(+), 5 deletions(-)
+ create mode 100644 apps/server/test/services/p6r/contribution-lookup.test.ts
+
+diff --git a/apps/server/src/services/p6r/sidecar-store.ts b/apps/server/src/services/p6r/sidecar-store.ts
+index 6941d51ddbbd617e29d1d2de3dcf40ad7738825a..6bb4d4d3fccd00ce59cfeefff5613a3db81ed540 100644
+--- a/apps/server/src/services/p6r/sidecar-store.ts
++++ b/apps/server/src/services/p6r/sidecar-store.ts
+@@ -254,21 +254,32 @@ export function listP6rContributions(
+   _operationNamespace: string,
+   input: { readonly nativeRequestId?: string; readonly references?: readonly { readonly contributionId: string; readonly threadId: string }[]; readonly threadId?: string },
+ ): readonly P6rStoredContribution[] {
++  const contributionKeys = db.select({
++    id: p6rContributions.id,
++    threadId: p6rContributions.threadId,
++    replacesContributionId: p6rContributions.replacesContributionId,
++  }).from(p6rContributions).orderBy(sql`${p6rContributions}.rowid`).all();
+   const rows = input.references === undefined
+     ? db.select().from(p6rContributions).where(and(
+         input.threadId === undefined ? undefined : eq(p6rContributions.threadId, input.threadId),
+         input.nativeRequestId === undefined ? undefined : eq(p6rContributions.nativeRequestId, input.nativeRequestId),
+       )).all()
+-    : db.select().from(p6rContributions).all();
++    : contributionKeys.flatMap((key) => {
++        const id = logicalStoredId(key.id);
++        if (id === null || !input.references!.some((reference) => reference.threadId === key.threadId && reference.contributionId === id)) return [];
++        const row = db.select().from(p6rContributions).where(eq(p6rContributions.id, key.id)).get();
++        return row === undefined ? [] : [row];
++      });
+   const values = rows
+     .map((row) => storedContribution(row))
+     .filter((row): row is P6rStoredContribution => row !== null)
+     .filter((row) => input.references === undefined || input.references.some((reference) => reference.threadId === row.threadId && reference.contributionId === row.id));
+   const replaced = new Set(
+-    db.select().from(p6rContributions).all()
+-      .map((row) => storedContribution(row))
+-      .filter((row): row is P6rStoredContribution => row !== null)
+-      .flatMap((row) => row.replacesContributionId === null ? [] : [`${row.threadId}\u0000${row.replacesContributionId}`]),
++    contributionKeys.filter((key) => logicalStoredId(key.id) !== null)
++      .flatMap((key) => {
++        const replacesContributionId = logicalStoredId(key.replacesContributionId);
++        return replacesContributionId === null ? [] : [`${key.threadId}\u0000${replacesContributionId}`];
++      }),
+   );
+   return values
+     .filter((row) => !replaced.has(`${row.threadId}\u0000${row.id}`))
+diff --git a/apps/server/test/services/p6r/contribution-lookup.test.ts b/apps/server/test/services/p6r/contribution-lookup.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e0a76d5cf13ca58344c159c3f50ce44999c8c4ec
+--- /dev/null
++++ b/apps/server/test/services/p6r/contribution-lookup.test.ts
+@@ -0,0 +1,224 @@
++import { createMigratedConnection } from "@bb/db/testing";
++import { describe, expect, it, vi } from "vitest";
++import type { JsonValue } from "@bb/domain";
++import { migrateP6rSidecars } from "../../../src/services/p6r/sidecar-migrate.js";
++import { p6rContributions } from "../../../src/services/p6r/sidecar-schema.js";
++import { listP6rContributions } from "../../../src/services/p6r/sidecar-store.js";
++
++function tuple(...parts: readonly string[]): string {
++  return parts.map(part => `${part.length}:${part}`).join("");
++}
++
++function setup() {
++  const queries: string[] = [];
++  const db = createMigratedConnection({
++    slowQueryThresholdMs: 0,
++    slowQueryLogger: { info(fields) { if (fields.sql.includes("p6r_contributions")) queries.push(fields.sql); } },
++  });
++  migrateP6rSidecars(db);
++  function add(id: string, threadId = "thread-target", options: {
++    namespace?: string; acceptedAt?: number; nativeRequestId?: string | null;
++    replaces?: string | null; copiedFrom?: string | null; value?: JsonValue; rawId?: string;
++  } = {}) {
++    const value = JSON.stringify(options.value === undefined ? { marker: id } : options.value);
++    db.insert(p6rContributions).values({
++      id: options.rawId ?? tuple(options.namespace ?? "namespace", id),
++      threadId, acceptedAt: options.acceptedAt ?? 10, acceptedAuthorship: value,
++      initialInput: value, currentProjection: value, latestEditor: value,
++      nativeRequestId: options.nativeRequestId ?? null,
++      replacesContributionId: options.replaces ?? null, copiedFromContributionId: options.copiedFrom ?? null,
++    }).run();
++  }
++  return { db, queries, add, close() { db.$client.close(); } };
++}
++
++function decodedWork(run: () => ReturnType<typeof listP6rContributions>) {
++  const original = JSON;
++  let calls = 0, bytes = 0;
++  vi.stubGlobal("JSON", {
++    ...original,
++    stringify: original.stringify,
++    parse: (...args: Parameters<typeof JSON.parse>) => {
++      calls++; bytes += Buffer.byteLength(args[0]);
++      return original.parse(...args);
++    },
++  });
++  try { return { result: run(), work: { calls, bytes } }; }
++  finally { vi.unstubAllGlobals(); }
++}
++
++describe("P6r contribution lookup", () => {
++  it("does not decode unrelated payload growth for one exact reference", () => {
++    const f = setup();
++    try {
++      f.add("target");
++      const input = { references: [{ threadId: "thread-target", contributionId: "target" }] };
++      const before = decodedWork(() => listP6rContributions(f.db, "unused", input));
++      for (let i = 0; i < 32; i++) f.add(`foreign-${i}`, "thread-foreign", { value: { body: "small" } });
++      const small = decodedWork(() => listP6rContributions(f.db, "unused", input));
++      expect(small.work).toEqual(before.work);
++      const larger = JSON.stringify({ body: "x".repeat(8192) });
++      f.db.$client.prepare("UPDATE p6r_contributions SET accepted_authorship=?,initial_input=?,current_projection=?,latest_editor=? WHERE thread_id=?")
++        .run(larger, larger, larger, larger, "thread-foreign");
++      f.queries.length = 0;
++      const after = decodedWork(() => listP6rContributions(f.db, "unused", input));
++      expect(after.result).toEqual(before.result);
++      expect(after.work).toEqual(before.work);
++      expect(after.work.calls).toBe(4);
++      expect(f.queries.filter(query => query.includes("initial_input"))).toHaveLength(1);
++      expect(f.queries.filter(query => query.includes("initial_input")).every(query => query.includes("where"))).toBe(true);
++    } finally { f.close(); }
++  });
++});
++
++describe("P6r contribution lookup preservation", () => {
++  it("retains cross-namespace physical ties and duplicate-reference semantics in rowid order", () => {
++    const f = setup();
++    try {
++      f.add("same", "thread-target", { namespace: "z", value: { marker: "first" } });
++      f.add("same", "thread-target", { namespace: "a", value: { marker: "second" } });
++      f.add("same", "thread-other", { value: { marker: "other" } });
++      f.db.$client.prepare("UPDATE p6r_contributions SET rowid=? WHERE id=?").run(9007199254740993n, tuple("z", "same"));
++      f.db.$client.prepare("UPDATE p6r_contributions SET rowid=? WHERE id=?").run(9007199254740994n, tuple("a", "same"));
++      const ref = { threadId: "thread-target", contributionId: "same" };
++      const values = listP6rContributions(f.db, "neither-namespace", {
++        references: [ref, { threadId: "missing", contributionId: "same" }, ref],
++        threadId: "ignored", nativeRequestId: "ignored",
++      });
++      expect(values.map(value => value.initialInput)).toEqual([{ marker: "first" }, { marker: "second" }]);
++    } finally { f.close(); }
++  });
++
++  it("preserves JS locale ordering rather than SQL binary ordering", () => {
++    const f = setup();
++    try {
++      const ids = ["z", "A", "á", "10", "2", "a"];
++      for (const id of ids) f.add(id);
++      expect(listP6rContributions(f.db, "", {
++        references: [...ids].reverse().map(contributionId => ({ contributionId, threadId: "thread-target" })),
++      }).map(value => value.id)).toEqual([...ids].sort((a, b) => a.localeCompare(b)));
++    } finally { f.close(); }
++  });
++
++  it("retains UTF16 tuple decoding, empty components and generic JSON payload shapes", () => {
++    const f = setup();
++    try {
++      const values: JsonValue[] = [null, 7, "scalar", [1, null], { nested: true }];
++      const ids = ["", "logical:😀", "digits:12", "array", "object"];
++      for (const [i, id] of ids.entries()) f.add(id, "thread-target", {
++        namespace: i === 0 ? "" : tuple("instance:😀", "plugin"),
++        acceptedAt: i, value: values[i],
++      });
++      const result = listP6rContributions(f.db, "ignored", {
++        references: ids.map(contributionId => ({ contributionId, threadId: "thread-target" })),
++      });
++      expect(result.map(value => value.id)).toEqual(ids);
++      expect(result.map(value => value.initialInput)).toEqual(values);
++      expect(result.map(value => value.acceptedAuthorship)).toEqual(values);
++      expect(result.map(value => value.currentProjection)).toEqual(values);
++      expect(result.map(value => value.latestEditor)).toEqual(values);
++    } finally { f.close(); }
++  });
++
++  it("keeps optional thread and request predicates conjunctive, including empty strings", () => {
++    const f = setup();
++    try {
++      f.add("a", "thread-target", { nativeRequestId: "request" });
++      f.add("b", "thread-other", { nativeRequestId: "request" });
++      f.add("c", "thread-target", { nativeRequestId: "" });
++      f.add("d", "", { nativeRequestId: "request" });
++      expect(listP6rContributions(f.db, "", {}).map(row => row.id)).toEqual(["a", "b", "c", "d"]);
++      expect(listP6rContributions(f.db, "", { threadId: "thread-target" }).map(row => row.id)).toEqual(["a", "c"]);
++      expect(listP6rContributions(f.db, "", { nativeRequestId: "request" }).map(row => row.id)).toEqual(["a", "b", "d"]);
++      expect(listP6rContributions(f.db, "", { threadId: "thread-target", nativeRequestId: "request" }).map(row => row.id)).toEqual(["a"]);
++      expect(listP6rContributions(f.db, "", { threadId: "" }).map(row => row.id)).toEqual(["d"]);
++      expect(listP6rContributions(f.db, "", { nativeRequestId: "" }).map(row => row.id)).toEqual(["c"]);
++      expect(listP6rContributions(f.db, "", { references: [], nativeRequestId: "request" })).toEqual([]);
++    } finally { f.close(); }
++  });
++
++  it("uses global namespace-blind replacement markers without traversing chains or changing copies", () => {
++    const f = setup();
++    try {
++      f.add("a", "thread-target", { namespace: "original" });
++      f.add("a", "thread-target", { namespace: "alias" });
++      f.add("b", "thread-target", { acceptedAt: 9, replaces: tuple("different-namespace", "a") });
++      f.add("c", "thread-target", { acceptedAt: 8, replaces: tuple("ignored", "b") });
++      f.add("copy", "thread-target", { copiedFrom: tuple("original", "a") });
++      f.add("self", "thread-target", { replaces: tuple("ignored", "self") });
++      f.add("x", "thread-target", { replaces: tuple("ignored", "y") });
++      f.add("y", "thread-target", { replaces: tuple("ignored", "x") });
++      f.add("other-edit", "thread-other", { replaces: tuple("ignored", "copy") });
++      expect(listP6rContributions(f.db, "", {
++        references: ["a", "b", "c", "copy", "self", "x", "y"].map(contributionId => ({ contributionId, threadId: "thread-target" })),
++      }).map(row => row.id)).toEqual(["c", "copy"]);
++      expect(listP6rContributions(f.db, "", { references: [{ contributionId: "a", threadId: "thread-target" }] })).toEqual([]);
++    } finally { f.close(); }
++  });
++
++  it("preserves the actual-NUL replacement-key collision and distinguishes literal escape text", () => {
++    const f = setup();
++    try {
++      const literal = "b\\u0000c";
++      f.add("b\u0000c", "a");
++      f.add(literal, "a");
++      f.add("replacement", "a\u0000b", { replaces: tuple("ignored", "c") });
++      const result = listP6rContributions(f.db, "", {
++        references: [{ contributionId: "b\u0000c", threadId: "a" }, { contributionId: literal, threadId: "a" }],
++      });
++      expect(result.map(row => row.id)).toEqual([literal]);
++    } finally { f.close(); }
++  });
++
++  it("skips malformed own IDs before decoding and ignores malformed replacement pointers", () => {
++    const f = setup();
++    try {
++      f.add("target");
++      f.add("invalid-pointer", "thread-target", { replaces: "not-a-tuple" });
++      for (const rawId of ["plain", "01:x1:y", "1:x1:y1:z", "999999999999999999999:x", "2:x1:y"]) {
++        f.add("ignored", "thread-target", { rawId, replaces: tuple("namespace", "target") });
++        f.db.$client.prepare("UPDATE p6r_contributions SET initial_input=? WHERE id=?").run("{broken", rawId);
++      }
++      expect(listP6rContributions(f.db, "", {}).map(row => row.id)).toEqual(["invalid-pointer", "target"]);
++    } finally { f.close(); }
++  });
++
++  it.each(["accepted_authorship", "initial_input", "current_projection", "latest_editor"])(
++    "still fails matched %s corruption even when the requested row is replaced",
++    column => {
++      const f = setup();
++      try {
++        f.add("target");
++        f.add("edit", "thread-target", { replaces: tuple("other-namespace", "target") });
++        f.db.$client.prepare("UPDATE p6r_contributions SET " + column + "=? WHERE id=?").run("{broken", tuple("namespace", "target"));
++        expect(() => listP6rContributions(f.db, "", { references: [{ contributionId: "target", threadId: "thread-target" }] })).toThrow(SyntaxError);
++      } finally { f.close(); }
++    },
++  );
++
++  it("unrelated or replacement-only malformed payloads no longer poison healthy reference lookup", () => {
++    const f = setup();
++    try {
++      f.add("target");
++      f.add("foreign", "thread-foreign");
++      f.db.$client.prepare("UPDATE p6r_contributions SET current_projection=? WHERE id=?").run("{broken", tuple("namespace", "foreign"));
++      expect(listP6rContributions(f.db, "", { references: [{ contributionId: "target", threadId: "thread-target" }] }).map(row => row.id)).toEqual(["target"]);
++      expect(listP6rContributions(f.db, "", { references: [] })).toEqual([]);
++      f.add("edit", "thread-target", { replaces: tuple("other", "target") });
++      f.db.$client.prepare("UPDATE p6r_contributions SET initial_input=? WHERE id=?").run("{broken", tuple("namespace", "edit"));
++      expect(listP6rContributions(f.db, "", { references: [{ contributionId: "target", threadId: "thread-target" }] })).toEqual([]);
++      expect(() => listP6rContributions(f.db, "", { references: [{ contributionId: "edit", threadId: "thread-target" }] })).toThrow(SyntaxError);
++    } finally { f.close(); }
++  });
++
++  it("hydrates large reference sets without multiplying duplicates or exceeding a binding list", () => {
++    const f = setup();
++    try {
++      const refs = Array.from({ length: 1005 }, (_, i) => ({ contributionId: "id-" + i, threadId: "thread-target" }));
++      f.db.transaction(() => { for (const ref of refs) f.add(ref.contributionId); });
++      const result = listP6rContributions(f.db, "", { references: [...refs, ...refs] });
++      expect(result).toHaveLength(refs.length);
++      expect(new Set(result.map(row => row.id)).size).toBe(refs.length);
++    } finally { f.close(); }
++  });
++});

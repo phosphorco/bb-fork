@@ -523,3 +523,14 @@ historical versioned evidence. Do not add fallback inference or dual live reader
 ## Patch67: retain bounded Claude response enrichment
 
 Completes Cole's approved native response-identity preservation. The native assembler treats a completed item identity as final, so initial and later enrichment now use distinct bounded emission ordinals. The same closed metadata payload,256resident responses and two-emission cap remain; phase-only repeats are still suppressed. Four real translator/public-assembler regressions protect optional request IDs, abort status and superseded SDK IDs. No core, SDK, routing, session or inference behavior changes.
+
+## Contribution lookup payload decoding
+
+Patch 68 keeps exact-reference identity history from decoding unrelated contribution
+payloads. It carries one query/test hunk, with no schema or SDK change. Logical
+identity, rowid encounter ties, replacement suppression and selected malformed
+payload errors are preserved; unrelated malformed payloads no longer poison other
+lookups. Global key scans and SQLite overflow I/O remain. Revert requires no data
+downgrade; retire this hunk when its owning kernel or replacement preserves the
+same work-growth and provenance tests. The patch queue is a source candidate; its
+queued changes are not thereby activated in the normal runtime.
