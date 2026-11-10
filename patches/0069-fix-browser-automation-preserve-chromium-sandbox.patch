@@ -1,0 +1,116 @@
+From a718d563a6f84e0e6621c065d9efdc09f3c8bfed Mon Sep 17 00:00:00 2001
+From: Codex execution steward <codex@bb-machine.invalid>
+Date: Tue, 10 Nov 2026 21:38:07 +0100
+Subject: [PATCH] Keep namespace sandboxing enabled in owned browser sessions
+
+---
+ plugins/browser-automation/README.md          |  5 ++-
+ plugins/browser-automation/runtime.test.ts    | 43 ++++++++++++++++++-
+ plugins/browser-automation/runtime.ts         |  1 -
+ .../skills/browser-automation/SKILL.md        |  4 +-
+ 4 files changed, 47 insertions(+), 6 deletions(-)
+
+diff --git a/plugins/browser-automation/README.md b/plugins/browser-automation/README.md
+index b061570b7319c8e963cc741c8f01aca4601ceccc..8d46e8c3c8c6acba5e641ac726beb5c9227033d0 100644
+--- a/plugins/browser-automation/README.md
++++ b/plugins/browser-automation/README.md
+@@ -94,8 +94,9 @@ Headless sessions need Chrome/Chromium on that host. The plugin checks
+ `<plugin host dataDir>/runtime/chrome`, the standard macOS Chrome path, then
+ `google-chrome`, `google-chrome-stable`, `chromium`, and `chromium-browser` on
+ PATH. The `runtime/chrome` entry can be a symlink to an installed executable.
+-Plugin-owned local/headless Chrome always launches with `--no-sandbox`, disabling
+-Chrome's sandbox so it can run on hosts that restrict unprivileged user namespaces.
++Plugin-owned local/headless Chrome keeps Chromium sandboxing enabled. Hosts must
++provide working namespace sandbox support for the selected Chrome executable;
++startup fails when that prerequisite is missing.
+ Desktop sessions attach to an existing browser and do not change its launch flags.
+ 
+ ## CLI and agent workflow
+diff --git a/plugins/browser-automation/runtime.test.ts b/plugins/browser-automation/runtime.test.ts
+index 48aa4df3efcbd4dc8d1bc25ed8723c8f29198bf0..4c631b0ffbe9546803dceb55d2c8ae85c747dc28 100644
+--- a/plugins/browser-automation/runtime.test.ts
++++ b/plugins/browser-automation/runtime.test.ts
+@@ -10,7 +10,7 @@ import {
+ import { join } from "node:path";
+ import { tmpdir } from "node:os";
+ import { afterEach, describe, expect, it } from "vitest";
+-import { decodeOutput, runtimeEnvironment } from "./runtime.js";
++import { createRuntime, decodeOutput, runtimeEnvironment } from "./runtime.js";
+ 
+ const dirs: string[] = [];
+ afterEach(async () => {
+@@ -178,3 +178,44 @@ describe("runtime output boundary", () => {
+     ).rejects.toThrow("escaped");
+   });
+ });
++
++const integrationChrome = process.env.BROWSER_AUTOMATION_TEST_CHROME;
++const integrationBinary = process.env.BROWSER_AUTOMATION_TEST_BINARY;
++it.skipIf(!integrationChrome || !integrationBinary)(
++  "keeps the Chromium sandbox enabled for plugin-owned headless sessions",
++  async () => {
++    if (!integrationChrome || !integrationBinary)
++      throw new Error("integration inputs missing");
++    const dataDir = await mkdtemp(join(tmpdir(), "browser-sandbox-test-"));
++    dirs.push(dataDir);
++    await mkdir(join(dataDir, "runtime"));
++    await symlink(integrationChrome, join(dataDir, "runtime", "chrome"));
++    const runtime = await createRuntime({
++      runtime: {
++        binary: integrationBinary,
++        version: "1.0.0-rc.3",
++        source: "release",
++      },
++      dataDir,
++      tempDir: join(dataDir, "sessions"),
++      signal: new AbortController().signal,
++    });
++    try {
++      const result = await runtime.run(
++        'const p=await browser.getPage("proof");await p.goto("chrome://version");console.log(await p.evaluate(()=>JSON.stringify({executable:document.querySelector("#executable_path").textContent,command:document.querySelector("#command_line").textContent,math:6*7})));await p.goto("chrome://sandbox");console.log(await p.evaluate(()=>document.body.innerText));',
++        30_000,
++        new AbortController().signal,
++      );
++      expect(result.exitCode).toBe(0);
++      expect(result.text).toContain(await realpath(integrationChrome));
++      expect(result.text).toContain('"math":42');
++      expect(result.text).not.toContain("--no-sandbox");
++      expect(result.text).toContain("You are adequately sandboxed");
++      expect(result.text).toMatch(/PID namespaces\s+Yes/);
++      expect(result.text).toMatch(/Seccomp-BPF sandbox\s+Yes/);
++    } finally {
++      await runtime.close();
++    }
++  },
++  45_000,
++);
+diff --git a/plugins/browser-automation/runtime.ts b/plugins/browser-automation/runtime.ts
+index 5ef777bd362f6853e7d653e3017a5e5c3933b5a7..c4660aae68e0b094a76902334332ce8629bce7be 100644
+--- a/plugins/browser-automation/runtime.ts
++++ b/plugins/browser-automation/runtime.ts
+@@ -236,7 +236,6 @@ export async function createRuntime(args: {
+           chrome,
+           [
+             "--headless=new",
+-            "--no-sandbox",
+             "--remote-debugging-port=0",
+             "--remote-debugging-address=127.0.0.1",
+             `--user-data-dir=${profile}`,
+diff --git a/plugins/browser-automation/skills/browser-automation/SKILL.md b/plugins/browser-automation/skills/browser-automation/SKILL.md
+index bc046c65c1e95e134f1380288be204b38cb47950..1504e5efe01a43f19d5cc821a88540d400b76622 100644
+--- a/plugins/browser-automation/skills/browser-automation/SKILL.md
++++ b/plugins/browser-automation/skills/browser-automation/SKILL.md
+@@ -18,8 +18,8 @@ already focused. New or activated controller pages follow the same rule;
+ automation does not switch threads or bring the desktop window forward. While
+ controlled, a desktop tab never takes keyboard focus from the composer or other
+ apps; the user presses Take over to type into it. Headless sessions remain headless.
+-Plugin-owned local/headless Chrome launches with `--no-sandbox`, disabling Chrome's
+-sandbox. Desktop attachment does not change the browser's launch flags.
++Plugin-owned local/headless Chrome keeps its sandbox enabled; the selected host
++must support Chromium namespace sandboxing. Desktop attachment does not change the browser's launch flags.
+ Resolve the explicit instance with `bb browser instances --host <host-id> --json`
+ first. Never silently choose a different host or mode.
+ Adding `--tab <tab-id>` takes control of an existing tab; do so only when the
+-- 
+2.53.0
+

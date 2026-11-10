@@ -534,3 +534,7 @@ lookups. Global key scans and SQLite overflow I/O remain. Revert requires no dat
 downgrade; retire this hunk when its owning kernel or replacement preserves the
 same work-growth and provenance tests. The patch queue is a source candidate; its
 queued changes are not thereby activated in the normal runtime.
+
+## Owned browser sandbox
+
+Patch69 removes the forced no-sandbox flag from browser-automation headless sessions. Hosts must supply working Chromium namespace sandbox support. A real createRuntime integration witness proves the selected executable, DOM/JavaScript, PID namespaces and seccomp; the old flag was observed red before the repair. The external desktop attachment path is unchanged.
