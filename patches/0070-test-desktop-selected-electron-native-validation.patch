@@ -1,0 +1,45 @@
+From 735faf1f9e9f4bb37b4c9bd29570d5163a1d66a6 Mon Sep 17 00:00:00 2001
+From: Codex execution steward <codex@bb-machine.invalid>
+Date: Wed, 11 Nov 2026 13:54:42 +0100
+Subject: [PATCH] test(desktop): verify SQLite against the selected Electron
+ pin
+
+---
+ apps/desktop/test/electron-builder-config.test.ts | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/apps/desktop/test/electron-builder-config.test.ts b/apps/desktop/test/electron-builder-config.test.ts
+index 77d0f3e4aab5ce49e7c2fc0d9beec961fb99e38e..df28ea915409bda79729039540e0676883f0e813 100644
+--- a/apps/desktop/test/electron-builder-config.test.ts
++++ b/apps/desktop/test/electron-builder-config.test.ts
+@@ -460,6 +460,9 @@ describe("electron-builder signing config", () => {
+   it("validates bundled N-API SQLite without using the legacy prebuild installer", async () => {
+     const appOutDir = await mkdtemp(resolve(tmpdir(), "bb-desktop-napi-"));
+     const nodeModules = resolve(appOutDir, "node_modules");
++    const electronVersion = createRequire(
++      resolve(desktopPackageRoot, "package.json"),
++    )("electron/package.json").version;
+     const requireFromRuntime = createRequire(
+       resolve(desktopPackageRoot, "../../packages/bb-app/package.json"),
+     );
+@@ -477,7 +480,7 @@ describe("electron-builder signing config", () => {
+       );
+       await mkdir(resolve(nodeModules, "@parcel/watcher"), { recursive: true });
+       const result = await runNativePrepScript(appOutDir, [
+-        "--electron-version=44.3.0",
++        `--electron-version=${electronVersion}`,
+       ]);
+       expect(result.stderr).toBe("");
+       expect(result.exitCode).toBe(0);
+@@ -488,7 +491,7 @@ describe("electron-builder signing config", () => {
+       );
+       await writeFile(binaryPath, "invalid native binary");
+       const invalidResult = await runNativePrepScript(appOutDir, [
+-        "--electron-version=44.3.0",
++        `--electron-version=${electronVersion}`,
+       ]);
+       expect(invalidResult.exitCode).not.toBe(0);
+       expect(invalidResult.stderr).toContain(binaryPath);
+-- 
+2.53.0
+
