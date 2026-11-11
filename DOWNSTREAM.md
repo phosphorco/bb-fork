@@ -542,3 +542,5 @@ Patch69 pins the same-major desktop dependency to Electron44.11.1 and its genera
 Patch70 makes the SQLite N-API positive/negative test use the selected installed Electron version, rather than stale44.3.0. All23 native desktop packaging configuration tests pass, including real in-memory SQLite validation under Electron44.11.1 and deliberate corrupted-binary refusal without legacy installer fallback. No ABI/safety assertion was removed. Separate CI server/provider400-vs200 and shared-environment frontend app.meta race failures are not fixed or claimed green here.
 
 Patch71 retains namespace/seccomp sandboxing for native browser automation and proves the public owning runtime with a real managed engine. Electron44 target-security backport remains in patches69–70.
+
+Patch72 removes the packaged Linux profile launcher’s forced sandbox bypass; native Linux/macOS/Windows launch arguments and selected-Electron positive/corrupt-binary validation remain tested.
