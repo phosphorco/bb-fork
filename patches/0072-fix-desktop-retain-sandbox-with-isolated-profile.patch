@@ -1,0 +1,48 @@
+From 51df41dc7a8f1512d6874b6677fe5e3edc961aa0 Mon Sep 17 00:00:00 2001
+From: Codex execution steward <codex@bb-machine.invalid>
+Date: Wed, 11 Nov 2026 14:55:09 +0100
+Subject: [PATCH] fix(desktop): retain sandbox when selecting an isolated
+ profile
+
+---
+ apps/desktop/scripts/packaged-app-launch.mjs  | 8 ++------
+ apps/desktop/test/packaged-app-launch.test.ts | 4 ++--
+ 2 files changed, 4 insertions(+), 8 deletions(-)
+
+diff --git a/apps/desktop/scripts/packaged-app-launch.mjs b/apps/desktop/scripts/packaged-app-launch.mjs
+index 2a80c9098c01b7ab3b4f91f03ed06c34132542ea..bcee2ecc137e79f8d62903e6c53c60f0b718e0e7 100644
+--- a/apps/desktop/scripts/packaged-app-launch.mjs
++++ b/apps/desktop/scripts/packaged-app-launch.mjs
+@@ -1,7 +1,3 @@
+-const LINUX_DISABLE_SANDBOX_ARGUMENT = "--no-sandbox";
+-
+-export function createPackagedAppLaunchArguments({ platform, userDataDir }) {
+-  const sandboxArguments =
+-    platform === "linux" ? [LINUX_DISABLE_SANDBOX_ARGUMENT] : [];
+-  return [...sandboxArguments, `--user-data-dir=${userDataDir}`];
++export function createPackagedAppLaunchArguments({ userDataDir }) {
++  return [`--user-data-dir=${userDataDir}`];
+ }
+diff --git a/apps/desktop/test/packaged-app-launch.test.ts b/apps/desktop/test/packaged-app-launch.test.ts
+index c7b39689e8dedf1d8c9ee51f26800452015e5390..4f21513e041e96c8c4ae92bff701a2c287821d49 100644
+--- a/apps/desktop/test/packaged-app-launch.test.ts
++++ b/apps/desktop/test/packaged-app-launch.test.ts
+@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
+ import { createPackagedAppLaunchArguments } from "../scripts/packaged-app-launch.mjs";
+ 
+ describe("createPackagedAppLaunchArguments", () => {
+-  it("disables the Chromium sandbox on Linux", () => {
++  it("keeps the Chromium sandbox on Linux", () => {
+     expect(
+       createPackagedAppLaunchArguments({
+         platform: "linux",
+         userDataDir: "/tmp/smoke/user-data",
+       }),
+-    ).toEqual(["--no-sandbox", "--user-data-dir=/tmp/smoke/user-data"]);
++    ).toEqual(["--user-data-dir=/tmp/smoke/user-data"]);
+   });
+ 
+   it("keeps the Chromium sandbox on macOS", () => {
+-- 
+2.53.0
+
