@@ -534,3 +534,7 @@ lookups. Global key scans and SQLite overflow I/O remain. Revert requires no dat
 downgrade; retire this hunk when its owning kernel or replacement preserves the
 same work-growth and provenance tests. The patch queue is a source candidate; its
 queued changes are not thereby activated in the normal runtime.
+
+## Desktop Electron44 XML security backport
+
+Patch69 pins the same-major desktop dependency to Electron44.11.1 and its generated pnpm lock. Its released tag includes chromium cherry-pick6a1ce1ef9d61 (Fixed582442907/572578603), matching Google CVE-2026-125350/125346. External Chromium/plugin selection cannot replace Electron WebContentsView, so the owning desktop dependency is necessary. Upstream-sync cost is the two-file dependency/lock cohort; remove this patch once upstream owns an equal or later verified fix. An isolated native desktop build completed57 Turbo tasks. The candidate Node runtime reports Electron44.11.1/Chromium152.0.7977.169; isolated GUI proof refused unavailable sandbox, so no GUI/deployed-app success is claimed. This review source does not promote unrelated BB runtime/DB changes or restart workloads.
