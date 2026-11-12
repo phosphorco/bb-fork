@@ -1,0 +1,395 @@
+From 39797c9ba24b742f459ce766e0697b2114110e81 Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Thu, 12 Nov 2026 17:07:06 +0100
+Subject: [PATCH 2/2] feat(app): copy error details from mutation error toasts
+
+Mutation error toasts offer Copy details, which copies the title, message,
+operation, HTTP status, server code and body, page and caller context as JSON.
+Queued-message sends include the thread, queued message, mode and wait.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ .../embedded-chat/useQueuedMessageActions.ts  |  13 ++
+ apps/app/src/lib/mutation-errors.test.ts      | 147 ++++++++++++++++++
+ apps/app/src/lib/mutation-errors.ts           | 114 +++++++++++++-
+ 3 files changed, 266 insertions(+), 8 deletions(-)
+
+diff --git a/apps/app/src/components/thread/embedded-chat/useQueuedMessageActions.ts b/apps/app/src/components/thread/embedded-chat/useQueuedMessageActions.ts
+index 439397b2efd844b8210a086ecdb21309d17af1f0..52f6f4acbb3d59115325a9a7dbd8800e3c95fda5 100644
+--- a/apps/app/src/components/thread/embedded-chat/useQueuedMessageActions.ts
++++ b/apps/app/src/components/thread/embedded-chat/useQueuedMessageActions.ts
+@@ -124,6 +124,19 @@ export function useQueuedMessageActions({
+           error,
+           fallbackMessage: "Failed to send queued message",
+           lifecycleOperation: "send_queued_message",
++          details: {
++            threadId,
++            queuedMessageId: messageId,
++            mode,
++            queuedMessageState:
++              queuedMessagesRef.current.find(
++                (message) => message.id === messageId,
++              )?.state ?? null,
++            queuedMessageWaitingOn:
++              queuedMessagesRef.current.find(
++                (message) => message.id === messageId,
++              )?.waitingOn?.kind ?? null,
++          },
+         });
+         setProcessingQueuedMessage((current) =>
+           current?.id === messageId ? null : current,
+diff --git a/apps/app/src/lib/mutation-errors.test.ts b/apps/app/src/lib/mutation-errors.test.ts
+index 9ef1a676a60768124d637a94696af43ba063a9d9..09140cdba9a8bab06897fc16c1241052b7dad5e1 100644
+--- a/apps/app/src/lib/mutation-errors.test.ts
++++ b/apps/app/src/lib/mutation-errors.test.ts
+@@ -4,6 +4,7 @@ import { toast } from "sonner";
+ import { attachSonnerToast } from "@/components/ui/app-toast-runtime";
+ import { HttpError } from "./api";
+ import {
++  formatMutationErrorDetails,
+   getMutationErrorMessage,
+   getMutationErrorMeta,
+   shouldShowMutationErrorToast,
+@@ -11,6 +12,10 @@ import {
+ } from "./mutation-errors";
+ 
+ interface CapturedToastProps {
++  action?: {
++    label: ReactNode;
++    onClick: (event: { preventDefault: () => void }) => void;
++  };
+   description?: ReactNode;
+   title: ReactNode;
+   tone: string;
+@@ -55,6 +60,17 @@ const mutationToastState = vi.hoisted(() => {
+   };
+ });
+ 
++const clipboardState = vi.hoisted(() => ({
++  copyToClipboardWithToast: vi.fn(
++    async (_text: string, _options?: { successMessage?: string | null }) =>
++      true,
++  ),
++}));
++
++vi.mock("./clipboard", () => ({
++  copyToClipboardWithToast: clipboardState.copyToClipboardWithToast,
++}));
++
+ vi.mock("sonner", () => ({
+   toast: {
+     custom: mutationToastState.custom,
+@@ -82,6 +98,7 @@ afterEach(() => {
+   mutationToastState.invocations.splice(0);
+   mutationToastState.custom.mockClear();
+   mutationToastState.dismiss.mockClear();
++  clipboardState.copyToClipboardWithToast.mockClear();
+ });
+ 
+ describe("getMutationErrorMeta", () => {
+@@ -189,7 +206,137 @@ describe("shouldShowMutationErrorToast", () => {
+   });
+ });
+ 
++describe("formatMutationErrorDetails", () => {
++  it("retains the server code, status, body and caller context", () => {
++    const details: unknown = JSON.parse(
++      formatMutationErrorDetails({
++        capturedAt: Date.UTC(2026, 10, 12, 15, 2, 0),
++        description: "This message cannot be sent yet",
++        details: {
++          threadId: "thr_example",
++          queuedMessageId: "qmsg_example",
++          mode: "auto",
++        },
++        error: new HttpError({
++          body: {
++            code: "queued_message_still_waiting",
++            message: "This message cannot be sent yet",
++          },
++          code: "queued_message_still_waiting",
++          message: "This message cannot be sent yet",
++          status: 409,
++        }),
++        lifecycleOperation: "send_queued_message",
++        pageUrl: "https://bb.example/threads/thr_example",
++        title: "Failed to send queued message",
++      }),
++    );
++    expect(details).toEqual({
++      kind: "bb-error-details",
++      version: 1,
++      capturedAt: "2026-11-12T15:02:00.000Z",
++      title: "Failed to send queued message",
++      description: "This message cannot be sent yet",
++      operation: "send_queued_message",
++      context: {
++        threadId: "thr_example",
++        queuedMessageId: "qmsg_example",
++        mode: "auto",
++      },
++      error: {
++        type: "HttpError",
++        httpStatus: 409,
++        code: "queued_message_still_waiting",
++        message: "HTTP 409: This message cannot be sent yet",
++        body: {
++          code: "queued_message_still_waiting",
++          message: "This message cannot be sent yet",
++        },
++      },
++      pageUrl: "https://bb.example/threads/thr_example",
++    });
++  });
++
++  it("keeps a code carried by the error when the body has none", () => {
++    const details: unknown = JSON.parse(
++      formatMutationErrorDetails({
++        capturedAt: 0,
++        description: null,
++        error: new HttpError({
++          code: "known_code",
++          message: "busy",
++          status: 409,
++        }),
++        pageUrl: null,
++        title: "Failed to send queued message",
++      }),
++    );
++    expect(details).toMatchObject({
++      error: { code: "known_code", httpStatus: 409 },
++    });
++  });
++
++  it("describes an error that never reached the server", () => {
++    const details: unknown = JSON.parse(
++      formatMutationErrorDetails({
++        capturedAt: 0,
++        description: null,
++        error: new TypeError("Failed to fetch"),
++        pageUrl: null,
++        title: "Failed to send queued message",
++      }),
++    );
++    expect(details).toMatchObject({
++      context: {},
++      error: { type: "TypeError", message: "Failed to fetch" },
++      operation: null,
++    });
++  });
++});
++
+ describe("showMutationErrorToast", () => {
++  it("offers the error details for copying", () => {
++    showMutationErrorToast({
++      error: new Error("The queue is busy."),
++      fallbackMessage: "Failed to send queued message.",
++      details: { queuedMessageId: "qmsg_example" },
++    });
++
++    expect(readLatestToastProps().action?.label).toBe("Copy details");
++  });
++
++  it("copies the failing request's details and keeps the toast open", () => {
++    showMutationErrorToast({
++      error: new HttpError({
++        body: {
++          code: "queued_message_still_waiting",
++          message: "This message cannot be sent yet",
++        },
++        code: "queued_message_still_waiting",
++        message: "This message cannot be sent yet",
++        status: 409,
++      }),
++      fallbackMessage: "Failed to send queued message",
++      details: { threadId: "thr_example", queuedMessageId: "qmsg_example" },
++    });
++    const preventDefault = vi.fn();
++
++    readLatestToastProps().action?.onClick({ preventDefault });
++
++    expect(preventDefault).toHaveBeenCalledTimes(1);
++    expect(clipboardState.copyToClipboardWithToast).toHaveBeenCalledTimes(1);
++    const [copied, options] =
++      clipboardState.copyToClipboardWithToast.mock.calls[0] ?? [];
++    expect(options).toEqual({ successMessage: "Error details copied" });
++    expect(JSON.parse(String(copied))).toMatchObject({
++      kind: "bb-error-details",
++      title: "Failed to send queued message",
++      description: "This message cannot be sent yet",
++      context: { threadId: "thr_example", queuedMessageId: "qmsg_example" },
++      error: { httpStatus: 409, code: "queued_message_still_waiting" },
++    });
++  });
++
+   it("splits the generic mutation fallback into title and description", () => {
+     showMutationErrorToast({
+       error: {},
+diff --git a/apps/app/src/lib/mutation-errors.ts b/apps/app/src/lib/mutation-errors.ts
+index fa36184b95071c13717c43a4251b2fd79a63e216..264c1f2bb399a7106a819977b752283a237ce052 100644
+--- a/apps/app/src/lib/mutation-errors.ts
++++ b/apps/app/src/lib/mutation-errors.ts
+@@ -1,5 +1,6 @@
+ import { extractErrorMessage, toRecord } from "@bb/core-ui";
+-import { appToast } from "@/components/ui/app-toast";
++import { appToast, type AppToastOptions } from "@/components/ui/app-toast";
++import { copyToClipboardWithToast } from "./clipboard";
+ import { asHttpError, getHttpErrorMessage } from "./http-error";
+ import {
+   describeLifecycleError,
+@@ -12,10 +13,26 @@ const NETWORK_TRANSPORT_ERROR_MESSAGE =
+ const GENERIC_REQUEST_FAILED_MESSAGE = "Request failed";
+ const TRAILING_PERIOD_PATTERN = /\.$/u;
+ 
++export type MutationErrorDetailValue = string | number | boolean | null;
++export type MutationErrorDetails = Readonly<
++  Record<string, MutationErrorDetailValue>
++>;
++
+ interface MutationErrorMessageOptions {
+   error: unknown;
+   fallbackMessage: string;
+   lifecycleOperation?: LifecycleErrorOperation | undefined;
++  details?: MutationErrorDetails | undefined;
++}
++
++interface FormatMutationErrorDetailsArgs {
++  capturedAt: number;
++  description: string | null;
++  details?: MutationErrorDetails | undefined;
++  error: unknown;
++  lifecycleOperation?: LifecycleErrorOperation | undefined;
++  pageUrl: string | null;
++  title: string;
+ }
+ 
+ interface MutationErrorMeta {
+@@ -144,10 +161,71 @@ export function shouldShowMutationErrorToast(error: unknown): boolean {
+   return !isAbortLikeError(error);
+ }
+ 
++export function formatMutationErrorDetails({
++  capturedAt,
++  description,
++  details,
++  error,
++  lifecycleOperation,
++  pageUrl,
++  title,
++}: FormatMutationErrorDetailsArgs): string {
++  const httpError = asHttpError(error);
++  const record = toRecord(error);
++  return JSON.stringify(
++    {
++      kind: "bb-error-details",
++      version: 1,
++      capturedAt: new Date(capturedAt).toISOString(),
++      title,
++      description,
++      operation: lifecycleOperation ?? null,
++      context: details ?? {},
++      error:
++        httpError === null
++          ? {
++              type: typeof record?.name === "string" ? record.name : null,
++              message: extractErrorMessage(error),
++            }
++          : {
++              type: httpError.name,
++              httpStatus: httpError.status,
++              code: httpError.code ?? toRecord(httpError.body)?.code ?? null,
++              message: httpError.message,
++              body: httpError.body ?? null,
++            },
++      pageUrl,
++    },
++    null,
++    2,
++  );
++}
++
++function errorDetailsToastOptions(
++  args: Omit<FormatMutationErrorDetailsArgs, "capturedAt" | "pageUrl">,
++): AppToastOptions {
++  const capturedAt = Date.now();
++  const pageUrl = typeof window === "undefined" ? null : window.location.href;
++  return {
++    ...(args.description === null ? {} : { description: args.description }),
++    action: {
++      label: "Copy details",
++      onClick: (event) => {
++        event.preventDefault();
++        void copyToClipboardWithToast(
++          formatMutationErrorDetails({ ...args, capturedAt, pageUrl }),
++          { successMessage: "Error details copied" },
++        );
++      },
++    },
++  };
++}
++
+ export function showMutationErrorToast({
+   error,
+   fallbackMessage,
+   lifecycleOperation,
++  details,
+ }: MutationErrorMessageOptions): void {
+   if (!shouldShowMutationErrorToast(error)) {
+     return;
+@@ -158,9 +236,16 @@ export function showMutationErrorToast({
+     operation: lifecycleOperation,
+   });
+   if (lifecycleDescription) {
+-    appToast.error(lifecycleDescription.title, {
+-      description: lifecycleDescription.body,
+-    });
++    appToast.error(
++      lifecycleDescription.title,
++      errorDetailsToastOptions({
++        description: lifecycleDescription.body,
++        details,
++        error,
++        lifecycleOperation,
++        title: lifecycleDescription.title,
++      }),
++    );
+     return;
+   }
+ 
+@@ -170,9 +255,16 @@ export function showMutationErrorToast({
+     lifecycleOperation,
+   }).replace(TRAILING_PERIOD_PATTERN, "");
+   if (message === GENERIC_REQUEST_FAILED_MESSAGE) {
+-    appToast.error("Request failed", {
+-      description: "Please try again",
+-    });
++    appToast.error(
++      "Request failed",
++      errorDetailsToastOptions({
++        description: "Please try again",
++        details,
++        error,
++        lifecycleOperation,
++        title: "Request failed",
++      }),
++    );
+     return;
+   }
+ 
+@@ -182,6 +274,12 @@ export function showMutationErrorToast({
+   );
+   appToast.error(
+     title,
+-    message === title ? undefined : { description: message },
++    errorDetailsToastOptions({
++      description: message === title ? null : message,
++      details,
++      error,
++      lifecycleOperation,
++      title,
++    }),
+   );
+ }
+-- 
+2.53.0
+

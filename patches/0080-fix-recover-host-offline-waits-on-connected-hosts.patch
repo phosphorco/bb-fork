@@ -1,0 +1,210 @@
+From 6fd1b3f1e78cddcf1b4b201ad3b7b28f47f9afeb Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Thu, 12 Nov 2026 17:07:05 +0100
+Subject: [PATCH 1/2] fix(queue): recover host-offline waits whose host is
+ connected
+
+A row parked on a host-offline wait was retried only by the host's reconnect
+event. An attempt that ended without dispatching or rebooking, such as a lost
+claim during that reconnect, left the row waiting on a machine that was
+already connected, with no later wake.
+
+The periodic idle recovery now rechecks rows parked on host-offline waits for
+connected hosts, and a failed automatic attempt logs the row's resulting
+state, wait, retry booking and host connection.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ .../threads/queued-message-dispatch.ts        | 76 +++++++++++++++----
+ .../test/threads/queue-drain-failure.test.ts  | 60 +++++++++++++++
+ 2 files changed, 120 insertions(+), 16 deletions(-)
+
+diff --git a/apps/server/src/services/threads/queued-message-dispatch.ts b/apps/server/src/services/threads/queued-message-dispatch.ts
+index 191e813c75bc1f114cf7ef84e9c1796cdcce42d3..adab5dee3460deaa7efdb70a3c9ce80a87e1e153 100644
+--- a/apps/server/src/services/threads/queued-message-dispatch.ts
++++ b/apps/server/src/services/threads/queued-message-dispatch.ts
+@@ -23,7 +23,10 @@ import {
+   isCommandTimeoutError,
+   runtimeErrorLogFields,
+ } from "../lib/error-log-fields.js";
+-import { isDispatchRequeuedRecently } from "./dispatch-hooks.js";
++import {
++  dispatchEnvironmentAndHost,
++  isDispatchRequeuedRecently,
++} from "./dispatch-hooks.js";
+ import { clearQueuedMessageWait } from "./queue-waits.js";
+ import {
+   createAutomaticQueuedMessageGroupEligibility,
+@@ -229,21 +232,10 @@ async function executePreparedQueuedMessageDispatch(
+ ): Promise<void> {
+   switch (wake.kind) {
+     case "host-connected":
+-      for (const threadId of listThreadIdsWithHostOfflineQueueWaits(
+-        deps.db,
+-        wake.hostId,
+-      )) {
+-        for (const row of listQueuedThreadMessagesWaitingOnKind(deps.db, {
+-          kind: "host-offline",
+-          threadId,
+-        })) {
+-          await attemptAutomaticQueuedMessage(deps, row, {
+-            now: Date.now(),
+-            respectRequeuePacing: false,
+-            retryingFailure: false,
+-          });
+-        }
+-      }
++      await runHostOfflineWaitDispatch(deps, {
++        hostId: wake.hostId,
++        respectRequeuePacing: false,
++      });
+       return;
+     case "workspace-ready":
+       await runWorkspaceReadyDispatch(deps, wake.threadId);
+@@ -275,6 +267,7 @@ async function executePreparedQueuedMessageDispatch(
+     case "idle-recovery":
+       releaseStaleQueuedMessageDispatchClaims(deps, wake.now);
+       await runIdleThreadRecovery(deps);
++      await runConnectedHostOfflineWaitRecovery(deps);
+       return;
+     case "failed-retry":
+       await runFailedRetryDispatch(deps, wake.now);
+@@ -285,6 +278,56 @@ async function executePreparedQueuedMessageDispatch(
+   }
+ }
+ 
++async function runHostOfflineWaitDispatch(
++  deps: QueueDispatchDeps,
++  args: { hostId: string; respectRequeuePacing: boolean },
++): Promise<void> {
++  for (const threadId of listThreadIdsWithHostOfflineQueueWaits(
++    deps.db,
++    args.hostId,
++  )) {
++    for (const row of listQueuedThreadMessagesWaitingOnKind(deps.db, {
++      kind: "host-offline",
++      threadId,
++    })) {
++      await attemptAutomaticQueuedMessage(deps, row, {
++        now: Date.now(),
++        respectRequeuePacing: args.respectRequeuePacing,
++        retryingFailure: false,
++      });
++    }
++  }
++}
++
++async function runConnectedHostOfflineWaitRecovery(
++  deps: QueueDispatchDeps,
++): Promise<void> {
++  for (const hostId of deps.hub.listConnectedHostIds()) {
++    if (isMachineWaitingForExecution(deps, hostId)) continue;
++    await runHostOfflineWaitDispatch(deps, {
++      hostId,
++      respectRequeuePacing: true,
++    });
++  }
++}
++
++function queuedMessageAttemptLogFields(
++  deps: QueueDispatchDeps,
++  row: QueuedMessageDispatchRef,
++  thread: { environmentId: string | null },
++): Record<string, boolean | number | string | null> {
++  const current = getQueuedThreadMessage(deps.db, row.id);
++  const { host } = dispatchEnvironmentAndHost(deps, thread.environmentId);
++  return {
++    hostConnected: host === null ? null : deps.hub.hasDaemonForHost(host.id),
++    hostId: host?.id ?? null,
++    rowFailureCount: current?.failureCount ?? null,
++    rowNextAttemptAt: current?.nextAttemptAt ?? null,
++    rowState: current?.state ?? "removed",
++    rowWaitingOn: current?.waitingOn ?? null,
++  };
++}
++
+ async function runThreadReadyDispatch(
+   deps: QueueDispatchDeps,
+   threadId: string,
+@@ -443,6 +486,7 @@ async function attemptAutomaticQueuedMessage(
+         queuedMessageId: row.id,
+         threadId: row.threadId,
+         ...runtimeErrorLogFields(deps.config, error),
++        ...queuedMessageAttemptLogFields(deps, row, thread),
+       },
+       "Queued message dispatch failed",
+     );
+diff --git a/apps/server/test/threads/queue-drain-failure.test.ts b/apps/server/test/threads/queue-drain-failure.test.ts
+index 6b7fd4a692ee5696676e1750f9841c945f33671a..c3cd27a928558d63686bfed3e74252a662f99f9f 100644
+--- a/apps/server/test/threads/queue-drain-failure.test.ts
++++ b/apps/server/test/threads/queue-drain-failure.test.ts
+@@ -131,6 +131,66 @@ describe("host-connected queue dispatch", () => {
+   });
+ });
+ 
++describe("host-offline wait recovery", () => {
++  it("sends a row left on a host-offline wait after its host already reconnected", async () => {
++    await withTestHarness(async (harness) => {
++      const { host, row, thread } = seedQueuedRow(harness, {
++        hostConnected: false,
++        hostName: "M4",
++      });
++      recordQueuedMessageDrainFailure(harness.deps, {
++        error: new ApiError(502, "host_unavailable", "Host is not connected"),
++        now: Date.now(),
++        row,
++        thread,
++      });
++      seedHostSession(harness.deps, { id: host.id, name: "M4" });
++      seedThreadRuntimeState(harness.deps, {
++        environmentId: thread.environmentId,
++        providerThreadId: "reconnected-machine-thread",
++        threadId: thread.id,
++      });
++      expect(reread(harness, row.id).waitingOn).toEqual({
++        kind: "host-offline",
++        hostName: "M4",
++      });
++
++      await runQueuedMessageDispatch(harness.deps, {
++        kind: "idle-recovery",
++        now: Date.now(),
++      });
++
++      expect(getQueuedThreadMessage(harness.db, row.id)).toBeNull();
++    });
++  });
++
++  it("leaves a host-offline row parked while its host is still away", async () => {
++    await withTestHarness(async (harness) => {
++      const { row, thread } = seedQueuedRow(harness, {
++        hostConnected: false,
++        hostName: "M4",
++      });
++      recordQueuedMessageDrainFailure(harness.deps, {
++        error: new ApiError(502, "host_unavailable", "Host is not connected"),
++        now: Date.now(),
++        row,
++        thread,
++      });
++
++      await runQueuedMessageDispatch(harness.deps, {
++        kind: "idle-recovery",
++        now: Date.now(),
++      });
++
++      expect(reread(harness, row.id).waitingOn).toEqual({
++        kind: "host-offline",
++        hostName: "M4",
++      });
++      expect(reread(harness, row.id).failureReason).toBeNull();
++    });
++  });
++});
++
+ describe("recordQueuedMessageDrainFailure", () => {
+   it("hides a failed row from the wakes that are not its booked retry", async () => {
+     await withTestHarness(async (harness) => {
+-- 
+2.53.0
+
