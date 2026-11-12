@@ -581,3 +581,5 @@ Patch79 preserves Codex app-server rejection explanations instead of replacing e
 ## Provider replay expectations
 
 Patch 80 replays the retained Claude recordings through the selected bridge and records its response-identity diagnostic events. Provider input recordings, transcript row counts, unhandled counts and grammar-drop counts stay unchanged. The existing parity assertions remain enabled.
+
+Patch 81 gives the ACP-next test workspace its own project marker, matching patch17 for ACP. Ambient ancestor markers such as `/tmp/.git` cannot change the expected user-versus-project classification. Production discovery behavior is unchanged; all82 ACP-next tests pass with the ambient marker retained.
