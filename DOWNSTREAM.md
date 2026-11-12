@@ -560,3 +560,14 @@ The source candidate has real bounded feedback-triggered correction and mixed-or
 
 
 Patch74 preserves cancelled historical revision identity. A new explicit edit at a still-valid target allocates after the highest retained accepted revision for that exact original; a commit-time fence refuses competing revisions before effects. Same-operation replay uses its frozen revision and authored binding, never a new admission or inherited override. Existing indexed journal storage suffices; no schema, migration, daemon wire or coordinator change is added. Real migrated SQLite cases cover legacy/native targets, current-policy rejection, cancellation, stable replay and concurrent revision refusal. This repairs a concrete uniqueness collision exposed by the final historical review; patch73 remains its earlier checkpoint.
+
+
+## Restart stabilization staged on 2026-11-12
+
+Patch75 bounds native realtime subscription socket writes by pending bytes and message count. It unregisters and terminates an overloaded subscription peer so native pending buffers can be released; other subscribers and daemon sessions continue. Terminal transport keeps its existing queue policy. There is no new wire field or protocol version.
+
+Patch76 gives server health readiness a finite 180-second default, retaining launch-ID verification and early child-exit failure. The daemon readiness default remains 60 seconds. Both initial server startup and child recovery use the same server-specific owner.
+
+Cole explicitly requested these repairs while holding core activation for coordinated redeployment. The missing capabilities are native subscription-queue admission and pre-plugin startup tolerance: plugin publishers cannot bound core invalidations or another producer, and plugins do not execute before server readiness. Publisher batching alone cannot provide a usable service once native queues exhaust the heap; service restarts interrupt work. The smallest native change is one shared guarded realtime send path and one server-only deadline. Upstream maintenance is confined to NotificationHub, launcher readiness and their tests; retire the overlay when upstream supplies equivalent behavior. These patches are staged source and tests, not live runtime proof; the existing packaged core remains selected until the coordinated rebuild/restart.
+
+Patch77 routes heartbeat replies through the same guarded subscription sender, covering the remaining direct protocol reply. A backed-up peer receives no further heartbeat writes and is terminated once. This patch shares patch75 activation and retirement boundaries.
