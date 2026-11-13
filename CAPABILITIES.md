@@ -5,7 +5,7 @@
 This is the selected source delta: **8 capabilities / 8 patches**. It is not a deployment or live-test receipt.
 
 - Reviewed upstream: `05199007ecad513b714b244e46b0ab2a9a06279f`
-- Reviewed result tree: `ddfc171fe3ec7d6b403bcb1bd25d8858d60be32a`
+- Reviewed result tree: `b9287dd919269c3795b545caec608015c852137a`
 
 The checker enforces explicit source coverage and review freshness. Each capability digest binds its primary patches and all selected patches touching the same source files, requiring shared-source dependency review. Human review establishes whether explanations and state/API identities are semantically complete. Historical notes remain in [DOWNSTREAM.md](DOWNSTREAM.md).
 
@@ -200,7 +200,7 @@ Remove bridge logic only when no supported retained database has its exact histo
 
 - [0001-retained-state-and-migrations.patch](patches/0001-retained-state-and-migrations.patch)
 
-Reviewed source digest: `af62dcbe611fcfe03f659c6f4b06a2146ecbb4b75b81eebfbadf9bc60fb5525f`
+Reviewed source digest: `4983640e16bc9fb9870a44f34aa0957f3b165a8fdc7cc59f7950a6117aacc5f2`
 
 </details>
 
@@ -392,7 +392,7 @@ These identify relevant checks; listing them does not assert that they passed fo
 
 ### Known limitations
 
-- The native sender hook is qualified; the older Message Rules consumer still requires migration to that hook.
+- Message Rules uses native static sender accept/reject; paid evaluation and delivery changes refuse explicitly. Native hook bypass and edited-resend boundaries remain upstream behavior.
 
 ### Retirement condition
 
@@ -402,7 +402,7 @@ Retire custom authorship plumbing when upstream exposes equivalent provenance an
 
 - [0002-trusted-authorship-and-dispatch.patch](patches/0002-trusted-authorship-and-dispatch.patch)
 
-Reviewed source digest: `064c7ef74ff504e39c89e7cae21fcda70d6d1e294f17d8a94672968e5ce980fb`
+Reviewed source digest: `6652221ab8017c3c6ad5f6f407fbd2a01e48e6d4790fd03cead63714b5589290`
 
 </details>
 
@@ -631,7 +631,7 @@ Retire individual seams as equivalent native SDK contracts become available.
 
 - [0003-shared-plugin-contracts.patch](patches/0003-shared-plugin-contracts.patch)
 
-Reviewed source digest: `fc41d871a51c7d35055e4a6e9b922b3ed79474588197b488df0588613f0e39f7`
+Reviewed source digest: `77202340cfe70f3fc802506865b5e470b0dbc24ed27c01e11c2a045b89d09769`
 
 </details>
 
@@ -946,7 +946,7 @@ Retire relay patches only when native provider configuration enforces the same d
 
 - [0004-inference-relay-and-provider-evidence.patch](patches/0004-inference-relay-and-provider-evidence.patch)
 
-Reviewed source digest: `e10018536e397aad73cb753f1591c0e724be02196866a03333ce5e5565c97112`
+Reviewed source digest: `050831d4d328b6a7756c5ebc41623e2ce07e0bf2c90a5be126a360160961f574`
 
 </details>
 
@@ -1089,7 +1089,7 @@ Retire individual UI seams when native SDK surfaces supply the same information.
 
 - [0005-team-navigation-and-diagnostics.patch](patches/0005-team-navigation-and-diagnostics.patch)
 
-Reviewed source digest: `d05199154f893df4242903c5a2afaed530f92c19b453f05228e47b59266818ad`
+Reviewed source digest: `1ad464caf1872d35e6d0faa7cce3c448e81a9079a235934247723d023a4577f7`
 
 </details>
 
@@ -1258,7 +1258,7 @@ Retire each operational patch after native upstream provides equivalent bounds a
 
 - [0006-service-lifecycle-and-transport.patch](patches/0006-service-lifecycle-and-transport.patch)
 
-Reviewed source digest: `fc74d1908b7f2e16acb154ff6f35b396ec8f83825a24510feda15305b3780877`
+Reviewed source digest: `b7da04295c076866a65aebd9a8dcaba3f5913fa3e9fc2344ea7530603813eeec`
 
 </details>
 
@@ -1511,6 +1511,9 @@ The selected native server, CLI, daemon and SDK must build as one cohort and ret
 - **Integrate and verify the selected upstream cohort: turbo.json**
   - Why: The selected native server, CLI, daemon and SDK must build as one cohort and retain native sandbox and dependency policy.
   - Source: `turbo.json`
+- **Integrate and verify the selected upstream cohort: plugins/plugin-rpc-caller.ts**
+  - Why: The selected native server, CLI, daemon and SDK must build as one cohort and retain native sandbox and dependency policy.
+  - Source: `apps/server/src/services/plugins/plugin-rpc-caller.ts`
 
 ### Verification references
 
@@ -1530,7 +1533,7 @@ Reevaluate every integration adjustment on the next upstream upgrade rather than
 
 - [0007-integration-and-verification.patch](patches/0007-integration-and-verification.patch)
 
-Reviewed source digest: `772ff01b1fd1b6b278bde424b3e311b96428762589b48284011b11d6c78797ad`
+Reviewed source digest: `12bdd0ce7fcfef2207ea6f0ae966ca55ba459393a6ae37dc858c800a834d250a`
 
 </details>
 
@@ -1571,6 +1574,6 @@ Retire this wording patch when native guide configuration supports the same text
 
 - [0008-prompt-wording.patch](patches/0008-prompt-wording.patch)
 
-Reviewed source digest: `794035b65b31fb5007412b595b53acb30456e103e8da2ffe8535d88aab4d2107`
+Reviewed source digest: `dd43c101a1d63ff7b311395f267b23c9cef268e145b77631fc5e13effdcb1342`
 
 </details>

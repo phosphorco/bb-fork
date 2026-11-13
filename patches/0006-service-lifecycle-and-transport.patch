@@ -1,6 +1,6 @@
-From 3a066d08d4488d6f90fb8390330a3f46a983e025 Mon Sep 17 00:00:00 2001
+From 648fc78a74dd5b770e8baecd1224474a1c5c3ae6 Mon Sep 17 00:00:00 2001
 From: Cole Lawrence <cole@colelawrence.com>
-Date: Fri, 13 Nov 2026 19:23:46 -0300
+Date: Fri, 13 Nov 2026 19:47:09 -0300
 Subject: [PATCH] Service lifecycle and transport
 
 ---
@@ -12,39 +12,39 @@ Subject: [PATCH] Service lifecycle and transport
  apps/server/src/routes/plugins.ts             |   8 +-
  apps/server/src/routes/projects.ts            |  24 +-
  apps/server/src/routes/system.ts              |  14 +-
- apps/server/src/server.ts                     | 160 ++++++++--
+ apps/server/src/server.ts                     | 160 +++++++++-
  .../hosts/host-environment-sync.test.ts       |   8 +-
  .../services/hosts/host-environment.test.ts   |  13 +-
  .../services/machines/environment-settings.ts |  42 ++-
- .../machines/environment-storage.test.ts      |  85 +++---
+ .../machines/environment-storage.test.ts      |  85 ++---
  .../services/machines/environment-storage.ts  |   4 +-
  .../services/machines/git-credentials.test.ts |   5 +
  .../src/services/machines/git-credentials.ts  |  10 +-
  .../plugins/plugin-agent-contributions.ts     |   1 +
- .../server/src/services/plugins/plugin-api.ts | 250 +++++++++++++++-
+ .../server/src/services/plugins/plugin-api.ts | 301 +++++++++++++++++-
  .../src/services/plugins/plugin-mentions.ts   |  93 +++++-
- .../services/plugins/plugin-p6r-dispatch.ts   | 191 ++++++++++++
- .../src/services/plugins/plugin-p6r-http.ts   |  53 ++++
- .../src/services/plugins/plugin-runtime.ts    |  98 +++++-
+ .../services/plugins/plugin-p6r-dispatch.ts   | 191 +++++++++++
+ .../src/services/plugins/plugin-p6r-http.ts   |  53 +++
+ .../src/services/plugins/plugin-runtime.ts    | 101 +++++-
  .../plugins/plugin-service-internal.ts        |  19 ++
- .../src/services/plugins/plugin-service.ts    | 278 +++++++++++++++++-
- .../providers/provider-model-catalog-store.ts |  87 ++++--
+ .../src/services/plugins/plugin-service.ts    | 278 +++++++++++++++-
+ .../providers/provider-model-catalog-store.ts |  87 +++--
  .../required-external-model-catalog.ts        |  71 +++++
  .../identity-and-native-projections.md        |  64 ++++
  .../src/services/system/execution-options.ts  |   7 +-
- apps/server/src/start-server.ts               | 124 ++++++--
+ apps/server/src/start-server.ts               | 124 +++++++-
  .../server/src/testing/test-fault-barriers.ts | 142 +++++++++
  apps/server/src/types.ts                      |   2 +
  apps/server/src/ws/client-protocol.ts         |   2 +-
- apps/server/src/ws/hub.ts                     |  53 +++-
- packages/bb-app/src/launcher.ts               |  33 ++-
- packages/bb-app/test/index.test.ts            | 150 +++++++---
- .../test/server-health-identity.test.ts       |  51 +++-
+ apps/server/src/ws/hub.ts                     |  53 ++-
+ packages/bb-app/src/launcher.ts               |  33 +-
+ packages/bb-app/test/index.test.ts            | 150 +++++++--
+ .../test/server-health-identity.test.ts       |  51 ++-
  plugins/browser-automation/README.md          |   5 +-
  plugins/browser-automation/runtime.test.ts    |  43 ++-
  plugins/browser-automation/runtime.ts         |   1 -
  .../skills/browser-automation/SKILL.md        |   4 +-
- 40 files changed, 2054 insertions(+), 261 deletions(-)
+ 40 files changed, 2098 insertions(+), 271 deletions(-)
  create mode 100644 apps/server/src/services/plugins/plugin-p6r-dispatch.ts
  create mode 100644 apps/server/src/services/plugins/plugin-p6r-http.ts
  create mode 100644 apps/server/src/services/providers/required-external-model-catalog.ts
@@ -1080,7 +1080,7 @@ index 8f404d386b106b8230b08ea81189d1b49548b269..cb8be60e288554dff6476ca606357ae5
      reason: entry.reason,
    }));
 diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
-index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e14564daf7ab 100644
+index 45d9415ed9a5913606f41dad27c8c813bcb5201e..9575eadc58d416c7044a4b8d769c50bc842d92b4 100644
 --- a/apps/server/src/services/plugins/plugin-api.ts
 +++ b/apps/server/src/services/plugins/plugin-api.ts
 @@ -13,20 +13,28 @@ import type { MachineEnrollments } from "../machines/enrollments.js";
@@ -1133,7 +1133,19 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
    PluginSettingDescriptors,
    PluginSettingValue,
    PluginSettings,
-@@ -301,7 +316,9 @@ export interface PluginApiHandle {
+@@ -130,10 +145,7 @@ import type {
+ } from "@bb/sdk";
+ import { requestEnvironmentProviderRecheck } from "./plugin-environment-provider-registry.js";
+ import { requestServerAccessRecheck } from "./plugin-server-access-registry.js";
+-import {
+-  createPluginRpcCallerSdk,
+-  type PluginRpcCallerCredential,
+-} from "./plugin-rpc-caller.js";
++import type { PluginRpcCallerCredential } from "./plugin-rpc-caller.js";
+ import type { ServerLogger } from "../../types.js";
+ import type { PluginInteractionResult } from "../interactions/pending-interactions.js";
+ import { appendPluginLogLine } from "./plugin-log.js";
+@@ -301,7 +313,9 @@ export interface PluginApiHandle {
    agentConfigurationProvider: PluginAgentConfigurationProvider | null;
    instructionProvider: PluginInstructionProvider | null;
    mentionProviders: PluginMentionProviderRecord[];
@@ -1143,7 +1155,7 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
    closeWebSockets(): void;
    invalidate(): void;
  }
-@@ -353,7 +370,35 @@ function withPluginThreadAttribution<
+@@ -353,7 +367,37 @@ function withPluginThreadAttribution<
    return { ...args, ...attribution };
  }
  
@@ -1154,7 +1166,10 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
 +}
 +
 +interface StagedThreadFacet {
-+  active: { generation: number; typeId: import("@bb/domain").ThreadFacetTypeId } | null;
++  active: {
++    generation: number;
++    typeId: import("@bb/domain").ThreadFacetTypeId;
++  } | null;
 +  censusInFlight: boolean;
 +  cursorPositions: Map<string, string>;
 +  declaration: {
@@ -1172,7 +1187,6 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
 +function wrapSdkForPlugin(
 +  sdk: BbSdk,
 +  pluginId: string,
-+  rpcCallerSdk: BbSdk,
 +  registerThreadFacetTarget: <T extends ExperimentalThreadFacetTarget>(
 +    thread: T,
 +  ) => T,
@@ -1180,7 +1194,7 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
    return {
      ...sdk,
      environments: {
-@@ -401,6 +446,12 @@ function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): PluginBbSdk {
+@@ -401,6 +445,12 @@ function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): PluginBbSdk {
        send(args) {
          return sdk.threads.send({ ...args, originPluginId: pluginId });
        },
@@ -1193,7 +1207,7 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
      },
    };
  }
-@@ -565,6 +616,11 @@ export function createPluginApi(options: {
+@@ -565,6 +615,11 @@ export function createPluginApi(options: {
    };
    isProviderIdTaken: (providerId: string) => boolean;
    assertProviderRegistrable: (providerId: string) => void;
@@ -1205,7 +1219,7 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
  }): PluginApiHandle {
    const {
      pluginId,
-@@ -599,13 +655,19 @@ export function createPluginApi(options: {
+@@ -599,13 +654,19 @@ export function createPluginApi(options: {
      registerAiService,
      isProviderIdTaken,
      assertProviderRegistrable,
@@ -1225,7 +1239,7 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
    const disposeHooks: Array<() => void | Promise<void>> = [];
    const openTunnelIngresses = new Set<() => Promise<void>>();
    const installHandlers: Array<() => void | Promise<void>> = [];
-@@ -668,6 +730,149 @@ export function createPluginApi(options: {
+@@ -668,6 +729,186 @@ export function createPluginApi(options: {
      if (invalidated) throw stale();
    }
  
@@ -1254,16 +1268,21 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
 +    return staged.active;
 +  }
 +
-+  function grantRecord(target: ExperimentalThreadFacetTargetGrant): ThreadFacetGrantRecord {
++  function grantRecord(
++    target: ExperimentalThreadFacetTargetGrant,
++  ): ThreadFacetGrantRecord {
 +    assertFacetAuthorityLive();
 +    const grant = threadFacetGrants.get(target);
 +    if (grant === undefined) refuseThreadFacetCapability();
 +    const current = threadFacetTargets.get(grant.thread);
-+    if (current !== grant || grant.thread.id !== grant.threadId) refuseThreadFacetCapability();
++    if (current !== grant || grant.thread.id !== grant.threadId)
++      refuseThreadFacetCapability();
 +    return grant;
 +  }
 +
-+  async function facetOperation<T>(operation: () => T | Promise<T>): Promise<T> {
++  async function facetOperation<T>(
++    operation: () => T | Promise<T>,
++  ): Promise<T> {
 +    try {
 +      return await operation();
 +    } catch {
@@ -1274,20 +1293,30 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
 +  function facetHandle<
 +    Cardinality extends ExperimentalThreadFacetCardinality,
 +    Member extends string,
-+  >(staged: StagedThreadFacet): ExperimentalThreadFacetHandle<Cardinality, Member> {
++  >(
++    staged: StagedThreadFacet,
++  ): ExperimentalThreadFacetHandle<Cardinality, Member> {
 +    return {
 +      replace(target, members) {
 +        return facetOperation(() => {
 +          const active = activeFacet(staged);
 +          const grant = grantRecord(target);
-+          replaceThreadFacetRelationsInGeneration(db, { ...active, threadId: grant.threadId, members });
++          replaceThreadFacetRelationsInGeneration(db, {
++            ...active,
++            threadId: grant.threadId,
++            members,
++          });
 +        });
 +      },
 +      clear(target) {
 +        return facetOperation(() => {
 +          const active = activeFacet(staged);
 +          const grant = grantRecord(target);
-+          replaceThreadFacetRelationsInGeneration(db, { ...active, threadId: grant.threadId, members: [] });
++          replaceThreadFacetRelationsInGeneration(db, {
++            ...active,
++            threadId: grant.threadId,
++            members: [],
++          });
 +        });
 +      },
 +      listPriorTargets(args) {
@@ -1297,20 +1326,37 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
 +          try {
 +            const active = activeFacet(staged);
 +            const supplied = args?.cursor;
-+            if (staged.expectedCursor === null || supplied !== staged.expectedCursor) refuseThreadFacetCapability();
++            if (
++              staged.expectedCursor === null ||
++              supplied !== staged.expectedCursor
++            )
++              refuseThreadFacetCapability();
 +            const pageSize = args?.pageSize ?? 50;
-+            if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) refuseThreadFacetCapability();
-+            const afterThreadId = supplied === undefined ? undefined : staged.cursorPositions.get(supplied);
-+            if (supplied !== undefined && afterThreadId === undefined) refuseThreadFacetCapability();
-+            const page = listPriorThreadFacetSnapshotTargets(db, { ...active, limit: pageSize, ...(afterThreadId === undefined ? {} : { afterThreadId }) });
++            if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100)
++              refuseThreadFacetCapability();
++            const afterThreadId =
++              supplied === undefined
++                ? undefined
++                : staged.cursorPositions.get(supplied);
++            if (supplied !== undefined && afterThreadId === undefined)
++              refuseThreadFacetCapability();
++            const page = listPriorThreadFacetSnapshotTargets(db, {
++              ...active,
++              limit: pageSize,
++              ...(afterThreadId === undefined ? {} : { afterThreadId }),
++            });
 +            const sdk = getSdk();
 +            if (sdk === undefined) refuseThreadFacetCapability();
 +            const targets: ExperimentalThreadFacetTarget[] = [];
-+            for (const threadId of page.threadIds) targets.push(registerThreadFacetTarget(await sdk.threads.get({ threadId })));
++            for (const threadId of page.threadIds)
++              targets.push(
++                registerThreadFacetTarget(await sdk.threads.get({ threadId })),
++              );
 +            if (page.nextAfterThreadId === null) {
 +              recordThreadFacetCensusExhausted(db, active);
 +              staged.expectedCursor = null;
-+              if (supplied !== undefined) staged.cursorPositions.delete(supplied);
++              if (supplied !== undefined)
++                staged.cursorPositions.delete(supplied);
 +              return { targets, nextCursor: null };
 +            }
 +            const nextCursor = randomUUID();
@@ -1324,7 +1370,9 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
 +        });
 +      },
 +      markReady() {
-+        return facetOperation(() => markThreadFacetOwnerGenerationReady(db, activeFacet(staged)));
++        return facetOperation(() =>
++          markThreadFacetOwnerGenerationReady(db, activeFacet(staged)),
++        );
 +      },
 +    };
 +  }
@@ -1333,7 +1381,8 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
 +    target(thread) {
 +      assertFacetAuthorityLive();
 +      const target = threadFacetTargets.get(thread);
-+      if (target === undefined || target.thread.id !== target.threadId) refuseThreadFacetCapability();
++      if (target === undefined || target.thread.id !== target.threadId)
++        refuseThreadFacetCapability();
 +      const grant = Object.freeze({}) as ExperimentalThreadFacetTargetGrant;
 +      threadFacetGrants.set(grant, target);
 +      return grant;
@@ -1367,7 +1416,9 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
 +      try {
 +        markThreadFacetOwnerGenerationUnavailable(db, staged.active);
 +      } catch (error) {
-+        logger.warn(`plugin ${pluginId} thread facet revocation failed: ${error instanceof Error ? error.message : String(error)}`);
++        logger.warn(
++          `plugin ${pluginId} thread facet revocation failed: ${error instanceof Error ? error.message : String(error)}`,
++        );
 +      }
 +    }
 +  }
@@ -1375,7 +1426,7 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
    const prefix = `[plugin:${pluginId}]`;
    function emitLog(
      level: "debug" | "info" | "warn" | "error",
-@@ -1057,6 +1262,13 @@ export function createPluginApi(options: {
+@@ -1057,6 +1298,13 @@ export function createPluginApi(options: {
      },
    };
  
@@ -1389,7 +1440,7 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
    const server: PluginServerApi = {
      get experimental_appUrl(): string | null {
        assertLive();
-@@ -1446,21 +1658,26 @@ export function createPluginApi(options: {
+@@ -1446,22 +1694,22 @@ export function createPluginApi(options: {
      server,
      hosts,
      experimental_aiServices,
@@ -1409,19 +1460,18 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
              "use it inside handlers, services, or timers, not at factory load time",
          );
        }
-       wrappedSdk ??= wrapSdkForPlugin(
+-      wrappedSdk ??= wrapSdkForPlugin(
 -        createPluginRpcCallerSdk({
 -          baseUrl: loopbackBaseUrl,
 -          token: rpcCaller.token,
 -        }),
-+        sdk,
-         pluginId,
-+        createPluginRpcCallerSdk({ baseUrl: loopbackBaseUrl, token: rpcCaller.token }),
-+        registerThreadFacetTarget,
-       );
+-        pluginId,
+-      );
++      wrappedSdk ??= wrapSdkForPlugin(sdk, pluginId, registerThreadFacetTarget);
        return wrappedSdk;
      },
-@@ -1508,6 +1725,10 @@ export function createPluginApi(options: {
+     onDispose(hook) {
+@@ -1508,6 +1756,10 @@ export function createPluginApi(options: {
        return instructionProvider;
      },
      mentionProviders,
@@ -1432,7 +1482,7 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
      activate() {
        if (activated) return;
        assertLive();
-@@ -1516,6 +1737,19 @@ export function createPluginApi(options: {
+@@ -1516,6 +1768,25 @@ export function createPluginApi(options: {
        );
        providerRegistrations.flush();
        aiServiceRegistrations.flush();
@@ -1441,18 +1491,24 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
 +        declarations: stagedThreadFacets.map(({ declaration }) => declaration),
 +      });
 +      if (activatedFacets.length !== stagedThreadFacets.length) {
-+        throw new Error("Thread facet declarations did not activate completely");
++        throw new Error(
++          "Thread facet declarations did not activate completely",
++        );
 +      }
 +      for (const [index, active] of activatedFacets.entries()) {
 +        const staged = stagedThreadFacets[index];
-+        if (staged === undefined) throw new Error("Missing staged thread facet");
-+        staged.active = { generation: active.generation, typeId: active.declaration.typeId };
++        if (staged === undefined)
++          throw new Error("Missing staged thread facet");
++        staged.active = {
++          generation: active.generation,
++          typeId: active.declaration.typeId,
++        };
 +      }
 +      facetsCommitted = true;
        activated = true;
        const cliWarning = cliRecord.registration
          ? pluginCliCollisionWarning(pluginId, cliRecord.registration.name)
-@@ -1531,6 +1765,9 @@ export function createPluginApi(options: {
+@@ -1531,6 +1802,9 @@ export function createPluginApi(options: {
          pendingNeedsConfiguration = null;
        }
      },
@@ -1462,7 +1518,7 @@ index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e145
      closeWebSockets() {
        for (const route of websocketRoutes) {
          route.active = false;
-@@ -1547,6 +1784,7 @@ export function createPluginApi(options: {
+@@ -1547,6 +1821,7 @@ export function createPluginApi(options: {
        }
      },
      invalidate() {
@@ -1848,16 +1904,15 @@ index 0000000000000000000000000000000000000000..e5ce50c2065e32d952f534333d08197b
 +  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 +}
 diff --git a/apps/server/src/services/plugins/plugin-runtime.ts b/apps/server/src/services/plugins/plugin-runtime.ts
-index bb1145f3bac135866d0515a7c3e08302e41cd50d..f56aa0c4f9e5733a71bd2939b14b9eeaad58115d 100644
+index bb1145f3bac135866d0515a7c3e08302e41cd50d..be604dd7fb48cefce3bab4c9b58dfe652d6b0f72 100644
 --- a/apps/server/src/services/plugins/plugin-runtime.ts
 +++ b/apps/server/src/services/plugins/plugin-runtime.ts
-@@ -40,7 +40,14 @@ import {
+@@ -40,7 +40,13 @@ import {
    isMutableArtifactStale,
    isMutablePluginHostReusable,
  } from "./mutable-plugin-artifacts.js";
 -import { createNodeBbSdk, type BbSdk } from "@bb/sdk";
 +import {
-+  createNodeBbSdk,
 +  createRequestTimeoutFetch,
 +  DEFAULT_BB_REQUEST_TIMEOUT_MS,
 +  type BbSdk,
@@ -1867,16 +1922,21 @@ index bb1145f3bac135866d0515a7c3e08302e41cd50d..f56aa0c4f9e5733a71bd2939b14b9eea
  import {
    getInstalledPlugin,
    getPluginSafeMode,
-@@ -109,6 +116,8 @@ import { runEventLoopWork } from "../system/event-loop-work.js";
+@@ -108,7 +114,12 @@ import { createKeyedLock } from "../lib/async-deduper.js";
+ import { runEventLoopWork } from "../system/event-loop-work.js";
  import { abortPluginToolCallsForPlugin } from "./plugin-tool-calls.js";
  import { buildCachedPluginServer } from "./plugin-server-cache.js";
- import { createPluginRpcCallerRegistry } from "./plugin-rpc-caller.js";
+-import { createPluginRpcCallerRegistry } from "./plugin-rpc-caller.js";
++import {
++  createPluginRpcCallerRegistry,
++  createPluginRpcCallerSdk,
++} from "./plugin-rpc-caller.js";
 +import type { P6rPreparedProvider } from "../p6r/provider-contract.js";
 +import type { P6rIdentityExtension } from "../p6r/identity-protocol.js";
  
  const serverRuntimeDir = dirname(fileURLToPath(import.meta.url));
  const pluginSdkRuntimePath = join(serverRuntimeDir, "plugin-sdk-runtime.js");
-@@ -117,7 +126,6 @@ const PLUGIN_SDK_SPECIFIER = "@get-bb/plugin-sdk";
+@@ -117,7 +128,6 @@ const PLUGIN_SDK_SPECIFIER = "@get-bb/plugin-sdk";
  
  const LEGACY_PLUGIN_SDK_SPECIFIER = "@bb/plugin-sdk";
  const ZOD_SPECIFIER = "zod";
@@ -1884,16 +1944,17 @@ index bb1145f3bac135866d0515a7c3e08302e41cd50d..f56aa0c4f9e5733a71bd2939b14b9eea
  async function hashFile(
    path: string,
  ): Promise<{ digest: string; byteLength: number }> {
-@@ -436,6 +444,8 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+@@ -435,7 +445,8 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+   const needsConfiguration = new Map<string, string>();
    const agentToolProblems = new Map<string, string>();
    const handlerStats = new Map<string, PluginHandlerStats>();
-   let boundSdk: BbSdk | undefined;
+-  let boundSdk: BbSdk | undefined;
 +  let boundSdkBaseUrl: string | undefined;
 +  let boundSdkFetch: FetchImplementation | undefined;
    let boundLoopbackBaseUrl: string | undefined;
    const rpcCallers = createPluginRpcCallerRegistry();
    let loadHold: PluginLoadHold | null = null;
-@@ -1765,6 +1775,12 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+@@ -1765,6 +1776,13 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
        current: {},
      };
      const stopping = new AbortController();
@@ -1903,22 +1964,29 @@ index bb1145f3bac135866d0515a7c3e08302e41cd50d..f56aa0c4f9e5733a71bd2939b14b9eea
 +      p6rGeneration,
 +      stopping.signal,
 +    );
++    const rpcCaller = rpcCallers.issue(row.id);
      const handle = createPluginApi({
        recordPluginUse: () => capturePluginUse(deps, row.id),
        pluginId: row.id,
-@@ -1772,7 +1788,10 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+@@ -1772,7 +1790,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
        db: deps.db,
        dataDir: deps.dataDir,
        walCheckpointer: deps.walCheckpointer ?? null,
 -      getSdk: () => boundSdk,
-+      getSdk: () =>
-+        p6rCandidate === undefined
-+          ? boundSdk
-+          : createP6rPluginSdk(p6rCandidate),
++      getSdk: () => createPluginSdk(p6rCandidate, rpcCaller.token),
        getMachineEnrollments: () => {
          if (!context.machineEnrollments)
            throw new Error(
-@@ -1954,6 +1973,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+@@ -1782,7 +1800,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+       },
+       getAppUrl: deps.getAppUrl ?? (() => null),
+       getLoopbackBaseUrl: () => boundLoopbackBaseUrl,
+-      rpcCaller: rpcCallers.issue(row.id),
++      rpcCaller,
+       invalidateRpc: (tags) => deps.hub.notifyPluginChanged(row.id, tags),
+       whileRpcWatched: (method, handler) => {
+         const active = new Map<string, AbortController>();
+@@ -1954,6 +1972,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
          }
          throw new Error(providerWithoutBridgeMessage(providerId));
        },
@@ -1926,7 +1994,7 @@ index bb1145f3bac135866d0515a7c3e08302e41cd50d..f56aa0c4f9e5733a71bd2939b14b9eea
        isProviderIdTaken: (providerId) => {
          if (!deps.providerRegistry) {
            throw new Error("the provider registry is unavailable in this host");
-@@ -2068,6 +2088,32 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+@@ -2068,6 +2087,32 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
        logger.warn(`plugin ${row.id} failed to load: ${hostArtifactProblem}`);
        return hostArtifactProblem;
      }
@@ -1959,7 +2027,7 @@ index bb1145f3bac135866d0515a7c3e08302e41cd50d..f56aa0c4f9e5733a71bd2939b14b9eea
      plugin.services = handle.backgroundServices.map((record) => ({
        record,
        state: "stopped" as const,
-@@ -2104,6 +2150,13 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+@@ -2104,6 +2149,13 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
      needsConfiguration.delete(row.id);
      agentToolProblems.delete(row.id);
      handle.activate();
@@ -1973,7 +2041,7 @@ index bb1145f3bac135866d0515a7c3e08302e41cd50d..f56aa0c4f9e5733a71bd2939b14b9eea
      const now = Date.now();
      prunePluginSchedules(
        deps.db,
-@@ -2139,6 +2192,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+@@ -2139,6 +2191,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
    async function disposePluginInstance(plugin: LoadedPlugin): Promise<void> {
      const id = plugin.pluginId;
      try {
@@ -1981,7 +2049,7 @@ index bb1145f3bac135866d0515a7c3e08302e41cd50d..f56aa0c4f9e5733a71bd2939b14b9eea
        plugin.handle.closeWebSockets();
        plugin.stopping.abort();
        if (plugin.hostArtifact !== null && deps.disposePluginHost) {
-@@ -2247,10 +2301,46 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+@@ -2247,10 +2300,44 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
    }
  
    function bindSdk(args: { baseUrl: string }): void {
@@ -1990,24 +2058,22 @@ index bb1145f3bac135866d0515a7c3e08302e41cd50d..f56aa0c4f9e5733a71bd2939b14b9eea
 +    boundSdkFetch = createRequestTimeoutFetch({
 +      timeoutMs: DEFAULT_BB_REQUEST_TIMEOUT_MS,
 +    });
-+    boundSdk = createNodeBbSdk({
-+      baseUrl: args.baseUrl,
-+      fetch: boundSdkFetch,
-+    });
      boundLoopbackBaseUrl = args.baseUrl;
    }
  
-+  function createP6rPluginSdk(
-+    p6rIdentity: P6rIdentityExtension,
++  function createPluginSdk(
++    p6rIdentity: P6rIdentityExtension | undefined,
++    callerToken: string,
 +  ): BbSdk | undefined {
 +    if (boundSdkBaseUrl === undefined || boundSdkFetch === undefined) {
 +      return undefined;
 +    }
 +    const sdkFetch = boundSdkFetch;
-+    return createNodeBbSdk({
++    return createPluginRpcCallerSdk({
 +      baseUrl: boundSdkBaseUrl,
++      token: callerToken,
 +      fetch: async (input, init) => {
-+        if (!p6rIdentity.producerMessageRenderingEnabled?.()) {
++        if (!p6rIdentity?.producerMessageRenderingEnabled?.()) {
 +          return sdkFetch(input, init);
 +        }
 +        const request = new Request(input, init);
