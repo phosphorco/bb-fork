@@ -1,0 +1,875 @@
+From 90f2f2db320c1ba70c84c8e496d2942511f0d332 Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Thu, 12 Nov 2026 08:39:17 +0100
+Subject: [PATCH] fix(admission): retain cancelled historical revision identity
+
+Allocate explicit new historical edits after all retained accepted revisions without reviving cancelled operations. Fence competing revisions in the acceptance transaction and reconcile a same-operation lookup race through its frozen revision and existing authored binding.
+---
+ .../services/threads/thread-edit-message.ts   |  20 +-
+ .../test/threads/thread-edit-message.test.ts  | 615 ++++++++++++++++++
+ packages/db/src/data/message-admission.ts     |  34 +-
+ .../db/test/data/message-admission.test.ts    |  85 +++
+ 4 files changed, 749 insertions(+), 5 deletions(-)
+
+diff --git a/apps/server/src/services/threads/thread-edit-message.ts b/apps/server/src/services/threads/thread-edit-message.ts
+index f663bdfbcec7d43a093778a695a4ffe0d60122ae..5ab40a1d31717fa8613fdb52e6dcd4aa8952e704 100644
+--- a/apps/server/src/services/threads/thread-edit-message.ts
++++ b/apps/server/src/services/threads/thread-edit-message.ts
+@@ -5,6 +5,7 @@ import { and, desc, eq, isNull, lt, sql, ne, inArray, gt } from "drizzle-orm";
+ import {
+   AdmissionConflict,
+   getAdmissionOperationById,
++  getLatestAcceptedAdmissionRevision,
+   admissionDigest,
+   captureQueuedThreadMessagePlacement,
+   claimQueuedThreadMessageGroup,
+@@ -961,6 +962,19 @@ export async function editThreadMessage(
+         .object({ nativePluginSubmission: JsonSchema.optional() })
+         .parse(previous.source.origin)
+     : undefined;
++  const originalId =
++    previous?.original.originalId ??
++    `legacy-edited:${args.thread.id}:${target.requestSequence}`;
++  const retainedSubmission = service.readNativeSubmission(
++    admissionOperationKey(operation.namespace, operation.operationId),
++  );
++  const revision =
++    retainedSubmission?.original.revision ??
++    Math.max(
++      previous?.original.revision ?? 0,
++      getLatestAcceptedAdmissionRevision(deps.db, args.thread.id, originalId) ??
++        0,
++    ) + 1;
+   const submission = await nativeAdmissionSubmission(deps.db, {
+     thread: args.thread,
+     input,
+@@ -968,10 +982,8 @@ export async function editThreadMessage(
+     execution,
+     mode: "start",
+     operationId: operation.operationId,
+-    originalId:
+-      previous?.original.originalId ??
+-      `legacy-edited:${args.thread.id}:${target.requestSequence}`,
+-    revision: (previous?.original.revision ?? 0) + 1,
++    originalId,
++    revision,
+     expectedPlacementWitness: admissionDigest(placement.orderedRows),
+     senderThreadId: previous
+       ? previous.source.senderThreadId
+diff --git a/apps/server/test/threads/thread-edit-message.test.ts b/apps/server/test/threads/thread-edit-message.test.ts
+index ef5b73e002bcdec3b99e241aa33db8aa29a1b0d3..946bac180936b37fa2c54a12f1c24713862be0d7 100644
+--- a/apps/server/test/threads/thread-edit-message.test.ts
++++ b/apps/server/test/threads/thread-edit-message.test.ts
+@@ -41,6 +41,7 @@ import {
+ } from "../../src/services/threads/message-admission-input.js";
+ import { attemptDispatch } from "../../src/services/threads/dispatch-attempt.js";
+ import { buildExecutionOptions } from "../../src/services/threads/thread-commands.js";
++import * as threadCommands from "../../src/services/threads/thread-commands.js";
+ import { configureNativeMessageAdmissionRuntime } from "../../src/services/threads/message-admission-runtime.js";
+ import {
+   setPluginHookProvider,
+@@ -2358,6 +2359,18 @@ describe("native edit admission before effects", () => {
+       expect(
+         f.service.preparationRecord(first.admission.operation)?.state,
+       ).toBe("effect-possible");
++      const effectPossibleCancel = await harness.app.request(
++        `/api/v1/threads/${thread.id}/admission-operations/${f.service.preparationRecord(first.admission.operation)!.id}/cancel`,
++        {
++          method: "POST",
++          headers: { "Content-Type": "application/json" },
++          body: JSON.stringify({ expectedState: "pending" }),
++        },
++      );
++      expect(effectPossibleCancel.status).toBe(409);
++      expect(await effectPossibleCancel.json()).toMatchObject({
++        code: "message_admission_delivery_busy",
++      });
+       await reportQueuedCommandError(harness, rewind, {
+         errorCode: "host_disconnected",
+         errorMessage: "Effect outcome unknown",
+@@ -2370,6 +2383,35 @@ describe("native edit admission before effects", () => {
+         expect(
+           f.service.lookupOperation(first.admission.operation)?.delivery.state,
+         ).toBe("uncertain");
++        const uncertain = f.service.lookupOperation(first.admission.operation)!;
++        const uncertainCancel = await harness.app.request(
++          `/api/v1/threads/${thread.id}/admission-operations/${f.service.preparationRecord(first.admission.operation)!.id}/cancel`,
++          {
++            method: "POST",
++            headers: { "Content-Type": "application/json" },
++            body: JSON.stringify({ expectedState: "failed" }),
++          },
++        );
++        expect(uncertainCancel.status).toBe(409);
++        expect(await uncertainCancel.json()).toMatchObject({
++          code: "message_admission_delivery_busy",
++        });
++        expect(
++          await editThreadMessage(harness.deps, {
++            environment,
++            thread,
++            payload: {
++              operationId: "uncertain-queued-edit",
++              expectedRequestSequence: 7,
++              input: [
++                { type: "text", text: "Uncertain correction", mentions: [] },
++              ],
++            },
++          }),
++        ).toMatchObject({ admission: uncertain });
++        expect(f.service.lookupOperation(first.admission.operation)).toEqual(
++          uncertain,
++        );
+         await expect(
+           sendQueuedMessageNow(harness.deps, {
+             threadId: thread.id,
+@@ -3323,6 +3365,482 @@ describe("historical final review regressions", () => {
+       }),
+     );
+   }
++  it.each(["legacy", "native"] as const)(
++    "allocates a fresh retained revision after public cancellation at an unchanged %s target",
++    async (targetKind) => {
++      await withTestHarness(async (harness) => {
++        const { environment, thread } = seedEditableThread(harness, {
++          includeSecondTurn: false,
++          threadStatus: targetKind === "native" ? "idle" : "active",
++        });
++        const observed: SubmissionV1[] = [];
++        const evaluator: EvaluatorV1 = (input) => {
++          if (input.submission.kind === "edit") observed.push(input.submission);
++          return reduceObservations({
++            assessmentId: input.assessmentId,
++            complete: true,
++            observations: [
++              {
++                groupId: "current-policy",
++                ruleId: "fresh-edit",
++                revision: "1",
++                status: "pass",
++                causes: [],
++                advice: [],
++                routing:
++                  input.submission.kind === "edit" ? "defer" : "preserve",
++                membership: "preserve",
++              },
++            ],
++          });
++        };
++        const f = await nativeEditPolicy(harness, thread, evaluator);
++        let requestSequence = 2;
++        let targetRevision = 0;
++        if (targetKind === "native") {
++          const sent = await harness.app.request(
++            `/api/v1/threads/${thread.id}/send`,
++            {
++              method: "POST",
++              headers: { "Content-Type": "application/json" },
++              body: JSON.stringify({
++                operationId: "revision-target-T",
++                input: text("Native target T"),
++                mode: "start",
++                model: "gpt-5",
++                permissionMode: "full",
++              }),
++            },
++          );
++          expect(sent.status, await sent.clone().text()).toBe(200);
++          const request = listEvents(harness.db, { threadId: thread.id })
++            .filter((row) => row.type === "client/turn/requested")
++            .at(-1)!;
++          requestSequence = request.sequence;
++          const data = turnRequestEventDataSchema.parse(
++            JSON.parse(request.data),
++          );
++          const manifest = getMessageAdmissionService(
++            harness.db,
++          ).readOriginalManifest(thread.id, data.requestId);
++          expect(manifest.status).toBe("available");
++          if (manifest.status !== "available")
++            throw new Error("Native target has no manifest");
++          targetRevision = manifest.originals[0]!.original.revision;
++          expect(targetRevision).toBe(1);
++          seedStoredEvent(harness.deps, {
++            threadId: thread.id,
++            providerThreadId: "provider-original",
++            sequence: requestSequence + 1,
++            type: "turn/started",
++            scope: turnScope("revision-target-turn"),
++            data: { providerThreadId: "provider-original" },
++          });
++          seedStoredEvent(harness.deps, {
++            threadId: thread.id,
++            providerThreadId: "provider-original",
++            sequence: requestSequence + 2,
++            type: "turn/input/accepted",
++            scope: turnScope("revision-target-turn"),
++            data: {
++              providerThreadId: "provider-original",
++              clientRequestId: data.requestId,
++            },
++          });
++        }
++        const runtime = configureNativeMessageAdmissionRuntime(harness.deps);
++        try {
++          const before = listEvents(harness.db, { threadId: thread.id });
++          const commands = listQueuedThreadCommands(
++            harness,
++            "thread.start",
++            thread.id,
++          );
++          const payloadB = {
++            operationId: "retained-cancelled-B",
++            expectedRequestSequence: requestSequence,
++            input: text("Historical B"),
++          };
++          const b = await editThreadMessage(harness.deps, {
++            environment,
++            thread: getThread(harness.db, thread.id)!,
++            payload: payloadB,
++          });
++          if (!("delivery" in b))
++            throw new Error("Expected accepted historical B");
++          expect(b.admission.acceptedOriginal?.original.revision).toBe(
++            targetRevision + 1,
++          );
++          const prep = f.service.preparationRecord(b.admission.operation)!;
++          const response = await harness.app.request(
++            `/api/v1/threads/${thread.id}/admission-operations/${prep.id}/cancel`,
++            {
++              method: "POST",
++              headers: { "Content-Type": "application/json" },
++              body: JSON.stringify({ expectedState: "pending" }),
++            },
++          );
++          expect(response.status, await response.clone().text()).toBe(200);
++          const retainedB = f.service.lookupOperation(b.admission.operation)!;
++          expect(retainedB).toMatchObject({
++            status: "accepted",
++            delivery: { state: "cancelled" },
++            acceptedOriginal: b.admission.acceptedOriginal,
++            acceptanceReceipt: b.admission.acceptanceReceipt,
++          });
++          expect(
++            await editThreadMessage(harness.deps, {
++              environment,
++              thread,
++              payload: payloadB,
++            }),
++          ).toMatchObject({
++            operationId: payloadB.operationId,
++            delivery: "preparing",
++            admission: retainedB,
++          });
++          expect(observed).toHaveLength(1);
++          if (targetKind === "native") {
++            let currentPolicyCalls = 0;
++            await f.plugin.protocol.registerEvaluator(
++              { version: 1, evaluatorVersion: "1" },
++              (input) => {
++                currentPolicyCalls++;
++                return reduceObservations({
++                  assessmentId: input.assessmentId,
++                  complete: true,
++                  observations: [
++                    {
++                      groupId: "current-policy",
++                      ruleId: "changed-policy",
++                      revision: "2",
++                      status: "reject",
++                      causes: [
++                        {
++                          code: "current-rule",
++                          message: "Fresh edit requires correction",
++                        },
++                      ],
++                      advice: [
++                        "Retain the target and submit a corrected new edit",
++                      ],
++                      routing: "preserve",
++                      membership: "preserve",
++                    },
++                  ],
++                });
++              },
++            );
++            const publishCurrentPolicy = async (revision: string) => {
++              const active = await f.plugin.protocol.readActivePublication({
++                version: 1,
++                providerId: "native-edit-policy",
++              });
++              const published = await f.plugin.protocol.publish({
++                version: 1,
++                operation: {
++                  namespace: "changed-edit-policy",
++                  operationId: revision,
++                },
++                providerId: "native-edit-policy",
++                expectedActivePublication: active!.publication,
++                snapshotBytes: canonicalJson({ revision }, 100),
++                configurationVersion: revision,
++                evaluatorVersion: "1",
++                enrollment: { mode: "enforce", projectIds: [thread.projectId] },
++              });
++              expect(published.status).toBe("published");
++            };
++            await publishCurrentPolicy("2");
++            const deniedPayload = {
++              operationId: "new-edit-current-policy-rejected",
++              expectedRequestSequence: requestSequence,
++              input: text("Draft rejected by current policy"),
++            };
++            for (let replay = 0; replay < 2; replay++)
++              await expect(
++                editThreadMessage(harness.deps, {
++                  environment,
++                  thread,
++                  payload: deniedPayload,
++                }),
++              ).rejects.toMatchObject({
++                body: { code: "message_admission_rejected" },
++              });
++            expect(currentPolicyCalls).toBe(1);
++            expect(f.service.lookupOperation(b.admission.operation)).toEqual(
++              retainedB,
++            );
++            expect(listEvents(harness.db, { threadId: thread.id })).toEqual(
++              before,
++            );
++            await f.plugin.protocol.registerEvaluator(
++              { version: 1, evaluatorVersion: "1" },
++              evaluator,
++            );
++            await publishCurrentPolicy("3");
++          }
++          const payloadC = {
++            operationId: "explicit-new-edit-C",
++            expectedRequestSequence: requestSequence,
++            input: text("New user-selected historical C"),
++          };
++          const c = await editThreadMessage(harness.deps, {
++            environment,
++            thread: getThread(harness.db, thread.id)!,
++            payload: payloadC,
++          });
++          if (!("delivery" in c))
++            throw new Error("Expected accepted new historical C");
++          expect(c.admission.acceptedOriginal?.original).toEqual({
++            originalId: b.admission.acceptedOriginal!.original.originalId,
++            revision: targetRevision + 2,
++          });
++          expect(c.admission.acceptedOriginal?.rawInput).toEqual(
++            text("New user-selected historical C"),
++          );
++          expect(observed).toHaveLength(2);
++          expect(observed[1]).toMatchObject({
++            operation: c.admission.operation,
++            override: "none",
++            original: c.admission.acceptedOriginal!.original,
++          });
++          expect(
++            f.service.preparationRecord(c.admission.operation)?.details,
++          ).not.toHaveProperty("sendNow");
++          expect(
++            await editThreadMessage(harness.deps, {
++              environment,
++              thread,
++              payload: payloadC,
++            }),
++          ).toEqual(c);
++          expect(observed).toHaveLength(2);
++          expect(f.service.lookupOperation(b.admission.operation)).toEqual(
++            retainedB,
++          );
++          expect(
++            f.service.preparationRecord(b.admission.operation)?.state,
++          ).toBe("cancelled");
++          await runtime.catchUp();
++          expect(listEvents(harness.db, { threadId: thread.id })).toEqual(
++            before,
++          );
++          expect(
++            listQueuedThreadCommands(harness, "thread.start", thread.id),
++          ).toEqual(commands);
++          expect(
++            listQueuedThreadCommands(
++              harness,
++              "thread.rewind.prepare",
++              thread.id,
++            ),
++          ).toEqual([]);
++          expect(
++            listQueuedThreadMessages(harness.db, thread.id).map(
++              (row) => row.admissionRef,
++            ),
++          ).toEqual([f.service.preparationRecord(c.admission.operation)!.id]);
++        } finally {
++          runtime.dispose();
++          f.plugin.retire();
++        }
++      });
++    },
++  );
++  it("returns the exact acknowledgement when same-operation replay resumes after acceptance", async () => {
++    await withTestHarness(async (harness) => {
++      const { environment, thread } = seedEditableThread(harness, {
++        includeSecondTurn: false,
++        threadStatus: "active",
++      });
++      let evaluations = 0;
++      const f = await nativeEditPolicy(harness, thread, (input) => {
++        evaluations++;
++        return reduceObservations({
++          assessmentId: input.assessmentId,
++          complete: true,
++          observations: [
++            {
++              groupId: "concurrent-replay",
++              ruleId: "queue",
++              revision: "1",
++              status: "pass",
++              causes: [],
++              advice: [],
++              routing: "defer",
++              membership: "preserve",
++            },
++          ],
++        });
++      });
++      const runtime = configureNativeMessageAdmissionRuntime(harness.deps);
++      let release!: () => void;
++      const gate = new Promise<void>((resolve) => {
++        release = resolve;
++      });
++      let entered!: () => void;
++      const paused = new Promise<void>((resolve) => {
++        entered = resolve;
++      });
++      const build = threadCommands.buildExecutionOptions;
++      const choices = vi
++        .spyOn(threadCommands, "buildExecutionOptions")
++        .mockImplementationOnce(async (...args) => {
++          entered();
++          await gate;
++          return build(...args);
++        });
++      try {
++        const before = listEvents(harness.db, { threadId: thread.id });
++        const payload = {
++          operationId: "concurrent-same-edit",
++          expectedRequestSequence: 2,
++          input: text("One explicit historical edit"),
++        };
++        const delayed = editThreadMessage(harness.deps, {
++          environment,
++          thread,
++          payload,
++        });
++        const result = Promise.allSettled([delayed]);
++        await paused;
++        const first = await editThreadMessage(harness.deps, {
++          environment,
++          thread,
++          payload,
++        });
++        release();
++        expect(await result).toEqual([{ status: "fulfilled", value: first }]);
++        expect(evaluations).toBe(1);
++        expect(
++          getThread(harness.db, thread.id)?.messageAcceptanceSequence,
++        ).toBe(1);
++        expect(listQueuedThreadMessages(harness.db, thread.id)).toHaveLength(1);
++        expect(listEvents(harness.db, { threadId: thread.id })).toEqual(before);
++        expect(
++          listQueuedThreadCommands(harness, "thread.rewind.prepare", thread.id),
++        ).toEqual([]);
++      } finally {
++        release();
++        choices.mockRestore();
++        runtime.dispose();
++        f.plugin.retire();
++      }
++    });
++  });
++  it("refuses a competing accepted revision without reallocating or replaying assessment", async () => {
++    await withTestHarness(async (harness) => {
++      const { environment, thread } = seedEditableThread(harness, {
++        includeSecondTurn: false,
++        threadStatus: "active",
++      });
++      let release!: () => void;
++      const gate = new Promise<void>((resolve) => {
++        release = resolve;
++      });
++      let entered!: () => void;
++      const bothEntered = new Promise<void>((resolve) => {
++        entered = resolve;
++      });
++      const observed: SubmissionV1[] = [];
++      const f = await nativeEditPolicy(harness, thread, async (input) => {
++        observed.push(input.submission);
++        if (observed.length === 2) entered();
++        await gate;
++        return reduceObservations({
++          assessmentId: input.assessmentId,
++          complete: true,
++          observations: [
++            {
++              groupId: "race",
++              ruleId: "queue",
++              revision: "1",
++              status: "pass",
++              causes: [],
++              advice: [],
++              routing: "defer",
++              membership: "preserve",
++            },
++          ],
++        });
++      });
++      const runtime = configureNativeMessageAdmissionRuntime(harness.deps);
++      try {
++        const before = listEvents(harness.db, { threadId: thread.id });
++        const payloads = ["competing-B", "competing-C"].map((operationId) => ({
++          operationId,
++          expectedRequestSequence: 2,
++          input: text(operationId),
++        }));
++        const work = Promise.allSettled(
++          payloads.map((payload) =>
++            editThreadMessage(harness.deps, { environment, thread, payload }),
++          ),
++        );
++        await bothEntered;
++        expect(observed[0]!.original).toEqual(observed[1]!.original);
++        release();
++        const results = await work;
++        const winners = results.filter(
++          (result) => result.status === "fulfilled",
++        );
++        const losers = results.filter((result) => result.status === "rejected");
++        expect(winners).toHaveLength(1);
++        expect(losers).toHaveLength(1);
++        expect(losers[0]!.reason).toMatchObject({
++          code: "original-revision-conflict",
++        });
++        const winner = winners[0]!.value;
++        if (!("delivery" in winner))
++          throw new Error("Expected accepted winner");
++        const winnerPayload = payloads.find(
++          (payload) => payload.operationId === winner.operationId,
++        )!;
++        const loserPayload = payloads.find(
++          (payload) => payload.operationId !== winner.operationId,
++        )!;
++        expect(
++          await editThreadMessage(harness.deps, {
++            environment,
++            thread,
++            payload: winnerPayload,
++          }),
++        ).toEqual(winner);
++        await expect(
++          editThreadMessage(harness.deps, {
++            environment,
++            thread,
++            payload: loserPayload,
++          }),
++        ).rejects.toMatchObject({
++          body: { code: "message_admission_unresolved" },
++        });
++        expect(observed).toHaveLength(2);
++        expect(
++          getThread(harness.db, thread.id)?.messageAcceptanceSequence,
++        ).toBe(1);
++        expect(
++          f.service.lookupOperation({
++            namespace: winner.admission.operation.namespace,
++            operationId: loserPayload.operationId,
++          }),
++        ).toMatchObject({ status: "unresolved", acceptedOriginal: null });
++        expect(listEvents(harness.db, { threadId: thread.id })).toEqual(before);
++        expect(listQueuedThreadMessages(harness.db, thread.id)).toHaveLength(1);
++        expect(
++          listQueuedThreadCommands(harness, "thread.rewind.prepare", thread.id),
++        ).toEqual([]);
++        expect(
++          listQueuedThreadCommands(harness, "thread.stop", thread.id),
++        ).toEqual([]);
++      } finally {
++        release();
++        runtime.dispose();
++        f.plugin.retire();
++      }
++    });
++  });
+   it("refuses inline historical queue replacement before evaluation and preserves the frozen preparation", async () => {
+     await withTestHarness(async (harness) => {
+       const { environment, thread } = seedEditableThread(harness, {
+@@ -3915,6 +4433,103 @@ describe("historical final review regressions", () => {
+             2,
+           );
+           expect(frozen).toMatchObject({ sendNow: true });
++          const failedB = f.service.lookupOperation(b.admission.operation)!;
++          const prep = f.service.preparationRecord(b.admission.operation)!;
++          const response = await harness.app.request(
++            `/api/v1/threads/${thread.id}/admission-operations/${prep.id}/cancel`,
++            {
++              method: "POST",
++              headers: { "Content-Type": "application/json" },
++              body: JSON.stringify({ expectedState: "failed" }),
++            },
++          );
++          expect(response.status, await response.clone().text()).toBe(200);
++          const cancelledB = f.service.lookupOperation(b.admission.operation)!;
++          expect(cancelledB).toMatchObject({
++            status: "accepted",
++            delivery: { state: "cancelled" },
++            acceptedOriginal: failedB.acceptedOriginal,
++          });
++          const beforeNewEdit = listEvents(harness.db, { threadId: thread.id });
++          const nextRuntime = configureNativeMessageAdmissionRuntime(
++            harness.deps,
++          );
++          try {
++            const payload = {
++              operationId: "rev-B-new-explicit",
++              expectedRequestSequence: 2,
++              input: text("New evaluated historical B"),
++            };
++            const next = await editThreadMessage(harness.deps, {
++              environment,
++              thread: getThread(harness.db, thread.id)!,
++              payload,
++            });
++            if (!("delivery" in next))
++              throw new Error("Expected a distinct new historical edit");
++            expect(next.admission.acceptedOriginal?.original).toEqual({
++              originalId: b.admission.acceptedOriginal!.original.originalId,
++              revision: b.admission.acceptedOriginal!.original.revision + 1,
++            });
++            expect(next.admission.assessments).toHaveLength(1);
++            expect(next.admission.assessments[0]!.assessmentId).not.toBe(
++              b.admission.assessments[0]!.assessmentId,
++            );
++            expect(
++              f.service.preparationRecord(next.admission.operation)?.details,
++            ).not.toHaveProperty("sendNow");
++            expect(
++              await editThreadMessage(harness.deps, {
++                environment,
++                thread,
++                payload,
++              }),
++            ).toEqual(next);
++            const oldReplay = await editThreadMessage(harness.deps, {
++              environment,
++              thread,
++              payload: {
++                operationId: "rev-B",
++                expectedRequestSequence: 2,
++                input: text("Historical B"),
++              },
++            });
++            expect(oldReplay).toMatchObject({
++              delivery: "preparing",
++              admission: cancelledB,
++            });
++            await nextRuntime.catchUp();
++            expect(f.service.lookupOperation(b.admission.operation)).toEqual(
++              cancelledB,
++            );
++            expect(getQueuedThreadMessage(harness.db, a.id)).toMatchObject({
++              content: revised.content,
++              admissionRef: revised.admissionRef,
++              originalManifest: revised.originalManifest,
++              requestedIntent: revised.requestedIntent,
++              effectiveIntent: revised.effectiveIntent,
++              sendAt: revised.sendAt,
++              scheduledFor: revised.scheduledFor,
++              waitingOn: revised.waitingOn,
++              payloadKind: revised.payloadKind,
++              p6rAuthors: revised.p6rAuthors,
++            });
++            expect(listEvents(harness.db, { threadId: thread.id })).toEqual(
++              beforeNewEdit,
++            );
++            expect(
++              listQueuedThreadCommands(harness, "thread.start", thread.id),
++            ).toEqual([]);
++            expect(
++              listQueuedThreadCommands(
++                harness,
++                "thread.rewind.prepare",
++                thread.id,
++              ),
++            ).toEqual([]);
++          } finally {
++            nextRuntime.dispose();
++          }
+         } finally {
+           runtime.dispose();
+           f.plugin.retire();
+diff --git a/packages/db/src/data/message-admission.ts b/packages/db/src/data/message-admission.ts
+index 2b5b4a3e64e02fbb12d8eb107bfd970008a0e225..f99eed83382510cc1d5f7f5e9ec57c53be38c613 100644
+--- a/packages/db/src/data/message-admission.ts
++++ b/packages/db/src/data/message-admission.ts
+@@ -1,5 +1,5 @@
+ import { createHash } from "node:crypto";
+-import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
++import { and, asc, desc, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
+ import type {
+   DbConnection,
+   DbQueryConnection,
+@@ -61,6 +61,28 @@ export function getAdmissionOperation(
+   );
+ }
+ 
++export function getLatestAcceptedAdmissionRevision(
++  db: DbQueryConnection,
++  threadId: string,
++  originalId: string,
++): number | null {
++  return (
++    db
++      .select({ revision: operations.revision })
++      .from(operations)
++      .where(
++        and(
++          eq(operations.threadId, threadId),
++          eq(operations.originalId, originalId),
++          isNotNull(operations.acceptanceSequence),
++        ),
++      )
++      .orderBy(desc(operations.revision))
++      .limit(1)
++      .get()?.revision ?? null
++  );
++}
++
+ export function reserveAdmissionOperation(
+   db: DbConnection,
+   input: Omit<
+@@ -364,6 +386,16 @@ export function acceptAdmissionOperation(
+       "operation-state-conflict",
+       "Admission has already completed or changed",
+     );
++  const retainedRevision = getLatestAcceptedAdmissionRevision(
++    tx,
++    operation.threadId,
++    operation.originalId,
++  );
++  if (retainedRevision !== null && retainedRevision >= operation.revision)
++    throw new AdmissionConflict(
++      "original-revision-conflict",
++      "A competing operation already accepted this original revision or a newer one; submit a new explicit edit after checking the current target",
++    );
+   const thread = tx
+     .update(threads)
+     .set({
+diff --git a/packages/db/test/data/message-admission.test.ts b/packages/db/test/data/message-admission.test.ts
+index c3a445c129ac6a1fb85565fcbe1746306154f6e6..197b10aec670cda91700520a7b7147ce91258424 100644
+--- a/packages/db/test/data/message-admission.test.ts
++++ b/packages/db/test/data/message-admission.test.ts
+@@ -17,6 +17,7 @@ import {
+   admissionOperationKey,
+   commitAdmissionDisposition,
+   getAdmissionOperation,
++  getLatestAcceptedAdmissionRevision,
+   getActiveAdmissionPublication,
+   listAdmissionActivity,
+   pendingAdmissionRecovery,
+@@ -94,6 +95,90 @@ describe("native admission durable database boundary", () => {
+     expect(() => reserve("a", "edited")).toThrow("different input");
+   });
+ 
++  it("selects only retained accepted revisions for the exact thread and original using the existing index", () => {
++    const { db, project, thread } = setup();
++    const other = createThread(db, noopNotifier, {
++      projectId: project.id,
++      providerId: "codex",
++    });
++    const reserve = (
++      operationId: string,
++      revision: number,
++      threadId = thread.id,
++      originalId = "retained-original",
++    ) =>
++      reserveAdmissionOperation(db, {
++        id: admissionOperationKey("revisions", operationId),
++        namespace: "revisions",
++        operationId,
++        fingerprint: operationId,
++        projectId: project.id,
++        threadId,
++        originalId,
++        revision,
++        input: "{}",
++      }).operation;
++    const accept = (id: string) =>
++      db.transaction((tx) =>
++        acceptAdmissionOperation(tx, {
++          id,
++          attempt: 1,
++          basis: "{}",
++          result: "{}",
++          visibleHuman: false,
++          preparation: "{}",
++        }),
++      );
++    expect(
++      getLatestAcceptedAdmissionRevision(db, thread.id, "retained-original"),
++    ).toBeNull();
++    const first = reserve("first", 1);
++    accept(first.id);
++    const retained = reserve("cancelled", 4);
++    accept(retained.id);
++    db.transaction((tx) =>
++      transitionAdmissionPreparation(
++        tx,
++        retained.id,
++        "pending",
++        "cancelled",
++        "{}",
++      ),
++    );
++    accept(reserve("other-thread", 99, other.id).id);
++    accept(reserve("other-original", 99, thread.id, "other-original").id);
++    reserve("unaccepted", 100);
++    expect(
++      getLatestAcceptedAdmissionRevision(db, thread.id, "retained-original"),
++    ).toBe(4);
++    const activity = readAdmissionActivity(db, thread.id);
++    const duplicate = reserve("competing", 4);
++    expect(() => accept(duplicate.id)).toThrow(
++      expect.objectContaining({ code: "original-revision-conflict" }),
++    );
++    expect(readAdmissionActivity(db, thread.id)).toEqual(activity);
++    expect(getAdmissionOperation(db, "revisions", "competing")?.state).toBe(
++      "evaluating",
++    );
++    expect(getAdmissionOperation(db, "revisions", "cancelled")).toMatchObject({
++      state: "accepted",
++      preparationState: "cancelled",
++      revision: 4,
++    });
++    const plan = db.$client
++      .prepare(
++        "EXPLAIN QUERY PLAN SELECT revision FROM message_admission_operations WHERE thread_id = ? AND original_id = ? AND acceptance_sequence IS NOT NULL ORDER BY revision DESC LIMIT 1",
++      )
++      .all(thread.id, "retained-original");
++    expect(plan).toEqual([
++      expect.objectContaining({
++        detail: expect.stringContaining(
++          "USING INDEX message_admission_accepted_original_idx",
++        ),
++      }),
++    ]);
++  });
++
+   it("publication CAS and enrollment move together; lost acknowledgment replays original publication", () => {
+     const { db, publish, project } = setup();
+     const first = publish("one", null);
+-- 
+2.53.0
+

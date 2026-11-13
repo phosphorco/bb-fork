@@ -1,0 +1,68 @@
+From 0350d43cbee71f2aaec66c680aa22684a013665b Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Thu, 12 Nov 2026 13:50:14 +0100
+Subject: [PATCH] fix(ws): guard realtime heartbeat replies
+
+---
+ apps/server/src/ws/client-protocol.ts        |  2 +-
+ apps/server/src/ws/hub.ts                    |  5 +----
+ apps/server/test/app/client-protocol.test.ts | 14 ++++++++++++++
+ 3 files changed, 16 insertions(+), 5 deletions(-)
+
+diff --git a/apps/server/src/ws/client-protocol.ts b/apps/server/src/ws/client-protocol.ts
+index a44ceeb62c..357c3e4151 100644
+--- a/apps/server/src/ws/client-protocol.ts
++++ b/apps/server/src/ws/client-protocol.ts
+@@ -43,7 +43,7 @@ export function onClientSocketMessage(
+       deps.watchInterests.unsubscribe(socket, parsed.target);
+       break;
+     case "ping":
+-      socket.send(JSON.stringify(PONG_MESSAGE));
++      deps.hub.sendRealtimeClientPayload(socket, JSON.stringify(PONG_MESSAGE));
+       break;
+     default: {
+       const _exhaustive: never = parsed;
+diff --git a/apps/server/src/ws/hub.ts b/apps/server/src/ws/hub.ts
+index 7c31b55f65..9f34e53a35 100644
+--- a/apps/server/src/ws/hub.ts
++++ b/apps/server/src/ws/hub.ts
+@@ -1244,10 +1244,7 @@ export class NotificationHub implements DbNotifier {
+     }
+   }
+ 
+-  private sendRealtimeClientPayload(
+-    socket: HubSocket,
+-    payload: string,
+-  ): boolean {
++  sendRealtimeClientPayload(socket: HubSocket, payload: string): boolean {
+     if (!this.clientKeysBySocket.has(socket)) return false;
+     const bufferedBytes = socket.raw?.bufferedAmount ?? 0;
+     const queuedMessages =
+diff --git a/apps/server/test/app/client-protocol.test.ts b/apps/server/test/app/client-protocol.test.ts
+index 01136b7b58..2e9c9005c7 100644
+--- a/apps/server/test/app/client-protocol.test.ts
++++ b/apps/server/test/app/client-protocol.test.ts
+@@ -18,6 +18,20 @@ function createProtocolDeps(hub: NotificationHub) {
+ }
+ 
+ describe("client websocket protocol", () => {
++  it("applies the same queue bound to heartbeat replies", () => {
++    const hub = new NotificationHub(),
++      deps = createProtocolDeps(hub);
++    const socket = {
++      ...createMockHubSocket(),
++      raw: { bufferedAmount: 64 * 1024 * 1024, terminate: vi.fn() },
++    };
++    onClientSocketOpen(hub, socket);
++    for (let i = 0; i < 10000; i++)
++      onClientSocketMessage(deps, socket, JSON.stringify({ type: "ping" }));
++    expect(socket.messages).toHaveLength(0);
++    expect(socket.raw.terminate).toHaveBeenCalledTimes(1);
++  });
++
+   it("subscribes valid client messages parsed through the shared schema", () => {
+     const hub = new NotificationHub();
+     const deps = createProtocolDeps(hub);
+-- 
+2.53.0
+

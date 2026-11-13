@@ -1,0 +1,693 @@
+From 6b3ec3db0015f70518c7e6370f3317c1b4753902 Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Thu, 12 Nov 2026 16:59:36 +0100
+Subject: [PATCH] fix(admission): honor explicit queued delivery mode
+
+Carry the owning explicit queue action through frozen native admission without rewriting accepted semantic intent. Preserve automatic queue behavior, historical targets, schedules, claims and execution ceilings.
+---
+ .../src/services/threads/dispatch-attempt.ts  |   9 +-
+ .../threads/message-admission-dispatch.ts     |  22 +-
+ .../src/services/threads/queued-messages.ts   |   8 +
+ ...-thread-queued-steer-admission.p6r.test.ts | 483 ++++++++++++++++++
+ .../test/threads/thread-edit-message.test.ts  |  77 +++
+ 5 files changed, 597 insertions(+), 2 deletions(-)
+ create mode 100644 apps/server/test/public/public-thread-queued-steer-admission.p6r.test.ts
+
+diff --git a/apps/server/src/services/threads/dispatch-attempt.ts b/apps/server/src/services/threads/dispatch-attempt.ts
+index 391fffadcca992573068f50e376c4501c1f4ccbe..7c740d690bcb23c9ec01f5cc1ddeff2053ed6bb0 100644
+--- a/apps/server/src/services/threads/dispatch-attempt.ts
++++ b/apps/server/src/services/threads/dispatch-attempt.ts
+@@ -37,7 +37,10 @@ import {
+   type ThreadCreateOrigin,
+   type ThreadQueuedMessage,
+ } from "@bb/domain";
+-import type { SendMessageRequest } from "@bb/server-contract";
++import type {
++  SendMessageRequest,
++  SendQueuedMessageMode,
++} from "@bb/server-contract";
+ import type {
+   MessageDispatchHookContext,
+   PluginDispatchEnvironmentIntent,
+@@ -279,6 +282,10 @@ export type DispatchAttemptSource =
+        * and cannot interrupt an interaction the user has not answered.
+        */
+       sendNow: boolean;
++      explicitDeliveryOverride?: {
++        kind: "explicit-send";
++        mode: SendQueuedMessageMode;
++      };
+     };
+ 
+ export interface DispatchAttemptArgs {
+diff --git a/apps/server/src/services/threads/message-admission-dispatch.ts b/apps/server/src/services/threads/message-admission-dispatch.ts
+index 222415fbd81d57975534a5ce4ca2566de0ddfdac..f7151e15ea96d16360d34f165c60e8bbc5ca8a4e 100644
+--- a/apps/server/src/services/threads/message-admission-dispatch.ts
++++ b/apps/server/src/services/threads/message-admission-dispatch.ts
+@@ -1,4 +1,5 @@
+ import type { SendThreadMessageTransactionCommit } from "./thread-send.js";
++import type { SendQueuedMessageMode } from "@bb/server-contract";
+ import type { MessageDispatchHookContext } from "@get-bb/plugin-sdk";
+ import {
+   AdmissionConflict,
+@@ -231,7 +232,7 @@ export interface NativeDispatchAdmission {
+     input: CreateQueuedThreadMessageInput;
+   }) => QueuedThreadMessageRow;
+   execution?: ResolvedThreadExecutionOptions;
+-  mode?: "queue-if-active" | "steer-if-active";
++  mode?: "queue-if-active" | "steer-if-active" | SendQueuedMessageMode;
+   sendAt?: number;
+   ticket?: PreparedAdmissionTicket;
+ }
+@@ -547,6 +548,16 @@ export function frozenNativeDispatchAdmission(
+       original.operation.operationId,
+     ),
+   );
++  const explicitDeliveryOverride =
++    args.source.kind === "drain" &&
++    args.source.sendNow &&
++    args.queuePayload.kind === "inline" &&
++    !args.retryOf &&
++    !args.acceptedContinuation &&
++    !args.preparationOperation &&
++    !args.payload.compactFirst
++      ? args.source.explicitDeliveryOverride
++      : undefined;
+   const context: NativeDispatchAdmission = {
+     dispatchContext: {
+       phase: "accepted",
+@@ -609,6 +620,15 @@ export function frozenNativeDispatchAdmission(
+       return request;
+     },
+   };
++  if (
++    explicitDeliveryOverride &&
++    context.dispatchContext?.submissions.every(
++      (submission) =>
++        submission.kind !== "edit" ||
++        !service.preparationRecord(submission.operation),
++    )
++  )
++    context.mode = explicitDeliveryOverride.mode;
+   if (!args.preparationOperation)
+     context.admissionCreate = ({ tx, input }) => {
+       const row = createQueuedThreadMessageInTransaction(tx, {
+diff --git a/apps/server/src/services/threads/queued-messages.ts b/apps/server/src/services/threads/queued-messages.ts
+index 193da1dc0ee8ec076f8b4b81413d72a307b93ba8..58c874b4c514dd314ad374282943491269a83059 100644
+--- a/apps/server/src/services/threads/queued-messages.ts
++++ b/apps/server/src/services/threads/queued-messages.ts
+@@ -1220,6 +1220,14 @@ async function sendClaimedQueuedMessageForThread(
+       claimed: args.queuedMessages,
+       respectManualStopPause: respectsManualStopPause(args),
+       sendNow: args.sendNow,
++      ...(args.sendNow && queuedMessage.payload.kind === "inline"
++        ? {
++            explicitDeliveryOverride: {
++              kind: "explicit-send" as const,
++              mode: args.mode,
++            },
++          }
++        : {}),
+     },
+     queuePayload: queuedMessage.payload,
+     pluginSubmission: null,
+diff --git a/apps/server/test/public/public-thread-queued-steer-admission.p6r.test.ts b/apps/server/test/public/public-thread-queued-steer-admission.p6r.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..25f5ad3a0e1e41da5eed6559523b4c105caac4b3
+--- /dev/null
++++ b/apps/server/test/public/public-thread-queued-steer-admission.p6r.test.ts
+@@ -0,0 +1,483 @@
++import { randomUUID } from "node:crypto";
++import { describe, expect, it } from "vitest";
++import {
++  getQueuedThreadMessage,
++  getThread,
++  claimQueuedThreadMessageGroup,
++  listAdmissionRequestOriginals,
++  listEvents,
++  listThreadQueueIncludingClaims,
++  noopNotifier,
++  queuedThreadMessages,
++  updateHost,
++} from "@bb/db";
++import { eq } from "drizzle-orm";
++import { turnRequestEventDataSchema } from "@bb/domain";
++import {
++  canonicalJson,
++  reduceObservations,
++} from "@phosphorco/bb-message-admission/protocol";
++import { getMessageAdmissionService } from "../../src/services/threads/message-admission.js";
++import { attemptDispatch } from "../../src/services/threads/dispatch-attempt.js";
++import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
++import { createProviderRegistryService } from "../../src/services/providers/provider-registry.js";
++import {
++  listQueuedThreadCommands,
++  waitForQueuedCommand,
++} from "../helpers/commands.js";
++import {
++  seedThread,
++  seedThreadFixture,
++  seedThreadRuntimeState,
++  seedTurnStarted,
++} from "../helpers/seed.js";
++import { textInput } from "../helpers/prompt-input.js";
++import { withTestHarness } from "../helpers/test-app.js";
++
++describe("public explicit queued Steer admission", () => {
++  it.each([
++    "ordinary",
++    "batch",
++    "scheduled",
++    "edited",
++    "scheduled-auto",
++  ] as const)(
++    "delivers accepted %s queue work with the explicit mode exactly once without changing semantic acceptance",
++    async (kind) => {
++      await withTestHarness(async (harness) => {
++        const { thread, environment } = seedThreadFixture(harness, {
++          thread: { status: "active" },
++        });
++        seedThreadRuntimeState(harness.deps, {
++          threadId: thread.id,
++          environmentId: environment.id,
++          providerThreadId: "explicit-queue-provider",
++        });
++        seedTurnStarted(harness.deps, {
++          threadId: thread.id,
++          environmentId: environment.id,
++          providerThreadId: "explicit-queue-provider",
++          turnId: "explicit-queue-turn",
++        });
++        const service = getMessageAdmissionService(harness.db);
++        const handle = service.createPluginHandle("explicit-queue-policy");
++        handle.activate();
++        let calls = 0;
++        await handle.protocol.registerEvaluator(
++          { version: 1, evaluatorVersion: "1" },
++          (input) => {
++            calls++;
++            return reduceObservations({
++              assessmentId: input.assessmentId,
++              complete: true,
++              observations:
++                kind === "batch"
++                  ? [
++                      {
++                        groupId: "membership",
++                        ruleId: "join",
++                        revision: "1",
++                        status: "pass",
++                        causes: [],
++                        advice: [],
++                        routing: "preserve",
++                        membership: "join-next-ordinary",
++                      },
++                    ]
++                  : [],
++            });
++          },
++        );
++        await handle.protocol.publish({
++          version: 1,
++          operation: {
++            namespace: "explicit-queue-publication",
++            operationId: randomUUID(),
++          },
++          providerId: "explicit-queue-policy",
++          expectedActivePublication: null,
++          snapshotBytes: canonicalJson({}, 100),
++          configurationVersion: "1",
++          evaluatorVersion: "1",
++          enrollment: { mode: "enforce", projectIds: [thread.projectId] },
++        });
++        const post = (path: string, payload: object) =>
++          harness.app.request(`/api/v1/threads/${thread.id}${path}`, {
++            method: "POST",
++            headers: { "content-type": "application/json" },
++            body: JSON.stringify(payload),
++          });
++        try {
++          const scheduledFor = Date.now() + 3600_000;
++          const scheduled = kind === "scheduled" || kind === "scheduled-auto";
++          const deliveryMode = kind === "scheduled-auto" ? "auto" : "steer";
++          const count = kind === "batch" ? 2 : 1;
++          const rows = [];
++          const before = [];
++          for (let index = 0; index < count; index++) {
++            const payload = {
++              operationId: `explicit-${kind}-${index}`,
++              input: textInput(`Queued ${index}`),
++              permissionMode: "accept-edits",
++              ...(scheduled
++                ? { mode: "queue-if-active", sendAt: scheduledFor }
++                : {}),
++            };
++            const response = await post(
++              scheduled ? "/send" : "/queued-messages",
++              payload,
++            );
++            const body: unknown = await response.json();
++            expect(response.status, JSON.stringify(body)).toBe(
++              scheduled ? 200 : 201,
++            );
++            let operationId = payload.operationId;
++            if (kind === "edited") {
++              const originalRow = listThreadQueueIncludingClaims(
++                harness.db,
++                thread.id,
++              )[0]!;
++              operationId = "explicit-edited-revision";
++              const edit = await harness.app.request(
++                `/api/v1/threads/${thread.id}/queued-messages/${originalRow.id}`,
++                {
++                  method: "PATCH",
++                  headers: { "content-type": "application/json" },
++                  body: JSON.stringify({
++                    operationId,
++                    expectedUpdatedAt: originalRow.updatedAt,
++                    input: textInput("Edited queued 0"),
++                  }),
++                },
++              );
++              expect(edit.status, await edit.text()).toBe(200);
++            }
++            const record = service.lookupOperation({
++              namespace: `native:${thread.id}`,
++              operationId,
++            })!;
++            expect(record.status).toBe("accepted");
++            expect(record.acceptedOriginal).toMatchObject({
++              requestedIntent: { mode: "queue" },
++              effectiveIntent: { mode: "queue" },
++            });
++            const row = listThreadQueueIncludingClaims(
++              harness.db,
++              thread.id,
++            ).at(-1)!;
++            rows.push(row);
++            before.push(record);
++          }
++          const acceptedCount = kind === "edited" ? 2 : count;
++          expect(calls).toBe(acceptedCount);
++          expect(rows.every((row) => row.originalManifest !== null)).toBe(true);
++          if (kind === "batch") {
++            const group = listThreadQueueIncludingClaims(harness.db, thread.id);
++            expect(group.map((row) => row.groupWithNext)).toEqual([
++              true,
++              false,
++            ]);
++          }
++          if (scheduled) expect(rows[0]!.scheduledFor).toBe(scheduledFor);
++          await runQueuedMessageDispatch(harness.deps, {
++            kind: "thread-ready",
++            threadId: thread.id,
++          });
++          expect(
++            listThreadQueueIncludingClaims(harness.db, thread.id).map(
++              (row) => row.id,
++            ),
++          ).toEqual(rows.map((row) => row.id));
++          expect(
++            listQueuedThreadCommands(harness, "turn.submit", thread.id),
++          ).toEqual([]);
++
++          const response = await post(`/queued-messages/${rows[0]!.id}/send`, {
++            mode: deliveryMode,
++          });
++          const body: unknown = await response.json();
++          expect(
++            body,
++            `explicit ${deliveryMode} must deliver accepted ${kind} work to the active turn`,
++          ).toEqual({ ok: true, delivery: "sent" });
++          expect(response.status).toBe(200);
++          expect(listThreadQueueIncludingClaims(harness.db, thread.id)).toEqual(
++            [],
++          );
++          const sent = await waitForQueuedCommand(
++            harness,
++            ({ command }) =>
++              command.type === "turn.submit" && command.threadId === thread.id,
++          );
++          expect(sent.command).toMatchObject({
++            type: "turn.submit",
++            target: {
++              mode: deliveryMode,
++              expectedTurnId: "explicit-queue-turn",
++            },
++            options: { permissionEscalation: "ask" },
++          });
++          const requests = listEvents(harness.db, {
++            threadId: thread.id,
++          }).filter((event) => event.type === "client/turn/requested");
++          expect(requests).toHaveLength(2);
++          const request = turnRequestEventDataSchema.parse(
++            JSON.parse(requests.at(-1)!.data),
++          );
++          expect(request.target).toEqual({
++            kind: deliveryMode,
++            expectedTurnId: "explicit-queue-turn",
++          });
++          expect(request.originalManifest).toEqual(
++            rows.flatMap((row) => JSON.parse(row.originalManifest!)),
++          );
++          expect(
++            listAdmissionRequestOriginals(
++              harness.db,
++              thread.id,
++              request.requestId,
++            ).map((row) => row.id),
++          ).toEqual(rows.map((row) => row.admissionRef));
++          for (const [index, original] of before.entries()) {
++            const after = service.lookupOperation(original.operation)!;
++            expect(after.acceptedOriginal).toEqual(original.acceptedOriginal);
++            expect(after.acceptanceReceipt).toEqual(original.acceptanceReceipt);
++            expect(after.assessments).toEqual(original.assessments);
++            expect(after.delivery).toMatchObject({
++              state: "request-committed",
++              requestId: request.requestId,
++            });
++            expect(
++              getQueuedThreadMessage(harness.db, rows[index]!.id),
++            ).toBeNull();
++          }
++          expect(calls).toBe(acceptedCount);
++          expect(
++            getThread(harness.db, thread.id)?.messageAcceptanceSequence,
++          ).toBe(acceptedCount);
++          const replay = await post(`/queued-messages/${rows[0]!.id}/send`, {
++            mode: deliveryMode,
++          });
++          expect(replay.status).toBe(404);
++          const originalReplay = await post(
++            scheduled ? "/send" : "/queued-messages",
++            {
++              operationId: `explicit-${kind}-0`,
++              input: textInput("Queued 0"),
++              permissionMode: "accept-edits",
++              ...(scheduled
++                ? { mode: "queue-if-active", sendAt: scheduledFor }
++                : {}),
++            },
++          );
++          expect(originalReplay.status).toBe(scheduled ? 200 : 201);
++          expect(
++            listEvents(harness.db, { threadId: thread.id }).filter(
++              (event) => event.type === "client/turn/requested",
++            ),
++          ).toHaveLength(2);
++          expect(
++            listQueuedThreadCommands(harness, "turn.submit", thread.id),
++          ).toHaveLength(1);
++          expect(calls).toBe(acceptedCount);
++        } finally {
++          handle.retire();
++        }
++      });
++    },
++  );
++
++  it.each([false, true])(
++    "keeps frozen queue mode for a payload-only Steer with sendNow=%s",
++    async (sendNow) => {
++      await withTestHarness(async (harness) => {
++        const { thread, environment } = seedThreadFixture(harness, {
++          thread: { status: "active" },
++        });
++        seedThreadRuntimeState(harness.deps, {
++          threadId: thread.id,
++          environmentId: environment.id,
++          providerThreadId: "payload-only-provider",
++        });
++        seedTurnStarted(harness.deps, {
++          threadId: thread.id,
++          environmentId: environment.id,
++          providerThreadId: "payload-only-provider",
++          turnId: "payload-only-turn",
++        });
++        const response = await harness.app.request(
++          `/api/v1/threads/${thread.id}/queued-messages`,
++          {
++            method: "POST",
++            headers: { "content-type": "application/json" },
++            body: JSON.stringify({
++              operationId: "payload-only-steer",
++              input: textInput("Frozen queue input"),
++            }),
++          },
++        );
++        expect(response.status).toBe(201);
++        const row = listThreadQueueIncludingClaims(harness.db, thread.id)[0]!;
++        const claimed = claimQueuedThreadMessageGroup(
++          harness.db,
++          harness.hub,
++          row.id,
++          { kind: "explicit-send" },
++        )!;
++        const service = getMessageAdmissionService(harness.db);
++        const before = service.lookupOperationById(row.admissionRef!)!;
++        const events = listEvents(harness.db, { threadId: thread.id });
++        const outcome = await attemptDispatch(harness.deps, {
++          thread: getThread(harness.db, thread.id)!,
++          payload: { input: textInput("Frozen queue input"), mode: "steer" },
++          source: {
++            kind: "drain",
++            claimed,
++            sendNow,
++            respectManualStopPause: !sendNow,
++          },
++          queuePayload: { kind: "inline" },
++          origin: null,
++          originPluginId: null,
++          startedOnBehalfOf: null,
++          trigger: "auto-dispatch",
++        });
++        expect(outcome).toMatchObject({
++          kind: "queued",
++          entry: { id: row.id, waitingOn: { kind: "thread-busy" } },
++        });
++        expect(service.lookupOperationById(row.admissionRef!)).toEqual(before);
++        expect(
++          listThreadQueueIncludingClaims(harness.db, thread.id).map(
++            (entry) => entry.id,
++          ),
++        ).toEqual([row.id]);
++        expect(listEvents(harness.db, { threadId: thread.id })).toEqual(events);
++        expect(
++          listQueuedThreadCommands(harness, "turn.submit", thread.id),
++        ).toEqual([]);
++      });
++    },
++  );
++
++  it.each(["claim", "revision", "target", "host", "provider"] as const)(
++    "refuses explicit Steer after a %s conflict without consuming or reassessing the original",
++    async (cause) => {
++      await withTestHarness(async (harness) => {
++        const { thread, environment, host } = seedThreadFixture(harness, {
++          thread: { status: "active" },
++        });
++        seedThreadRuntimeState(harness.deps, {
++          threadId: thread.id,
++          environmentId: environment.id,
++          providerThreadId: "refused-queue-provider",
++        });
++        seedTurnStarted(harness.deps, {
++          threadId: thread.id,
++          environmentId: environment.id,
++          providerThreadId: "refused-queue-provider",
++          turnId: "refused-queue-turn",
++        });
++        const post = (threadId: string, path: string, payload: object) =>
++          harness.app.request(`/api/v1/threads/${threadId}${path}`, {
++            method: "POST",
++            headers: { "content-type": "application/json" },
++            body: JSON.stringify(payload),
++          });
++        const created = await post(thread.id, "/queued-messages", {
++          operationId: "refused-steer",
++          input: textInput("Preserve this accepted original"),
++          permissionMode: "full",
++        });
++        expect(created.status).toBe(201);
++        const service = getMessageAdmissionService(harness.db);
++        const before = service.lookupOperation({
++          namespace: `native:${thread.id}`,
++          operationId: "refused-steer",
++        })!;
++        const row = listThreadQueueIncludingClaims(harness.db, thread.id)[0]!;
++        const events = listEvents(harness.db, { threadId: thread.id });
++        let targetId = thread.id;
++        if (cause === "claim") {
++          expect(
++            claimQueuedThreadMessageGroup(harness.db, harness.hub, row.id, {
++              kind: "explicit-send",
++            }),
++          ).toHaveLength(1);
++        } else if (cause === "revision") {
++          const manifest = JSON.parse(row.originalManifest!);
++          manifest[0].revisionId = "2";
++          harness.db
++            .update(queuedThreadMessages)
++            .set({ originalManifest: JSON.stringify(manifest) })
++            .where(eq(queuedThreadMessages.id, row.id))
++            .run();
++        } else if (cause === "target") {
++          targetId = seedThread(harness.deps, {
++            projectId: thread.projectId,
++            environmentId: environment.id,
++            status: "active",
++          }).id;
++        } else if (cause === "host") {
++          updateHost(harness.db, noopNotifier, host.id, {
++            maxPermissionMode: "accept-edits",
++          });
++        } else {
++          const provider = harness.deps.providerRegistry.get("codex")!;
++          const registry = createProviderRegistryService();
++          registry.register({
++            ...provider,
++            info: {
++              ...provider.info,
++              capabilities: {
++                ...provider.info.capabilities,
++                permissionModes: ["accept-edits"],
++              },
++            },
++          });
++          registry.markRegistrationsSettled();
++          harness.deps.providerRegistry = registry;
++        }
++        const retained = getQueuedThreadMessage(harness.db, row.id)!;
++        const response = await post(
++          targetId,
++          `/queued-messages/${row.id}/send`,
++          { mode: "steer" },
++        );
++        const body: unknown = await response.json();
++        expect(response.status, JSON.stringify(body)).toBe(
++          cause === "target" ? 404 : 409,
++        );
++        expect(body).toMatchObject({
++          code:
++            cause === "host" || cause === "provider"
++              ? "accepted_permission_conflict"
++              : cause === "revision"
++                ? "message_admission_conflict"
++                : "invalid_request",
++        });
++        expect(
++          listThreadQueueIncludingClaims(harness.db, thread.id).map(
++            (entry) => entry.id,
++          ),
++        ).toEqual([row.id]);
++        expect(getQueuedThreadMessage(harness.db, row.id)).toMatchObject({
++          content: retained.content,
++          originalManifest: retained.originalManifest,
++          admissionRef: retained.admissionRef,
++          requestedIntent: retained.requestedIntent,
++          effectiveIntent: retained.effectiveIntent,
++          permissionMode: "full",
++        });
++        expect(service.lookupOperation(before.operation)).toEqual(before);
++        expect(listEvents(harness.db, { threadId: thread.id })).toEqual(events);
++        expect(
++          listQueuedThreadCommands(harness, "turn.submit", thread.id),
++        ).toEqual([]);
++        expect(
++          listQueuedThreadCommands(harness, "turn.submit", targetId),
++        ).toEqual([]);
++      });
++    },
++  );
++});
+diff --git a/apps/server/test/threads/thread-edit-message.test.ts b/apps/server/test/threads/thread-edit-message.test.ts
+index 946bac180936b37fa2c54a12f1c24713862be0d7..d9eac8e2755d15d8c65e487f553a3d6c9dff2074 100644
+--- a/apps/server/test/threads/thread-edit-message.test.ts
++++ b/apps/server/test/threads/thread-edit-message.test.ts
+@@ -2624,6 +2624,83 @@ describe("native edit admission before effects", () => {
+       }
+     });
+   });
++  it("refuses public explicit Steer for an accepted persisted historical target without changing acceptance", async () => {
++    await withTestHarness(async (harness) => {
++      const { environment, thread } = seedEditableThread(harness, {
++        threadStatus: "active",
++      });
++      let calls = 0;
++      const f = await nativeEditPolicy(harness, thread, (input) => {
++        calls++;
++        return reduceObservations({
++          assessmentId: input.assessmentId,
++          complete: true,
++          observations: [
++            {
++              groupId: "delivery",
++              ruleId: "retain-target",
++              revision: "1",
++              status: "pass",
++              causes: [],
++              advice: [],
++              routing: "defer",
++              membership: "separate",
++            },
++          ],
++        });
++      });
++      const runtime = configureNativeMessageAdmissionRuntime(harness.deps);
++      try {
++        const accepted = await editThreadMessage(harness.deps, {
++          environment,
++          thread,
++          payload: {
++            operationId: "persisted-historical-steer-conflict",
++            expectedRequestSequence: 7,
++            input: [
++              { type: "text", text: "Historical correction", mentions: [] },
++            ],
++          },
++        });
++        if (!("admission" in accepted))
++          throw new Error("Expected accepted queued edit");
++        const before = f.service.lookupOperation(accepted.admission.operation)!;
++        const rows = listQueuedThreadMessages(harness.db, thread.id);
++        expect(rows).toHaveLength(1);
++        const events = listEvents(harness.db, { threadId: thread.id });
++        const response = await harness.app.request(
++          `/api/v1/threads/${thread.id}/queued-messages/${rows[0]!.id}/send`,
++          {
++            method: "POST",
++            headers: { "content-type": "application/json" },
++            body: JSON.stringify({ mode: "steer" }),
++          },
++        );
++        expect(response.status).toBe(409);
++        expect(await response.json()).toMatchObject({
++          code: "edit_delivery_conflict",
++        });
++        expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual(rows);
++        expect(listEvents(harness.db, { threadId: thread.id })).toEqual(events);
++        expect(f.service.lookupOperation(accepted.admission.operation)).toEqual(
++          before,
++        );
++        expect(calls).toBe(1);
++        expect(
++          listQueuedThreadCommands(harness, "thread.stop", thread.id),
++        ).toEqual([]);
++        expect(
++          listQueuedThreadCommands(harness, "thread.rewind.prepare", thread.id),
++        ).toEqual([]);
++        expect(
++          listQueuedThreadCommands(harness, "turn.submit", thread.id),
++        ).toEqual([]);
++      } finally {
++        runtime.dispose();
++        f.plugin.retire();
++      }
++    });
++  });
+   it("retains an explicit Send-now through coordinator replacement without overriding historical readiness or redoing policy", async () => {
+     await withTestHarness(async (harness) => {
+       const { environment, thread } = seedEditableThread(harness, {
+-- 
+2.53.0
+

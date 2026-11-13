@@ -1,0 +1,260 @@
+From 1a2b624b2b4e6454b49fcfdc81975c44101738ce Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Thu, 12 Nov 2026 13:44:56 +0100
+Subject: [PATCH] fix(ws): bound realtime client write backlogs
+
+---
+ apps/server/src/ws/hub.ts                     | 52 +++++++++++-
+ .../test/app/hub-backpressure-native.test.ts  | 42 ++++++++++
+ apps/server/test/app/hub-backpressure.test.ts | 81 +++++++++++++++++++
+ 3 files changed, 171 insertions(+), 4 deletions(-)
+ create mode 100644 apps/server/test/app/hub-backpressure-native.test.ts
+ create mode 100644 apps/server/test/app/hub-backpressure.test.ts
+
+diff --git a/apps/server/src/ws/hub.ts b/apps/server/src/ws/hub.ts
+index f4d19a0220e7ce24e3a5607249d3f64781c9c264..7c31b55f659e7d73269c2d7b8a410b1b481ab2a9 100644
+--- a/apps/server/src/ws/hub.ts
++++ b/apps/server/src/ws/hub.ts
+@@ -34,6 +34,8 @@ import {
+   type TerminalServerMessage,
+ } from "@bb/server-contract";
+ 
++const REALTIME_SOCKET_MAX_BUFFERED_BYTES = 1024 * 1024;
++const REALTIME_SOCKET_MAX_BUFFERED_MESSAGES = 1024;
+ const TERMINAL_SOCKET_HIGH_WATER_BYTES = 1024 * 1024;
+ const TERMINAL_SOCKET_MAX_QUEUE_BYTES = 32 * 1024 * 1024;
+ const TERMINAL_SOCKET_DRAIN_POLL_MS = 10;
+@@ -43,7 +45,7 @@ const LIST_RELEVANT_THREAD_EVENT_TYPES: ReadonlySet<ThreadEventType> =
+ 
+ interface HubSocket {
+   close(code?: number, reason?: string): void;
+-  raw?: { bufferedAmount: number };
++  raw?: { bufferedAmount: number; terminate?(): void };
+   send(data: string): void;
+ }
+ 
+@@ -229,6 +231,7 @@ export class HostOnlineRpcUnavailableError extends Error {
+ }
+ 
+ export class NotificationHub implements DbNotifier {
++  private readonly bufferedClientMessages = new Map<HubSocket, number>();
+   private readonly clientKeysBySocket = new Map<HubSocket, Set<string>>();
+   private readonly clientSocketsByKey = new Map<string, Set<HubSocket>>();
+   private readonly threadTimelineTargetsByKey = new Map<
+@@ -302,6 +305,7 @@ export class NotificationHub implements DbNotifier {
+   }
+ 
+   unregisterClient(socket: HubSocket): void {
++    this.bufferedClientMessages.delete(socket);
+     this.unregisterTerminalClientSocket(socket);
+     const keys = this.clientKeysBySocket.get(socket);
+     if (!keys) {
+@@ -976,8 +980,7 @@ export class NotificationHub implements DbNotifier {
+   private broadcastToAllClients(payload: string): number {
+     let delivered = 0;
+     for (const socket of this.clientKeysBySocket.keys()) {
+-      socket.send(payload);
+-      delivered += 1;
++      if (this.sendRealtimeClientPayload(socket, payload)) delivered += 1;
+     }
+     return delivered;
+   }
+@@ -1208,7 +1211,7 @@ export class NotificationHub implements DbNotifier {
+       if (this.clientKeysBySocket.get(socket)?.has(detailKey)) {
+         continue;
+       }
+-      socket.send(payload);
++      this.sendRealtimeClientPayload(socket, payload);
+     }
+   }
+ 
+@@ -1237,10 +1240,51 @@ export class NotificationHub implements DbNotifier {
+     payload: string,
+   ): void {
+     for (const socket of sockets) {
++      this.sendRealtimeClientPayload(socket, payload);
++    }
++  }
++
++  private sendRealtimeClientPayload(
++    socket: HubSocket,
++    payload: string,
++  ): boolean {
++    if (!this.clientKeysBySocket.has(socket)) return false;
++    const bufferedBytes = socket.raw?.bufferedAmount ?? 0;
++    const queuedMessages =
++      bufferedBytes > 0
++        ? (this.bufferedClientMessages.get(socket) ?? 0) + 1
++        : 0;
++    if (
++      bufferedBytes >= REALTIME_SOCKET_MAX_BUFFERED_BYTES ||
++      queuedMessages >= REALTIME_SOCKET_MAX_BUFFERED_MESSAGES
++    ) {
++      console.warn("Dropping backpressured realtime client", {
++        bufferedBytes,
++        queuedMessages,
++      });
++      this.dropRealtimeClient(socket, "realtime-backpressure");
++      return false;
++    }
++    if (queuedMessages > 0)
++      this.bufferedClientMessages.set(socket, queuedMessages);
++    else this.bufferedClientMessages.delete(socket);
++    try {
+       socket.send(payload);
++      return true;
++    } catch {
++      this.dropRealtimeClient(socket, "realtime-send-failed");
++      return false;
+     }
+   }
+ 
++  private dropRealtimeClient(socket: HubSocket, reason: string): void {
++    this.unregisterClient(socket);
++    try {
++      if (socket.raw?.terminate) socket.raw.terminate();
++      else socket.close(1013, reason);
++    } catch {}
++  }
++
+   private notifyChangedMessageListeners(message: ServerChangedMessage): void {
+     for (const listener of this.changedMessageListeners) {
+       listener(message);
+diff --git a/apps/server/test/app/hub-backpressure-native.test.ts b/apps/server/test/app/hub-backpressure-native.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..7bcaeb041c1067d1f819f424dacb9562fb9d2f03
+--- /dev/null
++++ b/apps/server/test/app/hub-backpressure-native.test.ts
+@@ -0,0 +1,42 @@
++import { once } from "node:events";
++import { Socket } from "node:net";
++import { expect, it } from "vitest";
++import WebSocket, { WebSocketServer } from "ws";
++import { NotificationHub } from "../../src/ws/hub.js";
++
++it("terminates a real stalled WebSocket before its pending write queue can grow without bound", async () => {
++  const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
++  await once(wss, "listening");
++  const address = wss.address();
++  if (!address || typeof address === "string")
++    throw Error("Expected ephemeral TCP listener");
++  const connected = once(wss, "connection");
++  const client = new WebSocket(`ws://127.0.0.1:${address.port}`);
++  await once(client, "open");
++  const [raw] = await connected;
++  if (!(raw instanceof WebSocket))
++    throw Error("Expected native WebSocket peer");
++  const transport = Reflect.get(client, "_socket");
++  if (!(transport instanceof Socket))
++    throw Error("Expected native TCP transport");
++  transport.pause();
++  const hub = new NotificationHub();
++  hub.registerClient({
++    raw,
++    send: (payload) => raw.send(payload),
++    close: (code, reason) => raw.close(code, reason),
++  });
++  try {
++    const closed = once(raw, "close");
++    const payload = { value: "x".repeat(4096) };
++    for (let i = 0; i < 20000; i++)
++      hub.notifyPluginSignal("probe", "changed", payload);
++    expect(raw.readyState).not.toBe(WebSocket.OPEN);
++    await closed;
++    expect(raw.bufferedAmount).toBeLessThan(2 * 1024 * 1024);
++  } finally {
++    client.terminate();
++    raw.terminate();
++    await new Promise<void>((resolve) => wss.close(() => resolve()));
++  }
++});
+diff --git a/apps/server/test/app/hub-backpressure.test.ts b/apps/server/test/app/hub-backpressure.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..bd7a309e5cc29816aa85e2cef820ef34673f3348
+--- /dev/null
++++ b/apps/server/test/app/hub-backpressure.test.ts
+@@ -0,0 +1,81 @@
++import { describe, expect, it, vi } from "vitest";
++import { NotificationHub } from "../../src/ws/hub.js";
++import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
++
++function peer(bufferedAmount = 0) {
++  const socket = createMockHubSocket();
++  return { ...socket, raw: { bufferedAmount, terminate: vi.fn() } };
++}
++
++describe("realtime client backpressure", () => {
++  it("evicts an already full client immediately and keeps other clients and daemons working", () => {
++    const hub = new NotificationHub();
++    const slow = peer(64 * 1024 * 1024),
++      healthy = peer(),
++      daemon = peer();
++    hub.registerClient(slow);
++    hub.registerClient(healthy);
++    hub.registerDaemon("session", "host", daemon);
++    for (let i = 0; i < 10000; i++)
++      hub.notifyPluginSignal("probe", "changed", { i });
++    expect(slow.messages).toHaveLength(0);
++    expect(slow.raw.terminate).toHaveBeenCalledTimes(1);
++    expect(healthy.messages).toHaveLength(10000);
++    expect(hub.hasDaemonForHost("host")).toBe(true);
++  });
++
++  it("bounds queued tiny messages even when their byte count stays small", () => {
++    const hub = new NotificationHub(),
++      socket = peer(1);
++    hub.subscribe(socket, { kind: "thread-detail", threadId: "thread" });
++    for (let i = 0; i < 10000; i++)
++      hub.notifyThread("thread", ["title-changed"]);
++    expect(socket.messages.length).toBeGreaterThan(0);
++    expect(socket.messages.length).toBeLessThan(1100);
++    expect(socket.raw.terminate).toHaveBeenCalledTimes(1);
++  });
++
++  it("resets pending-message accounting after the socket drains", () => {
++    const hub = new NotificationHub(),
++      socket = peer(1);
++    hub.registerClient(socket);
++    for (let i = 0; i < 1000; i++)
++      hub.notifyPluginSignal("probe", "changed", {});
++    socket.raw.bufferedAmount = 0;
++    hub.notifyPluginSignal("probe", "changed", {});
++    socket.raw.bufferedAmount = 1;
++    for (let i = 0; i < 1000; i++)
++      hub.notifyPluginSignal("probe", "changed", {});
++    expect(socket.messages).toHaveLength(2001);
++    expect(socket.raw.terminate).not.toHaveBeenCalled();
++  });
++
++  it("removes a blocked peer even if the transport only exposes close", () => {
++    const hub = new NotificationHub(),
++      socket = {
++        ...createMockHubSocket(),
++        raw: { bufferedAmount: 64 * 1024 * 1024 },
++      };
++    hub.subscribe(socket, { kind: "thread-list" });
++    hub.notifyThread("thread", ["title-changed"]);
++    hub.notifyThread("thread", ["title-changed"]);
++    expect(socket.messages).toHaveLength(0);
++    expect(socket.closed).toEqual([
++      { code: 1013, reason: "realtime-backpressure" },
++    ]);
++  });
++
++  it("a failed send cannot prevent another subscriber receiving its notification", () => {
++    const hub = new NotificationHub(),
++      broken = peer(),
++      healthy = peer();
++    broken.send = () => {
++      throw Error("closed");
++    };
++    hub.registerClient(broken);
++    hub.registerClient(healthy);
++    expect(hub.notifyPluginSignal("probe", "changed", {})).toBe(1);
++    expect(broken.raw.terminate).toHaveBeenCalledTimes(1);
++    expect(healthy.messages).toHaveLength(1);
++  });
++});
+-- 
+2.53.0
+

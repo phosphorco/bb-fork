@@ -1,0 +1,103 @@
+From c536fa9830b2389c12e97d36f89b1310cdc3ba3b Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Thu, 12 Nov 2026 13:44:57 +0100
+Subject: [PATCH] fix(launcher): allow bounded slow server startup
+
+---
+ packages/bb-app/src/launcher.ts               |  3 +-
+ .../test/server-health-identity.test.ts       | 51 ++++++++++++++++++-
+ 2 files changed, 52 insertions(+), 2 deletions(-)
+
+diff --git a/packages/bb-app/src/launcher.ts b/packages/bb-app/src/launcher.ts
+index 99571c72aa3f2e247a5a7343c3a597afd31ac30d..a7bf13de3c85dddb0911a97ef81993f2f3d25537 100644
+--- a/packages/bb-app/src/launcher.ts
++++ b/packages/bb-app/src/launcher.ts
+@@ -138,6 +138,7 @@ import {
+ const HOST_AUTH_FILE_NAME = "auth.json";
+ const HOST_ID_FILE_NAME = "host-id";
+ const HEALTH_CHECK_TIMEOUT_MS = 60_000;
++const SERVER_HEALTH_CHECK_TIMEOUT_MS = 180_000;
+ const HEALTH_CHECK_INTERVAL_MS = 100;
+ const HEALTH_CHECK_REQUEST_TIMEOUT_MS = 1_000;
+ const CONFIG_RELOAD_REQUEST_TIMEOUT_MS = 1_000;
+@@ -2364,7 +2365,7 @@ async function isHealthyServerAnswering(url: string): Promise<boolean> {
+ export async function waitForServerHealth(
+   args: WaitForServerHealthArgs,
+ ): Promise<void> {
+-  const timeoutMs = args.timeoutMs ?? HEALTH_CHECK_TIMEOUT_MS;
++  const timeoutMs = args.timeoutMs ?? SERVER_HEALTH_CHECK_TIMEOUT_MS;
+   const deadline = Date.now() + timeoutMs;
+   let foreignServerAnswered = false;
+   const describeFailure = (reason: string): string =>
+diff --git a/packages/bb-app/test/server-health-identity.test.ts b/packages/bb-app/test/server-health-identity.test.ts
+index 93d3880c0c5645d6a273ed4beef822a7df368949..696f8045449ac977a501f3be01bcc960f24d7791 100644
+--- a/packages/bb-app/test/server-health-identity.test.ts
++++ b/packages/bb-app/test/server-health-identity.test.ts
+@@ -6,7 +6,7 @@ import {
+ } from "node:http";
+ import { tmpdir } from "node:os";
+ import { dirname, join } from "node:path";
+-import { afterEach, describe, expect, it } from "vitest";
++import { afterEach, describe, expect, it, vi } from "vitest";
+ import type {
+   BbAppStartContext,
+   ManagedFullStackProcesses,
+@@ -94,6 +94,55 @@ function createStartContext(args: {
+ }
+ 
+ describe("waitForServerHealth", () => {
++  afterEach(() => {
++    vi.useRealTimers();
++    vi.unstubAllGlobals();
++  });
++
++  it("allows a legitimate server startup beyond sixty seconds", async () => {
++    vi.useFakeTimers();
++    const started = Date.now();
++    vi.stubGlobal(
++      "fetch",
++      vi.fn(
++        async () =>
++          new Response(
++            JSON.stringify({
++              ok: true,
++              launchId:
++                Date.now() - started >= 120_000 ? "slow-launch" : "not-ready",
++            }),
++            { status: 200, headers: { "content-type": "application/json" } },
++          ),
++      ),
++    );
++    const ready = waitForServerHealth({
++      childProcess: null,
++      expectedLaunchId: "slow-launch",
++      url: "http://127.0.0.1:1/health",
++    });
++    await vi.advanceTimersByTimeAsync(120_100);
++    await expect(ready).resolves.toBeUndefined();
++  });
++
++  it("keeps the longer server startup deadline finite", async () => {
++    vi.useFakeTimers();
++    vi.stubGlobal(
++      "fetch",
++      vi.fn(async () => new Response("{}", { status: 503 })),
++    );
++    const outcome = waitForServerHealth({
++      childProcess: null,
++      expectedLaunchId: "never",
++      url: "http://127.0.0.1:1/health",
++    }).then(
++      () => null,
++      (error) => error,
++    );
++    await vi.advanceTimersByTimeAsync(180_200);
++    await expect(outcome).resolves.toBeInstanceOf(Error);
++  });
++
+   it("keeps polling past foreign answers until the child echoes its launch id", async () => {
+     let healthRequests = 0;
+     const server = await listen((_request, response) => {
+-- 
+2.53.0
+
