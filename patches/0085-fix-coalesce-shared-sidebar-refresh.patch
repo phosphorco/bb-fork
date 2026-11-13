@@ -1,0 +1,298 @@
+From c291817ab84e3c0672e8912a8c98f05eab06a57d Mon Sep 17 00:00:00 2001
+From: Cole Lawrence <cole@colelawrence.com>
+Date: Fri, 13 Nov 2026 13:00:00 -0300
+Subject: [PATCH] fix(app): coalesce shared sidebar refresh without losing
+ dirty reads
+
+---
+ .../cache-owners/realtime-cache-registry.ts   |  27 ++-
+ .../sidebar-refetch-lifecycle.test.ts         | 211 ++++++++++++++++++
+ 2 files changed, 232 insertions(+), 6 deletions(-)
+ create mode 100644 apps/app/src/hooks/cache-owners/sidebar-refetch-lifecycle.test.ts
+
+diff --git a/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts b/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts
+index 7f33313e17a3f0526137478d44ef58d3d1827e85..b843c7c9a1279572ddcff7d41165e8f4f4ee6eaf 100644
+--- a/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts
++++ b/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts
+@@ -61,6 +61,7 @@ import {
+   pluginInstallJobsQueryKey,
+   pluginUpdateJobsQueryKey,
+   sidebarNavigationQueryKey,
++  SIDEBAR_NAVIGATION_QUERY_KEY,
+   systemAiServicesQueryKey,
+   systemConfigQueryKey,
+   uiPreferencesQueryKey,
+@@ -184,6 +185,7 @@ function refetchActiveQueriesWithoutCanceling({
+   queryKey,
+ }: ScheduleTrailingActiveRefetchArgs): void {
+   const hadActiveFetch = hasActiveFetchingQueries(queryClient, queryKey, exact);
++  queryClient.invalidateQueries({ exact, queryKey, refetchType: "none" });
+   void queryClient
+     .refetchQueries(
+       { exact, queryKey, type: "active" },
+@@ -253,12 +255,7 @@ function scheduleTrailingActiveRefetch({
+     const delayMs = resolveTrailingRefetchDelayMs(Date.now() - waitingSince);
+     const timer = setTimeout(() => {
+       unsubscribers.delete(scheduleKey);
+-      void queryClient
+-        .refetchQueries(
+-          { exact, queryKey, type: "active" },
+-          { cancelRefetch: false },
+-        )
+-        .catch(() => {});
++      refetchActiveQueriesWithoutCanceling({ exact, queryClient, queryKey });
+     }, delayMs);
+     unsubscribers.set(scheduleKey, () => {
+       clearTimeout(timer);
+@@ -587,6 +584,7 @@ type ThreadChangeFlushPriority = "debounced" | "immediate";
+ 
+ interface RealtimeDirtyContext {
+   queryClient: QueryClient;
++  flushOnce?: (key: string) => boolean;
+ }
+ 
+ interface ThreadRealtimeDirtyContext extends RealtimeDirtyContext {
+@@ -686,6 +684,23 @@ export function executeRealtimeDirtyHandlers<
+       continue;
+     }
+     for (const queryKey of queryKeys) {
++      if (
++        queryKey.length === 1 &&
++        queryKey[0] === SIDEBAR_NAVIGATION_QUERY_KEY
++      ) {
++        if (
++          context.flushOnce &&
++          !context.flushOnce(SIDEBAR_NAVIGATION_QUERY_KEY)
++        ) {
++          continue;
++        }
++        refetchActiveQueriesWithoutCanceling({
++          exact: true,
++          queryClient: context.queryClient,
++          queryKey,
++        });
++        continue;
++      }
+       context.queryClient.invalidateQueries({ queryKey });
+     }
+   }
+diff --git a/apps/app/src/hooks/cache-owners/sidebar-refetch-lifecycle.test.ts b/apps/app/src/hooks/cache-owners/sidebar-refetch-lifecycle.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..50b3f42db82e147c9b3c7e5b16be354fa80c8c3d
+--- /dev/null
++++ b/apps/app/src/hooks/cache-owners/sidebar-refetch-lifecycle.test.ts
+@@ -0,0 +1,211 @@
++import {
++  QueryClient,
++  QueryObserver,
++  type QueryKey,
++} from "@tanstack/react-query";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { sidebarNavigationQueryKey } from "../queries/query-keys";
++import {
++  createFlushOncePredicate,
++  disposeTrailingActiveRefetches,
++  executeRealtimeDirtyHandlers,
++  REALTIME_THREAD_CHANGE_REGISTRY,
++} from "./realtime-cache-registry";
++
++interface PendingRead {
++  captured: number;
++  resolve: () => void;
++  reject: () => void;
++  signal: AbortSignal;
++}
++
++const clients = new Set<QueryClient>();
++
++beforeEach(() => vi.useFakeTimers());
++afterEach(() => {
++  for (const client of clients) {
++    disposeTrailingActiveRefetches(client);
++    client.clear();
++  }
++  clients.clear();
++  vi.useRealTimers();
++});
++
++function fixture() {
++  const queryClient = new QueryClient({
++    defaultOptions: {
++      queries: { gcTime: Infinity, retry: false, staleTime: Infinity },
++    },
++  });
++  clients.add(queryClient);
++  const queryKey = sidebarNavigationQueryKey();
++  queryClient.setQueryData(queryKey, -1);
++  let serverValue = 0;
++  const reads: PendingRead[] = [];
++  const observer = new QueryObserver(queryClient, {
++    queryKey,
++    queryFn: ({ signal }) =>
++      new Promise<number>((resolve, reject) => {
++        const captured = serverValue;
++        reads.push({
++          captured,
++          resolve: () => resolve(captured),
++          reject: () => reject(new Error("read unavailable")),
++          signal,
++        });
++        signal.addEventListener("abort", () => reject(new Error("aborted")), {
++          once: true,
++        });
++      }),
++  });
++  const unsubscribe = observer.subscribe(() => {});
++  const dirty = (
++    value: number,
++    flushOnce = createFlushOncePredicate(),
++    threadId = "thread-1",
++  ) => {
++    serverValue = value;
++    executeRealtimeDirtyHandlers({
++      context: {
++        queryClient,
++        backgroundActivityChanged: undefined,
++        eventTypes: undefined,
++        timelineSequence: undefined,
++        flushOnce,
++        hasPendingInteraction: undefined,
++        projectId: "project-1",
++        statusChange: undefined,
++        threadId,
++      },
++      handlers: REALTIME_THREAD_CHANGE_REGISTRY["title-changed"].dirty,
++    });
++  };
++  return {
++    queryClient,
++    queryKey,
++    reads,
++    observer,
++    unsubscribe,
++    dirty,
++    start: () => void observer.refetch(),
++  };
++}
++
++async function settle(read: PendingRead) {
++  read.resolve();
++  await vi.advanceTimersByTimeAsync(0);
++}
++
++function dirtyKey(queryClient: QueryClient, queryKey: QueryKey) {
++  executeRealtimeDirtyHandlers({
++    context: { queryClient },
++    handlers: [() => [queryKey]],
++  });
++}
++
++describe("shared sidebar refresh lifecycle", () => {
++  it("coalesces several changed threads in one flush without aborting a warm read", async () => {
++    const f = fixture();
++    f.start();
++    const invalidations = vi.spyOn(f.queryClient, "invalidateQueries");
++    const flushOnce = createFlushOncePredicate();
++    for (let value = 1; value <= 5; value++) {
++      f.dirty(value, flushOnce, `thread-${value}`);
++    }
++    expect(f.reads).toHaveLength(1);
++    expect(f.reads[0].signal.aborted).toBe(false);
++    expect(
++      invalidations.mock.calls.filter(
++        ([filters]) => filters?.queryKey?.[0] === f.queryKey[0],
++      ),
++    ).toHaveLength(1);
++    await settle(f.reads[0]);
++    expect(f.queryClient.getQueryData(f.queryKey)).toBe(0);
++    await vi.advanceTimersByTimeAsync(50);
++    expect(f.reads).toHaveLength(2);
++    expect(f.reads[1].captured).toBe(5);
++    await settle(f.reads[1]);
++    expect(f.queryClient.getQueryData(f.queryKey)).toBe(5);
++    expect(f.reads.every((read) => !read.signal.aborted)).toBe(true);
++    f.unsubscribe();
++  });
++
++  it("performs a later read when a trailing timer overlaps a newly dirtied fetch", async () => {
++    const f = fixture();
++    f.start();
++    f.dirty(1);
++    await settle(f.reads[0]);
++    await vi.advanceTimersByTimeAsync(10);
++    f.dirty(2);
++    expect(f.reads).toHaveLength(2);
++    await vi.advanceTimersByTimeAsync(10);
++    f.dirty(3);
++    await vi.advanceTimersByTimeAsync(30);
++    expect(f.reads).toHaveLength(2);
++    await settle(f.reads[1]);
++    await vi.advanceTimersByTimeAsync(50);
++    expect(f.reads).toHaveLength(3);
++    expect(f.reads[2].captured).toBe(3);
++    await settle(f.reads[2]);
++    expect(f.queryClient.getQueryData(f.queryKey)).toBe(3);
++    expect(f.reads.every((read) => !read.signal.aborted)).toBe(true);
++    f.unsubscribe();
++  });
++
++  it("keeps a cancelled inactive query stale so remount cannot preserve the old snapshot", async () => {
++    const f = fixture();
++    f.start();
++    f.dirty(1);
++    f.unsubscribe();
++    await vi.advanceTimersByTimeAsync(100);
++    expect(f.reads[0].signal.aborted).toBe(true);
++    expect(f.queryClient.getQueryData(f.queryKey)).toBe(-1);
++    expect(f.queryClient.getQueryState(f.queryKey)?.isInvalidated).toBe(true);
++    const unsubscribe = f.observer.subscribe(() => {});
++    expect(f.reads).toHaveLength(2);
++    await settle(f.reads[1]);
++    expect(f.queryClient.getQueryData(f.queryKey)).toBe(1);
++    unsubscribe();
++  });
++
++  it("retains the previous result after a failed read and catches up once", async () => {
++    const f = fixture();
++    f.start();
++    f.dirty(1);
++    f.reads[0].reject();
++    await vi.advanceTimersByTimeAsync(0);
++    expect(f.queryClient.getQueryData(f.queryKey)).toBe(-1);
++    await vi.advanceTimersByTimeAsync(50);
++    expect(f.reads).toHaveLength(2);
++    await settle(f.reads[1]);
++    expect(f.queryClient.getQueryData(f.queryKey)).toBe(1);
++    f.unsubscribe();
++  });
++
++  it("disposes a pending trailing timer without starting another read", async () => {
++    const f = fixture();
++    f.start();
++    f.dirty(1);
++    await settle(f.reads[0]);
++    disposeTrailingActiveRefetches(f.queryClient);
++    await vi.advanceTimersByTimeAsync(1_000);
++    expect(f.reads).toHaveLength(1);
++    f.unsubscribe();
++  });
++
++  it("marks only the exact inactive sidebar key stale until it gains an observer", async () => {
++    const f = fixture();
++    f.unsubscribe();
++    const nestedKey = [...f.queryKey, "other"];
++    f.queryClient.setQueryData(nestedKey, "nested");
++    dirtyKey(f.queryClient, f.queryKey);
++    expect(f.queryClient.getQueryState(f.queryKey)?.isInvalidated).toBe(true);
++    expect(f.queryClient.getQueryState(nestedKey)?.isInvalidated).toBe(false);
++    expect(f.reads).toHaveLength(0);
++    const unsubscribe = f.observer.subscribe(() => {});
++    expect(f.reads).toHaveLength(1);
++    await settle(f.reads[0]);
++    expect(f.queryClient.getQueryData(f.queryKey)).toBe(0);
++    unsubscribe();
++  });
++});
+-- 
+2.50.1 (Apple Git-155)
+
