@@ -1,6 +1,6 @@
-From a784e5a9b6223ba4816c48fb59de0cc9265769ce Mon Sep 17 00:00:00 2001
+From 2085e69034b01d21ed03bc8e83ae8d34d23098cc Mon Sep 17 00:00:00 2001
 From: Cole Lawrence <cole@colelawrence.com>
-Date: Fri, 13 Nov 2026 19:47:09 -0300
+Date: Fri, 13 Nov 2026 20:02:33 -0300
 Subject: [PATCH] Integration and verification
 
 ---
@@ -15,7 +15,7 @@ Subject: [PATCH] Integration and verification
  .../generate-bb-official-marketplace.ts       |   5 +-
  .../src/services/plugins/plugin-rpc-caller.ts |  10 +-
  apps/server/test/app/client-protocol.test.ts  |  15 +-
- .../test/app/hub-backpressure-native.test.ts  |  42 ++
+ .../test/app/hub-backpressure-native.test.ts  |  91 +++++
  apps/server/test/app/hub-backpressure.test.ts |  81 ++++
  .../test/app/startup-diagnostics.test.ts      | 152 +++++++-
  apps/server/test/helpers/p6r-authorship.ts    |  36 ++
@@ -83,7 +83,7 @@ Subject: [PATCH] Integration and verification
  .../fake/smoke/dynamic-acp-agent.test.ts      |   9 +-
  tests/integration/helpers/harness.ts          |   2 +
  turbo.json                                    |  16 +-
- 79 files changed, 3860 insertions(+), 149 deletions(-)
+ 79 files changed, 3909 insertions(+), 149 deletions(-)
  create mode 100644 apps/server/test/app/hub-backpressure-native.test.ts
  create mode 100644 apps/server/test/app/hub-backpressure.test.ts
  create mode 100644 apps/server/test/helpers/p6r-authorship.ts
@@ -570,10 +570,10 @@ index 29a733846418b55a958642039154443ea325ac7b..9c3e6b1c7f2432c7ed1b95644307ec1e
      const socket = createMockHubSocket();
 diff --git a/apps/server/test/app/hub-backpressure-native.test.ts b/apps/server/test/app/hub-backpressure-native.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..7bcaeb041c1067d1f819f424dacb9562fb9d2f03
+index 0000000000000000000000000000000000000000..2b5bc8cc20ee70c2c8d8f523a7f3d264e9bbaac7
 --- /dev/null
 +++ b/apps/server/test/app/hub-backpressure-native.test.ts
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,91 @@
 +import { once } from "node:events";
 +import { Socket } from "node:net";
 +import { expect, it } from "vitest";
@@ -616,9 +616,58 @@ index 0000000000000000000000000000000000000000..7bcaeb041c1067d1f819f424dacb9562
 +    await new Promise<void>((resolve) => wss.close(() => resolve()));
 +  }
 +});
++
++it("keeps a healthy compressed client connected through repeated reload-sized bursts", async () => {
++  const wss = new WebSocketServer({
++    host: "127.0.0.1",
++    port: 0,
++    perMessageDeflate: { threshold: 0 },
++  });
++  await once(wss, "listening");
++  const address = wss.address();
++  if (!address || typeof address === "string")
++    throw Error("Expected ephemeral TCP listener");
++  const connected = once(wss, "connection");
++  const client = new WebSocket(`ws://127.0.0.1:${address.port}`);
++  await once(client, "open");
++  const [raw] = await connected;
++  if (!(raw instanceof WebSocket))
++    throw Error("Expected native WebSocket peer");
++  expect(client.extensions).toContain("permessage-deflate");
++  let received = 0;
++  client.on("message", () => {
++    received += 1;
++  });
++  const hub = new NotificationHub();
++  hub.registerClient({
++    raw,
++    send: (payload, options) => raw.send(payload, options ?? {}),
++    close: (code, reason) => raw.close(code, reason),
++  });
++  try {
++    for (let burst = 0; burst < 2; burst++) {
++      for (let i = 0; i < 1200; i++)
++        hub.notifyPluginSignal("reload", "changed", {
++          sequence: burst * 1200 + i,
++        });
++      expect(raw.bufferedAmount).toBeGreaterThan(0);
++      expect(raw.bufferedAmount).toBeLessThan(1024 * 1024);
++      expect(raw.readyState).toBe(WebSocket.OPEN);
++      await expect
++        .poll(() => received, { timeout: 5000 })
++        .toBe((burst + 1) * 1200);
++      await expect.poll(() => raw.bufferedAmount, { timeout: 5000 }).toBe(0);
++    }
++    expect(client.readyState).toBe(WebSocket.OPEN);
++  } finally {
++    client.terminate();
++    raw.terminate();
++    await new Promise<void>((resolve) => wss.close(() => resolve()));
++  }
++});
 diff --git a/apps/server/test/app/hub-backpressure.test.ts b/apps/server/test/app/hub-backpressure.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..bd7a309e5cc29816aa85e2cef820ef34673f3348
+index 0000000000000000000000000000000000000000..ddbb89084d3e35d11a03de541a8a69927c8b5cc7
 --- /dev/null
 +++ b/apps/server/test/app/hub-backpressure.test.ts
 @@ -0,0 +1,81 @@
@@ -648,30 +697,30 @@ index 0000000000000000000000000000000000000000..bd7a309e5cc29816aa85e2cef820ef34
 +    expect(hub.hasDaemonForHost("host")).toBe(true);
 +  });
 +
-+  it("bounds queued tiny messages even when their byte count stays small", () => {
++  it("does not confuse sustained partial drains with a growing message queue", () => {
 +    const hub = new NotificationHub(),
-+      socket = peer(1);
++      socket = peer(64 * 1024);
 +    hub.subscribe(socket, { kind: "thread-detail", threadId: "thread" });
-+    for (let i = 0; i < 10000; i++)
++    for (let i = 0; i < 10000; i++) {
++      // Compression and network progress need not leave an observable zero
++      // between sends. The transport stays well below its byte limit.
++      socket.raw.bufferedAmount = (i % 2 === 0 ? 32 : 64) * 1024;
 +      hub.notifyThread("thread", ["title-changed"]);
-+    expect(socket.messages.length).toBeGreaterThan(0);
-+    expect(socket.messages.length).toBeLessThan(1100);
-+    expect(socket.raw.terminate).toHaveBeenCalledTimes(1);
++    }
++    expect(socket.messages).toHaveLength(10000);
++    expect(socket.raw.terminate).not.toHaveBeenCalled();
 +  });
 +
-+  it("resets pending-message accounting after the socket drains", () => {
++  it("evicts when the actual pending bytes reach the bound", () => {
 +    const hub = new NotificationHub(),
 +      socket = peer(1);
 +    hub.registerClient(socket);
 +    for (let i = 0; i < 1000; i++)
 +      hub.notifyPluginSignal("probe", "changed", {});
-+    socket.raw.bufferedAmount = 0;
++    socket.raw.bufferedAmount = 1024 * 1024;
 +    hub.notifyPluginSignal("probe", "changed", {});
-+    socket.raw.bufferedAmount = 1;
-+    for (let i = 0; i < 1000; i++)
-+      hub.notifyPluginSignal("probe", "changed", {});
-+    expect(socket.messages).toHaveLength(2001);
-+    expect(socket.raw.terminate).not.toHaveBeenCalled();
++    expect(socket.messages).toHaveLength(1000);
++    expect(socket.raw.terminate).toHaveBeenCalledTimes(1);
 +  });
 +
 +  it("removes a blocked peer even if the transport only exposes close", () => {

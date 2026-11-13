@@ -5,7 +5,7 @@
 This is the selected source delta: **8 capabilities / 8 patches**. It is not a deployment or live-test receipt.
 
 - Reviewed upstream: `05199007ecad513b714b244e46b0ab2a9a06279f`
-- Reviewed result tree: `b9287dd919269c3795b545caec608015c852137a`
+- Reviewed result tree: `fc3ee29353fc5f5f314bd7b1738890756ffcaf33`
 
 The checker enforces explicit source coverage and review freshness. Each capability digest binds its primary patches and all selected patches touching the same source files, requiring shared-source dependency review. Human review establishes whether explanations and state/API identities are semantically complete. Historical notes remain in [DOWNSTREAM.md](DOWNSTREAM.md).
 
@@ -200,7 +200,7 @@ Remove bridge logic only when no supported retained database has its exact histo
 
 - [0001-retained-state-and-migrations.patch](patches/0001-retained-state-and-migrations.patch)
 
-Reviewed source digest: `4983640e16bc9fb9870a44f34aa0957f3b165a8fdc7cc59f7950a6117aacc5f2`
+Reviewed source digest: `0cb2d3064240ce043e3e84833e98231d97ada9b6c4e4e334ddefb18915e00f9b`
 
 </details>
 
@@ -402,7 +402,7 @@ Retire custom authorship plumbing when upstream exposes equivalent provenance an
 
 - [0002-trusted-authorship-and-dispatch.patch](patches/0002-trusted-authorship-and-dispatch.patch)
 
-Reviewed source digest: `6652221ab8017c3c6ad5f6f407fbd2a01e48e6d4790fd03cead63714b5589290`
+Reviewed source digest: `cec649ae4650d89c3909aaafafebd5d9649c6e576e18e1e25f028d64e4a9c655`
 
 </details>
 
@@ -631,7 +631,7 @@ Retire individual seams as equivalent native SDK contracts become available.
 
 - [0003-shared-plugin-contracts.patch](patches/0003-shared-plugin-contracts.patch)
 
-Reviewed source digest: `77202340cfe70f3fc802506865b5e470b0dbc24ed27c01e11c2a045b89d09769`
+Reviewed source digest: `ca0f61203ad7d9c00fd1da2cb8e01a254289c5faa74cafdc00189a802477f6d9`
 
 </details>
 
@@ -946,7 +946,7 @@ Retire relay patches only when native provider configuration enforces the same d
 
 - [0004-inference-relay-and-provider-evidence.patch](patches/0004-inference-relay-and-provider-evidence.patch)
 
-Reviewed source digest: `050831d4d328b6a7756c5ebc41623e2ce07e0bf2c90a5be126a360160961f574`
+Reviewed source digest: `75df9d86e7ab592b5fbd0a5ecf21a11d073ba410a4906bd24ac6d975bb8d88fa`
 
 </details>
 
@@ -1089,7 +1089,7 @@ Retire individual UI seams when native SDK surfaces supply the same information.
 
 - [0005-team-navigation-and-diagnostics.patch](patches/0005-team-navigation-and-diagnostics.patch)
 
-Reviewed source digest: `1ad464caf1872d35e6d0faa7cce3c448e81a9079a235934247723d023a4577f7`
+Reviewed source digest: `8022e2329a58a676ed573314dbf8e9207364c02de7d65b33f9393865a39b226a`
 
 </details>
 
@@ -1258,7 +1258,7 @@ Retire each operational patch after native upstream provides equivalent bounds a
 
 - [0006-service-lifecycle-and-transport.patch](patches/0006-service-lifecycle-and-transport.patch)
 
-Reviewed source digest: `b7da04295c076866a65aebd9a8dcaba3f5913fa3e9fc2344ea7530603813eeec`
+Reviewed source digest: `16b726a5809bf27e16fcf75c3d90a8cf50903739f3d3b9923ae1e997a77f94d4`
 
 </details>
 
@@ -1533,7 +1533,7 @@ Reevaluate every integration adjustment on the next upstream upgrade rather than
 
 - [0007-integration-and-verification.patch](patches/0007-integration-and-verification.patch)
 
-Reviewed source digest: `12bdd0ce7fcfef2207ea6f0ae966ca55ba459393a6ae37dc858c800a834d250a`
+Reviewed source digest: `14c683b031bea6100eb14f0ad7308f172437274cf2e185eb3782fdcfa00279fb`
 
 </details>
 
@@ -1574,6 +1574,6 @@ Retire this wording patch when native guide configuration supports the same text
 
 - [0008-prompt-wording.patch](patches/0008-prompt-wording.patch)
 
-Reviewed source digest: `dd43c101a1d63ff7b311395f267b23c9cef268e145b77631fc5e13effdcb1342`
+Reviewed source digest: `819c308210622702baef404cb2762a659e532f28bfe0c34babe60f46ce47987a`
 
 </details>
