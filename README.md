@@ -36,6 +36,13 @@ justification.
 
 This is a thin, auditable deployment overlay for [get-bb/bb](https://github.com/get-bb/bb). It does not carry a second copy of upstream source and it does not treat a long-lived Git branch as the release definition.
 
+The [current capability catalog](CAPABILITIES.md) explains what the downstream
+changes deliver, why they remain, and which database models, SDK/API contracts
+and other areas they affect. [capabilities.json](capabilities.json) is the sole
+editable current catalog; the Markdown view is generated. Keep it current in the
+same commit as changing the selected queue or its upstream base. See
+[the contributor contract](AGENTS.md) for the checks and review obligation.
+
 The current base is exact upstream commit `01affc197dc621cddc7343e09b1c5c10a5b9efcb` (BB 0.46.1, SDK 0.6.52). The lock records a reviewed source receipt rather than a moving branch or inferred release tag.
 
 The deployable source is exactly:
