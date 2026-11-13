@@ -1,4 +1,13 @@
-# Downstream patch contract
+# Downstream history and rationale
+
+The current, capability-organized inventory is [CAPABILITIES.md](CAPABILITIES.md),
+generated from [capabilities.json](capabilities.json). It records motivations,
+responsibility, affected database/API surfaces and reviewed source bindings.
+Update that catalog in the same change as adding, removing or changing selected
+patches; the verification and materialization entrypoints enforce its coverage
+and freshness. This document retains historical patch explanations and receipts;
+earlier source counts, admission rules and migration ordinals are not the current
+inventory or evidence of live activation.
 
 > Policy update — 2026-09-09: the approved [Identities and multiplayer ADR](../docs/adrs/2026-09-identities-and-multiplayer.md)
 > governs this trusted shared deployment. Use verified people when available,
