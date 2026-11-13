@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "reviewedUpstream": "05199007ecad513b714b244e46b0ab2a9a06279f",
-  "reviewedResultTree": "fc3ee29353fc5f5f314bd7b1738890756ffcaf33",
+  "reviewedResultTree": "be9de791bb80e58f0f83edecc394697a587d9c34",
   "capabilities": [
     {
       "id": "retained-state-and-migrations",
@@ -16,7 +16,7 @@
       "patches": [
         "0001-retained-state-and-migrations.patch"
       ],
-      "sourceDigest": "0cb2d3064240ce043e3e84833e98231d97ada9b6c4e4e334ddefb18915e00f9b",
+      "sourceDigest": "92e939e01cf8cb5d0ae3872d87ffa49d5973bf0d50e3a2882dbe96029f598e30",
       "surfaces": [
         {
           "kind": "database",
@@ -562,7 +562,7 @@
       "patches": [
         "0002-trusted-authorship-and-dispatch.patch"
       ],
-      "sourceDigest": "cec649ae4650d89c3909aaafafebd5d9649c6e576e18e1e25f028d64e4a9c655",
+      "sourceDigest": "cb44ada47bea0c109e8ea39b6e71f8977a7dcb5d015ddcf648fe05d794419f16",
       "surfaces": [
         {
           "kind": "runtime",
@@ -1049,7 +1049,7 @@
       "patches": [
         "0003-shared-plugin-contracts.patch"
       ],
-      "sourceDigest": "ca0f61203ad7d9c00fd1da2cb8e01a254289c5faa74cafdc00189a802477f6d9",
+      "sourceDigest": "724eb46e6a74852306398929439f701cd3cfa9183f0653a6cdc89ebf723258f8",
       "surfaces": [
         {
           "kind": "api",
@@ -1590,7 +1590,7 @@
       "patches": [
         "0004-inference-relay-and-provider-evidence.patch"
       ],
-      "sourceDigest": "75df9d86e7ab592b5fbd0a5ecf21a11d073ba410a4906bd24ac6d975bb8d88fa",
+      "sourceDigest": "140f89b143a4d25a082a3addf315e4bd300c81cf78e82874faf9bd61a9f89e2a",
       "surfaces": [
         {
           "kind": "verification",
@@ -2341,7 +2341,7 @@
       "patches": [
         "0005-team-navigation-and-diagnostics.patch"
       ],
-      "sourceDigest": "8022e2329a58a676ed573314dbf8e9207364c02de7d65b33f9393865a39b226a",
+      "sourceDigest": "1b5c94fd15343e421ab1cddb1af2fdf5dac9ea8bd05a317331b63708a4a5cfbf",
       "surfaces": [
         {
           "kind": "verification",
@@ -2634,18 +2634,18 @@
     },
     {
       "id": "service-lifecycle-and-transport",
-      "title": "Bound transport and service startup failures",
-      "motivation": "Realtime backpressure and slow startup must remain diagnosable without unbounded socket buffers or premature restart loops.",
+      "title": "Preserve native transport and diagnose startup failures",
+      "motivation": "Company startup policy must preserve valid native realtime traffic while avoiding premature restart loops.",
       "behavior": [
-        "Realtime backpressure and slow startup must remain diagnosable without unbounded socket buffers or premature restart loops."
+        "Company startup policy must preserve valid native realtime traffic while avoiding premature restart loops."
       ],
       "owners": [
-        "Native launcher owns readiness deadlines; server transport owns bounded writes and heartbeat guards."
+        "Native WebSocket delivery owns compression and buffering; the launcher owns readiness deadlines. Downstream isolates failed sockets and guards heartbeat replies."
       ],
       "patches": [
         "0006-service-lifecycle-and-transport.patch"
       ],
-      "sourceDigest": "16b726a5809bf27e16fcf75c3d90a8cf50903739f3d3b9923ae1e997a77f94d4",
+      "sourceDigest": "e15cad5a2c775e058fa44e667bb8122c2de672c19757f939728f7a5dac857f56",
       "surfaces": [
         {
           "kind": "dependency",
@@ -2924,8 +2924,8 @@
           "paths": [
             "apps/server/src/ws/hub.ts"
           ],
-          "summary": "Server effect and read owners. Shared sidebar dirty events coalesce within the existing flush and let an active read finish, followed by a bounded trailing catch-up. Overlapping-tail and inactive-remount races retain eventual freshness; explicit status replacement and terminal cancellation remain separate authorities.",
-          "why": "realtime-cache-registry owns invalidation/trailing reads; existing realtime effects owns dirty batches/reconnects. NotificationHub owns realtime write bounds and client cleanup; terminal/daemon policies remain distinct. DB event lookup and server timeline-context-order own their query/cache invariants. bb-app launcher owns config/readiness deadlines; start-server owns listener admission before recovery."
+          "summary": "Native compressed delivery and failed-socket isolation",
+          "why": "Valid native realtime bursts must not be rejected by unsupported downstream thresholds. Native upstream owns buffering; tests preserve delivery and isolate failed peers."
         },
         {
           "kind": "runtime",
@@ -2985,11 +2985,11 @@
         }
       ],
       "verification": [
-        "Transport and launcher tests cover slow startup, backlog rejection and heartbeat replies."
+        "Real negotiated-compression bursts deliver 12000 notifications above 1 MiB pending; failed-socket and launcher tests exercise isolation and startup."
       ],
-      "retirement": "Retire each operational patch after native upstream provides equivalent bounds and tests.",
+      "retirement": "Retire residual failure isolation and launcher adjustments when upstream supplies the same required behavior.",
       "limitations": [
-        "Build and controlled tests do not substitute for deployed workflow verification."
+        "Ordinary realtime buffering follows native upstream. No downstream message-count or 1 MiB eviction threshold remains; terminal-specific native limits are unchanged."
       ]
     },
     {
@@ -3005,7 +3005,7 @@
       "patches": [
         "0007-integration-and-verification.patch"
       ],
-      "sourceDigest": "14c683b031bea6100eb14f0ad7308f172437274cf2e185eb3782fdcfa00279fb",
+      "sourceDigest": "f2d064ffd8e06f7cb8f939d104d10610b80b25eabc59cbdd44185557078945ea",
       "surfaces": [
         {
           "kind": "runtime",
@@ -3661,7 +3661,7 @@
       "patches": [
         "0008-prompt-wording.patch"
       ],
-      "sourceDigest": "819c308210622702baef404cb2762a659e532f28bfe0c34babe60f46ce47987a",
+      "sourceDigest": "cc2f38403e02e6da2d0f23fb6edc7d966f086b3c88427775996598540bbb2ea4",
       "surfaces": [
         {
           "kind": "runtime",

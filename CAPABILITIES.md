@@ -5,7 +5,7 @@
 This is the selected source delta: **8 capabilities / 8 patches**. It is not a deployment or live-test receipt.
 
 - Reviewed upstream: `05199007ecad513b714b244e46b0ab2a9a06279f`
-- Reviewed result tree: `fc3ee29353fc5f5f314bd7b1738890756ffcaf33`
+- Reviewed result tree: `be9de791bb80e58f0f83edecc394697a587d9c34`
 
 The checker enforces explicit source coverage and review freshness. Each capability digest binds its primary patches and all selected patches touching the same source files, requiring shared-source dependency review. Human review establishes whether explanations and state/API identities are semantically complete. Historical notes remain in [DOWNSTREAM.md](DOWNSTREAM.md).
 
@@ -16,7 +16,7 @@ The checker enforces explicit source coverage and review freshness. Each capabil
 | [Expose bounded team plugin contracts](#shared-plugin-contracts) | Team plugins need explicit identity, facets and execution contracts without reviving retired prompt rendering or admission APIs. | 1 |
 | [Preserve the external inference relay and provider evidence](#inference-relay-and-provider-evidence) | Company inference must continue through the configured relay and retain exact provider response identities for attribution. | 1 |
 | [Keep team navigation and useful diagnostics](#team-navigation-and-diagnostics) | Shared-team navigation, mentions and copyable errors must survive native upstream UI changes without retaining obsolete cache implementations. | 1 |
-| [Bound transport and service startup failures](#service-lifecycle-and-transport) | Realtime backpressure and slow startup must remain diagnosable without unbounded socket buffers or premature restart loops. | 1 |
+| [Preserve native transport and diagnose startup failures](#service-lifecycle-and-transport) | Company startup policy must preserve valid native realtime traffic while avoiding premature restart loops. | 1 |
 | [Integrate and verify the selected upstream cohort](#integration-and-verification) | The selected native server, CLI, daemon and SDK must build as one cohort and retain native sandbox and dependency policy. | 1 |
 | [Maintain reviewed BB Guide wording in source](#prompt-wording) | Company guide wording belongs in a focused source patch before interpolation; runtime rewriting must not touch user message bodies. | 1 |
 
@@ -200,7 +200,7 @@ Remove bridge logic only when no supported retained database has its exact histo
 
 - [0001-retained-state-and-migrations.patch](patches/0001-retained-state-and-migrations.patch)
 
-Reviewed source digest: `0cb2d3064240ce043e3e84833e98231d97ada9b6c4e4e334ddefb18915e00f9b`
+Reviewed source digest: `92e939e01cf8cb5d0ae3872d87ffa49d5973bf0d50e3a2882dbe96029f598e30`
 
 </details>
 
@@ -402,7 +402,7 @@ Retire custom authorship plumbing when upstream exposes equivalent provenance an
 
 - [0002-trusted-authorship-and-dispatch.patch](patches/0002-trusted-authorship-and-dispatch.patch)
 
-Reviewed source digest: `cec649ae4650d89c3909aaafafebd5d9649c6e576e18e1e25f028d64e4a9c655`
+Reviewed source digest: `cb44ada47bea0c109e8ea39b6e71f8977a7dcb5d015ddcf648fe05d794419f16`
 
 </details>
 
@@ -631,7 +631,7 @@ Retire individual seams as equivalent native SDK contracts become available.
 
 - [0003-shared-plugin-contracts.patch](patches/0003-shared-plugin-contracts.patch)
 
-Reviewed source digest: `ca0f61203ad7d9c00fd1da2cb8e01a254289c5faa74cafdc00189a802477f6d9`
+Reviewed source digest: `724eb46e6a74852306398929439f701cd3cfa9183f0653a6cdc89ebf723258f8`
 
 </details>
 
@@ -946,7 +946,7 @@ Retire relay patches only when native provider configuration enforces the same d
 
 - [0004-inference-relay-and-provider-evidence.patch](patches/0004-inference-relay-and-provider-evidence.patch)
 
-Reviewed source digest: `75df9d86e7ab592b5fbd0a5ecf21a11d073ba410a4906bd24ac6d975bb8d88fa`
+Reviewed source digest: `140f89b143a4d25a082a3addf315e4bd300c81cf78e82874faf9bd61a9f89e2a`
 
 </details>
 
@@ -1089,22 +1089,22 @@ Retire individual UI seams when native SDK surfaces supply the same information.
 
 - [0005-team-navigation-and-diagnostics.patch](patches/0005-team-navigation-and-diagnostics.patch)
 
-Reviewed source digest: `8022e2329a58a676ed573314dbf8e9207364c02de7d65b33f9393865a39b226a`
+Reviewed source digest: `1b5c94fd15343e421ab1cddb1af2fdf5dac9ea8bd05a317331b63708a4a5cfbf`
 
 </details>
 
 <a id="service-lifecycle-and-transport"></a>
-## Bound transport and service startup failures
+## Preserve native transport and diagnose startup failures
 
-Realtime backpressure and slow startup must remain diagnosable without unbounded socket buffers or premature restart loops.
+Company startup policy must preserve valid native realtime traffic while avoiding premature restart loops.
 
 ### What this delivers
 
-- Realtime backpressure and slow startup must remain diagnosable without unbounded socket buffers or premature restart loops.
+- Company startup policy must preserve valid native realtime traffic while avoiding premature restart loops.
 
 ### Responsibility
 
-- Native launcher owns readiness deadlines; server transport owns bounded writes and heartbeat guards.
+- Native WebSocket delivery owns compression and buffering; the launcher owns readiness deadlines. Downstream isolates failed sockets and guards heartbeat replies.
 
 ### Core SDK and APIs
 
@@ -1215,8 +1215,8 @@ Realtime backpressure and slow startup must remain diagnosable without unbounded
 - **Server effect and read owners. Shared sidebar dirty events coalesce within the existing flush and let an active read finish, followed by a bounded trailing catch-up. Overlapping-tail and inactive-remount races retain eventual freshness; explicit status replacement and terminal cancellation remain separate authorities.**
   - Why: realtime-cache-registry owns invalidation/trailing reads; existing realtime effects owns dirty batches/reconnects. NotificationHub owns realtime write bounds and client cleanup; terminal/daemon policies remain distinct. DB event lookup and server timeline-context-order own their query/cache invariants. bb-app launcher owns config/readiness deadlines; start-server owns listener admission before recovery.
   - Source: `apps/server/src/ws/client-protocol.ts`
-- **Server effect and read owners. Shared sidebar dirty events coalesce within the existing flush and let an active read finish, followed by a bounded trailing catch-up. Overlapping-tail and inactive-remount races retain eventual freshness; explicit status replacement and terminal cancellation remain separate authorities.**
-  - Why: realtime-cache-registry owns invalidation/trailing reads; existing realtime effects owns dirty batches/reconnects. NotificationHub owns realtime write bounds and client cleanup; terminal/daemon policies remain distinct. DB event lookup and server timeline-context-order own their query/cache invariants. bb-app launcher owns config/readiness deadlines; start-server owns listener admission before recovery.
+- **Native compressed delivery and failed-socket isolation**
+  - Why: Valid native realtime bursts must not be rejected by unsupported downstream thresholds. Native upstream owns buffering; tests preserve delivery and isolate failed peers.
   - Source: `apps/server/src/ws/hub.ts`
 - **bb-app package integration. Shared sidebar dirty events coalesce within the existing flush and let an active read finish, followed by a bounded trailing catch-up. Overlapping-tail and inactive-remount races retain eventual freshness; explicit status replacement and terminal cancellation remain separate authorities.**
   - Why: realtime-cache-registry owns invalidation/trailing reads; existing realtime effects owns dirty batches/reconnects. NotificationHub owns realtime write bounds and client cleanup; terminal/daemon policies remain distinct. DB event lookup and server timeline-context-order own their query/cache invariants. bb-app launcher owns config/readiness deadlines; start-server owns listener admission before recovery.
@@ -1244,21 +1244,21 @@ Realtime backpressure and slow startup must remain diagnosable without unbounded
 
 These identify relevant checks; listing them does not assert that they passed for a deployment.
 
-- Transport and launcher tests cover slow startup, backlog rejection and heartbeat replies.
+- Real negotiated-compression bursts deliver 12000 notifications above 1 MiB pending; failed-socket and launcher tests exercise isolation and startup.
 
 ### Known limitations
 
-- Build and controlled tests do not substitute for deployed workflow verification.
+- Ordinary realtime buffering follows native upstream. No downstream message-count or 1 MiB eviction threshold remains; terminal-specific native limits are unchanged.
 
 ### Retirement condition
 
-Retire each operational patch after native upstream provides equivalent bounds and tests.
+Retire residual failure isolation and launcher adjustments when upstream supplies the same required behavior.
 
 <details><summary>Selected patches (1) and source binding</summary>
 
 - [0006-service-lifecycle-and-transport.patch](patches/0006-service-lifecycle-and-transport.patch)
 
-Reviewed source digest: `16b726a5809bf27e16fcf75c3d90a8cf50903739f3d3b9923ae1e997a77f94d4`
+Reviewed source digest: `e15cad5a2c775e058fa44e667bb8122c2de672c19757f939728f7a5dac857f56`
 
 </details>
 
@@ -1533,7 +1533,7 @@ Reevaluate every integration adjustment on the next upstream upgrade rather than
 
 - [0007-integration-and-verification.patch](patches/0007-integration-and-verification.patch)
 
-Reviewed source digest: `14c683b031bea6100eb14f0ad7308f172437274cf2e185eb3782fdcfa00279fb`
+Reviewed source digest: `f2d064ffd8e06f7cb8f939d104d10610b80b25eabc59cbdd44185557078945ea`
 
 </details>
 
@@ -1574,6 +1574,6 @@ Retire this wording patch when native guide configuration supports the same text
 
 - [0008-prompt-wording.patch](patches/0008-prompt-wording.patch)
 
-Reviewed source digest: `819c308210622702baef404cb2762a659e532f28bfe0c34babe60f46ce47987a`
+Reviewed source digest: `cc2f38403e02e6da2d0f23fb6edc7d966f086b3c88427775996598540bbb2ea4`
 
 </details>
