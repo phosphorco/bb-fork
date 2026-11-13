@@ -1,6 +1,6 @@
-From f1b402f0a31b5781924ae60090743c6581286176 Mon Sep 17 00:00:00 2001
+From 667bc10aa29b09cd4815e625434580d6ab7789ff Mon Sep 17 00:00:00 2001
 From: Cole Lawrence <cole@colelawrence.com>
-Date: Fri, 13 Nov 2026 19:01:31 -0300
+Date: Fri, 13 Nov 2026 19:23:46 -0300
 Subject: [PATCH] Shared plugin contracts
 
 ---
@@ -15,7 +15,7 @@ Subject: [PATCH] Shared plugin contracts
  .../environment-credential-projection.test.ts | 110 ++++++
  .../domain/test/p6r-message-author.test.ts    |  32 ++
  .../domain/test/stored-thread-event.test.ts   |  70 ++++
- packages/domain/test/thread.test.ts           |  45 +++
+ packages/domain/test/thread.test.ts           |  44 +++
  packages/host-daemon-contract/src/commands.ts |   5 +
  .../test/contract.test.ts                     |  47 +++
  .../test/environment-classification.test.ts   |  28 ++
@@ -50,7 +50,7 @@ Subject: [PATCH] Shared plugin contracts
  .../src/event-projection-message.ts           |   3 +
  .../thread-view/src/user-message-parsing.ts   |   6 +
  .../test/user-message-parsing.test.ts         |  19 +
- 46 files changed, 1919 insertions(+), 25 deletions(-)
+ 46 files changed, 1918 insertions(+), 25 deletions(-)
  create mode 100644 packages/domain/src/p6r-message-author.ts
  create mode 100644 packages/domain/src/thread-facet.ts
  create mode 100644 packages/domain/test/environment-credential-projection.test.ts
@@ -711,10 +711,10 @@ index 4e64516789b47cf2f5d561106fc006d07620c6cb..a2e2f01a0da986ee53d5c08de508152f
      const data = {
        reason: "host-daemon-restarted",
 diff --git a/packages/domain/test/thread.test.ts b/packages/domain/test/thread.test.ts
-index d79c6a6d141e794d4edc6fd0b1303451f45b3f9b..846921d80de513dce5010a9695890f499eb33c9a 100644
+index d79c6a6d141e794d4edc6fd0b1303451f45b3f9b..267c540abab8c693ccec48635278dbed42cada16 100644
 --- a/packages/domain/test/thread.test.ts
 +++ b/packages/domain/test/thread.test.ts
-@@ -2,6 +2,51 @@ import { describe, expect, it } from "vitest";
+@@ -2,6 +2,50 @@ import { describe, expect, it } from "vitest";
  import { threadQueuedMessageSchema } from "../src/thread.js";
  
  describe("thread queued message schema", () => {
@@ -736,6 +736,7 @@ index d79c6a6d141e794d4edc6fd0b1303451f45b3f9b..846921d80de513dce5010a9695890f49
 +    waitingOn: null,
 +    failureReason: null,
 +    payload: { kind: "inline" },
++    systemNotice: null,
 +    editable: true,
 +    createdAt: 1,
 +    updatedAt: 1,
@@ -757,9 +758,7 @@ index d79c6a6d141e794d4edc6fd0b1303451f45b3f9b..846921d80de513dce5010a9695890f49
 +      ),
 +    ).toThrow("must not be empty");
 +    expect(() =>
-+      threadQueuedMessageSchema.parse(
-+        queuedMessage({ initialForkSeed: true }),
-+      ),
++      threadQueuedMessageSchema.parse(queuedMessage({ initialForkSeed: true })),
 +    ).toThrow("requires an empty");
 +  });
 +
