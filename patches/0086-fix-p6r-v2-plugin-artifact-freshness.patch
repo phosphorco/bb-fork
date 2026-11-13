@@ -1,0 +1,306 @@
+From 6affcc0569bde73b24c77e65d80e2e72c3d2816f Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Fri, 13 Nov 2026 03:56:16 +0100
+Subject: [PATCH] fix(p6r): gate v2 app artifact freshness alongside legacy
+ probe
+
+---
+ .../plugins/p6r-app-artifact-freshness.ts     |  50 +++++++
+ .../src/services/plugins/plugin-runtime.ts    |   6 +-
+ .../p6r-app-artifact-freshness.p6r.test.ts    | 134 ++++++++++++++++++
+ docs/configuration.md                         |   7 +
+ docs/p6r-plugin-artifact-freshness.md         |  28 ++++
+ .../src/templates/bb-guide-plugins.md         |   8 ++
+ 6 files changed, 232 insertions(+), 1 deletion(-)
+ create mode 100644 apps/server/src/services/plugins/p6r-app-artifact-freshness.ts
+ create mode 100644 apps/server/test/services/plugins/p6r-app-artifact-freshness.p6r.test.ts
+ create mode 100644 docs/p6r-plugin-artifact-freshness.md
+
+diff --git a/apps/server/src/services/plugins/p6r-app-artifact-freshness.ts b/apps/server/src/services/plugins/p6r-app-artifact-freshness.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..eb5737971b8e95343b4167a6ca004d750edaa43a
+--- /dev/null
++++ b/apps/server/src/services/plugins/p6r-app-artifact-freshness.ts
+@@ -0,0 +1,50 @@
++import { lstat, readdir, stat } from "node:fs/promises";
++import { join } from "node:path";
++import { isIgnoredPluginDevPath } from "@bb/plugin-build";
++import { loadPluginAppBundle, readPluginAppBundleMeta } from "./app-bundle.js";
++
++export async function isP6rMutableAppBundleStale(
++  rootDir: string,
++  legacy: () => Promise<boolean>,
++): Promise<boolean> {
++  if (process.env.BB_P6R_PLUGIN_ARTIFACT_FRESHNESS !== "1") return legacy();
++  const meta = await readPluginAppBundleMeta(rootDir);
++  if (meta?.artifactFormatVersion !== 2 || !meta.appArtifact) return legacy();
++  const snapshot = await loadPluginAppBundle(
++    meta.pluginId ?? "p6r-freshness",
++    rootDir,
++  );
++  if (!snapshot.assets) return true;
++  let artifactMtimeMs = Infinity;
++  try {
++    for (const file of meta.appArtifact.files) {
++      const info = await lstat(
++        join(
++          rootDir,
++          "dist",
++          ".bb-artifacts",
++          meta.appArtifact.generation,
++          file.path,
++        ),
++      );
++      if (!info.isFile() || info.isSymbolicLink()) return true;
++      artifactMtimeMs = Math.min(artifactMtimeMs, info.mtimeMs);
++    }
++    const directories = [""];
++    while (directories.length) {
++      const relative = directories.pop()!;
++      const directory = join(rootDir, relative);
++      if ((await stat(directory)).mtimeMs > artifactMtimeMs) return true;
++      for (const entry of await readdir(directory, { withFileTypes: true })) {
++        const path = join(relative, entry.name);
++        if (isIgnoredPluginDevPath(path)) continue;
++        if ((await stat(join(rootDir, path))).mtimeMs > artifactMtimeMs)
++          return true;
++        if (entry.isDirectory()) directories.push(path);
++      }
++    }
++    return false;
++  } catch {
++    return true;
++  }
++}
+diff --git a/apps/server/src/services/plugins/plugin-runtime.ts b/apps/server/src/services/plugins/plugin-runtime.ts
+index 0aae9b2dafc8dafe0a6a147eeb0f06bbfb498ea6..f05ed0a76aa3ddf88e6a1603d918a9c1f800bfd4 100644
+--- a/apps/server/src/services/plugins/plugin-runtime.ts
++++ b/apps/server/src/services/plugins/plugin-runtime.ts
+@@ -35,6 +35,7 @@ import {
+ } from "@bb/plugin-build";
+ import { PluginHostArtifactRegistry } from "./plugin-host-artifact-registry.js";
+ import { getPluginBuildToolchain } from "./build-toolchain.js";
++import { isP6rMutableAppBundleStale } from "./p6r-app-artifact-freshness.js";
+ import {
+   createNodeBbSdk,
+   createRequestTimeoutFetch,
+@@ -1253,7 +1254,10 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+       const meta = await readPluginAppBundleMeta(row.rootDir);
+       const sdkChanged = meta?.sdkVersion !== PLUGIN_SDK_VERSION;
+       const sourceChanged =
+-        !sdkChanged && (await isMutableAppBundleStale(row.rootDir));
++        !sdkChanged &&
++        (await isP6rMutableAppBundleStale(row.rootDir, () =>
++          isMutableAppBundleStale(row.rootDir),
++        ));
+       if (sdkChanged || sourceChanged) {
+         const reason = sdkChanged
+           ? `built with SDK ${meta?.sdkVersion ?? "unknown"}, running SDK is ${PLUGIN_SDK_VERSION}`
+diff --git a/apps/server/test/services/plugins/p6r-app-artifact-freshness.p6r.test.ts b/apps/server/test/services/plugins/p6r-app-artifact-freshness.p6r.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..c2d211459ecd9d7601a61a26ca1e7d18a5a434b0
+--- /dev/null
++++ b/apps/server/test/services/plugins/p6r-app-artifact-freshness.p6r.test.ts
+@@ -0,0 +1,134 @@
++import { createHash } from "node:crypto";
++import {
++  mkdtemp,
++  mkdir,
++  writeFile,
++  rm,
++  utimes,
++  readFile,
++} from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { PLUGIN_SDK_MAJOR, PLUGIN_SDK_VERSION } from "@bb/domain";
++import { isP6rMutableAppBundleStale } from "../../../src/services/plugins/p6r-app-artifact-freshness.js";
++import { loadPluginAppBundle } from "../../../src/services/plugins/app-bundle.js";
++
++const roots: string[] = [];
++const generation = "0123456789abcdef0123456789abcdef";
++const old = new Date(Date.now() - 100000);
++const built = new Date(Date.now() - 50000);
++afterEach(async () => {
++  vi.unstubAllEnvs();
++  for (const root of roots.splice(0))
++    await rm(root, { recursive: true, force: true });
++});
++
++async function fixture() {
++  const root = await mkdtemp(join(tmpdir(), "p6r-artifact-"));
++  roots.push(root);
++  const dist = join(root, "dist", ".bb-artifacts", generation);
++  await mkdir(dist, { recursive: true });
++  await mkdir(join(root, "src"));
++  await writeFile(join(root, "src", "app.ts"), "export default 1;");
++  await writeFile(
++    join(root, "package.json"),
++    JSON.stringify({ name: "bb-plugin-fixture", version: "1.0.0" }),
++  );
++  const files = [];
++  for (const path of ["app.js", "chunk.js"]) {
++    const content = "export default 1;";
++    await writeFile(join(dist, path), content);
++    await utimes(join(dist, path), built, built);
++    files.push({
++      path,
++      bytes: Buffer.byteLength(content),
++      sha256: createHash("sha256").update(content).digest("hex"),
++      contentType: "text/javascript; charset=utf-8",
++    });
++  }
++  await writeFile(
++    join(root, "dist", "app.meta.json"),
++    JSON.stringify({
++      sdkMajor: PLUGIN_SDK_MAJOR,
++      sdkVersion: PLUGIN_SDK_VERSION,
++      artifactFormatVersion: 2,
++      pluginId: "fixture",
++      pluginVersion: "1.0.0",
++      builtWith: { bbVersion: "0.46.1", pluginSdkVersion: PLUGIN_SDK_VERSION },
++      appArtifact: { generation, files },
++    }),
++  );
++  for (const path of ["src/app.ts", "src", "package.json", ""])
++    await utimes(join(root, path), old, old);
++  return { root, dist };
++}
++
++describe("additive v2 artifact freshness", () => {
++  it("reuses a complete generation with no legacy app.js and retains its URLs across reloads", async () => {
++    vi.stubEnv("BB_P6R_PLUGIN_ARTIFACT_FRESHNESS", "1");
++    const { root } = await fixture();
++    const legacy = vi.fn(async () => true);
++    const before = await loadPluginAppBundle("fixture", root);
++    for (let i = 0; i < 3; i++)
++      expect(await isP6rMutableAppBundleStale(root, legacy)).toBe(false);
++    const after = await loadPluginAppBundle("fixture", root);
++    expect(after.state.bundle?.jsUrl).toBe(before.state.bundle?.jsUrl);
++    expect(after.state.bundle?.hash).toBe(before.state.bundle?.hash);
++    expect(before.assets?.generation).toBe(generation);
++    expect(legacy).not.toHaveBeenCalled();
++  });
++
++  it("uses the unchanged legacy implementation when switched off or reading v1", async () => {
++    const { root } = await fixture();
++    const legacy = vi.fn(async () => true);
++    vi.stubEnv("BB_P6R_PLUGIN_ARTIFACT_FRESHNESS", "0");
++    expect(await isP6rMutableAppBundleStale(root, legacy)).toBe(true);
++    vi.stubEnv("BB_P6R_PLUGIN_ARTIFACT_FRESHNESS", "1");
++    await writeFile(
++      join(root, "dist", "app.meta.json"),
++      JSON.stringify({
++        sdkMajor: PLUGIN_SDK_MAJOR,
++        sdkVersion: PLUGIN_SDK_VERSION,
++      }),
++    );
++    expect(await isP6rMutableAppBundleStale(root, legacy)).toBe(true);
++    expect(legacy).toHaveBeenCalledTimes(2);
++  });
++
++  it("rebuilds when source is newer or a source file was deleted", async () => {
++    vi.stubEnv("BB_P6R_PLUGIN_ARTIFACT_FRESHNESS", "1");
++    const { root } = await fixture();
++    await utimes(join(root, "src", "app.ts"), new Date(), new Date());
++    expect(await isP6rMutableAppBundleStale(root, async () => false)).toBe(
++      true,
++    );
++    await utimes(join(root, "src", "app.ts"), old, old);
++    await rm(join(root, "src", "app.ts"));
++    expect(await isP6rMutableAppBundleStale(root, async () => false)).toBe(
++      true,
++    );
++  });
++
++  it("refuses missing, corrupt or changed-generation artifacts", async () => {
++    vi.stubEnv("BB_P6R_PLUGIN_ARTIFACT_FRESHNESS", "1");
++    const { root, dist } = await fixture();
++    const meta = await readFile(join(root, "dist", "app.meta.json"), "utf8");
++    await writeFile(
++      join(root, "dist", "app.meta.json"),
++      meta.replace(generation, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
++    );
++    expect(await isP6rMutableAppBundleStale(root, async () => false)).toBe(
++      true,
++    );
++    await writeFile(join(root, "dist", "app.meta.json"), meta);
++    await writeFile(join(dist, "chunk.js"), "export default 2;");
++    expect(await isP6rMutableAppBundleStale(root, async () => false)).toBe(
++      true,
++    );
++    await rm(join(dist, "chunk.js"));
++    expect(await isP6rMutableAppBundleStale(root, async () => false)).toBe(
++      true,
++    );
++  });
++});
+diff --git a/docs/configuration.md b/docs/configuration.md
+index 1cdf87587bd5f81b92ed717106b4fcc9765be70c..55600c7a094fa03eb1454d3d6f763617fa16434d 100644
+--- a/docs/configuration.md
++++ b/docs/configuration.md
+@@ -1192,3 +1192,10 @@ metadata is preserved. This is a desktop-local preference, with no server
+ settings CLI/SDK endpoint. Builds with tolerant readers ignore the field and
+ may drop it on save; older strict readers can reject the whole file, so keep a
+ backup before rolling back to a build predating the tolerant-reader fix #5286.
++
++## Downstream v2 artifact freshness trial
++
++`BB_P6R_PLUGIN_ARTIFACT_FRESHNESS=1` selects the additive v2 app-artifact freshness
++probe. It is off by default; unset it and restart to restore the old probe without
++redeployment. See [artifact freshness](p6r-plugin-artifact-freshness.md). A restart
++requires separate authorization.
+diff --git a/docs/p6r-plugin-artifact-freshness.md b/docs/p6r-plugin-artifact-freshness.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..554f28646a9688ef4aa89bf65e0b7f2b74fb897a
+--- /dev/null
++++ b/docs/p6r-plugin-artifact-freshness.md
+@@ -0,0 +1,28 @@
++# V2 plugin artifact freshness trial
++
++Set `BB_P6R_PLUGIN_ARTIFACT_FRESHNESS=1` in the server environment before a separately
++authorized start to enable this default-off trial. Unset it and restart to return
++to the existing freshness implementation; no source revert or deployment is
++required. This switch governs startup/reload behavior and cannot be a browser
++setting. This change does not authorize a restart.
++
++Mutable path/builtin v2 app bundles place their entry in
++`dist/.bb-artifacts/<generation>/app.js`. The old freshness probe checks only
++`dist/app.js` and treats its absence as stale, rebuilding an unchanged generation.
++Each rebuild chooses a random generation embedded in imports, invalidating the
++asset URLs and hashes even if logical source did not change.
++
++The trial validates the declared complete generation using the existing artifact
++loader (including safe paths, sizes and hashes), then compares source files and
++directories with the oldest declared artifact timestamp. It uses the same ignored
++paths as the development watcher. Newer source, deleted source (directory mtime),
++missing/corrupt artifacts and unreadable inputs remain stale. SDK compatibility
++still runs before this probe. V1, malformed metadata and a disabled switch call
++the unchanged legacy probe. Failed v2 validation never selects another generation.
++
++This adds one extra validation/hash pass on v2 artifact checks. It preserves the
++existing subsequent loader validation rather than weakening it. Tests cover
++stable URLs across repeated checks, source edits/deletion, corruption, missing
++chunks, generation mismatch and switch rollback. It does not change frontend
++loader concurrency, CSS ordering or the random-generation build format. Startup
++or cold-browser time saved requires a separately authorized production check.
+diff --git a/packages/templates/src/templates/bb-guide-plugins.md b/packages/templates/src/templates/bb-guide-plugins.md
+index 14ee833d177637d3c44deabb79f53be3b0b4a493..a5d86dd28e122627c625565b5d53d43851bd642d 100644
+--- a/packages/templates/src/templates/bb-guide-plugins.md
++++ b/packages/templates/src/templates/bb-guide-plugins.md
+@@ -343,3 +343,11 @@ plugins.
+ `bb plugin update <id> --yes` starts a server job and waits by polling, so the activation stability check does not hold one HTTP request open. Add `--no-wait` to return immediately. Use `bb plugin update-jobs [job-id] --json` for progress and results, including automatic rollback. Queued/running updates continue after the CLI or app disconnects. Finished jobs remain for ten minutes; jobs do not survive server restarts. Running updates cannot be cancelled midway through activation.
+ 
+ SDK: `plugins.applyUpdate({ pluginId })` waits; `plugins.experimental_startUpdate({ pluginId })` returns the job. Inspect with `plugins.experimental_updateJobs.list()` or `.get({ jobId })`. Raw HTTP callers opt in with `Prefer: respond-async`; legacy callers still receive the completed result.
++
++## V2 artifact freshness trial
++
++The downstream server flag `BB_P6R_PLUGIN_ARTIFACT_FRESHNESS=1` enables validation
++of the declared v2 generation before checking mutable plugin source timestamps.
++It avoids rebuilding unchanged v2 bundles solely because legacy `dist/app.js` is
++absent. It is off by default. Unset it and restart to roll back; no source revert
++is needed. Changing the server environment requires an authorized restart.
+-- 
+2.53.0
+

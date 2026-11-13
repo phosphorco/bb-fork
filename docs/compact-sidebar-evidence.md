@@ -165,3 +165,26 @@ The independent artifact-freshness branch passed server typecheck/build and 17
 filesystem/loader/packaging cases. Workspace composition checking reports all
 three checkout gitlinks differ from the inherited receipt. That is expected in
 this isolated source-review workspace; no workspace promotion receipt was changed.
+
+## Composition for review
+
+PR18 is stacked on PR17 for landing. The combined materialized tree is
+`6a23bee8ba23d743dba236345c0082f741d203ad`. Sidebar production/test files are unchanged from the accepted
+standalone tree; the only additions are PR17's exact five freshness files and
+its configuration documentation. Both configuration sections are preserved.
+Patch order is 0086 then 0085, with the latter re-exported on its predecessor so
+queue replay is conflict-free. The earlier measurements and limitations remain
+historical evidence; composition verification and final-head CI supplement them.
+
+## Pre-existing build-race follow-up (not fixed here)
+
+PR17's initial integration failure reproduced on the exact main builder: 12
+concurrent builds of an isolated copy of environment-project-checkout produced
+four ENOENT failures, including two unlink failures on dist/app.meta.json (Node
+22.19.0, matching CI). Parallel harnesses share a builtin source root; the builder
+copies one metadata path and prunes generations concurrently. The implicated
+builder/install/harness files are unchanged, and failure occurs before runtime
+freshness selection with its flag off. Both local full integration comparisons
+passed 74/74; one unchanged-head CI rerun also passed. This is an existing
+publication/pruning race, not repaired by either trial. Atomic publication,
+generation coordination or fixture-root isolation need a separate scoped fix.
