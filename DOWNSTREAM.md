@@ -598,3 +598,19 @@ when upstream freshness recognizes the v2 artifact layout. The probe performs
 one extra existing-loader validation/hash pass, explicitly retaining downstream
 validation after freshness. See docs/p6r-plugin-artifact-freshness.md in the
 materialization. No runtime or deployment is changed by the source receipt.
+
+Patch85 adds a default-off compact sidebar trial: additive p6r bootstrap, bounded
+row and metadata-only routes, full-shape decoding into the existing cache, and a
+single noncancelling client request owner. Legacy bootstrap and query hook are
+unchanged. The browser-local `bb.p6r.compact-sidebar` switch plus reload selects
+or rolls back the trial without deployment. The same switch coalesces a missing
+thread-tab revision read with an existing query. The missing public plugin
+capability is control of native response serialization and TanStack ownership;
+replacement sidebars, RPCs and overlays still leave the native overfetch running.
+Cole's approval was relayed by Gus through the Outcome Owner on 2026-11-13; the
+verbatim relay is retained in the draft PR for his confirmation. Upstream cost
+is one contract module, server registration, the new client owner/facade and its
+import cohort; there is no DB migration or daemon protocol change. Retire when
+upstream provides compact lossless sidebar reads and incremental, coalesced
+request ownership. See the materialized docs/p6r-sidebar-performance.md for
+scope, rollout and behavior parity limits. Source review does not deploy it.
