@@ -1,0 +1,3833 @@
+From eb38837e55df5f6f292f409d220948a5cc0e5eaa Mon Sep 17 00:00:00 2001
+From: Cole Lawrence <cole@colelawrence.com>
+Date: Fri, 13 Nov 2026 19:01:32 -0300
+Subject: [PATCH] Service lifecycle and transport
+
+---
+ apps/desktop/package.json                     |   2 +-
+ apps/desktop/scripts/packaged-app-launch.mjs  |   8 +-
+ apps/desktop/test/packaged-app-launch.test.ts |   4 +-
+ apps/server/src/internal/events.ts            |  32 +-
+ apps/server/src/internal/tool-calls.ts        |  74 +++--
+ apps/server/src/routes/plugins.ts             |   8 +-
+ apps/server/src/routes/projects.ts            |  24 +-
+ apps/server/src/routes/system.ts              |  14 +-
+ apps/server/src/server.ts                     | 160 ++++++++--
+ .../hosts/host-environment-sync.test.ts       |   8 +-
+ .../services/hosts/host-environment.test.ts   |  13 +-
+ .../services/machines/environment-settings.ts |  42 ++-
+ .../machines/environment-storage.test.ts      |  85 +++---
+ .../services/machines/environment-storage.ts  |   4 +-
+ .../services/machines/git-credentials.test.ts |   5 +
+ .../src/services/machines/git-credentials.ts  |  10 +-
+ .../plugins/plugin-agent-contributions.ts     |   1 +
+ .../server/src/services/plugins/plugin-api.ts | 250 +++++++++++++++-
+ .../src/services/plugins/plugin-mentions.ts   |  93 +++++-
+ .../services/plugins/plugin-p6r-dispatch.ts   | 191 ++++++++++++
+ .../src/services/plugins/plugin-p6r-http.ts   |  53 ++++
+ .../src/services/plugins/plugin-runtime.ts    |  98 +++++-
+ .../plugins/plugin-service-internal.ts        |  19 ++
+ .../src/services/plugins/plugin-service.ts    | 278 +++++++++++++++++-
+ .../providers/provider-model-catalog-store.ts |  87 ++++--
+ .../required-external-model-catalog.ts        |  71 +++++
+ .../identity-and-native-projections.md        |  64 ++++
+ .../src/services/system/execution-options.ts  |   7 +-
+ apps/server/src/start-server.ts               | 124 ++++++--
+ .../server/src/testing/test-fault-barriers.ts | 142 +++++++++
+ apps/server/src/types.ts                      |   2 +
+ apps/server/src/ws/client-protocol.ts         |   2 +-
+ apps/server/src/ws/hub.ts                     |  53 +++-
+ packages/bb-app/src/launcher.ts               |  33 ++-
+ packages/bb-app/test/index.test.ts            | 150 +++++++---
+ .../test/server-health-identity.test.ts       |  51 +++-
+ plugins/browser-automation/README.md          |   5 +-
+ plugins/browser-automation/runtime.test.ts    |  43 ++-
+ plugins/browser-automation/runtime.ts         |   1 -
+ .../skills/browser-automation/SKILL.md        |   4 +-
+ 40 files changed, 2054 insertions(+), 261 deletions(-)
+ create mode 100644 apps/server/src/services/plugins/plugin-p6r-dispatch.ts
+ create mode 100644 apps/server/src/services/plugins/plugin-p6r-http.ts
+ create mode 100644 apps/server/src/services/providers/required-external-model-catalog.ts
+ create mode 100644 apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/identity-and-native-projections.md
+ create mode 100644 apps/server/src/testing/test-fault-barriers.ts
+
+diff --git a/apps/desktop/package.json b/apps/desktop/package.json
+index 94dabb35058b5b5a68aaaf7883eaeecb631d73c7..377391425b59d4cea72af56dd845c0f249578018 100644
+--- a/apps/desktop/package.json
++++ b/apps/desktop/package.json
+@@ -54,7 +54,7 @@
+     "@types/node": "^24.19.2",
+     "@types/semver": "^7.8.0",
+     "@types/ws": "^8.18.2",
+-    "electron": "44.10.2",
++    "electron": "44.11.1",
+     "electron-builder": "^26.18.0",
+     "electron-builder-squirrel-windows": "26.18.0",
+     "esbuild": "^0.28.2",
+diff --git a/apps/desktop/scripts/packaged-app-launch.mjs b/apps/desktop/scripts/packaged-app-launch.mjs
+index 2a80c9098c01b7ab3b4f91f03ed06c34132542ea..bcee2ecc137e79f8d62903e6c53c60f0b718e0e7 100644
+--- a/apps/desktop/scripts/packaged-app-launch.mjs
++++ b/apps/desktop/scripts/packaged-app-launch.mjs
+@@ -1,7 +1,3 @@
+-const LINUX_DISABLE_SANDBOX_ARGUMENT = "--no-sandbox";
+-
+-export function createPackagedAppLaunchArguments({ platform, userDataDir }) {
+-  const sandboxArguments =
+-    platform === "linux" ? [LINUX_DISABLE_SANDBOX_ARGUMENT] : [];
+-  return [...sandboxArguments, `--user-data-dir=${userDataDir}`];
++export function createPackagedAppLaunchArguments({ userDataDir }) {
++  return [`--user-data-dir=${userDataDir}`];
+ }
+diff --git a/apps/desktop/test/packaged-app-launch.test.ts b/apps/desktop/test/packaged-app-launch.test.ts
+index c7b39689e8dedf1d8c9ee51f26800452015e5390..4f21513e041e96c8c4ae92bff701a2c287821d49 100644
+--- a/apps/desktop/test/packaged-app-launch.test.ts
++++ b/apps/desktop/test/packaged-app-launch.test.ts
+@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
+ import { createPackagedAppLaunchArguments } from "../scripts/packaged-app-launch.mjs";
+ 
+ describe("createPackagedAppLaunchArguments", () => {
+-  it("disables the Chromium sandbox on Linux", () => {
++  it("keeps the Chromium sandbox on Linux", () => {
+     expect(
+       createPackagedAppLaunchArguments({
+         platform: "linux",
+         userDataDir: "/tmp/smoke/user-data",
+       }),
+-    ).toEqual(["--no-sandbox", "--user-data-dir=/tmp/smoke/user-data"]);
++    ).toEqual(["--user-data-dir=/tmp/smoke/user-data"]);
+   });
+ 
+   it("keeps the Chromium sandbox on macOS", () => {
+diff --git a/apps/server/src/internal/events.ts b/apps/server/src/internal/events.ts
+index 4811947b350da26402e6a990958b9fa099c51bdf..ad3193fbe5b492034a8dce51a67f5f2903a7b0db 100644
+--- a/apps/server/src/internal/events.ts
++++ b/apps/server/src/internal/events.ts
+@@ -16,6 +16,7 @@ import type {
+   AcceptedDaemonEvent,
+   AppendDaemonEventInput,
+   AppendDaemonEventsResult,
++  DbQueryConnection,
+ } from "@bb/db";
+ import {
+   hostDaemonEventBatchRequestSchema,
+@@ -84,6 +85,7 @@ import {
+   observeStreamTraceEventBatch,
+   observeTurnTraceEventBatch,
+ } from "../services/system/turn-trace.js";
++import { linkP6rNativeTurnForRequest } from "../services/p6r/sidecar-store.js";
+ 
+ interface ToStoredEventArgs {
+   envelope: HostDaemonEventEnvelope;
+@@ -394,6 +396,27 @@ function notifyInsertedEventThreads(
+   }
+ }
+ 
++function linkP6rAcceptedInputTurns(
++  db: DbQueryConnection,
++  events: readonly HostDaemonEventEnvelope[],
++  insertedEventIndexes: readonly number[],
++): void {
++  for (const index of insertedEventIndexes) {
++    const envelope = events[index];
++    if (envelope === undefined || envelope.event.type !== "turn/input/accepted") {
++      continue;
++    }
++    linkP6rNativeTurnForRequest(db, {
++      nativeRequestId: envelope.event.clientRequestId,
++      threadId: envelope.threadId,
++      turnId: requireThreadEventScopeTurnId({
++        scope: envelope.event.scope,
++        type: envelope.event.type,
++      }),
++    });
++  }
++}
++
+ function addParentTurnNotificationFollowUp(
+   args: AddParentTurnNotificationFollowUpArgs,
+ ): void {
+@@ -1189,6 +1212,9 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
+         throw error;
+       }
+       const events = ungroupHostDaemonEvents(payload.eventGroups);
++      if (events.some(({ event }) => event.type === "client/turn/requested")) {
++        throw new ApiError(400, "invalid_request", "Client turn requests may only be appended by the server");
++      }
+       const { entries: ownedEntries, rejectedEvents } =
+         resolvePostableEventBatchEntries(deps, {
+           hostId: session.hostId,
+@@ -1247,7 +1273,11 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
+       let appendResult: AppendDaemonEventsResult;
+       try {
+         appendResult = deps.db.transaction(
+-          (tx) => appendDaemonEventsInTransaction(tx, eventInputs),
++          (tx) => {
++            const result = appendDaemonEventsInTransaction(tx, eventInputs);
++            linkP6rAcceptedInputTurns(tx, postableEvents, result.insertedInputIndexes);
++            return result;
++          },
+           { behavior: "immediate" },
+         );
+       } catch (error) {
+diff --git a/apps/server/src/internal/tool-calls.ts b/apps/server/src/internal/tool-calls.ts
+index 06b1fd7ac17cd631079e834163a28bde206e26fc..1dde6b0e8a635f258b75b1391d5a77fd91127252 100644
+--- a/apps/server/src/internal/tool-calls.ts
++++ b/apps/server/src/internal/tool-calls.ts
+@@ -8,6 +8,7 @@ import type { Hono } from "hono";
+ import type { AppDeps } from "../types.js";
+ import { ApiError } from "../errors.js";
+ import { requireThreadEnvironment } from "../services/lib/entity-lookup.js";
++import { getServerP6rToolCorrelationRegistry } from "../services/p6r/tool-correlation-registry.js";
+ import {
+   findPluginAgentTool,
+   invokePluginAgentTool,
+@@ -75,14 +76,33 @@ export function registerInternalToolCallRoutes(app: Hono, deps: AppDeps): void {
+         );
+       }
+ 
++      const correlation = getServerP6rToolCorrelationRegistry().begin({
++        callId: payload.callId,
++        providerThreadId: payload.providerThreadId,
++        sessionId: payload.sessionId,
++        threadId: payload.threadId,
++        turnId: payload.turnId,
++      });
++      const settle = (
++        response: ToolCallResponse,
++        outcome: "failed" | "succeeded" | "unsupported" = response.success
++          ? "succeeded"
++          : "failed",
++      ): ToolCallResponse => {
++        correlation.settle(outcome);
++        return response;
++      };
++
+       if (payload.tool === UPDATE_ENVIRONMENT_DIRECTORY_TOOL_NAME) {
+         return context.json(
+-          await handleUpdateEnvironmentDirectoryToolCall(deps, {
+-            currentEnvironment: environment,
+-            input: payload.arguments,
+-            thread,
+-            turnId: payload.turnId,
+-          }),
++          settle(
++            await handleUpdateEnvironmentDirectoryToolCall(deps, {
++              currentEnvironment: environment,
++              input: payload.arguments,
++              thread,
++              turnId: payload.turnId,
++            }),
++          ),
+         );
+       }
+ 
+@@ -98,15 +118,24 @@ export function registerInternalToolCallRoutes(app: Hono, deps: AppDeps): void {
+             context.req.raw.signal,
+             roundTrip.signal,
+           ]),
+-          invoke: (signal) =>
+-            invokePluginAgentTool(pluginTool, {
++          invoke: (signal) => {
++            const pluginContext = {
++              threadId: thread.id,
++              projectId: thread.projectId,
++              signal,
++            };
++            getServerP6rToolCorrelationRegistry().bindContext(
++              pluginContext,
++              correlation.correlation.call,
++            );
++            return invokePluginAgentTool(pluginTool, {
+               input: payload.arguments,
+-              ctx: {
+-                threadId: thread.id,
+-                projectId: thread.projectId,
+-                signal,
+-              },
+-            }),
++              ctx: pluginContext,
++            }).then(settle, (error: unknown) => {
++              correlation.settle("failed");
++              throw error;
++            });
++          },
+           onDetachedResult: (result) =>
+             deliverDetachedToolResult(deps, {
+               threadId: thread.id,
+@@ -118,12 +147,17 @@ export function registerInternalToolCallRoutes(app: Hono, deps: AppDeps): void {
+         return streamToolCallResponse(response, roundTrip);
+       }
+ 
+-      return context.json({
+-        success: false,
+-        contentItems: [
+-          { type: "inputText", text: `Unsupported tool: ${payload.tool}` },
+-        ],
+-      });
++      return context.json(
++        settle(
++          {
++            success: false,
++            contentItems: [
++              { type: "inputText", text: `Unsupported tool: ${payload.tool}` },
++            ],
++          },
++          "unsupported",
++        ),
++      );
+     },
+   );
+ }
+diff --git a/apps/server/src/routes/plugins.ts b/apps/server/src/routes/plugins.ts
+index 06c77cc46672107fb5d7d69c191ad5788356df41..ef00776d1c1a9633b388f9fd4091dc969f999793 100644
+--- a/apps/server/src/routes/plugins.ts
++++ b/apps/server/src/routes/plugins.ts
+@@ -1,6 +1,6 @@
+ import { HOST_TAILWIND_VERSION } from "@bb/plugin-build/host-tailwind-version";
+ import type { PluginUpdateJobs } from "../services/plugins/plugin-update-jobs.js";
+-import { timingSafeEqual } from "node:crypto";
++import { randomUUID, timingSafeEqual } from "node:crypto";
+ import { promisify } from "node:util";
+ import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
+ import type { Context, Hono } from "hono";
+@@ -1015,12 +1015,18 @@ export function registerPluginRoutes(
+       input,
+       callerResolution.caller,
+       context.req.raw.signal,
++      {
++        ingress: { requestId: randomUUID(), transport: "http" },
++        request: context,
++      },
+     );
+     if (!outcome.ok) {
+       return context.json(
+         { ok: false, error: outcome.error },
+         (
+           {
++            unauthenticated: 401,
++            unavailable: 503,
+             invalid_json: 400,
+             invalid_input: 400,
+             forbidden: 403,
+diff --git a/apps/server/src/routes/projects.ts b/apps/server/src/routes/projects.ts
+index 980e1aa200290ed3bf093c4904ef24b9a4fa36c1..f4d23a50f0dd81a95fd3558d0b12036e9e1bbdf6 100644
+--- a/apps/server/src/routes/projects.ts
++++ b/apps/server/src/routes/projects.ts
+@@ -368,7 +368,11 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
+     await deleteMachineEnvironmentVariable(deps.db, payload.name, project.id);
+     deps.hub.notifySystem(["config-changed"]);
+     return context.json(
+-      await projectMachineEnvironmentView(deps.db, project.id),
++      await projectMachineEnvironmentView(
++        deps.db,
++        deps.config.dataDir,
++        project.id,
++      ),
+     );
+   });
+ 
+@@ -388,7 +392,11 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
+     );
+     deps.hub.notifySystem(["config-changed"]);
+     return context.json(
+-      await projectMachineEnvironmentView(deps.db, project.id),
++      await projectMachineEnvironmentView(
++        deps.db,
++        deps.config.dataDir,
++        project.id,
++      ),
+     );
+   });
+ 
+@@ -408,14 +416,22 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
+     );
+     deps.hub.notifySystem(["config-changed"]);
+     return context.json(
+-      await projectMachineEnvironmentView(deps.db, project.id),
++      await projectMachineEnvironmentView(
++        deps.db,
++        deps.config.dataDir,
++        project.id,
++      ),
+     );
+   });
+ 
+   get(routes.machineEnvironment, async (context) => {
+     const project = requirePublicProject(deps.db, context.req.param("id"));
+     return context.json(
+-      await projectMachineEnvironmentView(deps.db, project.id),
++      await projectMachineEnvironmentView(
++        deps.db,
++        deps.config.dataDir,
++        project.id,
++      ),
+     );
+   });
+ 
+diff --git a/apps/server/src/routes/system.ts b/apps/server/src/routes/system.ts
+index e70c9235c50c500fd7ff3c079c97e60e977fc0b2..0e6c81af952a6c6b0247dfbebebc59e733e09720 100644
+--- a/apps/server/src/routes/system.ts
++++ b/apps/server/src/routes/system.ts
+@@ -269,7 +269,9 @@ export function registerSystemRoutes(
+     );
+     deps.lifecycleDedupers.providerModelCatalogs.markAllStale();
+     deps.hub.notifySystem(["config-changed"]);
+-    return context.json(await machineEnvironmentView(deps.db));
++    return context.json(
++      await machineEnvironmentView(deps.db, deps.config.dataDir),
++    );
+   });
+ 
+   del(routes.deleteMachineEnvironmentVariable, async (context, payload) => {
+@@ -282,11 +284,13 @@ export function registerSystemRoutes(
+     await deleteMachineEnvironmentVariable(deps.db, payload.name, null);
+     deps.lifecycleDedupers.providerModelCatalogs.markAllStale();
+     deps.hub.notifySystem(["config-changed"]);
+-    return context.json(await machineEnvironmentView(deps.db));
++    return context.json(
++      await machineEnvironmentView(deps.db, deps.config.dataDir),
++    );
+   });
+ 
+   get(routes.machineEnvironment, async (context) =>
+-    context.json(await machineEnvironmentView(deps.db)),
++    context.json(await machineEnvironmentView(deps.db, deps.config.dataDir)),
+   );
+   put(routes.replaceMachineEnvironment, async (context, payload) => {
+     if (getGateAuthKind(context) === "machine")
+@@ -298,7 +302,9 @@ export function registerSystemRoutes(
+     await replaceMachineEnvironment(deps.db, deps.config.dataDir, payload);
+     deps.lifecycleDedupers.providerModelCatalogs.markAllStale();
+     deps.hub.notifySystem(["config-changed"]);
+-    return context.json(await machineEnvironmentView(deps.db));
++    return context.json(
++      await machineEnvironmentView(deps.db, deps.config.dataDir),
++    );
+   });
+ 
+   put(routes.generalSettings, (context, payload) => {
+diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
+index 99eef734f491c544596f9a6a22fedfb150ddb745..5be2fb88bc04dfe7a92cc13f6b24878a46f25498 100644
+--- a/apps/server/src/server.ts
++++ b/apps/server/src/server.ts
+@@ -17,6 +17,9 @@ import {
+   INSTALL_MACHINE_SCRIPT_PATH,
+   INSTALL_MACHINE_WINDOWS_SCRIPT_PATH,
+ } from "./install-machine-asset.js";
++import { installP6rNativeRequestRoutes } from "./services/p6r/native-request.js";
++import { and, eq, isNull } from "drizzle-orm";
++import { hosts as hostsTable } from "@bb/db";
+ import { createNodeWebSocket } from "@hono/node-ws";
+ import {
+   declineWebSocketCompression,
+@@ -29,9 +32,11 @@ import {
+ } from "./services/connect-next/tunnel-ingress.js";
+ import { createHash, randomUUID } from "node:crypto";
+ import { readFile, stat } from "node:fs/promises";
++import { hostname } from "node:os";
+ import { performance } from "node:perf_hooks";
+ import { extname, join, resolve } from "node:path";
+-import { Hono } from "hono";
++import { Hono, type Context } from "hono";
++import { getCookie } from "hono/cookie";
+ import { terminalWebSocketQuerySchema } from "@bb/server-contract";
+ import { compress } from "hono/compress";
+ import { cors } from "hono/cors";
+@@ -88,8 +93,18 @@ import {
+ import {
+   captureTrustedRemoteAddress,
+   resolveRequestAccessRoute,
++  getGateAuthKind,
++  getGateMachineId,
++  getTrustedRemoteAddress,
+   resolveRequestAppSurface,
+ } from "./request-context.js";
++import { createP6rInvocationRegistry } from "./services/p6r/invocation-registry.js";
++import { createP6rIdentityService } from "./services/p6r/identity-protocol.js";
++import { createP6rNativeAcceptance } from "./services/p6r/native-acceptance.js";
++import { createP6rProviderAdmission } from "./services/p6r/provider-admission.js";
++import { createP6rProviderRegistry } from "./services/p6r/provider-registry.js";
++import { initializeP6rInstanceNamespace } from "./services/p6r/sidecar-store.js";
++import { createP6rPluginDispatch } from "./services/plugins/plugin-p6r-dispatch.js";
+ import { runEventLoopWork } from "./services/system/event-loop-work.js";
+ import { runWithTelemetryRequest } from "./services/system/telemetry.js";
+ import {
+@@ -161,6 +176,21 @@ type CloseWebSockets = () => Promise<void>;
+ type NodeWebSocketServer = ReturnType<typeof createNodeWebSocket>["wss"];
+ type WebSocketCloseError = Error | undefined;
+ 
++function p6rHonoContext(request: object): Context | null {
++  const candidate = request as {
++    readonly get?: unknown;
++    readonly req?: { readonly method?: unknown; readonly url?: unknown };
++  };
++  if (
++    typeof candidate.get !== "function" ||
++    typeof candidate.req?.method !== "string" ||
++    typeof candidate.req.url !== "string"
++  ) {
++    return null;
++  }
++  return request as Context;
++}
++
+ interface ServerApp {
+   app: Hono;
+   closeWebSockets: CloseWebSockets;
+@@ -546,21 +576,24 @@ export function createApp(
+     }
+     return runEventLoopWork(`${context.req.method} ${path}`, next);
+   });
+-  app.use(
+-    "*",
+-    cors({
+-      origin: (origin, context) => {
+-        if (context.req.path === "/health") {
+-          return "*";
+-        }
+-        const allowedCorsOrigins = allowedAppOrigins(deps);
+-        const requestOrigin = new URL(context.req.url).origin;
+-        if (origin === requestOrigin || allowedCorsOrigins.has(origin)) {
+-          return origin;
+-        }
+-        return null;
+-      },
+-    }),
++  const browserCors = cors({
++    origin: (origin, context) => {
++      if (context.req.path === "/health") {
++        return "*";
++      }
++      const allowedCorsOrigins = allowedAppOrigins(deps);
++      const requestOrigin = new URL(context.req.url).origin;
++      if (origin === requestOrigin || allowedCorsOrigins.has(origin)) {
++        return origin;
++      }
++      return null;
++    },
++  });
++  app.use("*", (context, next) =>
++    context.req.method === "OPTIONS" &&
++      PLUGIN_WIRE_HTTP_PATH.test(context.req.path)
++      ? next()
++      : browserCors(context, next),
+   );
+   const compressResponse = compress();
+   const compressApiJson = apiJsonCompression();
+@@ -789,7 +822,92 @@ export function createApp(
+     }
+     return next();
+   });
+-  const pluginService = createPluginService({
++  const p6rDispatch = createP6rPluginDispatch();
++  const p6rProviderRegistry = createP6rProviderRegistry({ now: Date.now });
++  const p6rInstanceId = initializeP6rInstanceNamespace(deps.db);
++  const p6rAdmission = createP6rProviderAdmission({
++    configured: () =>
++      deps.config.p6rIdentityBoundary !== null &&
++      deps.config.p6rIdentityBoundary !== undefined,
++    ingressFacts: ({ request }) => {
++      const context = p6rHonoContext(request);
++      const boundary = deps.config.p6rIdentityBoundary ?? null;
++      const remoteAddress =
++        context === null ? undefined : getTrustedRemoteAddress(context);
++      const trustedIngress = boundary?.trustedIngresses.find((candidate) =>
++        candidate.remoteAddresses.includes(remoteAddress ?? ""),
++      );
++      if (context === null || trustedIngress === undefined) return null;
++      const gateMachineId =
++        getGateAuthKind(context) === "machine"
++          ? getGateMachineId(context)
++          : null;
++      const matchedHosts =
++        gateMachineId === null
++          ? []
++          : deps.db
++              .select({ id: hostsTable.id, name: hostsTable.name })
++              .from(hostsTable)
++              .where(
++                and(
++                  eq(hostsTable.connectMachineId, gateMachineId),
++                  isNull(hostsTable.destroyedAt),
++                ),
++              )
++              .all();
++      const matchedHost = matchedHosts.length === 1 ? matchedHosts[0] : null;
++      return {
++        authenticatedPeer: trustedIngress.authenticatedPeer,
++        ...(matchedHost === null
++          ? {}
++          : { hostId: matchedHost.id, hostName: matchedHost.name }),
++        id: trustedIngress.id,
++        kind: trustedIngress.kind,
++      };
++    },
++    instanceId: p6rInstanceId,
++    machineName: hostname(),
++    now: Date.now,
++    providerRegistry: p6rProviderRegistry,
++    requestFacts: (request) => {
++      const context = p6rHonoContext(request);
++      if (context === null) return null;
++      const url = new URL(context.req.url);
++      return {
++        authority: url.host,
++        cookie: (name) => getCookie(context, name) ?? null,
++        header: (name) => context.req.header(name) ?? null,
++        method: context.req.method,
++        pathname: context.req.path,
++        receivedAt: Date.now(),
++        transport: "http" as const,
++      };
++    },
++    selectedConfiguration: () =>
++      (deps.config.p6rIdentityBoundary ?? null)?.configuration ?? null,
++  });
++  let pluginService: PluginService;
++  const p6rIdentity = createP6rIdentityService({
++    activateBindings: (generation) => p6rDispatch.activateBindings(generation),
++    bindInvocation: (input) => p6rDispatch.bindInvocation(input),
++    db: deps.db,
++    instanceId: p6rInstanceId,
++    invocationRegistry: createP6rInvocationRegistry(),
++    providerConfiguration: p6rAdmission.providerConfiguration,
++    providerRegistry: p6rProviderRegistry,
++    native: {
++      accept: createP6rNativeAcceptance({
++        deps,
++        now: Date.now,
++        retentionMs: 30 * 24 * 60 * 60 * 1_000,
++      }),
++      forwardRpc: (input) => pluginService.forwardP6rRpc(input),
++    },
++    now: Date.now,
++    retireBindings: (generation) => p6rDispatch.retireBindings(generation),
++    trustedInvocation: p6rAdmission.trustedInvocation,
++  });
++  pluginService = createPluginService({
+     machineEnrollments: getMachineEnrollmentService(deps),
+     db: deps.db,
+     hub: deps.hub,
+@@ -802,6 +920,9 @@ export function createApp(
+     getAppUrl: () => deps.config.appUrl ?? null,
+     sharedPorts: deps.sharedPorts,
+     providerRegistry: deps.providerRegistry,
++    p6rDispatch,
++    p6rIdentity,
++    p6rProviderRegistry,
+     pluginHostArtifacts: deps.pluginHostArtifacts,
+     aiServices: deps.aiServices,
+     ensureSharedPortTunnel: (hostId) =>
+@@ -924,6 +1045,11 @@ export function createApp(
+     notifyCatalogChanged: () => deps.hub.notifySystem(["plugins-changed"]),
+     warn: (message) => deps.logger.warn(message),
+   });
++  installP6rNativeRequestRoutes(
++    publicApi,
++    p6rAdmission,
++    deps.config.p6rIdentityBoundary?.configuration.pluginId ?? null,
++  );
+   registerProjectRoutes(publicApi, deps);
+   registerPromptHistoryRoutes(publicApi, deps);
+   registerThreadSectionRoutes(publicApi, deps);
+diff --git a/apps/server/src/services/hosts/host-environment-sync.test.ts b/apps/server/src/services/hosts/host-environment-sync.test.ts
+index ff632d11334f7b25cb9b5a7d956ed304d90c4eca..6492875863a923d505c7c60322945a52dc654eab 100644
+--- a/apps/server/src/services/hosts/host-environment-sync.test.ts
++++ b/apps/server/src/services/hosts/host-environment-sync.test.ts
+@@ -24,7 +24,9 @@ it("synchronizes configured variables to every connected host", async () => {
+     }
+     await writeFile(join(dataDir, "host-id"), "local");
+     await replaceMachineEnvironment(db, dataDir, {
+-      variables: [{ name: "MACHINE_VALUE", value: "first", note: null }],
++      variables: [
++        { name: "MACHINE_VALUE", value: "first", secret: false, note: null },
++      ],
+     });
+     const sync = new HostEnvironmentSync({
+       db,
+@@ -55,7 +57,9 @@ it("synchronizes configured variables to every connected host", async () => {
+       },
+     });
+     await replaceMachineEnvironment(db, dataDir, {
+-      variables: [{ name: "MACHINE_VALUE", value: "second", note: null }],
++      variables: [
++        { name: "MACHINE_VALUE", value: "second", secret: false, note: null },
++      ],
+     });
+     hub.notifySystem(["config-changed"]);
+     await vi.waitFor(() => expect(sent).toHaveLength(2));
+diff --git a/apps/server/src/services/hosts/host-environment.test.ts b/apps/server/src/services/hosts/host-environment.test.ts
+index 3c8cdc43f894bb0d9d77dab7eb4322d9e4f58526..0898684104f7ea2ca408fa4f68627472ef6886d9 100644
+--- a/apps/server/src/services/hosts/host-environment.test.ts
++++ b/apps/server/src/services/hosts/host-environment.test.ts
+@@ -69,7 +69,14 @@ it("gives every host user environment while forwarding automatic gh credentials
+     await writeFile(join(dataDir, "host-id"), "local-daemon");
+     expect(getHost(db, "legacy-remote")?.machineProviderId).toBe("manual");
+     await replaceMachineEnvironment(db, dataDir, {
+-      variables: [{ name: "MACHINE_VALUE", value: "configured", note: null }],
++      variables: [
++        {
++          name: "MACHINE_VALUE",
++          value: "configured",
++          secret: false,
++          note: null,
++        },
++      ],
+     });
+     const bin = join(dataDir, "bin");
+     await mkdir(bin);
+@@ -125,8 +132,8 @@ it("gives every host user environment while forwarding automatic gh credentials
+     expect(disabled.some((row) => row.name === "MACHINE_VALUE")).toBe(true);
+     await replaceMachineEnvironment(db, dataDir, {
+       variables: [
+-        { name: "MACHINE_VALUE", value: null, note: null },
+-        { name: "GH_TOKEN", value: "custom-token", note: null },
++        { name: "MACHINE_VALUE", value: null, secret: false, note: null },
++        { name: "GH_TOKEN", value: "custom-token", secret: true, note: null },
+       ],
+     });
+     const overridden = await resolveHostEnvironment(deps, {
+diff --git a/apps/server/src/services/machines/environment-settings.ts b/apps/server/src/services/machines/environment-settings.ts
+index 175c9a4242c1c8679b82bf947ae41678055b5dd9..b8e61b1c33b120485f4899ba9b4a8a5873664978 100644
+--- a/apps/server/src/services/machines/environment-settings.ts
++++ b/apps/server/src/services/machines/environment-settings.ts
+@@ -18,6 +18,7 @@ export async function resolveUserMachineEnvironment(
+     rows.map(async (row) => ({
+       name: row.name,
+       value: await decryptMachineEnvironment(dataDir, row),
++      secret: row.secret,
+       reason:
+         row.note ??
+         (projectId === null
+@@ -31,13 +32,30 @@ export async function resolveUserMachineEnvironment(
+   );
+ }
+ 
+-export async function machineEnvironmentView(db: DbConnection) {
+-  const variables = readMachineEnvironment(db).map((row) => ({
+-    name: row.name,
+-    value: null,
+-    secret: true as const,
+-    note: row.note,
+-  }));
++async function environmentVariablesView(
++  db: DbConnection,
++  dataDir: string,
++  projectId: string | null = null,
++) {
++  return Promise.all(
++    readMachineEnvironment(db, projectId).map(async (row) =>
++      row.secret
++        ? { name: row.name, value: null, secret: true as const, note: row.note }
++        : {
++            name: row.name,
++            value: await decryptMachineEnvironment(dataDir, row),
++            secret: false as const,
++            note: row.note,
++          },
++    ),
++  );
++}
++
++export async function machineEnvironmentView(
++  db: DbConnection,
++  dataDir: string,
++) {
++  const variables = await environmentVariablesView(db, dataDir);
+   const overridden = variables.some((row) => row.name === "GH_TOKEN");
+   const enabled = getAppSettings(db).machineGitCredentialsEnabled;
+   const health =
+@@ -68,15 +86,11 @@ export async function machineEnvironmentView(db: DbConnection) {
+ 
+ export async function projectMachineEnvironmentView(
+   db: DbConnection,
++  dataDir: string,
+   projectId: string,
+ ) {
+-  const global = await machineEnvironmentView(db);
+-  const variables = readMachineEnvironment(db, projectId).map((row) => ({
+-    name: row.name,
+-    value: null,
+-    secret: true as const,
+-    note: row.note,
+-  }));
++  const global = await machineEnvironmentView(db, dataDir);
++  const variables = await environmentVariablesView(db, dataDir, projectId);
+   return {
+     builtInGit: variables.some((row) => row.name === "GH_TOKEN")
+       ? {
+diff --git a/apps/server/src/services/machines/environment-storage.test.ts b/apps/server/src/services/machines/environment-storage.test.ts
+index fd341a6195479b114ee37baf7968ead3642e5b8b..f512c97b7b9f9912b0a445f2739761f34523bf26 100644
+--- a/apps/server/src/services/machines/environment-storage.test.ts
++++ b/apps/server/src/services/machines/environment-storage.test.ts
+@@ -3,12 +3,7 @@ import { eq } from "drizzle-orm";
+ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+-import {
+-  projects,
+-  appSettingsValues,
+-  environmentVariables,
+-  type DbConnection,
+-} from "@bb/db";
++import { projects, environmentVariables, type DbConnection } from "@bb/db";
+ import { createMigratedConnection } from "@bb/db/testing";
+ import { afterEach, beforeEach, expect, it } from "vitest";
+ import {
+@@ -31,8 +26,12 @@ afterEach(async () => {
+ });
+ it("stores encrypted values that survive a database reopen", async () => {
+   await replaceMachineEnvironment(db, dataDir, {
+-    variables: ["REGION", "TOKEN"].map((name) => ({
++    variables: [
++      { name: "REGION", secret: false },
++      { name: "TOKEN", secret: true },
++    ].map(({ name, secret }) => ({
+       name,
++      secret,
+       value: "private-" + name,
+       note: null,
+     })),
+@@ -57,15 +56,15 @@ it("stores encrypted values that survive a database reopen", async () => {
+ it("replaces the whole list while retaining unchanged ciphertext", async () => {
+   await replaceMachineEnvironment(db, dataDir, {
+     variables: [
+-      { name: "REMOVE", value: "old", note: null },
+-      { name: "TOKEN", value: "private", note: null },
++      { name: "REMOVE", value: "old", secret: false, note: null },
++      { name: "TOKEN", value: "private", secret: true, note: null },
+     ],
+   });
+   const token = readMachineEnvironment(db).find((row) => row.name === "TOKEN");
+   await replaceMachineEnvironment(db, dataDir, {
+     variables: [
+-      { name: "TOKEN", value: null, note: "Retained" },
+-      { name: "ADDED", value: "new", note: null },
++      { name: "TOKEN", value: null, secret: true, note: "Retained" },
++      { name: "ADDED", value: "new", secret: false, note: null },
+     ],
+   });
+   const rows = readMachineEnvironment(db);
+@@ -76,7 +75,7 @@ it("replaces the whole list while retaining unchanged ciphertext", async () => {
+ 
+ it("authenticates ciphertext and its variable name", async () => {
+   await replaceMachineEnvironment(db, dataDir, {
+-    variables: [{ name: "TOKEN", value: "private", note: null }],
++    variables: [{ name: "TOKEN", value: "private", secret: true, note: null }],
+   });
+   const [row] = readMachineEnvironment(db);
+   await expect(
+@@ -94,15 +93,15 @@ it("authenticates ciphertext and its variable name", async () => {
+ 
+ it("does not replace a missing encryption key or overwrite existing ciphertext", async () => {
+   await replaceMachineEnvironment(db, dataDir, {
+-    variables: [{ name: "TOKEN", value: "private", note: null }],
++    variables: [{ name: "TOKEN", value: "private", secret: true, note: null }],
+   });
+   const before = db.select().from(environmentVariables).all();
+   await rm(join(dataDir, "machine-environment-key"));
+   await expect(
+     replaceMachineEnvironment(db, dataDir, {
+       variables: [
+-        { name: "TOKEN", value: null, note: null },
+-        { name: "OTHER", value: "new", note: null },
++        { name: "TOKEN", value: null, secret: true, note: null },
++        { name: "OTHER", value: "new", secret: false, note: null },
+       ],
+     }),
+   ).rejects.toThrow("encryption key is unavailable");
+@@ -114,11 +113,11 @@ it("does not replace a missing encryption key or overwrite existing ciphertext",
+ 
+ it("serializes replacement and removal without resurrecting values", async () => {
+   await replaceMachineEnvironment(db, dataDir, {
+-    variables: [{ name: "TOKEN", value: "old", note: null }],
++    variables: [{ name: "TOKEN", value: "old", secret: true, note: null }],
+   });
+   await Promise.all([
+     replaceMachineEnvironment(db, dataDir, {
+-      variables: [{ name: "TOKEN", value: "new", note: null }],
++      variables: [{ name: "TOKEN", value: "new", secret: true, note: null }],
+     }),
+     replaceMachineEnvironment(db, dataDir, { variables: [] }),
+   ]);
+@@ -134,26 +133,26 @@ it("isolates scopes, authenticates scope, and preserves concurrent edits", async
+   await setMachineEnvironmentVariable(
+     db,
+     dataDir,
+-    { name: "TOKEN", value: "global", note: null },
++    { name: "TOKEN", value: "global", secret: true, note: null },
+     null,
+   );
+   await Promise.all([
+     setMachineEnvironmentVariable(
+       db,
+       dataDir,
+-      { name: "TOKEN", value: "project-a", note: null },
++      { name: "TOKEN", value: "project-a", secret: true, note: null },
+       "a",
+     ),
+     setMachineEnvironmentVariable(
+       db,
+       dataDir,
+-      { name: "OTHER", value: "other", note: null },
++      { name: "OTHER", value: "other", secret: false, note: null },
+       "a",
+     ),
+     setMachineEnvironmentVariable(
+       db,
+       dataDir,
+-      { name: "TOKEN", value: "", note: null },
++      { name: "TOKEN", value: "", secret: true, note: null },
+       "b",
+     ),
+   ]);
+@@ -195,7 +194,7 @@ it("does not create a new key for an empty scope when another scope still has ci
+   await setMachineEnvironmentVariable(
+     db,
+     dataDir,
+-    { name: "TOKEN", value: "secret", note: null },
++    { name: "TOKEN", value: "secret", secret: true, note: null },
+     "a",
+   );
+   await rm(join(dataDir, "machine-environment-key"));
+@@ -203,14 +202,14 @@ it("does not create a new key for an empty scope when another scope still has ci
+     setMachineEnvironmentVariable(
+       db,
+       dataDir,
+-      { name: "GLOBAL", value: "value", note: null },
++      { name: "GLOBAL", value: "value", secret: false, note: null },
+       null,
+     ),
+   ).rejects.toThrow("encryption key is unavailable");
+   expect(readMachineEnvironment(db)).toEqual([]);
+ });
+ 
+-it("migrates legacy settings without changing ciphertext or requiring its key", async () => {
++it("preserves explicitly classified retained encryption before a value upgrade", async () => {
+   const key = randomBytes(32);
+   const iv = randomBytes(12);
+   const cipher = createCipheriv("aes-256-gcm", key, iv);
+@@ -224,39 +223,23 @@ it("migrates legacy settings without changing ciphertext or requiring its key",
+     cipher.getAuthTag(),
+     encrypted,
+   ]).toString("base64");
+-  db.insert(appSettingsValues)
++  db.insert(environmentVariables)
+     .values({
+-      key: "machineEnvironment:TOKEN",
+-      value: JSON.stringify({
+-        version: 1,
+-        name: "TOKEN",
+-        ciphertext,
+-        note: "Legacy",
+-      }),
++      projectId: null,
++      name: "TOKEN",
++      secret: true,
++      ciphertext,
++      encryptionVersion: 1,
++      note: "Retained classified credential",
+       updatedAt: 7,
+     })
+     .run();
+-  db.$client.exec("DROP TABLE environment_variables");
+-  const sql = await readFile(
+-    new URL(
+-      "../../../../../packages/db/drizzle/0123_cheerful_tomorrow_man.sql",
+-      import.meta.url,
+-    ),
+-    "utf8",
+-  );
+-  db.$client.exec(sql);
+-  expect(
+-    db
+-      .select()
+-      .from(appSettingsValues)
+-      .all()
+-      .some((row) => row.key.startsWith("machineEnvironment:")),
+-  ).toBe(false);
+   expect(readMachineEnvironment(db)[0]).toMatchObject({
+     ciphertext,
++    secret: true,
+     encryptionVersion: 1,
+     projectId: null,
+-    note: "Legacy",
++    note: "Retained classified credential",
+   });
+   await writeFile(
+     join(dataDir, "machine-environment-key"),
+@@ -267,13 +250,13 @@ it("migrates legacy settings without changing ciphertext or requiring its key",
+     await decryptMachineEnvironment(dataDir, readMachineEnvironment(db)[0]!),
+   ).toBe("legacy-secret");
+   await replaceMachineEnvironment(db, dataDir, {
+-    variables: [{ name: "TOKEN", value: null, note: "Retained" }],
++    variables: [{ name: "TOKEN", value: null, secret: true, note: "Retained" }],
+   });
+   expect(readMachineEnvironment(db)[0]?.ciphertext).toBe(ciphertext);
+   await setMachineEnvironmentVariable(
+     db,
+     dataDir,
+-    { name: "TOKEN", value: "updated", note: null },
++    { name: "TOKEN", value: "updated", secret: true, note: null },
+     null,
+   );
+   expect(readMachineEnvironment(db)[0]?.encryptionVersion).toBe(2);
+diff --git a/apps/server/src/services/machines/environment-storage.ts b/apps/server/src/services/machines/environment-storage.ts
+index 7161b5ba65055d2ce771556a52de3bfc73aeb9c8..4aece64f03287db8a1d91ba10600bfa67779cad0 100644
+--- a/apps/server/src/services/machines/environment-storage.ts
++++ b/apps/server/src/services/machines/environment-storage.ts
+@@ -22,6 +22,7 @@ const encryptedSchema = z.object({
+   encryptionVersion: z.union([z.literal(1), z.literal(2)]),
+   projectId: z.string().nullable(),
+   name: machineEnvironmentNameSchema,
++  secret: z.boolean(),
+   ciphertext: z.string(),
+   note: z.string().nullable(),
+ });
+@@ -80,6 +81,7 @@ function encrypt(
+     encryptionVersion: row.encryptionVersion,
+     projectId,
+     name: input.name,
++    secret: input.secret,
+     ciphertext: Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString(
+       "base64",
+     ),
+@@ -170,7 +172,7 @@ export function replaceMachineEnvironment(
+           "invalid_request",
+           `No saved value for ${variable.name}; reload settings and retry`,
+         );
+-      return { ...existing, note: variable.note };
++      return { ...existing, note: variable.note, secret: variable.secret };
+     });
+     db.transaction((tx) => {
+       tx.delete(environmentVariables).where(scope(projectId)).run();
+diff --git a/apps/server/src/services/machines/git-credentials.test.ts b/apps/server/src/services/machines/git-credentials.test.ts
+index eafd1a301575454b51aafc190f287967743eff49..5d31e9d87d183a7b875e7c51bcc22b08b54e7109 100644
+--- a/apps/server/src/services/machines/git-credentials.test.ts
++++ b/apps/server/src/services/machines/git-credentials.test.ts
+@@ -63,6 +63,7 @@ describe("machine Git environment", () => {
+       {
+         name: "GH_TOKEN",
+         value: "provider-token",
++        secret: true,
+         source: { plugin: "provider" },
+         reason: "Override",
+       },
+@@ -88,6 +89,9 @@ describe("machine Git environment", () => {
+       const env = Object.fromEntries(
+         entries.map((entry) => [entry.name, entry.value]),
+       );
++      expect(
++        entries.filter((entry) => entry.secret).map((entry) => entry.name),
++      ).toEqual(["GH_TOKEN"]);
+       expect(env.GIT_AUTHOR_NAME).toBe(login);
+       expect(env.GIT_COMMITTER_NAME).toBe(login);
+       expect(env.GIT_AUTHOR_EMAIL).toBe(
+@@ -225,6 +229,7 @@ describe("server Git credential refresh", () => {
+     results[0]!.push({
+       name: "EXTRA",
+       value: "mutated",
++      secret: false,
+       source: { core: "machine-git" },
+       reason: "mutation",
+     });
+diff --git a/apps/server/src/services/machines/git-credentials.ts b/apps/server/src/services/machines/git-credentials.ts
+index a8fa461ef56fa70b00294557b4c85793c78feb00..582aab4443512cdeacf1b37e8a744205b04eadf5 100644
+--- a/apps/server/src/services/machines/git-credentials.ts
++++ b/apps/server/src/services/machines/git-credentials.ts
+@@ -40,6 +40,7 @@ export function githubGitConfiguration(): HostDaemonContributedEnvEntry[] {
+     ([name, value]) => ({
+       name,
+       value,
++      secret: false,
+       source: { core: "machine-git" },
+       reason: "GitHub HTTPS authentication",
+     }),
+@@ -63,8 +64,14 @@ async function loadGitCredentials(
+       user.email ?? `${user.id}+${user.login}@users.noreply.github.com`;
+     return [
+       ...githubGitConfiguration(),
++      {
++        name: "GH_TOKEN",
++        value: token,
++        secret: true,
++        source: { core: "machine-git" },
++        reason: "GitHub credentials from the server gh login",
++      },
+       ...Object.entries({
+-        GH_TOKEN: token,
+         GIT_AUTHOR_NAME: user.login,
+         GIT_AUTHOR_EMAIL: email,
+         GIT_COMMITTER_NAME: user.login,
+@@ -72,6 +79,7 @@ async function loadGitCredentials(
+       }).map<HostDaemonContributedEnvEntry>(([name, value]) => ({
+         name,
+         value,
++        secret: false,
+         source: { core: "machine-git" },
+         reason: "GitHub credentials from the server gh login",
+       })),
+diff --git a/apps/server/src/services/plugins/plugin-agent-contributions.ts b/apps/server/src/services/plugins/plugin-agent-contributions.ts
+index 8f404d386b106b8230b08ea81189d1b49548b269..cb8be60e288554dff6476ca606357ae55f66cf83 100644
+--- a/apps/server/src/services/plugins/plugin-agent-contributions.ts
++++ b/apps/server/src/services/plugins/plugin-agent-contributions.ts
+@@ -78,6 +78,7 @@ export async function resolvePluginProviderEnv(args: {
+   return (await active.resolveProviderEnv(args)).entries.map((entry) => ({
+     name: entry.name,
+     value: entry.value,
++    secret: entry.secret,
+     source: entry.source,
+     reason: entry.reason,
+   }));
+diff --git a/apps/server/src/services/plugins/plugin-api.ts b/apps/server/src/services/plugins/plugin-api.ts
+index 45d9415ed9a5913606f41dad27c8c813bcb5201e..8a4d00cd509bf25ed0ef74136909e14564daf7ab 100644
+--- a/apps/server/src/services/plugins/plugin-api.ts
++++ b/apps/server/src/services/plugins/plugin-api.ts
+@@ -13,20 +13,28 @@ import type { MachineEnrollments } from "../machines/enrollments.js";
+ import { listServerAccessProviders } from "./plugin-server-access-registry.js";
+ import { detachActivePluginToolCallForUserInput } from "./plugin-tool-calls.js";
+ import { fillPluginPresentation } from "./plugin-presentation.js";
++import { randomUUID } from "node:crypto";
+ import { mkdirSync } from "node:fs";
+ import { join } from "node:path";
+ import Database from "better-sqlite3";
+ import { CronExpressionParser } from "cron-parser";
+ import {
+   deletePluginKvValue,
++  activatePluginThreadFacetDeclarations,
+   getPluginKvValue,
+   getHost,
++  listPriorThreadFacetSnapshotTargets,
++  markThreadFacetOwnerGenerationReady,
++  markThreadFacetOwnerGenerationUnavailable,
++  recordThreadFacetCensusExhausted,
++  replaceThreadFacetRelationsInGeneration,
+   listPluginKvKeys,
+   setPluginKvValue,
+   type DbConnection,
+   type WalCheckpointer,
+ } from "@bb/db";
+ import type { ThreadEventItemPresentation } from "@bb/domain";
++import { getThreadRoutePath } from "@bb/client-core";
+ import type {
+   BbPluginApi,
+   PluginAgentConfiguration,
+@@ -58,6 +66,12 @@ import type {
+   PluginMentionTrigger,
+   PluginMachines,
+   PluginAiServices,
++  ExperimentalP6rIdentityProtocol,
++  ExperimentalThreadFacetCardinality,
++  ExperimentalThreadFacetHandle,
++  ExperimentalThreadFacetTarget,
++  ExperimentalThreadFacetTargetGrant,
++  ExperimentalThreadFacets,
+   PluginProviderDeclaration,
+   ExperimentalPluginProviderEnvContext,
+   ExperimentalPluginProviderEnvEntry,
+@@ -69,6 +83,7 @@ import type {
+   PluginRealtime,
+   PluginRpc,
+   PluginServerApi,
++  P6rExperimentalPluginRoutes,
+   PluginSettingDescriptors,
+   PluginSettingValue,
+   PluginSettings,
+@@ -301,7 +316,9 @@ export interface PluginApiHandle {
+   agentConfigurationProvider: PluginAgentConfigurationProvider | null;
+   instructionProvider: PluginInstructionProvider | null;
+   mentionProviders: PluginMentionProviderRecord[];
++  activateP6rIdentity(): void;
+   activate(): void;
++  retireP6rIdentity(): void;
+   closeWebSockets(): void;
+   invalidate(): void;
+ }
+@@ -353,7 +370,35 @@ function withPluginThreadAttribution<
+   return { ...args, ...attribution };
+ }
+ 
+-function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): PluginBbSdk {
++interface ThreadFacetTargetRecord {
++  thread: ExperimentalThreadFacetTarget;
++  threadId: string;
++}
++
++interface StagedThreadFacet {
++  active: { generation: number; typeId: import("@bb/domain").ThreadFacetTypeId } | null;
++  censusInFlight: boolean;
++  cursorPositions: Map<string, string>;
++  declaration: {
++    assignmentScope: "shared-thread";
++    cardinality: ExperimentalThreadFacetCardinality;
++    localName: string;
++    memberKind: "enum";
++    members: readonly string[];
++  };
++  expectedCursor: string | null | undefined;
++}
++
++interface ThreadFacetGrantRecord extends ThreadFacetTargetRecord {}
++
++function wrapSdkForPlugin(
++  sdk: BbSdk,
++  pluginId: string,
++  rpcCallerSdk: BbSdk,
++  registerThreadFacetTarget: <T extends ExperimentalThreadFacetTarget>(
++    thread: T,
++  ) => T,
++): PluginBbSdk {
+   return {
+     ...sdk,
+     environments: {
+@@ -401,6 +446,12 @@ function wrapSdkForPlugin(sdk: BbSdk, pluginId: string): PluginBbSdk {
+       send(args) {
+         return sdk.threads.send({ ...args, originPluginId: pluginId });
+       },
++      async get(args) {
++        return registerThreadFacetTarget(await sdk.threads.get(args));
++      },
++      async list(args) {
++        return (await sdk.threads.list(args)).map(registerThreadFacetTarget);
++      },
+     },
+   };
+ }
+@@ -565,6 +616,11 @@ export function createPluginApi(options: {
+   };
+   isProviderIdTaken: (providerId: string) => boolean;
+   assertProviderRegistrable: (providerId: string) => void;
++  p6rIdentity?: {
++    readonly protocol: ExperimentalP6rIdentityProtocol;
++    activate(): void;
++    retire(): void;
++  };
+ }): PluginApiHandle {
+   const {
+     pluginId,
+@@ -599,13 +655,19 @@ export function createPluginApi(options: {
+     registerAiService,
+     isProviderIdTaken,
+     assertProviderRegistrable,
++    p6rIdentity,
+   } = options;
+   let invalidated = false;
+   let activated = false;
++  let facetAuthorityRevoked = false;
++  let facetsCommitted = false;
+   let wrappedSdk: PluginBbSdk | undefined;
+   let pendingNeedsConfiguration: string | null = null;
+   const pendingAgentToolProblems: string[] = [];
+   const pendingSharedPorts = new Map<string, readonly number[]>();
++  const stagedThreadFacets: StagedThreadFacet[] = [];
++  const threadFacetGrants = new WeakMap<object, ThreadFacetGrantRecord>();
++  const threadFacetTargets = new WeakMap<object, ThreadFacetTargetRecord>();
+   const disposeHooks: Array<() => void | Promise<void>> = [];
+   const openTunnelIngresses = new Set<() => Promise<void>>();
+   const installHandlers: Array<() => void | Promise<void>> = [];
+@@ -668,6 +730,149 @@ export function createPluginApi(options: {
+     if (invalidated) throw stale();
+   }
+ 
++  function refuseThreadFacetCapability(): never {
++    throw new Error("Native thread facet capability is unavailable");
++  }
++
++  function assertFacetAuthorityLive(): void {
++    assertLive();
++    if (facetAuthorityRevoked) refuseThreadFacetCapability();
++  }
++
++  function registerThreadFacetTarget<T extends ExperimentalThreadFacetTarget>(
++    thread: T,
++  ): T {
++    threadFacetTargets.set(thread, { thread, threadId: thread.id });
++    return thread;
++  }
++
++  function activeFacet(staged: StagedThreadFacet): {
++    generation: number;
++    typeId: import("@bb/domain").ThreadFacetTypeId;
++  } {
++    assertFacetAuthorityLive();
++    if (staged.active === null) refuseThreadFacetCapability();
++    return staged.active;
++  }
++
++  function grantRecord(target: ExperimentalThreadFacetTargetGrant): ThreadFacetGrantRecord {
++    assertFacetAuthorityLive();
++    const grant = threadFacetGrants.get(target);
++    if (grant === undefined) refuseThreadFacetCapability();
++    const current = threadFacetTargets.get(grant.thread);
++    if (current !== grant || grant.thread.id !== grant.threadId) refuseThreadFacetCapability();
++    return grant;
++  }
++
++  async function facetOperation<T>(operation: () => T | Promise<T>): Promise<T> {
++    try {
++      return await operation();
++    } catch {
++      return refuseThreadFacetCapability();
++    }
++  }
++
++  function facetHandle<
++    Cardinality extends ExperimentalThreadFacetCardinality,
++    Member extends string,
++  >(staged: StagedThreadFacet): ExperimentalThreadFacetHandle<Cardinality, Member> {
++    return {
++      replace(target, members) {
++        return facetOperation(() => {
++          const active = activeFacet(staged);
++          const grant = grantRecord(target);
++          replaceThreadFacetRelationsInGeneration(db, { ...active, threadId: grant.threadId, members });
++        });
++      },
++      clear(target) {
++        return facetOperation(() => {
++          const active = activeFacet(staged);
++          const grant = grantRecord(target);
++          replaceThreadFacetRelationsInGeneration(db, { ...active, threadId: grant.threadId, members: [] });
++        });
++      },
++      listPriorTargets(args) {
++        return facetOperation(async () => {
++          if (staged.censusInFlight) refuseThreadFacetCapability();
++          staged.censusInFlight = true;
++          try {
++            const active = activeFacet(staged);
++            const supplied = args?.cursor;
++            if (staged.expectedCursor === null || supplied !== staged.expectedCursor) refuseThreadFacetCapability();
++            const pageSize = args?.pageSize ?? 50;
++            if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) refuseThreadFacetCapability();
++            const afterThreadId = supplied === undefined ? undefined : staged.cursorPositions.get(supplied);
++            if (supplied !== undefined && afterThreadId === undefined) refuseThreadFacetCapability();
++            const page = listPriorThreadFacetSnapshotTargets(db, { ...active, limit: pageSize, ...(afterThreadId === undefined ? {} : { afterThreadId }) });
++            const sdk = getSdk();
++            if (sdk === undefined) refuseThreadFacetCapability();
++            const targets: ExperimentalThreadFacetTarget[] = [];
++            for (const threadId of page.threadIds) targets.push(registerThreadFacetTarget(await sdk.threads.get({ threadId })));
++            if (page.nextAfterThreadId === null) {
++              recordThreadFacetCensusExhausted(db, active);
++              staged.expectedCursor = null;
++              if (supplied !== undefined) staged.cursorPositions.delete(supplied);
++              return { targets, nextCursor: null };
++            }
++            const nextCursor = randomUUID();
++            staged.cursorPositions.set(nextCursor, page.nextAfterThreadId);
++            staged.expectedCursor = nextCursor;
++            if (supplied !== undefined) staged.cursorPositions.delete(supplied);
++            return { targets, nextCursor };
++          } finally {
++            staged.censusInFlight = false;
++          }
++        });
++      },
++      markReady() {
++        return facetOperation(() => markThreadFacetOwnerGenerationReady(db, activeFacet(staged)));
++      },
++    };
++  }
++
++  const experimental_facets: ExperimentalThreadFacets = {
++    target(thread) {
++      assertFacetAuthorityLive();
++      const target = threadFacetTargets.get(thread);
++      if (target === undefined || target.thread.id !== target.threadId) refuseThreadFacetCapability();
++      const grant = Object.freeze({}) as ExperimentalThreadFacetTargetGrant;
++      threadFacetGrants.set(grant, target);
++      return grant;
++    },
++    declare(declaration) {
++      assertFacetAuthorityLive();
++      if (facetsCommitted) refuseThreadFacetCapability();
++      const staged: StagedThreadFacet = {
++        declaration: {
++          assignmentScope: declaration.assignmentScope,
++          cardinality: declaration.cardinality,
++          localName: declaration.localName,
++          memberKind: declaration.memberKind,
++          members: [...declaration.members],
++        },
++        active: null,
++        censusInFlight: false,
++        cursorPositions: new Map(),
++        expectedCursor: undefined,
++      };
++      stagedThreadFacets.push(staged);
++      return facetHandle(staged);
++    },
++  };
++
++  function revokeThreadFacetAuthority(): void {
++    if (facetAuthorityRevoked) return;
++    facetAuthorityRevoked = true;
++    for (const staged of stagedThreadFacets) {
++      if (staged.active === null) continue;
++      try {
++        markThreadFacetOwnerGenerationUnavailable(db, staged.active);
++      } catch (error) {
++        logger.warn(`plugin ${pluginId} thread facet revocation failed: ${error instanceof Error ? error.message : String(error)}`);
++      }
++    }
++  }
++
+   const prefix = `[plugin:${pluginId}]`;
+   function emitLog(
+     level: "debug" | "info" | "warn" | "error",
+@@ -1057,6 +1262,13 @@ export function createPluginApi(options: {
+     },
+   };
+ 
++  const experimentalRoutes: P6rExperimentalPluginRoutes = {
++    p6rThreadPath(args) {
++      assertLive();
++      return getThreadRoutePath(args);
++    },
++  };
++
+   const server: PluginServerApi = {
+     get experimental_appUrl(): string | null {
+       assertLive();
+@@ -1446,21 +1658,26 @@ export function createPluginApi(options: {
+     server,
+     hosts,
+     experimental_aiServices,
++    experimental_facets,
++    experimental_p6rRoutes: experimentalRoutes,
++    ...(p6rIdentity === undefined
++      ? {}
++      : { experimental_p6rIdentity: p6rIdentity.protocol }),
+     get sdk(): PluginBbSdk {
+       assertLive();
+       const loopbackBaseUrl = getLoopbackBaseUrl();
+-      if (!getSdk() || loopbackBaseUrl === undefined) {
++      const sdk = getSdk();
++      if (!sdk || loopbackBaseUrl === undefined) {
+         throw new Error(
+           "bb.sdk is not available until the server is listening — " +
+             "use it inside handlers, services, or timers, not at factory load time",
+         );
+       }
+       wrappedSdk ??= wrapSdkForPlugin(
+-        createPluginRpcCallerSdk({
+-          baseUrl: loopbackBaseUrl,
+-          token: rpcCaller.token,
+-        }),
++        sdk,
+         pluginId,
++        createPluginRpcCallerSdk({ baseUrl: loopbackBaseUrl, token: rpcCaller.token }),
++        registerThreadFacetTarget,
+       );
+       return wrappedSdk;
+     },
+@@ -1508,6 +1725,10 @@ export function createPluginApi(options: {
+       return instructionProvider;
+     },
+     mentionProviders,
++    activateP6rIdentity() {
++      assertLive();
++      p6rIdentity?.activate();
++    },
+     activate() {
+       if (activated) return;
+       assertLive();
+@@ -1516,6 +1737,19 @@ export function createPluginApi(options: {
+       );
+       providerRegistrations.flush();
+       aiServiceRegistrations.flush();
++      const activatedFacets = activatePluginThreadFacetDeclarations(db, {
++        ownerPluginId: pluginId,
++        declarations: stagedThreadFacets.map(({ declaration }) => declaration),
++      });
++      if (activatedFacets.length !== stagedThreadFacets.length) {
++        throw new Error("Thread facet declarations did not activate completely");
++      }
++      for (const [index, active] of activatedFacets.entries()) {
++        const staged = stagedThreadFacets[index];
++        if (staged === undefined) throw new Error("Missing staged thread facet");
++        staged.active = { generation: active.generation, typeId: active.declaration.typeId };
++      }
++      facetsCommitted = true;
+       activated = true;
+       const cliWarning = cliRecord.registration
+         ? pluginCliCollisionWarning(pluginId, cliRecord.registration.name)
+@@ -1531,6 +1765,9 @@ export function createPluginApi(options: {
+         pendingNeedsConfiguration = null;
+       }
+     },
++    retireP6rIdentity() {
++      p6rIdentity?.retire();
++    },
+     closeWebSockets() {
+       for (const route of websocketRoutes) {
+         route.active = false;
+@@ -1547,6 +1784,7 @@ export function createPluginApi(options: {
+       }
+     },
+     invalidate() {
++      revokeThreadFacetAuthority();
+       invalidated = true;
+       rpcCaller.revoke();
+       for (const close of [...openTunnelIngresses]) void close();
+diff --git a/apps/server/src/services/plugins/plugin-mentions.ts b/apps/server/src/services/plugins/plugin-mentions.ts
+index 1d6340f3af3a68f135cbbf575640c5d916fe9521..d587e68fe223edfc33e1f6ec682e7366f46b085b 100644
+--- a/apps/server/src/services/plugins/plugin-mentions.ts
++++ b/apps/server/src/services/plugins/plugin-mentions.ts
+@@ -1,4 +1,4 @@
+-import type { PromptInput } from "@bb/domain";
++import type { P6rMentionTarget, PromptInput } from "@bb/domain";
+ import { ApiError } from "../../errors.js";
+ import { resolvePluginMention } from "./plugin-agent-contributions.js";
+ 
+@@ -26,12 +26,14 @@ function collectPluginMentionResources(
+   return resources;
+ }
+ 
+-export async function resolvePluginMentionContextInputs(
+-  input: readonly PromptInput[],
+-): Promise<PromptInput[]> {
+-  const resources = collectPluginMentionResources(input);
+-  if (resources.length === 0) return [];
+-  const contextInputs: PromptInput[] = [];
++async function resolvePluginMentionResources(
++  resources: readonly PluginMentionResource[],
++): Promise<{
++  contextInputsByResource: PromptInput[][];
++  targets: P6rMentionTarget[];
++}> {
++  const targets = new Map<string, P6rMentionTarget>();
++  const contextInputsByResource: PromptInput[][] = [];
+   for (const resource of resources) {
+     const result = await resolvePluginMention({
+       pluginId: resource.pluginId,
+@@ -44,12 +46,15 @@ export async function resolvePluginMentionContextInputs(
+         `Could not resolve @${resource.label} (plugin "${resource.pluginId}"): ${result.error}`,
+       );
+     }
+-    contextInputs.push({
+-      type: "text",
+-      text: `Context for @${resource.label} (resolved by plugin "${resource.pluginId}"):\n\n${result.context}`,
+-      mentions: [],
+-      visibility: "agent-only",
+-    });
++    if (result.target) targets.set(result.target.identity.key, result.target);
++    const contextInputs: PromptInput[] = [
++      {
++        type: "text",
++        text: `Context for @${resource.label} (resolved by plugin "${resource.pluginId}"):\n\n${result.context}`,
++        mentions: [],
++        visibility: "agent-only",
++      },
++    ];
+     for (const image of result.images) {
+       if (image.context?.trim()) {
+         contextInputs.push({
+@@ -66,6 +71,66 @@ export async function resolvePluginMentionContextInputs(
+         visibility: "agent-only",
+       });
+     }
++    contextInputsByResource.push(contextInputs);
+   }
+-  return contextInputs;
++  return { contextInputsByResource, targets: [...targets.values()] };
++}
++
++export async function resolvePluginMentionInputsByGroup(
++  inputGroups: readonly (readonly PromptInput[])[],
++): Promise<{
++  contextInputs: PromptInput[][];
++  targets: P6rMentionTarget[];
++}> {
++  const resourcesByGroup = inputGroups.map(collectPluginMentionResources);
++  const resources: PluginMentionResource[] = [];
++  const seen = new Set<string>();
++  for (const group of resourcesByGroup) {
++    for (const resource of group) {
++      const key = `${resource.pluginId}::${resource.itemId}`;
++      if (seen.has(key)) continue;
++      seen.add(key);
++      resources.push(resource);
++    }
++  }
++  if (resources.length > 256)
++    throw new ApiError(
++      422,
++      "plugin_mention_resolve_failed",
++      "Too many plugin mention targets",
++    );
++  const resolved = await resolvePluginMentionResources(resources);
++  const contextByKey = new Map(
++    resources.map(
++      (resource, index) =>
++        [
++          `${resource.pluginId}::${resource.itemId}`,
++          resolved.contextInputsByResource[index]!,
++        ] as const,
++    ),
++  );
++  return {
++    contextInputs: resourcesByGroup.map((group) =>
++      group.flatMap((resource) =>
++        contextByKey.get(`${resource.pluginId}::${resource.itemId}`)!,
++      ),
++    ),
++    targets: resolved.targets,
++  };
++}
++
++export async function resolvePluginMentionInputs(
++  input: readonly PromptInput[],
++): Promise<{ contextInputs: PromptInput[]; targets: P6rMentionTarget[] }> {
++  const result = await resolvePluginMentionInputsByGroup([input]);
++  return {
++    contextInputs: result.contextInputs[0] ?? [],
++    targets: result.targets,
++  };
++}
++
++export async function resolvePluginMentionContextInputs(
++  input: readonly PromptInput[],
++): Promise<PromptInput[]> {
++  return (await resolvePluginMentionInputs(input)).contextInputs;
+ }
+diff --git a/apps/server/src/services/plugins/plugin-p6r-dispatch.ts b/apps/server/src/services/plugins/plugin-p6r-dispatch.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..64e65ddd63af044b0e2a6a9ce8328768bb0655b0
+--- /dev/null
++++ b/apps/server/src/services/plugins/plugin-p6r-dispatch.ts
+@@ -0,0 +1,191 @@
++import { AsyncLocalStorage } from "node:async_hooks";
++import type {
++  ExperimentalP6rInvocationContext,
++  ExperimentalP6rInvocationRegistration,
++  ExperimentalP6rInvocationRouteClass,
++} from "@get-bb/plugin-sdk";
++import type { P6rIdentityGeneration } from "../p6r/identity-protocol.js";
++
++interface P6rBinding {
++  activate(): void;
++  readonly generation: P6rIdentityGeneration;
++  readonly handler: object;
++  readonly registration: ExperimentalP6rInvocationRegistration;
++  readonly routeClass: ExperimentalP6rInvocationRouteClass;
++  retire(): void;
++}
++
++const routeClasses = new Set<ExperimentalP6rInvocationRouteClass>([
++  "interactive-session",
++  "external-credential",
++  "anonymous",
++  "plugin-background",
++  "agent-tool",
++  "local-cli",
++]);
++
++function isSameGeneration(
++  left: P6rIdentityGeneration,
++  right: P6rIdentityGeneration,
++): boolean {
++  return (
++    left.generation === right.generation && left.pluginId === right.pluginId
++  );
++}
++
++export interface P6rPluginDispatch {
++  activateBindings(generation: P6rIdentityGeneration): void;
++  bindInvocation<Args extends readonly unknown[], Output>(input: {
++    readonly generation: P6rIdentityGeneration;
++    readonly handler: (
++      context: ExperimentalP6rInvocationContext<object>,
++      ...args: Args
++    ) => Output;
++    readonly routeClass: ExperimentalP6rInvocationRouteClass;
++  }): {
++    readonly handler: (...args: Args) => Output;
++    readonly registration: ExperimentalP6rInvocationRegistration;
++  };
++  bindingFor(handler: unknown):
++    | {
++        readonly generation: string;
++        readonly pluginId: string;
++        readonly routeClass: ExperimentalP6rInvocationRouteClass;
++      }
++    | undefined;
++  retireBindings(generation: P6rIdentityGeneration): void;
++  runWithInvocation<Output>(
++    handler: unknown,
++    context: ExperimentalP6rInvocationContext<object>,
++    run: () => Output,
++  ): Output;
++}
++
++export function createP6rPluginDispatch(): P6rPluginDispatch {
++  const contexts = new AsyncLocalStorage<{
++    readonly binding: P6rBinding;
++    readonly context: ExperimentalP6rInvocationContext<object>;
++  }>();
++  const bindings = new Map<string, Set<P6rBinding>>();
++  const bindingsByHandler = new WeakMap<object, P6rBinding>();
++
++  return {
++    activateBindings(generation) {
++      const entries = bindings.get(generation.generation);
++      if (entries === undefined) return;
++      for (const binding of entries) {
++        if (!isSameGeneration(binding.generation, generation)) continue;
++        binding.activate();
++      }
++    },
++
++    bindInvocation<Args extends readonly unknown[], Output>(input: {
++      readonly generation: P6rIdentityGeneration;
++      readonly handler: (
++        context: ExperimentalP6rInvocationContext<object>,
++        ...args: Args
++      ) => Output;
++      readonly routeClass: ExperimentalP6rInvocationRouteClass;
++    }) {
++      if (!routeClasses.has(input.routeClass)) {
++        throw new Error(`Unsupported p6r route class: ${input.routeClass}`);
++      }
++      let status: ExperimentalP6rInvocationRegistration["status"] =
++        "staged";
++      let binding: P6rBinding | undefined;
++      const remove = (): void => {
++        if (binding === undefined) return;
++        const entries = bindings.get(binding.generation.generation);
++        entries?.delete(binding);
++        if (entries?.size === 0) bindings.delete(binding.generation.generation);
++        bindingsByHandler.delete(binding.handler);
++      };
++      const registration: ExperimentalP6rInvocationRegistration = {
++        generation: input.generation.generation,
++        get status() {
++          return status;
++        },
++        dispose() {
++          status = "retired";
++          remove();
++        },
++      };
++      const handler = (...args: Args): Output => {
++        if (status !== "active") {
++          throw new Error("P6r invocation binding is unavailable");
++        }
++        const execution = contexts.getStore();
++        if (execution === undefined || execution.binding !== binding) {
++          throw new Error("P6r invocation requires host dispatch context");
++        }
++        if (
++          execution.context.scope.signal.aborted ||
++          !execution.context.scope.validate().ok
++        ) {
++          throw new Error("P6r invocation scope is unavailable");
++        }
++        return input.handler(execution.context, ...args);
++      };
++      binding = {
++        activate() {
++          if (status === "staged") status = "active";
++        },
++        generation: input.generation,
++        handler,
++        registration,
++        routeClass: input.routeClass,
++        retire() {
++          status = "retired";
++        },
++      };
++      const entries = bindings.get(input.generation.generation) ?? new Set();
++      const registeredBinding = binding;
++      if (registeredBinding === undefined) {
++        throw new Error("P6r invocation binding was not initialized");
++      }
++      entries.add(registeredBinding);
++      bindings.set(input.generation.generation, entries);
++      bindingsByHandler.set(handler, registeredBinding);
++      return { handler, registration };
++    },
++
++    bindingFor(handler) {
++      if (typeof handler !== "function") return undefined;
++      const binding = bindingsByHandler.get(handler);
++      return binding === undefined
++        ? undefined
++        : {
++            generation: binding.generation.generation,
++            pluginId: binding.generation.pluginId,
++            routeClass: binding.routeClass,
++          };
++    },
++
++    retireBindings(generation) {
++      const entries = bindings.get(generation.generation);
++      if (entries === undefined) return;
++      for (const binding of entries) {
++        if (!isSameGeneration(binding.generation, generation)) continue;
++        binding.retire();
++        bindingsByHandler.delete(binding.handler);
++        entries.delete(binding);
++      }
++      if (entries.size === 0) bindings.delete(generation.generation);
++    },
++
++    runWithInvocation(handler, context, run) {
++      const binding =
++        (typeof handler === "function" ||
++          (typeof handler === "object" && handler !== null))
++          ? bindingsByHandler.get(handler)
++          : undefined;
++      if (binding === undefined || binding.registration.status !== "active") {
++        throw new Error("P6r invocation binding is unavailable");
++      }
++      if (context.scope.signal.aborted || !context.scope.validate().ok) {
++        throw new Error("P6r invocation scope is unavailable");
++      }
++      return contexts.run({ binding, context }, run);
++    },
++  };
++}
+diff --git a/apps/server/src/services/plugins/plugin-p6r-http.ts b/apps/server/src/services/plugins/plugin-p6r-http.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e5ce50c2065e32d952f534333d08197b1fcef655
+--- /dev/null
++++ b/apps/server/src/services/plugins/plugin-p6r-http.ts
+@@ -0,0 +1,53 @@
++import type { P6rInvocationScope } from "../p6r/invocation-registry.js";
++
++export function retainP6rHttpResponse(response: Response, scope: P6rInvocationScope): Response {
++  if (response.body === null) {
++    scope.release();
++    return response;
++  }
++  const reader = response.body.getReader();
++  let settled = false;
++  let streamController: ReadableStreamDefaultController<Uint8Array>;
++  const finish = () => {
++    if (settled) return;
++    settled = true;
++    scope.signal.removeEventListener("abort", abort);
++    scope.release();
++  };
++  const abort = () => {
++    if (settled) return;
++    finish();
++    streamController.error(new Error("Plugin HTTP invocation cancelled"));
++    void reader.cancel().catch(() => undefined);
++  };
++  const body = new ReadableStream<Uint8Array>({
++    start(controller) {
++      streamController = controller;
++      scope.signal.addEventListener("abort", abort, { once: true });
++      if (scope.signal.aborted) abort();
++    },
++    async pull(controller) {
++      if (settled) return;
++      try {
++        const item = await reader.read();
++        if (settled) return;
++        if (!scope.validate().ok) { abort(); return; }
++        if (item.done) {
++          finish();
++          controller.close();
++        } else {
++          controller.enqueue(item.value);
++        }
++      } catch (cause) {
++        if (settled) return;
++        finish();
++        controller.error(cause);
++      }
++    },
++    cancel(reason) {
++      finish();
++      return reader.cancel(reason);
++    },
++  });
++  return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
++}
+diff --git a/apps/server/src/services/plugins/plugin-runtime.ts b/apps/server/src/services/plugins/plugin-runtime.ts
+index bb1145f3bac135866d0515a7c3e08302e41cd50d..f56aa0c4f9e5733a71bd2939b14b9eeaad58115d 100644
+--- a/apps/server/src/services/plugins/plugin-runtime.ts
++++ b/apps/server/src/services/plugins/plugin-runtime.ts
+@@ -40,7 +40,14 @@ import {
+   isMutableArtifactStale,
+   isMutablePluginHostReusable,
+ } from "./mutable-plugin-artifacts.js";
+-import { createNodeBbSdk, type BbSdk } from "@bb/sdk";
++import {
++  createNodeBbSdk,
++  createRequestTimeoutFetch,
++  DEFAULT_BB_REQUEST_TIMEOUT_MS,
++  type BbSdk,
++  type FetchImplementation,
++} from "@bb/sdk";
++
+ import {
+   getInstalledPlugin,
+   getPluginSafeMode,
+@@ -109,6 +116,8 @@ import { runEventLoopWork } from "../system/event-loop-work.js";
+ import { abortPluginToolCallsForPlugin } from "./plugin-tool-calls.js";
+ import { buildCachedPluginServer } from "./plugin-server-cache.js";
+ import { createPluginRpcCallerRegistry } from "./plugin-rpc-caller.js";
++import type { P6rPreparedProvider } from "../p6r/provider-contract.js";
++import type { P6rIdentityExtension } from "../p6r/identity-protocol.js";
+ 
+ const serverRuntimeDir = dirname(fileURLToPath(import.meta.url));
+ const pluginSdkRuntimePath = join(serverRuntimeDir, "plugin-sdk-runtime.js");
+@@ -117,7 +126,6 @@ const PLUGIN_SDK_SPECIFIER = "@get-bb/plugin-sdk";
+ 
+ const LEGACY_PLUGIN_SDK_SPECIFIER = "@bb/plugin-sdk";
+ const ZOD_SPECIFIER = "zod";
+-
+ async function hashFile(
+   path: string,
+ ): Promise<{ digest: string; byteLength: number }> {
+@@ -436,6 +444,8 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+   const agentToolProblems = new Map<string, string>();
+   const handlerStats = new Map<string, PluginHandlerStats>();
+   let boundSdk: BbSdk | undefined;
++  let boundSdkBaseUrl: string | undefined;
++  let boundSdkFetch: FetchImplementation | undefined;
+   let boundLoopbackBaseUrl: string | undefined;
+   const rpcCallers = createPluginRpcCallerRegistry();
+   let loadHold: PluginLoadHold | null = null;
+@@ -1765,6 +1775,12 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+       current: {},
+     };
+     const stopping = new AbortController();
++    const p6rGeneration = randomUUID();
++    const p6rCandidate = deps.p6rIdentity?.forPluginGeneration(
++      row.id,
++      p6rGeneration,
++      stopping.signal,
++    );
+     const handle = createPluginApi({
+       recordPluginUse: () => capturePluginUse(deps, row.id),
+       pluginId: row.id,
+@@ -1772,7 +1788,10 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+       db: deps.db,
+       dataDir: deps.dataDir,
+       walCheckpointer: deps.walCheckpointer ?? null,
+-      getSdk: () => boundSdk,
++      getSdk: () =>
++        p6rCandidate === undefined
++          ? boundSdk
++          : createP6rPluginSdk(p6rCandidate),
+       getMachineEnrollments: () => {
+         if (!context.machineEnrollments)
+           throw new Error(
+@@ -1954,6 +1973,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+         }
+         throw new Error(providerWithoutBridgeMessage(providerId));
+       },
++      ...(p6rCandidate === undefined ? {} : { p6rIdentity: p6rCandidate }),
+       isProviderIdTaken: (providerId) => {
+         if (!deps.providerRegistry) {
+           throw new Error("the provider registry is unavailable in this host");
+@@ -2068,6 +2088,32 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+       logger.warn(`plugin ${row.id} failed to load: ${hostArtifactProblem}`);
+       return hostArtifactProblem;
+     }
++    const preparedP6rProvider =
++      p6rCandidate === undefined
++        ? null
++        : (deps.p6rIdentity?.preparedProvider(row.id, p6rGeneration) ?? null);
++    let publishedP6rProvider: {
++      active: P6rPreparedProvider;
++      predecessor: P6rPreparedProvider | null;
++    } | null = null;
++    if (preparedP6rProvider !== null) {
++      const registry = deps.p6rProviderRegistry;
++      if (registry === undefined) {
++        handle.retireP6rIdentity();
++        handle.invalidate();
++        return failBeforeFactory(
++          "error",
++          "P6r provider staging is unavailable in this host",
++        );
++      }
++      const published = registry.publish(preparedP6rProvider);
++      if (!published.ok) {
++        handle.retireP6rIdentity();
++        handle.invalidate();
++        return failBeforeFactory("error", published.error.message);
++      }
++      publishedP6rProvider = published.value;
++    }
+     plugin.services = handle.backgroundServices.map((record) => ({
+       record,
+       state: "stopped" as const,
+@@ -2104,6 +2150,13 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+     needsConfiguration.delete(row.id);
+     agentToolProblems.delete(row.id);
+     handle.activate();
++    handle.activateP6rIdentity();
++    if (publishedP6rProvider !== null) {
++      deps.p6rProviderRegistry?.notifyPublished(publishedP6rProvider.active);
++      if (publishedP6rProvider.predecessor !== null) {
++        deps.p6rProviderRegistry?.retire(publishedP6rProvider.predecessor);
++      }
++    }
+     const now = Date.now();
+     prunePluginSchedules(
+       deps.db,
+@@ -2139,6 +2192,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+   async function disposePluginInstance(plugin: LoadedPlugin): Promise<void> {
+     const id = plugin.pluginId;
+     try {
++      plugin.handle.retireP6rIdentity();
+       plugin.handle.closeWebSockets();
+       plugin.stopping.abort();
+       if (plugin.hostArtifact !== null && deps.disposePluginHost) {
+@@ -2247,10 +2301,46 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
+   }
+ 
+   function bindSdk(args: { baseUrl: string }): void {
+-    boundSdk = createNodeBbSdk({ baseUrl: args.baseUrl });
++    boundSdkBaseUrl = args.baseUrl;
++    boundSdkFetch = createRequestTimeoutFetch({
++      timeoutMs: DEFAULT_BB_REQUEST_TIMEOUT_MS,
++    });
++    boundSdk = createNodeBbSdk({
++      baseUrl: args.baseUrl,
++      fetch: boundSdkFetch,
++    });
+     boundLoopbackBaseUrl = args.baseUrl;
+   }
+ 
++  function createP6rPluginSdk(
++    p6rIdentity: P6rIdentityExtension,
++  ): BbSdk | undefined {
++    if (boundSdkBaseUrl === undefined || boundSdkFetch === undefined) {
++      return undefined;
++    }
++    const sdkFetch = boundSdkFetch;
++    return createNodeBbSdk({
++      baseUrl: boundSdkBaseUrl,
++      fetch: async (input, init) => {
++        if (!p6rIdentity.producerMessageRenderingEnabled?.()) {
++          return sdkFetch(input, init);
++        }
++        const request = new Request(input, init);
++        if (
++          request.method !== "POST" ||
++          !/^\/api\/v1\/threads\/[^/]+\/(?:send|queued-messages)$/u.test(
++            new URL(request.url).pathname.replace(/\/+$/u, ""),
++          )
++        ) {
++          return sdkFetch(input, init);
++        }
++        const headers = new Headers(request.headers);
++        headers.set("x-bb-p6r-message-rendering", "producer");
++        return sdkFetch(input, { ...init, headers });
++      },
++    });
++  }
++
+   return {
+     REGISTRATION_MUTATION_KEY,
+     agentToolProblems,
+diff --git a/apps/server/src/services/plugins/plugin-service-internal.ts b/apps/server/src/services/plugins/plugin-service-internal.ts
+index e2a94d6d26df108e027ce37ec522e668ed15794a..ed1deb2ace9e82d3f7c8b8690e79b8f9d9d54a0a 100644
+--- a/apps/server/src/services/plugins/plugin-service-internal.ts
++++ b/apps/server/src/services/plugins/plugin-service-internal.ts
+@@ -1,6 +1,7 @@
+ import type { TunnelIngressLease } from "../connect-next/tunnel-ingress.js";
+ import type { EnvironmentRemoval } from "@bb/domain";
+ import type { MachineEnrollmentService } from "../machines/machine-services.js";
++import type { P6rMentionTarget } from "@bb/domain";
+ import type { AiServiceRegistry } from "../ai/ai-service-registry.js";
+ import type { DbConnection, HostRow, WalCheckpointer } from "@bb/db";
+ import type {
+@@ -33,6 +34,15 @@ import type {
+ import type { HostSharedPortCoordinator } from "../../ws/host-shared-ports.js";
+ import type { ProviderRegistryService } from "../providers/provider-registry.js";
+ import type { PluginHostArtifactRegistry } from "./plugin-host-artifact-registry.js";
++import type { P6rIdentityService } from "../p6r/identity-protocol.js";
++import type { P6rInvocationIngress } from "../p6r/invocation-registry.js";
++import type { P6rProviderRegistry } from "../p6r/provider-contract.js";
++import type { P6rPluginDispatch } from "./plugin-p6r-dispatch.js";
++export type {
++  PluginHandlerStats,
++  PluginRuntimeStatus,
++  PluginUpdateCheckEntry,
++} from "@bb/server-contract";
+ 
+ type PluginServiceState = "running" | "backoff" | "stopped";
+ 
+@@ -83,6 +93,9 @@ export interface PluginServiceDeps {
+     hostId: string,
+   ) => Promise<HostDaemonConnectTunnelIdentity>;
+   providerRegistry?: ProviderRegistryService;
++  p6rIdentity?: P6rIdentityService;
++  p6rDispatch?: P6rPluginDispatch;
++  p6rProviderRegistry?: P6rProviderRegistry;
+   pluginHostArtifacts?: PluginHostArtifactRegistry;
+   aiServices: AiServiceRegistry;
+   onSettingsChanged?: (pluginId: string) => void;
+@@ -177,6 +190,11 @@ export interface PluginAgentToolContribution {
+   instructions: string | null;
+ }
+ 
++export interface PluginRpcInvocationContext {
++  readonly ingress: P6rInvocationIngress;
++  readonly request: object;
++}
++
+ export interface PluginInstructionContribution {
+   pluginId: string;
+   provider: (ctx: { threadId: string; projectId: string }) => string | null;
+@@ -226,6 +244,7 @@ export type PluginMentionResolveResult =
+         | { type: "image"; url: string; context?: string }
+         | { type: "localImage"; path: string; context?: string }
+       >;
++      target?: P6rMentionTarget;
+     }
+   | { ok: false; error: string };
+ 
+diff --git a/apps/server/src/services/plugins/plugin-service.ts b/apps/server/src/services/plugins/plugin-service.ts
+index d5da1d6247510c9581931a09586796ba7d109b9b..6dfd062e542e281710f12597d9374b6e1ee9d301 100644
+--- a/apps/server/src/services/plugins/plugin-service.ts
++++ b/apps/server/src/services/plugins/plugin-service.ts
+@@ -9,6 +9,7 @@ import type {
+ } from "@bb/server-contract";
+ import type Database from "better-sqlite3";
+ import { watch } from "node:fs";
++import { randomUUID } from "node:crypto";
+ import { readFile, rm } from "node:fs/promises";
+ import { join } from "node:path";
+ import { homedir } from "node:os";
+@@ -189,12 +190,19 @@ import {
+   pluginVersionLabelForRow,
+   type PluginApplyUpdateOptions,
+ } from "./plugin-updates.js";
++import { retainP6rHttpResponse } from "./plugin-p6r-http.js";
++import type {
++  P6rIdentityCaptureResult,
++  P6rJson,
++} from "../p6r/identity-protocol.js";
++import type { P6rInvocationScope } from "../p6r/invocation-registry.js";
+ 
+ import type {
+   LoadedPlugin,
+   PluginAgentToolContribution,
+   PluginApplyUpdateOutcome,
+   PluginInstructionContribution,
++  PluginRpcInvocationContext,
+   PluginMentionProviderContribution,
+   PluginMentionResolveResult,
+   PluginMentionSearchGroup,
+@@ -441,9 +449,20 @@ export interface PluginService {
+     input: unknown,
+     caller: ExperimentalPluginRpcCaller,
+     signal: AbortSignal | null,
++    context?: PluginRpcInvocationContext,
+   ): Promise<
+     { ok: true; result: JsonValue } | { ok: false; error: PluginRpcError }
+   >;
++  forwardP6rRpc(args: {
++    destination: { method: string; pluginId: string };
++    deriveScope: (destinationGeneration: string) => {
++      request: object;
++      release(): void;
++      scope: P6rInvocationScope;
++    } | null;
++    input: P6rJson;
++    sourcePluginId: string;
++  }): Promise<P6rJson>;
+   httpToken(
+     id: string,
+     options?: { rotate?: boolean },
+@@ -526,6 +545,19 @@ function throwRpcBoundaryError(error: PluginRpcError): never {
+   throw new PluginRpcBoundaryError(error);
+ }
+ 
++function p6rCaptureTransportFailure(
++  capture: Extract<P6rIdentityCaptureResult, { ok: false }>,
++): { readonly code: "unauthenticated" | "unavailable"; readonly message: string; readonly status: 401 | 503 } {
++  return {
++    code: "unavailable",
++    message:
++      capture.code === "retired"
++        ? "P6r invocation scope is unavailable"
++        : "P6r identity is unavailable for this request",
++    status: 503,
++  };
++}
++
+ function normalizeAgentToolResult(
+   name: string,
+   result: unknown,
+@@ -619,6 +651,17 @@ function normalizeMentionSearchItems(
+   });
+ }
+ 
++
++function pluginHttpExternalOrigin(
++  getAppUrl: (() => string | null) | undefined,
++  context: Context,
++): string {
++  const configured = getAppUrl?.();
++  return configured === null || configured === undefined
++    ? new URL(context.req.url).origin
++    : new URL(configured).origin;
++}
++
+ export function createPluginService(deps: PluginServiceDeps): PluginService {
+   const logger = deps.logger;
+   const installHandlerTimeoutMs = deps.installHandlerTimeoutMs ?? 30_000;
+@@ -2177,8 +2220,70 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+         owner,
+         `http ${route.method} ${route.path}`,
+         async () => {
+-          const response = await route.handler(context);
+-          return adoptHttpRouteResponse(response);
++          const p6rRequestContext = {
++            experimental_p6rExternalOrigin: pluginHttpExternalOrigin(
++              deps.getAppUrl,
++              context,
++            ),
++          };
++          const dispatch = deps.p6rDispatch;
++          const binding = dispatch?.bindingFor(route.handler);
++          if (binding === undefined) {
++            return adoptHttpRouteResponse(
++              await route.handler(context, p6rRequestContext),
++            );
++          }
++          if (
++            binding.pluginId !== owner.pluginId ||
++            dispatch === undefined ||
++            deps.p6rIdentity === undefined
++          ) {
++            throw new Error("P6r HTTP invocation context is unavailable");
++          }
++          const capture = await deps.p6rIdentity.captureInvocation({
++            generation: binding.generation,
++            ingress: { requestId: randomUUID(), transport: "http" },
++            pluginId: owner.pluginId,
++            request: context,
++            routeClass: binding.routeClass,
++          });
++          if (!capture.ok) {
++            const failure = p6rCaptureTransportFailure(capture);
++            return context.json(
++              {
++                ok: false,
++                error: { code: failure.code, message: failure.message },
++              },
++              failure.status,
++            );
++          }
++          const abort = () => capture.scope.release();
++          context.req.raw.signal.addEventListener("abort", abort, {
++            once: true,
++          });
++          capture.scope.signal.addEventListener(
++            "abort",
++            () => context.req.raw.signal.removeEventListener("abort", abort),
++            { once: true },
++          );
++          if (context.req.raw.signal.aborted) {
++            abort();
++            throw new Error("P6r HTTP request is aborted");
++          }
++          try {
++            const response = await dispatch.runWithInvocation(
++              route.handler,
++              { request: context, scope: capture.scope },
++              () => route.handler(context, p6rRequestContext),
++            );
++            return retainP6rHttpResponse(
++              adoptHttpRouteResponse(response),
++              capture.scope,
++            );
++          } catch (cause) {
++            capture.scope.release();
++            throw cause;
++          }
+         },
+       );
+       if (outcome.ok) return outcome.value;
+@@ -2228,7 +2333,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+       );
+     },
+ 
+-    async invokeRpcHandler(owner, method, handler, input, caller, signal) {
++    async invokeRpcHandler(owner, method, handler, input, caller, signal, context) {
+       const outcome = await invokeWrapped(
+         owner,
+         `rpc ${method}`,
+@@ -2241,10 +2346,26 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+           );
+           let result: unknown;
+           try {
+-            result = await handler.handler(parsedInput, {
++            const run = () => handler.handler(parsedInput, {
+               experimental_caller: caller,
+               experimental_signal: invocationSignal,
+             });
++            const dispatch = deps.p6rDispatch;
++            const binding = dispatch?.bindingFor(handler.handler);
++            if (binding === undefined) {
++              result = await run();
++            } else {
++              if (binding.pluginId !== owner.pluginId || context === undefined || deps.p6rIdentity === undefined || dispatch === undefined) {
++                throw new PluginRpcBoundaryError({ code: "handler_error", message: "P6r invocation context is unavailable" });
++              }
++              const capture = await deps.p6rIdentity.captureInvocation({ generation: binding.generation, ingress: context.ingress, pluginId: owner.pluginId, request: context.request, routeClass: binding.routeClass });
++              if (!capture.ok) {
++                const failure = p6rCaptureTransportFailure(capture);
++                throwRpcBoundaryError({ code: failure.code, message: failure.message });
++              }
++              try { result = await dispatch.runWithInvocation(handler.handler, { request: context.request, scope: capture.scope }, run); }
++              finally { capture.scope.release(); }
++            }
+           } catch (error) {
+             const refusal = readPluginRpcRefusal(error);
+             if (refusal === null) throw error;
+@@ -2281,6 +2402,66 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+       };
+     },
+ 
++    async forwardP6rRpc(args) {
++      const target = loaded.get(args.destination.pluginId);
++      if (target === undefined) {
++        throw new Error("P6r forwarding destination is unavailable");
++      }
++      const handler = target.handle.rpcHandlers.get(args.destination.method);
++      if (handler === undefined) {
++        throw new Error("P6r forwarding destination method is unavailable");
++      }
++      const dispatch = deps.p6rDispatch;
++      const binding = dispatch?.bindingFor(handler.handler);
++      if (
++        dispatch === undefined ||
++        binding === undefined ||
++        binding.pluginId !== args.destination.pluginId
++      ) {
++        throw new Error("P6r forwarding destination is not an active binding");
++      }
++      const parsedInput = await validateRpcValue(
++        handler.inputSchema,
++        args.input,
++        "input",
++        throwRpcBoundaryError,
++      );
++      const derived = args.deriveScope(binding.generation);
++      if (derived === null) {
++        throw new Error("P6r forwarding source or destination is unavailable");
++      }
++      let outcome: Awaited<ReturnType<typeof invokeWrapped>>;
++      try {
++        outcome = await invokeWrapped(
++          target,
++          `p6r forward ${args.destination.method}`,
++          (invocationSignal) =>
++            dispatch.runWithInvocation(
++              handler.handler,
++              { request: derived.request, scope: derived.scope },
++              () =>
++                handler.handler(parsedInput as never, {
++                  experimental_signal: invocationSignal,
++                  experimental_caller: {
++                    kind: "plugin",
++                    pluginId: args.sourcePluginId,
++                  },
++                }),
++            ),
++        );
++      } finally {
++        derived.release();
++      }
++      if (!outcome.ok) throw new Error(outcome.error);
++      const parsedOutput = await validateRpcValue(
++        handler.outputSchema,
++        outcome.value,
++        "output",
++        throwRpcBoundaryError,
++      );
++      return normalizeRpcJsonResult(parsedOutput, throwRpcBoundaryError);
++    },
++
+     async httpToken(id, options) {
+       if (!getInstalledPlugin(deps.db, id)) return undefined;
+       const dir = pluginSecretsDir(deps.dataDir, id);
+@@ -2468,15 +2649,32 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+           `provider environment for ${providerId}`,
+           async () =>
+             raceTimeout(
+-              Promise.resolve(resolve(context)).then((value) =>
+-                validatePluginProviderEnvEntries(value),
+-              ),
++              Promise.resolve(resolve(context)),
+               providerEnvResolveTimeoutMs,
+               `timed out after ${providerEnvResolveTimeoutMs}ms`,
+             ),
+         );
+-        if (!outcome.ok) continue;
+-        for (const entry of outcome.value) {
++        if (!outcome.ok) {
++          if (
++            outcome.cause instanceof Error &&
++            outcome.cause.name === "AbortError"
++          )
++            throw outcome.cause;
++          throw new Error(
++            `Plugin ${pluginId} provider environment resolver failed for ${providerId}: ${outcome.error}; inference was not started.`,
++            { cause: outcome.cause },
++          );
++        }
++        let validatedEntries;
++        try {
++          validatedEntries = validatePluginProviderEnvEntries(outcome.value);
++        } catch (error) {
++          throw new Error(
++            `Plugin ${pluginId} provider environment validation failed for ${providerId}: ${error instanceof Error ? error.message : "invalid entries"}`,
++            { cause: error },
++          );
++        }
++        for (const entry of validatedEntries) {
+           const earlierPluginId = ownerByName.get(entry.name);
+           if (earlierPluginId !== undefined) {
+             logger.error(
+@@ -2491,7 +2689,13 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+             continue;
+           }
+           ownerByName.set(entry.name, pluginId);
+-          entries.push({ ...entry, source: { plugin: pluginId } });
++          entries.push({
++            name: entry.name,
++            value: entry.value,
++            reason: entry.reason,
++            secret: entry.experimental_secret,
++            source: { plugin: pluginId },
++          });
+         }
+       }
+       return { entries };
+@@ -2705,8 +2909,23 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+           const record = result as {
+             context?: unknown;
+             experimental_images?: unknown;
++            experimental_target?: unknown;
+           } | null;
+           const context = record?.context;
++          const target = record?.experimental_target;
++          const selected =
++            target !== null &&
++            typeof target === "object" &&
++            !Array.isArray(target) &&
++            (target as Record<string, unknown>).kind === "p6r-person" &&
++            typeof (target as Record<string, unknown>).issuer === "string" &&
++            typeof (target as Record<string, unknown>).subject === "string"
++              ? (target as {
++                  kind: "p6r-person";
++                  issuer: string;
++                  subject: string;
++                })
++              : undefined;
+           if (typeof context !== "string" || context.trim().length === 0) {
+             throw new Error(
+               `mention provider "${providerId}" resolve() must return { context: string }`,
+@@ -2754,10 +2973,45 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
+                     : { context: candidate.context as string }),
+                 };
+           });
+-          return { context, images };
++          if (
++            target !== undefined &&
++            (selected === undefined ||
++              selected.issuer.length === 0 ||
++              selected.issuer.length > 512 ||
++              selected.subject.length === 0 ||
++              selected.subject.length > 512)
++          )
++            throw new Error("mention target selector is malformed");
++          if (selected === undefined) return { context, images };
++          const normalized = await deps.p6rProviderRegistry?.personForPlugin({
++            pluginId,
++            issuer: selected.issuer,
++            subject: selected.subject,
++          });
++          if (normalized === undefined || !normalized.ok)
++            throw new Error(
++              "mention target is not an active verified provider person",
++            );
++          return {
++            context,
++            images,
++            target: {
++              identity: normalized.value.person,
++              presentation: normalized.value.presentation,
++              source: { pluginId, generation: normalized.value.generation },
++            },
++          };
+         },
+       );
+-      if (outcome.ok) return { ok: true, ...outcome.value };
++      if (outcome.ok)
++        return {
++          ok: true,
++          context: outcome.value.context,
++          images: outcome.value.images,
++          ...(outcome.value.target === undefined
++            ? {}
++            : { target: outcome.value.target }),
++        };
+       return { ok: false, error: outcome.error };
+     },
+ 
+diff --git a/apps/server/src/services/providers/provider-model-catalog-store.ts b/apps/server/src/services/providers/provider-model-catalog-store.ts
+index ff4840d0dc5484f30afee4e6976c2540f56fb616..3d3d541abb2fa79ff80e8f2d57743b6a32668cc9 100644
+--- a/apps/server/src/services/providers/provider-model-catalog-store.ts
++++ b/apps/server/src/services/providers/provider-model-catalog-store.ts
+@@ -1,3 +1,4 @@
++import { readRequiredExternalModelCatalog } from "./required-external-model-catalog.js";
+ import { createHash } from "node:crypto";
+ import {
+   deleteStoredProviderModelCatalogsForHost,
+@@ -55,6 +56,7 @@ export type ProviderModelCatalogAccess =
+       kind: "validation";
+       requiredModel: string | null;
+       selectedModel?: string;
++      forceRefresh?: boolean;
+     };
+ 
+ type ProviderModelCatalogReadResult =
+@@ -123,12 +125,12 @@ interface CatalogFailure {
+   failedAt: number;
+ }
+ 
+-interface CatalogRefresh {
++interface CatalogRefresh<T = void> {
+   fingerprint: string;
+   sessionId: string | null;
+   startedAt: number;
+   markedStale: boolean;
+-  promise: Promise<void>;
++  promise: Promise<T>;
+ }
+ 
+ interface CatalogEntry {
+@@ -136,7 +138,7 @@ interface CatalogEntry {
+   good: CatalogGood | null;
+   failure: CatalogFailure | null;
+   unavailableDetail: string | null;
+-  refresh: CatalogRefresh | null;
++  refresh: CatalogRefresh<RefreshResult> | null;
+   selectedModels: Map<string, CatalogRefresh & { expiresAt: number }>;
+ }
+ 
+@@ -144,6 +146,10 @@ type RefreshSettlement =
+   | { ok: true; models: AvailableModel[]; selectedOnlyModels: AvailableModel[] }
+   | { ok: false; error: unknown };
+ 
++type RefreshResult =
++  | { ok: true }
++  | { ok: false; code: ProviderModelCatalogFailureCode; detail: string | null };
++
+ type CatalogDecision =
+   | {
+       kind: "serve";
+@@ -209,6 +215,16 @@ async function resolveCatalogLaunch(args: {
+         bridgeLaunch.providerOptions,
+         bridgeLaunch.envPassthrough,
+         contributedEnv.map((entry) => [entry.name, entry.value]),
++        ...(process.env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED !== undefined &&
++        ["claude-code", "codex"].includes(args.providerId)
++          ? [
++              process.env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED,
++              process.env.BB_ACCOUNT_POOL_EXTERNAL_URL ?? null,
++              createHash("sha256")
++                .update(process.env.BB_ACCOUNT_POOL_EXTERNAL_TOKEN ?? "")
++                .digest("hex"),
++            ]
++          : []),
+       ]),
+     )
+     .digest("hex");
+@@ -325,6 +341,16 @@ function evaluate(
+   const active = failure !== null && now - failure.failedAt < FAILURE_TTL_MS;
+   if (servable !== null) {
+     const stale = !refreshed && !active && now - servable.fetchedAt >= FRESH_MS;
++    if (access.kind === "validation" && access.forceRefresh === true) {
++      if (refreshed && failure !== null) {
++        return {
++          kind: "serve",
++          result: { kind: "error", code: failure.code, detail: failure.detail },
++          backgroundRefresh: false,
++        };
++      }
++      if (!refreshed) return { kind: "wait" };
++    }
+     if (
+       stale &&
+       access.kind === "validation" &&
+@@ -485,9 +511,9 @@ export function createProviderModelCatalogStore(options: {
+   function settle(
+     deps: WorkSessionDeps,
+     entry: CatalogEntry,
+-    refresh: CatalogRefresh,
++    refresh: CatalogRefresh<RefreshResult>,
+     settlement: RefreshSettlement,
+-  ): void {
++  ): RefreshResult {
+     const { hostId, providerId, scopeKey } = entry.key;
+     const now = options.now();
+     const log = (
+@@ -507,7 +533,7 @@ export function createProviderModelCatalogStore(options: {
+     };
+     if (entry.refresh !== refresh) {
+       log("info", { outcome: "superseded", changed: false });
+-      return;
++      return { ok: false, code: "failed", detail: null };
+     }
+     entry.refresh = null;
+     const before = pickerView(entry, refresh.fingerprint);
+@@ -544,7 +570,7 @@ export function createProviderModelCatalogStore(options: {
+           changed: false,
+           ...errorFields,
+         });
+-        return;
++        return { ok: false, code: "failed", detail: entry.unavailableDetail };
+       }
+       const code =
+         error instanceof ApiError &&
+@@ -566,33 +592,50 @@ export function createProviderModelCatalogStore(options: {
+       schedulePush(deps, hostId);
+     }
+     log(level, { ...fields, changed });
++    return settlement.ok
++      ? { ok: true }
++      : {
++          ok: false,
++          code: entry.failure?.code ?? "failed",
++          detail: entry.failure?.detail ?? null,
++        };
+   }
+ 
+   function startRefresh(
+     deps: WorkSessionDeps,
+     entry: CatalogEntry,
+     launch: CatalogLaunch,
+-  ): Promise<void> {
++  ): Promise<RefreshResult> {
+     const { hostId, providerId, scopeKey } = entry.key;
+-    const refresh: CatalogRefresh = {
++    const refresh: CatalogRefresh<RefreshResult> = {
+       fingerprint: launch.fingerprint,
+       sessionId: deps.hub.getDaemonSessionIdForHost(hostId),
+       startedAt: options.now(),
+       markedStale: false,
+-      promise: Promise.resolve(),
++      promise: Promise.resolve({ ok: false, code: "failed", detail: null }),
+     };
+     entry.refresh = refresh;
+-    refresh.promise = callHostOnlineRpc(deps, {
+-      hostId,
+-      timeoutMs: COMMAND_TIMEOUT_MS,
+-      command: {
+-        type: "provider.list_models",
+-        providerId,
+-        ...(scopeKey === "" ? {} : { cwd: scopeKey }),
+-        bridgeLaunch: launch.bridgeLaunch,
+-        contributedEnv: launch.contributedEnv,
+-      },
+-    }).then(
++    refresh.promise = (async () => {
++      const externalCatalog =
++        process.env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED !== undefined &&
++        ["claude-code", "codex"].includes(providerId)
++          ? await readRequiredExternalModelCatalog(providerId)
++          : undefined;
++      return callHostOnlineRpc(deps, {
++        hostId,
++        timeoutMs: COMMAND_TIMEOUT_MS,
++        command: {
++          type: "provider.list_models",
++          providerId,
++          ...(scopeKey === "" ? {} : { cwd: scopeKey }),
++          bridgeLaunch: launch.bridgeLaunch,
++          contributedEnv: launch.contributedEnv,
++          ...(externalCatalog === undefined
++            ? {}
++            : { requiredExternalCatalog: externalCatalog }),
++        },
++      });
++    })().then(
+       (result) =>
+         settle(deps, entry, refresh, {
+           ok: true,
+@@ -608,7 +651,7 @@ export function createProviderModelCatalogStore(options: {
+     deps: WorkSessionDeps,
+     entry: CatalogEntry,
+     launch: CatalogLaunch,
+-  ): Promise<void> {
++  ): Promise<RefreshResult> {
+     return entry.refresh?.fingerprint === launch.fingerprint
+       ? entry.refresh.promise
+       : startRefresh(deps, entry, launch);
+diff --git a/apps/server/src/services/providers/required-external-model-catalog.ts b/apps/server/src/services/providers/required-external-model-catalog.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..04660a04ae01da8de9b5815bfa97744009add65c
+--- /dev/null
++++ b/apps/server/src/services/providers/required-external-model-catalog.ts
+@@ -0,0 +1,71 @@
++import { availableModelSchema, type AvailableModel } from "@bb/domain";
++import { z } from "zod";
++
++const catalogueSchema = z.object({
++  data: z.array(z.object({ id: z.string().min(1).max(200) })).max(4096),
++});
++
++// Catalogue discovery uses the same server-held route/key as inference. Workers
++// receive model facts over their authenticated BB command transport, never keys.
++export async function readRequiredExternalModelCatalog(
++  providerId: string,
++  env: NodeJS.ProcessEnv = process.env,
++  request: typeof fetch = fetch,
++): Promise<{ models: AvailableModel[]; selectedOnlyModels: AvailableModel[] }> {
++  try {
++    const origin = new URL(env.BB_ACCOUNT_POOL_EXTERNAL_URL ?? "");
++    const token = env.BB_ACCOUNT_POOL_EXTERNAL_TOKEN ?? "";
++    if (
++      env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED !== "1" ||
++      origin.protocol !== "https:" ||
++      !origin.hostname.endsWith(".ts.net") ||
++      origin.username ||
++      origin.password ||
++      origin.port ||
++      origin.pathname !== "/" ||
++      origin.search ||
++      origin.hash ||
++      !token ||
++      /\s/.test(token)
++    )
++      throw new Error();
++    const response = await request(`${origin.origin}/v1/models`, {
++      headers: { authorization: `Bearer ${token}` },
++      redirect: "error",
++      signal: AbortSignal.timeout(15_000),
++    });
++    if (!response.ok) throw new Error();
++    const bytes = await response.text();
++    if (Buffer.byteLength(bytes) > 1024 * 1024) throw new Error();
++    const catalogue = catalogueSchema.parse(JSON.parse(bytes));
++    const seen = new Set<string>();
++    const models: AvailableModel[] = [];
++    for (const { id } of catalogue.data) {
++      const admitted =
++        providerId === "claude-code"
++          ? /^claude-(?:opus|sonnet|haiku)-/u.test(id)
++          : providerId === "codex" &&
++            /^gpt-\d[\w.-]*$/u.test(id) &&
++            !/(?:image|audio|realtime|transcri|embedding)/u.test(id);
++      if (!admitted || seen.has(id)) continue;
++      seen.add(id);
++      models.push(
++        availableModelSchema.parse({
++          id,
++          model: id,
++          displayName: id,
++          description:
++            "Available through the required shared BB inference pool.",
++          supportedReasoningEfforts: [],
++          defaultReasoningEffort: "low",
++          isDefault: false,
++        }),
++      );
++    }
++    if (models.length === 0) throw new Error();
++    return { models, selectedOnlyModels: [] };
++  } catch {
++    // Never include a route key or upstream diagnostic in UI/log errors.
++    throw new Error("Required BB external model catalogue is unavailable.");
++  }
++}
+diff --git a/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/identity-and-native-projections.md b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/identity-and-native-projections.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..73aeabc7d61ece16d96543d7c7511891c2efde0a
+--- /dev/null
++++ b/apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/identity-and-native-projections.md
+@@ -0,0 +1,64 @@
++# Identity and native projections
++
++These optional fork extensions keep request authority in the host. Use the
++public `@phosphorco/bb-identity/bb` binding for identity-aware features; declare
++that package dependency explicitly. Read its installed entry declarations.
++
++`bb.experimental_p6rIdentity` supplies generation-bound provider registration,
++issued invocation scopes, directory records, and retained acceptance/history.
++An absent extension is baseline capability absence. A configured provider that
++rejects or becomes unavailable must not select a fallback person. Persist an
++operation before dispatch and reconcile its exact receipt after uncertainty.
++Do not manufacture actors, request scopes, or provider keys in a feature.
++
++`bb.experimental_facets` owns declared thread facets, census targets and
++readiness. Complete the host-issued census and discharge replacement targets
++before declaring readiness. Native participant keys belong to the host's
++persisted projection, including verified contribution authors and separately
++verified mention targets. They are not a claim about the current viewer.
++`PluginMentionProviderRegistration.resolve().experimental_target` is only a
++selector for a person in the resolver plugin's active provider; the host derives
++and freezes the canonical identity and presentation.
++
++`P6rParticipantProfile` is the optional sidebar presentation shape carried in
++`PluginSidebarThread.p6rParticipants`. Reuse the supplied list data; do not add a
++per-row directory or participant RPC. Older hosts may omit the projection.
++
++`bb.experimental_p6rRoutes` builds canonical thread links. The optional HTTP
++`P6rPluginRequestContext.experimental_p6rExternalOrigin` is configured public
++origin or direct request origin, solely for presentation. It contains no actor
++or principal, and forwarded headers must not be treated as authority.
++
++Use upstream `auth: "none"` when a plugin route validates its own connection
++token in the handler. Registration and method/path matching do not authenticate
++the caller or issue an identity; no additional fork auth mode is needed.
++
++## Additional public symbols
++
++Use this index to locate the exact contracts in the generated SDK declarations.
++It describes the selected host; a version number alone does not establish that
++another host implements these optional extensions.
++
++- `ExperimentalP6rAcceptanceRequest`
++- `ExperimentalP6rAcceptanceSource`
++- `ExperimentalP6rForkRequestHandle`
++- `ExperimentalP6rIdentityProtocol`
++- `ExperimentalP6rInvocationContext`
++- `ExperimentalP6rInvocationRegistration`
++- `ExperimentalP6rInvocationRouteClass`
++- `ExperimentalP6rInvocationScope`
++- `ExperimentalP6rInvocationValidity`
++- `ExperimentalP6rProviderRegistration`
++- `ExperimentalP6rRequestHandle`
++- `ExperimentalP6rResult`
++- `ExperimentalPluginMentionTargetSelector`
++- `ExperimentalThreadFacetCardinality`
++- `ExperimentalThreadFacetHandle`
++- `ExperimentalThreadFacetReplacement`
++- `ExperimentalThreadFacetTarget`
++- `ExperimentalThreadFacetTargetGrant`
++- `ExperimentalThreadFacetTargetPage`
++- `ExperimentalThreadFacets`
++- `P6rExperimentalPluginRoutes`
++- `P6rParticipantProfile`
++- `P6rPluginRequestContext`
+diff --git a/apps/server/src/services/system/execution-options.ts b/apps/server/src/services/system/execution-options.ts
+index f8fccd7bf07994e5f971aad87db0a5a56357db29..557195f6dca53ede23d596c894579225e2d59d20 100644
+--- a/apps/server/src/services/system/execution-options.ts
++++ b/apps/server/src/services/system/execution-options.ts
+@@ -56,6 +56,7 @@ interface BuildModelLoadErrorArgs {
+ 
+ interface ResolveSystemProviderModelsArgs {
+   cwd?: string;
++  forceRefresh?: boolean;
+   hostId: string;
+   providerId: string;
+ }
+@@ -358,7 +359,11 @@ export async function resolveSystemProviderModels(
+     cwd: args.cwd ?? null,
+     hostId: args.hostId,
+     provider,
+-    access: { kind: "validation", requiredModel: null },
++    access: {
++      kind: "validation",
++      requiredModel: null,
++      forceRefresh: args.forceRefresh,
++    },
+   });
+   const { models, selectedOnlyModels } = appendCustomModels(
+     deps.providerRegistry,
+diff --git a/apps/server/src/start-server.ts b/apps/server/src/start-server.ts
+index e6e8e4c3f42034a87f59339606406523d5063a1f..76d1eb67b96ba8a137efa45b3ecb50ad139a2045 100644
+--- a/apps/server/src/start-server.ts
++++ b/apps/server/src/start-server.ts
+@@ -9,6 +9,7 @@ import {
+ } from "./services/system/app-update-send-hold.js";
+ import { createDesktopUpdateChannel } from "./services/system/desktop-update-channel.js";
+ import { serve } from "@hono/node-server";
++import { once } from "node:events";
+ import { existsSync } from "node:fs";
+ import { homedir } from "node:os";
+ import { dirname, join, resolve } from "node:path";
+@@ -107,6 +108,95 @@ export function startHttpListener(args: StartHttpListenerArgs) {
+   });
+ }
+ 
++type HttpListener = ReturnType<typeof startHttpListener>;
++
++export function resolveTailnetIngressPort(args: {
++  portText: string | undefined;
++  serverConfig: Pick<ServerConfig, "BB_SERVER_BIND_HOST" | "BB_SERVER_PORT" | "BB_HOST_DAEMON_PORT">;
++}): number | null {
++  if (args.portText === undefined) return null;
++  const port = Number(args.portText);
++  if (
++    !Number.isInteger(port) ||
++    port < 1 ||
++    port > 65535 ||
++    port === args.serverConfig.BB_SERVER_PORT ||
++    port === args.serverConfig.BB_HOST_DAEMON_PORT ||
++    !isLoopbackHostname(args.serverConfig.BB_SERVER_BIND_HOST)
++  ) {
++    throw new Error("BB_TAILNET_INGRESS_PORT must be a distinct loopback TCP port");
++  }
++  return port;
++}
++
++async function waitForHttpListener(server: HttpListener): Promise<void> {
++  if (!server.listening) await once(server, "listening");
++}
++
++async function closeHttpListener(server: HttpListener): Promise<void> {
++  if (!server.listening) return;
++  await new Promise<void>((resolveClose, rejectClose) => {
++    server.close((error) => {
++      if (error) rejectClose(error);
++      else resolveClose();
++    });
++  });
++}
++
++export async function closeConfiguredHttpListeners(args: {
++  server: HttpListener;
++  tailnetServer: HttpListener | null;
++}): Promise<void> {
++  await Promise.all([
++    closeHttpListener(args.server),
++    ...(args.tailnetServer === null ? [] : [closeHttpListener(args.tailnetServer)]),
++  ]);
++}
++
++export async function startConfiguredHttpListeners(args: {
++  fetch: StartHttpListenerArgs["fetch"];
++  serverConfig: Pick<ServerConfig, "BB_SERVER_BIND_HOST" | "BB_SERVER_PORT" | "BB_HOST_DAEMON_PORT">;
++  tailnetPortText: string | undefined;
++}): Promise<{ server: HttpListener; tailnetServer: HttpListener | null }> {
++  const tailnetPort = resolveTailnetIngressPort({
++    portText: args.tailnetPortText,
++    serverConfig: args.serverConfig,
++  });
++  const server = startHttpListener({ fetch: args.fetch, serverConfig: args.serverConfig });
++  try {
++    await waitForHttpListener(server);
++    const tailnetServer =
++      tailnetPort === null
++        ? null
++        : startHttpListener({
++            fetch: args.fetch,
++            serverConfig: {
++              BB_SERVER_BIND_HOST: "127.0.0.1",
++              BB_SERVER_PORT: tailnetPort,
++            },
++          });
++    if (tailnetServer !== null) await waitForHttpListener(tailnetServer);
++    return { server, tailnetServer };
++  } catch (error) {
++    await closeHttpListener(server);
++    throw error;
++  }
++}
++
++export function startStartupRecoveryAfterListeners(args: {
++  listeners: { server: HttpListener; tailnetServer: HttpListener | null };
++  run: () => Promise<void>;
++  onError: (error: unknown) => void;
++}): void {
++  if (
++    !args.listeners.server.listening ||
++    (args.listeners.tailnetServer !== null && !args.listeners.tailnetServer.listening)
++  ) {
++    throw new Error("Startup recovery requires listening ingress sockets");
++  }
++  void args.run().catch(args.onError);
++}
++
+ export interface StartServerPluginsArgs {
+   dataDir: string;
+   logger: Pick<ServerLogger, "error" | "warn">;
+@@ -208,6 +298,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+     inheritedSkillsRootPaths: serverConfig.BB_INHERITED_SKILLS_ROOTS,
+     isDevelopment: !isProduction,
+     performanceDiagnosticsAvailable: serverConfig.BB_PERF_DIAGNOSTICS,
++    p6rIdentityBoundary: serverConfig.BB_P6R_IDENTITY_BOUNDARY,
+     serverPort: serverConfig.BB_SERVER_PORT,
+     sharedSkillRoots: { user: [], project: [] },
+   };
+@@ -501,12 +592,6 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+     pendingServerMove === null
+       ? installProviderCliStatusPrewarm(sweepDeps)
+       : null;
+-  if (pendingServerMove === null) {
+-    releaseSendsHeldAcrossRestart(sweepDeps);
+-    await runStartupRecoverySweep(sweepDeps).catch((error) => {
+-      logger.error({ err: error }, "Startup recovery sweep failed");
+-    });
+-  }
+ 
+   if (!isLoopbackHostname(serverConfig.BB_SERVER_BIND_HOST)) {
+     logger.warn(
+@@ -515,11 +600,13 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+     );
+   }
+ 
+-  const server = startHttpListener({
++  const { server, tailnetServer } = await startConfiguredHttpListeners({
+     fetch: app.fetch,
+     serverConfig,
++    tailnetPortText: process.env.BB_TAILNET_INGRESS_PORT,
+   });
+   injectWebSocket(server);
++  if (tailnetServer !== null) injectWebSocket(tailnetServer);
+ 
+   logger.info(
+     {
+@@ -552,6 +639,18 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+       });
+     }
+     pluginCatalogService.startPeriodicRefresh();
++    // Recovery is independent of listener binding. Keep startup responsive
++    // while preserving the sweep on every ordinary server start.
++    startStartupRecoveryAfterListeners({
++      listeners: { server, tailnetServer },
++      run: () => {
++        releaseSendsHeldAcrossRestart(sweepDeps);
++        return runStartupRecoverySweep(sweepDeps);
++      },
++      onError: (error) => {
++        logger.error({ err: error }, "Startup recovery sweep failed");
++      },
++    });
+     sweepInterval = setInterval(() => {
+       if (!isServerMoveFrozen(db)) {
+         void runPeriodicSweeps(sweepDeps);
+@@ -589,18 +688,9 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
+           logger.warn({ err: error }, "Plugin shutdown failed");
+         });
+       }
+-      const closeServer = new Promise<void>((resolve, reject) => {
+-        server.close((error) => {
+-          if (error) {
+-            reject(error);
+-            return;
+-          }
+-          resolve();
+-        });
+-      });
+       await tunnelIngress.closeAll();
+       await closeWebSockets();
+-      await closeServer;
++      await closeConfiguredHttpListeners({ server, tailnetServer });
+       await walCheckpointer.stop();
+     })();
+     return shutdownPromise;
+diff --git a/apps/server/src/testing/test-fault-barriers.ts b/apps/server/src/testing/test-fault-barriers.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d806145e2458411b36421d24d8f29961a561c699
+--- /dev/null
++++ b/apps/server/src/testing/test-fault-barriers.ts
+@@ -0,0 +1,142 @@
++import { randomUUID } from "node:crypto";
++import { existsSync, realpathSync, statSync } from "node:fs";
++import { mkdir, readFile, writeFile } from "node:fs/promises";
++import { isAbsolute, join, relative, sep } from "node:path";
++
++export const TEST_FAULT_BARRIER_TOKEN_ENV = "BB_TEST_FAULT_BARRIER_TOKEN";
++export const TEST_FAULT_BARRIER_POINT_ENV = "BB_TEST_FAULT_BARRIER_POINT";
++export const TEST_FAULT_BARRIER_DATA_DIR_TOKEN_MARKER_FILE =
++  ".bb-test-fault-barrier-token";
++export const TEST_FAULT_BARRIER_CONTROL_DIRECTORY = ".bb-test-fault-barriers";
++
++export const testFaultBarrierPoints = {
++  childOutputBeforeParentNotice: "child-output-before-parent-notice",
++  queueClaimBeforeRequest: "queue-claim-before-request",
++  queueRequestCommitBeforeCommand: "queue-request-commit-before-command",
++} as const;
++
++export type TestFaultBarrierPoint =
++  (typeof testFaultBarrierPoints)[keyof typeof testFaultBarrierPoints];
++
++export type TestFaultBarrierContext = Readonly<
++  Record<string, string | number | readonly string[]>
++>;
++
++interface SelectedTestFaultBarrierWaitArgs {
++  context: TestFaultBarrierContext;
++  dataDir: string;
++  point: TestFaultBarrierPoint;
++}
++
++interface TestFaultBarrierObservation {
++  context: TestFaultBarrierContext;
++  invocationId: string;
++  observedAt: string;
++  pid: number;
++  point: TestFaultBarrierPoint;
++}
++
++export function waitAtSelectedTestFaultBarrier(
++  args: SelectedTestFaultBarrierWaitArgs,
++): Promise<void> | undefined {
++  const token = process.env[TEST_FAULT_BARRIER_TOKEN_ENV];
++  const selectedPoint = process.env[TEST_FAULT_BARRIER_POINT_ENV];
++  if (token === undefined && selectedPoint === undefined) return undefined;
++  if (token === undefined || selectedPoint === undefined) {
++    throw new Error(
++      `${TEST_FAULT_BARRIER_TOKEN_ENV} and ${TEST_FAULT_BARRIER_POINT_ENV} must be set together`,
++    );
++  }
++  if (!/^[a-f0-9]{64}$/.test(token)) {
++    throw new Error(
++      `${TEST_FAULT_BARRIER_TOKEN_ENV} must be 64 lowercase hex characters`,
++    );
++  }
++  if (
++    !Object.values(testFaultBarrierPoints).includes(
++      selectedPoint as TestFaultBarrierPoint,
++    )
++  ) {
++    throw new Error(
++      `${TEST_FAULT_BARRIER_POINT_ENV} is not a supported test barrier point`,
++    );
++  }
++  if (selectedPoint !== args.point) return undefined;
++  return waitForTestFaultBarrierRelease({ ...args, token });
++}
++
++export function testFaultBarrierControlDirectory(
++  dataDir: string,
++  token: string,
++  point: TestFaultBarrierPoint,
++): string {
++  return join(dataDir, TEST_FAULT_BARRIER_CONTROL_DIRECTORY, token, point);
++}
++
++export function testFaultBarrierWaitingFilePath(
++  directory: string,
++  invocationId: string,
++): string {
++  return join(directory, `waiting.${invocationId}.json`);
++}
++
++export function testFaultBarrierReleaseFilePath(
++  directory: string,
++  invocationId: string,
++): string {
++  return join(directory, `release.${invocationId}`);
++}
++
++async function waitForTestFaultBarrierRelease(
++  args: SelectedTestFaultBarrierWaitArgs & { token: string },
++): Promise<void> {
++  const dataDir = realpathSync(args.dataDir);
++  const dataDirRelativeToTmp = relative("/tmp", dataDir);
++  if (
++    dataDirRelativeToTmp === "" ||
++    dataDirRelativeToTmp === ".." ||
++    dataDirRelativeToTmp.startsWith(`..${sep}`) ||
++    isAbsolute(dataDirRelativeToTmp)
++  ) {
++    throw new Error("Test fault barriers require a data directory below /tmp");
++  }
++  if ((statSync(dataDir).mode & 0o077) !== 0) {
++    throw new Error(
++      "Test fault barrier data directory must be private to its owner",
++    );
++  }
++  const marker = await readFile(
++    join(dataDir, TEST_FAULT_BARRIER_DATA_DIR_TOKEN_MARKER_FILE),
++    "utf8",
++  );
++  if (marker.trim() !== args.token) {
++    throw new Error(
++      "Test fault barrier token does not match the data directory marker",
++    );
++  }
++
++  const directory = testFaultBarrierControlDirectory(
++    dataDir,
++    args.token,
++    args.point,
++  );
++  const invocationId = randomUUID();
++  const observation: TestFaultBarrierObservation = {
++    context: args.context,
++    invocationId,
++    observedAt: new Date().toISOString(),
++    pid: process.pid,
++    point: args.point,
++  };
++  await mkdir(directory, { recursive: true, mode: 0o700 });
++  await writeFile(
++    testFaultBarrierWaitingFilePath(directory, invocationId),
++    `${JSON.stringify(observation)}\n`,
++    { flag: "wx", mode: 0o600 },
++  );
++
++  const releasePath = testFaultBarrierReleaseFilePath(directory, invocationId);
++  while (!existsSync(releasePath)) {
++    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
++  }
++}
+diff --git a/apps/server/src/types.ts b/apps/server/src/types.ts
+index 2cd6b5ae850cce0362550a95b4a86bfa03440665..89125dd3c0f4f7206cee4134be0841ed8349db61 100644
+--- a/apps/server/src/types.ts
++++ b/apps/server/src/types.ts
+@@ -1,5 +1,6 @@
+ import type { CustomProviderModel } from "@bb/config/bb-app-managed-config";
+ import type { DbConnection, WalCheckpointer } from "@bb/db";
++import type { P6rIdentityBoundaryConfig } from "@bb/config/server";
+ import type { FeatureFlags, ProviderNativeSkillRoots } from "@bb/domain";
+ import type { Logger } from "@bb/logger";
+ import type { PendingInteractionLifecycle } from "./services/interactions/pending-interactions.js";
+@@ -25,6 +26,7 @@ import type { ProviderLiveCommandsCache } from "./services/providers/provider-li
+ export type ServerLogger = Pick<Logger, "debug" | "error" | "info" | "warn">;
+ 
+ export interface ServerRuntimeConfig {
++  p6rIdentityBoundary?: P6rIdentityBoundaryConfig | null;
+   appVersion: string;
+   builtinSkillsRootPath: string;
+   customModels: CustomProviderModel[];
+diff --git a/apps/server/src/ws/client-protocol.ts b/apps/server/src/ws/client-protocol.ts
+index 19ccb2265d195b37aa3628738d1e21911541f747..76393dd343135299b89425abfaafb6fb414797dc 100644
+--- a/apps/server/src/ws/client-protocol.ts
++++ b/apps/server/src/ws/client-protocol.ts
+@@ -51,7 +51,7 @@ export function onClientSocketMessage(
+       }
+       break;
+     case "ping":
+-      socket.send(JSON.stringify(PONG_MESSAGE));
++      hub.sendRealtimeClientPayload(socket, JSON.stringify(PONG_MESSAGE));
+       break;
+     case "visibility":
+       hub.setClientVisible(socket, parsed.visible);
+diff --git a/apps/server/src/ws/hub.ts b/apps/server/src/ws/hub.ts
+index 5f93bdd2a4999ffa87af1bcfbd1fbbc85bdb6d5e..40c63cd108c940e649f76d4d31490210981dd42c 100644
+--- a/apps/server/src/ws/hub.ts
++++ b/apps/server/src/ws/hub.ts
+@@ -44,6 +44,8 @@ import {
+   type WatchedTargetKind,
+ } from "./watched-targets.js";
+ 
++const REALTIME_SOCKET_MAX_BUFFERED_BYTES = 1024 * 1024;
++const REALTIME_SOCKET_MAX_BUFFERED_MESSAGES = 1024;
+ const TERMINAL_SOCKET_HIGH_WATER_BYTES = 1024 * 1024;
+ const TERMINAL_SOCKET_MAX_QUEUE_BYTES = 32 * 1024 * 1024;
+ const TERMINAL_SOCKET_DRAIN_POLL_MS = 10;
+@@ -53,7 +55,7 @@ const LIST_RELEVANT_THREAD_EVENT_TYPES: ReadonlySet<ThreadEventType> =
+ 
+ interface HubSocket {
+   close(code?: number, reason?: string): void;
+-  raw?: { bufferedAmount: number };
++  raw?: { bufferedAmount: number; terminate?(): void };
+   send(data: string, options?: { compress: boolean }): void;
+ }
+ 
+@@ -263,6 +265,7 @@ export class HostOnlineRpcUnavailableError extends Error {
+ }
+ 
+ export class NotificationHub implements DbNotifier {
++  private readonly bufferedClientMessages = new Map<HubSocket, number>();
+   private readonly clientKeysBySocket = new Map<
+     HubSocket,
+     Map<string, RealtimeSubscriptionTarget>
+@@ -391,6 +394,7 @@ export class NotificationHub implements DbNotifier {
+   }
+ 
+   unregisterClient(socket: HubSocket): void {
++    this.bufferedClientMessages.delete(socket);
+     this.unregisterTerminalClientSocket(socket);
+     const keys = this.clientKeysBySocket.get(socket);
+     if (!keys) {
+@@ -556,7 +560,7 @@ export class NotificationHub implements DbNotifier {
+       (socket.raw?.bufferedAmount ?? 0) <= TERMINAL_SOCKET_HIGH_WATER_BYTES
+     ) {
+       try {
+-        socket.send(payload);
++        socket.send(payload, COMPRESSED_SEND);
+         return;
+       } catch {
+         this.dropTerminalSocket(socket, "terminal-send-failed");
+@@ -609,7 +613,7 @@ export class NotificationHub implements DbNotifier {
+         break;
+       }
+       try {
+-        socket.send(payload);
++        socket.send(payload, COMPRESSED_SEND);
+       } catch {
+         this.dropTerminalSocket(socket, "terminal-send-failed");
+         return;
+@@ -1147,8 +1151,7 @@ export class NotificationHub implements DbNotifier {
+   private broadcastToAllClients(payload: string): number {
+     let delivered = 0;
+     for (const socket of this.clientKeysBySocket.keys()) {
+-      socket.send(payload, COMPRESSED_SEND);
+-      delivered += 1;
++      if (this.sendRealtimeClientPayload(socket, payload)) delivered += 1;
+     }
+     return delivered;
+   }
+@@ -1379,7 +1382,7 @@ export class NotificationHub implements DbNotifier {
+       if (this.clientKeysBySocket.get(socket)?.has(detailKey)) {
+         continue;
+       }
+-      socket.send(payload, COMPRESSED_SEND);
++      this.sendRealtimeClientPayload(socket, payload);
+     }
+   }
+ 
+@@ -1412,10 +1415,48 @@ export class NotificationHub implements DbNotifier {
+     payload: string,
+   ): void {
+     for (const socket of sockets) {
++      this.sendRealtimeClientPayload(socket, payload);
++    }
++  }
++
++  sendRealtimeClientPayload(socket: HubSocket, payload: string): boolean {
++    if (!this.clientKeysBySocket.has(socket)) return false;
++    const bufferedBytes = socket.raw?.bufferedAmount ?? 0;
++    const queuedMessages =
++      bufferedBytes > 0
++        ? (this.bufferedClientMessages.get(socket) ?? 0) + 1
++        : 0;
++    if (
++      bufferedBytes >= REALTIME_SOCKET_MAX_BUFFERED_BYTES ||
++      queuedMessages >= REALTIME_SOCKET_MAX_BUFFERED_MESSAGES
++    ) {
++      console.warn("Dropping backpressured realtime client", {
++        bufferedBytes,
++        queuedMessages,
++      });
++      this.dropRealtimeClient(socket, "realtime-backpressure");
++      return false;
++    }
++    if (queuedMessages > 0)
++      this.bufferedClientMessages.set(socket, queuedMessages);
++    else this.bufferedClientMessages.delete(socket);
++    try {
+       socket.send(payload, COMPRESSED_SEND);
++      return true;
++    } catch {
++      this.dropRealtimeClient(socket, "realtime-send-failed");
++      return false;
+     }
+   }
+ 
++  private dropRealtimeClient(socket: HubSocket, reason: string): void {
++    this.unregisterClient(socket);
++    try {
++      if (socket.raw?.terminate) socket.raw.terminate();
++      else socket.close(1013, reason);
++    } catch {}
++  }
++
+   private notifyChangedMessageListeners(message: ServerChangedMessage): void {
+     for (const listener of this.changedMessageListeners) {
+       listener(message);
+diff --git a/packages/bb-app/src/launcher.ts b/packages/bb-app/src/launcher.ts
+index aa8c247f096c335f81629a6e868a23da6865e440..2fd4a79b97aa6f20cf8004c24ac52cf9ff64f409 100644
+--- a/packages/bb-app/src/launcher.ts
++++ b/packages/bb-app/src/launcher.ts
+@@ -147,8 +147,10 @@ import {
+ const HOST_AUTH_FILE_NAME = "auth.json";
+ const HOST_ID_FILE_NAME = "host-id";
+ const HEALTH_CHECK_TIMEOUT_MS = 60_000;
++const SERVER_HEALTH_CHECK_TIMEOUT_MS = 180_000;
+ const HEALTH_CHECK_INTERVAL_MS = 100;
+ const HEALTH_CHECK_REQUEST_TIMEOUT_MS = 1_000;
++const CONFIG_RELOAD_REQUEST_TIMEOUT_MS = 1_000;
+ const MANAGED_PROCESS_TERMINATION_TIMEOUT_MS = 5_000;
+ const MANAGED_PROCESS_KILL_TIMEOUT_MS = 1_000;
+ const MANAGED_PROCESS_RESTART_RETRY_DELAY_MS = 1_000;
+@@ -1843,7 +1845,10 @@ async function refreshRunningServerConfig(
+   const reloadUrl = new URL("/api/v1/system/config/reload", args.serverUrl);
+   let response: Response;
+   try {
+-    response = await fetch(reloadUrl, { method: "POST" });
++    response = await fetch(reloadUrl, {
++      method: "POST",
++      signal: AbortSignal.timeout(CONFIG_RELOAD_REQUEST_TIMEOUT_MS),
++    });
+   } catch {
+     if (args.required) {
+       throw new Error(`Could not reach bb server at ${args.serverUrl}`);
+@@ -1851,17 +1856,25 @@ async function refreshRunningServerConfig(
+     return false;
+   }
+ 
+-  if (response.ok) {
+-    return true;
+-  }
+-
+   let message = `bb server rejected config reload with HTTP ${response.status}`;
+   try {
+-    const parsed = apiErrorResponseSchema.safeParse(await response.json());
+-    if (parsed.success) {
+-      message = parsed.data.message;
++    const body = await response.text();
++    if (!response.ok) {
++      const parsed = apiErrorResponseSchema.safeParse(JSON.parse(body));
++      if (parsed.success) {
++        message = parsed.data.message;
++      }
+     }
+-  } catch {}
++  } catch {
++    if (response.ok) {
++      if (args.required) {
++        throw new Error(`Could not reach bb server at ${args.serverUrl}`);
++      }
++      return false;
++    }
++  }
++
++  if (response.ok) return true;
+   throw new Error(message);
+ }
+ 
+@@ -2372,7 +2385,7 @@ async function isHealthyServerAnswering(url: string): Promise<boolean> {
+ export async function waitForServerHealth(
+   args: WaitForServerHealthArgs,
+ ): Promise<void> {
+-  const timeoutMs = args.timeoutMs ?? HEALTH_CHECK_TIMEOUT_MS;
++  const timeoutMs = args.timeoutMs ?? SERVER_HEALTH_CHECK_TIMEOUT_MS;
+   const deadline = Date.now() + timeoutMs;
+   let foreignServerAnswered = false;
+   const describeFailure = (reason: string): string =>
+diff --git a/packages/bb-app/test/index.test.ts b/packages/bb-app/test/index.test.ts
+index 33a3aff54b6f62ce53c743730640a432cad63135..6e84c424577b7da5b87bbdd39424acd0fc7bde94 100644
+--- a/packages/bb-app/test/index.test.ts
++++ b/packages/bb-app/test/index.test.ts
+@@ -170,6 +170,7 @@ const startupOnlyManagedEnvCases: StartupOnlyManagedEnvCase[] = [
+   { key: "BB_SERVER_PORT", value: "48886" },
+   { key: "BB_TELEMETRY", value: "false" },
+ ];
++const unavailableTestServerUrl = "http://127.0.0.1:1";
+ 
+ const packageMetadataSchema = z.object({
+   engines: z.object({
+@@ -404,6 +405,60 @@ async function startConfigReloadTestServer(): Promise<ConfigReloadTestServer> {
+   };
+ }
+ 
++async function startStalledConfigReloadTestServer(): Promise<ConfigReloadTestServer> {
++  const reloadRequests: ConfigReloadRequest[] = [];
++  const server = createServer(
++    (request: IncomingMessage, _response: ServerResponse) => {
++      if (
++        request.method === "POST" &&
++        request.url === "/api/v1/system/config/reload"
++      ) {
++        reloadRequests.push({
++          host: request.headers.host,
++          method: request.method,
++          url: request.url,
++        });
++      }
++    },
++  );
++
++  await new Promise<void>((resolvePromise, reject) => {
++    server.once("error", reject);
++    server.listen(0, "127.0.0.1", () => {
++      resolvePromise();
++    });
++  });
++
++  const address = server.address();
++  if (typeof address === "string" || address === null) {
++    throw new Error("Expected stalled test server to listen on a TCP port");
++  }
++  const addressInfo: AddressInfo = address;
++
++  return {
++    async close(): Promise<void> {
++      server.closeAllConnections();
++      await new Promise<void>((resolvePromise, reject) => {
++        server.close((error) => {
++          if (error) {
++            reject(error);
++            return;
++          }
++          resolvePromise();
++        });
++      });
++    },
++    port: addressInfo.port,
++    reloadCount(): number {
++      return reloadRequests.length;
++    },
++    reloadRequests(): ConfigReloadRequest[] {
++      return [...reloadRequests];
++    },
++    url: `http://127.0.0.1:${addressInfo.port}`,
++  };
++}
++
+ async function startHostListTestServer(
+   hosts: unknown[],
+ ): Promise<HostListTestServer> {
+@@ -486,6 +541,19 @@ async function captureStdout(run: () => Promise<void>): Promise<string> {
+   return chunks.join("");
+ }
+ 
++function runBbAppWithoutRunningServer(
++  dataDir: string,
++  commandArgs: string[],
++): Promise<void> {
++  return runBbApp([
++    "--data-dir",
++    dataDir,
++    "--server-url",
++    unavailableTestServerUrl,
++    ...commandArgs,
++  ]);
++}
++
+ describe("bb-app launcher", () => {
+   it("waits for the expected host daemon identity and connection", async () => {
+     let statusRequests = 0;
+@@ -1157,25 +1225,19 @@ describe("bb-app launcher", () => {
+   it("stores managed config values from the config command", async () => {
+     const dataDir = mkdtempSync(join(tmpdir(), "bb-app-config-command-"));
+ 
+-    await runBbApp([
+-      "--data-dir",
+-      dataDir,
++    await runBbAppWithoutRunningServer(dataDir, [
+       "config",
+       "set",
+       "BB_APP_URL",
+       "https://bb.example.test",
+     ]);
+-    await runBbApp([
+-      "--data-dir",
+-      dataDir,
++    await runBbAppWithoutRunningServer(dataDir, [
+       "config",
+       "set",
+       "BB_LOG_LEVEL",
+       "debug",
+     ]);
+-    await runBbApp([
+-      "--data-dir",
+-      dataDir,
++    await runBbAppWithoutRunningServer(dataDir, [
+       "env",
+       "set",
+       "OPENAI_API_KEY",
+@@ -1322,9 +1384,7 @@ describe("bb-app launcher", () => {
+       "utf8",
+     );
+ 
+-    await runBbApp([
+-      "--data-dir",
+-      dataDir,
++    await runBbAppWithoutRunningServer(dataDir, [
+       "config",
+       "set",
+       "BB_APP_URL",
+@@ -1386,9 +1446,7 @@ describe("bb-app launcher", () => {
+       "utf8",
+     );
+ 
+-    await runBbApp([
+-      "--data-dir",
+-      dataDir,
++    await runBbAppWithoutRunningServer(dataDir, [
+       "env",
+       "unset",
+       "BB_SERVER_BIND_HOST",
+@@ -1499,6 +1557,40 @@ describe("bb-app launcher", () => {
+     }
+   });
+ 
++  it("bounds an optional reload until the server response completes", async () => {
++    const dataDir = mkdtempSync(
++      join(tmpdir(), "bb-app-config-stalled-reload-"),
++    );
++    const server = await startStalledConfigReloadTestServer();
++
++    try {
++      const output = await captureStdout(() =>
++        runBbApp([
++          "--data-dir",
++          dataDir,
++          "--server-url",
++          server.url,
++          "config",
++          "set",
++          "BB_APP_URL",
++          "https://bb.example.test",
++        ]),
++      );
++
++      expect(output).toContain("No running bb server found");
++      expect(
++        JSON.parse(readFileSync(join(dataDir, "config.json"), "utf8")),
++      ).toEqual({
++        config: { BB_APP_URL: "https://bb.example.test" },
++      });
++      expect(server.reloadRequests()).toEqual([
++        expectedConfigReloadRequest(server),
++      ]);
++    } finally {
++      await server.close();
++    }
++  });
++
+   it("prints a restart notice when setting a startup-only config key", async () => {
+     const dataDir = mkdtempSync(join(tmpdir(), "bb-app-startup-config-set-"));
+     const server = await startConfigReloadTestServer();
+@@ -1508,8 +1600,8 @@ describe("bb-app launcher", () => {
+         runBbApp([
+           "--data-dir",
+           dataDir,
+-          "--server-port",
+-          String(server.port),
++          "--server-url",
++          server.url,
+           "config",
+           "set",
+           "BB_LOG_LEVEL",
+@@ -1539,8 +1631,8 @@ describe("bb-app launcher", () => {
+           runBbApp([
+             "--data-dir",
+             dataDir,
+-            "--server-port",
+-            String(server.port),
++            "--server-url",
++            server.url,
+             "env",
+             "set",
+             testCase.key,
+@@ -1573,8 +1665,8 @@ describe("bb-app launcher", () => {
+         runBbApp([
+           "--data-dir",
+           dataDir,
+-          "--server-port",
+-          String(server.port),
++          "--server-url",
++          server.url,
+           "env",
+           "unset",
+           "BB_SERVER_BIND_HOST",
+@@ -1623,16 +1715,12 @@ describe("bb-app launcher", () => {
+ 
+   it("reports that startup-only config will apply on next start without a running server", async () => {
+     const dataDir = mkdtempSync(join(tmpdir(), "bb-app-startup-next-start-"));
+-    const unavailableServer = await startConfigReloadTestServer();
+-    const unavailablePort = unavailableServer.port;
+-    await unavailableServer.close();
+-
+     const output = await captureStdout(() =>
+       runBbApp([
+         "--data-dir",
+         dataDir,
+-        "--server-port",
+-        String(unavailablePort),
++        "--server-url",
++        unavailableTestServerUrl,
+         "env",
+         "set",
+         "BB_SERVER_BIND_HOST",
+@@ -1714,9 +1802,7 @@ describe("bb-app launcher", () => {
+     const server = await startConfigReloadTestServer();
+ 
+     try {
+-      await runBbApp([
+-        "--data-dir",
+-        dataDir,
++      await runBbAppWithoutRunningServer(dataDir, [
+         "config",
+         "set",
+         "BB_SERVER_URL",
+@@ -1748,9 +1834,7 @@ describe("bb-app launcher", () => {
+     const previousServerUrl = process.env.BB_SERVER_URL;
+ 
+     try {
+-      await runBbApp([
+-        "--data-dir",
+-        dataDir,
++      await runBbAppWithoutRunningServer(dataDir, [
+         "config",
+         "set",
+         "BB_SERVER_URL",
+diff --git a/packages/bb-app/test/server-health-identity.test.ts b/packages/bb-app/test/server-health-identity.test.ts
+index 93d3880c0c5645d6a273ed4beef822a7df368949..696f8045449ac977a501f3be01bcc960f24d7791 100644
+--- a/packages/bb-app/test/server-health-identity.test.ts
++++ b/packages/bb-app/test/server-health-identity.test.ts
+@@ -6,7 +6,7 @@ import {
+ } from "node:http";
+ import { tmpdir } from "node:os";
+ import { dirname, join } from "node:path";
+-import { afterEach, describe, expect, it } from "vitest";
++import { afterEach, describe, expect, it, vi } from "vitest";
+ import type {
+   BbAppStartContext,
+   ManagedFullStackProcesses,
+@@ -94,6 +94,55 @@ function createStartContext(args: {
+ }
+ 
+ describe("waitForServerHealth", () => {
++  afterEach(() => {
++    vi.useRealTimers();
++    vi.unstubAllGlobals();
++  });
++
++  it("allows a legitimate server startup beyond sixty seconds", async () => {
++    vi.useFakeTimers();
++    const started = Date.now();
++    vi.stubGlobal(
++      "fetch",
++      vi.fn(
++        async () =>
++          new Response(
++            JSON.stringify({
++              ok: true,
++              launchId:
++                Date.now() - started >= 120_000 ? "slow-launch" : "not-ready",
++            }),
++            { status: 200, headers: { "content-type": "application/json" } },
++          ),
++      ),
++    );
++    const ready = waitForServerHealth({
++      childProcess: null,
++      expectedLaunchId: "slow-launch",
++      url: "http://127.0.0.1:1/health",
++    });
++    await vi.advanceTimersByTimeAsync(120_100);
++    await expect(ready).resolves.toBeUndefined();
++  });
++
++  it("keeps the longer server startup deadline finite", async () => {
++    vi.useFakeTimers();
++    vi.stubGlobal(
++      "fetch",
++      vi.fn(async () => new Response("{}", { status: 503 })),
++    );
++    const outcome = waitForServerHealth({
++      childProcess: null,
++      expectedLaunchId: "never",
++      url: "http://127.0.0.1:1/health",
++    }).then(
++      () => null,
++      (error) => error,
++    );
++    await vi.advanceTimersByTimeAsync(180_200);
++    await expect(outcome).resolves.toBeInstanceOf(Error);
++  });
++
+   it("keeps polling past foreign answers until the child echoes its launch id", async () => {
+     let healthRequests = 0;
+     const server = await listen((_request, response) => {
+diff --git a/plugins/browser-automation/README.md b/plugins/browser-automation/README.md
+index 43eb48c5a2a04e474dab22c140a96a1c26c806de..01521476a5f183e84cec1970d2c37a5b5e168430 100644
+--- a/plugins/browser-automation/README.md
++++ b/plugins/browser-automation/README.md
+@@ -94,8 +94,9 @@ Headless sessions need Chrome/Chromium on that host. The plugin checks
+ `<plugin host dataDir>/runtime/chrome`, the standard macOS Chrome path, then
+ `google-chrome`, `google-chrome-stable`, `chromium`, and `chromium-browser` on
+ PATH. The `runtime/chrome` entry can be a symlink to an installed executable.
+-Plugin-owned local/headless Chrome always launches with `--no-sandbox`, disabling
+-Chrome's sandbox so it can run on hosts that restrict unprivileged user namespaces.
++Plugin-owned local/headless Chrome keeps Chromium sandboxing enabled. Hosts must
++provide working namespace sandbox support for the selected Chrome executable;
++startup fails when that prerequisite is missing.
+ Desktop sessions attach to an existing browser and do not change its launch flags.
+ 
+ ## CLI and agent workflow
+diff --git a/plugins/browser-automation/runtime.test.ts b/plugins/browser-automation/runtime.test.ts
+index 48aa4df3efcbd4dc8d1bc25ed8723c8f29198bf0..4c631b0ffbe9546803dceb55d2c8ae85c747dc28 100644
+--- a/plugins/browser-automation/runtime.test.ts
++++ b/plugins/browser-automation/runtime.test.ts
+@@ -10,7 +10,7 @@ import {
+ import { join } from "node:path";
+ import { tmpdir } from "node:os";
+ import { afterEach, describe, expect, it } from "vitest";
+-import { decodeOutput, runtimeEnvironment } from "./runtime.js";
++import { createRuntime, decodeOutput, runtimeEnvironment } from "./runtime.js";
+ 
+ const dirs: string[] = [];
+ afterEach(async () => {
+@@ -178,3 +178,44 @@ describe("runtime output boundary", () => {
+     ).rejects.toThrow("escaped");
+   });
+ });
++
++const integrationChrome = process.env.BROWSER_AUTOMATION_TEST_CHROME;
++const integrationBinary = process.env.BROWSER_AUTOMATION_TEST_BINARY;
++it.skipIf(!integrationChrome || !integrationBinary)(
++  "keeps the Chromium sandbox enabled for plugin-owned headless sessions",
++  async () => {
++    if (!integrationChrome || !integrationBinary)
++      throw new Error("integration inputs missing");
++    const dataDir = await mkdtemp(join(tmpdir(), "browser-sandbox-test-"));
++    dirs.push(dataDir);
++    await mkdir(join(dataDir, "runtime"));
++    await symlink(integrationChrome, join(dataDir, "runtime", "chrome"));
++    const runtime = await createRuntime({
++      runtime: {
++        binary: integrationBinary,
++        version: "1.0.0-rc.3",
++        source: "release",
++      },
++      dataDir,
++      tempDir: join(dataDir, "sessions"),
++      signal: new AbortController().signal,
++    });
++    try {
++      const result = await runtime.run(
++        'const p=await browser.getPage("proof");await p.goto("chrome://version");console.log(await p.evaluate(()=>JSON.stringify({executable:document.querySelector("#executable_path").textContent,command:document.querySelector("#command_line").textContent,math:6*7})));await p.goto("chrome://sandbox");console.log(await p.evaluate(()=>document.body.innerText));',
++        30_000,
++        new AbortController().signal,
++      );
++      expect(result.exitCode).toBe(0);
++      expect(result.text).toContain(await realpath(integrationChrome));
++      expect(result.text).toContain('"math":42');
++      expect(result.text).not.toContain("--no-sandbox");
++      expect(result.text).toContain("You are adequately sandboxed");
++      expect(result.text).toMatch(/PID namespaces\s+Yes/);
++      expect(result.text).toMatch(/Seccomp-BPF sandbox\s+Yes/);
++    } finally {
++      await runtime.close();
++    }
++  },
++  45_000,
++);
+diff --git a/plugins/browser-automation/runtime.ts b/plugins/browser-automation/runtime.ts
+index 6930fe0695561abd96fca3ae2df1b1996a5f768e..fc7012c3839125d83a567aa87bb9c32cf4f72e6d 100644
+--- a/plugins/browser-automation/runtime.ts
++++ b/plugins/browser-automation/runtime.ts
+@@ -241,7 +241,6 @@ export async function createRuntime(args: {
+           chrome,
+           [
+             "--headless=new",
+-            "--no-sandbox",
+             "--remote-debugging-port=0",
+             "--remote-debugging-address=127.0.0.1",
+             `--user-data-dir=${profile}`,
+diff --git a/plugins/browser-automation/skills/browser-automation/SKILL.md b/plugins/browser-automation/skills/browser-automation/SKILL.md
+index d637d7d996876c2532ae3812932516c3d06fd65d..ae427e381fc11f4a7c834c6997459be2695a69e0 100644
+--- a/plugins/browser-automation/skills/browser-automation/SKILL.md
++++ b/plugins/browser-automation/skills/browser-automation/SKILL.md
+@@ -18,8 +18,8 @@ already focused. New or activated controller pages follow the same rule;
+ automation does not switch threads or bring the desktop window forward. While
+ controlled, a desktop tab never takes keyboard focus from the composer or other
+ apps; the user presses Take over to type into it. Headless sessions remain headless.
+-Plugin-owned local/headless Chrome launches with `--no-sandbox`, disabling Chrome's
+-sandbox. Desktop attachment does not change the browser's launch flags.
++Plugin-owned local/headless Chrome keeps its sandbox enabled; the selected host
++must support Chromium namespace sandboxing. Desktop attachment does not change the browser's launch flags.
+ Resolve the explicit instance with `bb browser instances --host <host-id> --json`
+ first. Never silently choose a different host or mode.
+ Adding `--tab <tab-id>` takes control of an existing tab; do so only when the
+-- 
+2.50.1 (Apple Git-155)
+

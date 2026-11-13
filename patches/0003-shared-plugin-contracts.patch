@@ -1,0 +1,2924 @@
+From f1b402f0a31b5781924ae60090743c6581286176 Mon Sep 17 00:00:00 2001
+From: Cole Lawrence <cole@colelawrence.com>
+Date: Fri, 13 Nov 2026 19:01:31 -0300
+Subject: [PATCH] Shared plugin contracts
+
+---
+ packages/domain/src/change-kinds.ts           |   1 +
+ packages/domain/src/index.ts                  |   2 +
+ packages/domain/src/p6r-message-author.ts     |  44 +++
+ packages/domain/src/provider-event.ts         |  32 +-
+ packages/domain/src/queued-message.ts         |   7 +-
+ packages/domain/src/thread-events.ts          |  31 ++
+ packages/domain/src/thread-facet.ts           | 147 ++++++++
+ packages/domain/src/thread.ts                 |  20 +-
+ .../environment-credential-projection.test.ts | 110 ++++++
+ .../domain/test/p6r-message-author.test.ts    |  32 ++
+ .../domain/test/stored-thread-event.test.ts   |  70 ++++
+ packages/domain/test/thread.test.ts           |  45 +++
+ packages/host-daemon-contract/src/commands.ts |   5 +
+ .../test/contract.test.ts                     |  47 +++
+ .../test/environment-classification.test.ts   |  28 ++
+ packages/plugin-sdk/package.json              |   3 +-
+ .../src/__tests__/frontend-exports.test.ts    |   9 +-
+ .../src/__tests__/public-types.test.ts        |  53 +++
+ packages/plugin-sdk/src/app-contract.ts       |  38 ++
+ packages/plugin-sdk/src/backend-contract.ts   |  89 ++++-
+ .../src/experimental-p6r-identity.ts          | 194 +++++++++++
+ packages/plugin-sdk/src/index.ts              |   1 +
+ .../plugin-sdk/src/internal/host-policy.ts    |   1 +
+ .../plugin-app-registration-collector.ts      |  10 +
+ packages/plugin-sdk/src/rpc-contract.ts       |   2 +
+ .../__tests__/fake-plugin-host.test.ts        |  29 +-
+ .../src/testing/fake-plugin-host.ts           |  53 ++-
+ packages/plugin-sdk/src/testing/fixtures.ts   |   1 +
+ packages/sdk/src/areas/projects.ts            |   7 +-
+ packages/sdk/src/areas/system.ts              |  10 +
+ packages/sdk/src/areas/threads.ts             |  99 ++++++
+ packages/sdk/src/realtime-client.ts           |   9 +-
+ packages/sdk/test/public-types.test.ts        |   5 +
+ .../sdk/test/realtime-adapter-close.test.ts   |  26 ++
+ packages/sdk/test/sdk.test.ts                 | 103 ++++++
+ .../src/api/machine-environment.ts            |  27 +-
+ packages/server-contract/src/api/system.ts    |  13 +
+ packages/server-contract/src/api/threads.ts   | 327 ++++++++++++++++++
+ packages/server-contract/src/public-api.ts    |  50 +++
+ .../server-contract/src/thread-timeline.ts    |   3 +
+ .../server-contract/test/contract.test.ts     | 128 ++++++-
+ packages/test-helpers/src/domain-fixtures.ts  |   1 +
+ .../thread-view/src/build-thread-timeline.ts  |   4 +
+ .../src/event-projection-message.ts           |   3 +
+ .../thread-view/src/user-message-parsing.ts   |   6 +
+ .../test/user-message-parsing.test.ts         |  19 +
+ 46 files changed, 1919 insertions(+), 25 deletions(-)
+ create mode 100644 packages/domain/src/p6r-message-author.ts
+ create mode 100644 packages/domain/src/thread-facet.ts
+ create mode 100644 packages/domain/test/environment-credential-projection.test.ts
+ create mode 100644 packages/domain/test/p6r-message-author.test.ts
+ create mode 100644 packages/host-daemon-contract/test/environment-classification.test.ts
+ create mode 100644 packages/plugin-sdk/src/experimental-p6r-identity.ts
+ create mode 100644 packages/sdk/test/realtime-adapter-close.test.ts
+
+diff --git a/packages/domain/src/change-kinds.ts b/packages/domain/src/change-kinds.ts
+index 54575db6fc5ac3bec7d5336b6069f33c71d754c5..eec2050f007af91e980f04dc2bde7db12418e832 100644
+--- a/packages/domain/src/change-kinds.ts
++++ b/packages/domain/src/change-kinds.ts
+@@ -15,6 +15,7 @@ export const THREAD_CHANGE_KINDS = [
+   "thread-created",
+   "thread-deleted",
+   "events-appended",
++  "execution-options-changed",
+   "history-rewritten",
+   "history-compacted",
+   "interactions-changed",
+diff --git a/packages/domain/src/index.ts b/packages/domain/src/index.ts
+index 749d11ad52b616ef2c0b79a6b04210f87ef2a8c2..fb3df24b639ae9f0d240190a63415b5c2a6d924d 100644
+--- a/packages/domain/src/index.ts
++++ b/packages/domain/src/index.ts
+@@ -1,4 +1,5 @@
+ export * from "./context-snapshot.js";
++export * from "./p6r-message-author.js";
+ export * from "./active-thinking.js";
+ export * from "./acp-cli.js";
+ export * from "./native-roots.js";
+@@ -61,6 +62,7 @@ export * from "./terminal.js";
+ export * from "./thread-dynamic-context.js";
+ export * from "./thread-event-scope.js";
+ export * from "./thread-events.js";
++export * from "./thread-facet.js";
+ export * from "./thread-git-diff.js";
+ export * from "./started-on-behalf-of.js";
+ export * from "./thread-create-origin.js";
+diff --git a/packages/domain/src/p6r-message-author.ts b/packages/domain/src/p6r-message-author.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..13fd7ebb24699ec9bdef7b8cded5d5851ed9addd
+--- /dev/null
++++ b/packages/domain/src/p6r-message-author.ts
+@@ -0,0 +1,44 @@
++import { z } from "zod";
++
++const personAuthorSchema = z.object({
++  evidence: z.enum(["provider-verified", "integration-asserted"]),
++  identity: z.object({
++    kind: z.literal("person"),
++    key: z.string().min(1),
++    issuer: z.string().min(1),
++    subject: z.string().min(1),
++  }),
++  presentation: z.object({
++    displayName: z.string(),
++    handle: z.string().nullable(),
++    avatarUrl: z.string().nullable(),
++  }),
++});
++const machineAuthorSchema = z.object({
++  evidence: z.literal("machine"),
++  identity: z.object({
++    kind: z.literal("machine"),
++    key: z.string().min(1),
++    instanceId: z.string().min(1),
++    hostId: z.string().min(1).nullable(),
++  }),
++  presentation: z.object({
++    displayName: z.string(),
++    handle: z.string().nullable(),
++    avatarUrl: z.string().nullable(),
++  }),
++});
++export const p6rMessageAuthorSchema = z.union([personAuthorSchema, machineAuthorSchema]);
++export type P6rMessageAuthor = z.infer<typeof p6rMessageAuthorSchema>;
++
++export const p6rMessageAttributionSchema = z.object({
++  authors: z.array(p6rMessageAuthorSchema.nullable()).max(256).optional(),
++  editors: z.array(p6rMessageAuthorSchema.nullable()).max(256).optional(),
++}).strict();
++export const p6rStoredMessageAttributionSchema = z.union([
++  z.array(p6rMessageAuthorSchema.nullable()).max(256),
++  p6rMessageAttributionSchema,
++]);
++export type P6rMessageAttribution = z.infer<
++  typeof p6rMessageAttributionSchema
++>;
+diff --git a/packages/domain/src/provider-event.ts b/packages/domain/src/provider-event.ts
+index ff570cde42cedd8db27fa35114bf3b3154231927..401e9133caaa70ce0135b7a10f7553caefe52e1b 100644
+--- a/packages/domain/src/provider-event.ts
++++ b/packages/domain/src/provider-event.ts
+@@ -382,6 +382,14 @@ export type ThreadEventBackgroundTaskItem = z.infer<
+   typeof threadEventBackgroundTaskItemSchema
+ >;
+ 
++export const threadEventAgentMessagePhaseSchema = z.enum([
++  "commentary",
++  "final_answer",
++]);
++export type ThreadEventAgentMessagePhase = z.infer<
++  typeof threadEventAgentMessagePhaseSchema
++>;
++
+ export const threadEventItemSchema = z.discriminatedUnion("type", [
+   z
+     .object({
+@@ -396,6 +404,7 @@ export const threadEventItemSchema = z.discriminatedUnion("type", [
+     type: z.literal("agentMessage"),
+     id: z.string(),
+     text: z.string(),
++    phase: threadEventAgentMessagePhaseSchema.nullable().optional(),
+     ...itemPresentationField,
+     parentToolCallId: z.string().optional(),
+   }),
+@@ -681,7 +690,28 @@ const unscopedProviderEventSchema = z.discriminatedUnion("type", [
+           ]),
+           reason: z.string().optional(),
+         })
+-        .strict(),
++        .strict()
++        .transform((entry) => {
++          if (
++            typeof entry.value !== "string" ||
++            entry.value === "" ||
++            entry.value === "csr.unresolved" ||
++            typeof entry.source !== "object" ||
++            !("plugin" in entry.source)
++          )
++            return entry;
++          const authenticationSlot =
++            (entry.source.plugin === "account-pool" &&
++              (entry.name === "ANTHROPIC_AUTH_TOKEN" ||
++                entry.name === "CODEX_POOL_AUTH_TOKEN" ||
++                entry.name === "BB_ACCOUNT_POOL_PARENT_TOKEN")) ||
++            (entry.source.plugin === "subscription-router" &&
++              (entry.name === "ANTHROPIC_AUTH_TOKEN" ||
++                entry.name === "CODEX_POOL_AUTH_TOKEN"));
++          return authenticationSlot
++            ? { ...entry, value: { masked: true as const } }
++            : entry;
++        }),
+     ),
+   }),
+   z.object({
+diff --git a/packages/domain/src/queued-message.ts b/packages/domain/src/queued-message.ts
+index 9749d74e25c430ec05413616061d4444d74e1618..43dde1f40f0b29749e7c1fef0c631adcd11cc682 100644
+--- a/packages/domain/src/queued-message.ts
++++ b/packages/domain/src/queued-message.ts
+@@ -1,3 +1,4 @@
++import { p6rMessageAuthorSchema } from "./p6r-message-author.js";
+ import { z } from "zod";
+ import { pluginIdSchema } from "./plugin-id.js";
+ import { clientTurnRequestIdSchema } from "./protocol-ids.js";
+@@ -172,7 +173,11 @@ export type QueuedMessagePayloadKind = z.infer<
+ >;
+ 
+ export const queuedMessagePayloadSchema = z.discriminatedUnion("kind", [
+-  z.object({ kind: z.literal("inline") }),
++  z.object({
++    kind: z.literal("inline"),
++    p6rAuthors: z.array(p6rMessageAuthorSchema.nullable()).max(256).optional(),
++    p6rEditors: z.array(p6rMessageAuthorSchema.nullable()).max(256).optional(),
++  }),
+   z.object({
+     kind: z.literal("retry"),
+     /**
+diff --git a/packages/domain/src/thread-events.ts b/packages/domain/src/thread-events.ts
+index 665ec522984d952b500e2aa1d971cc79172c616b..45a1584df85268cdac4134d5172dc5e331183655 100644
+--- a/packages/domain/src/thread-events.ts
++++ b/packages/domain/src/thread-events.ts
+@@ -1,3 +1,4 @@
++import { p6rMessageAuthorSchema } from "./p6r-message-author.js";
+ import { z } from "zod";
+ import {
+   approvalPendingInteractionResolutionSchema,
+@@ -60,6 +61,33 @@ export type ClientTurnLifecycleEventData = z.infer<
+   typeof clientTurnLifecycleEventDataSchema
+ >;
+ 
++export const p6rMentionTargetSchema = z
++  .object({
++    identity: z
++      .object({
++        kind: z.literal("person"),
++        key: z.string().min(1).max(2048),
++        issuer: z.string().min(1).max(512),
++        subject: z.string().min(1).max(512),
++      })
++      .strict(),
++    presentation: z
++      .object({
++        displayName: z.string().min(1).max(256),
++        handle: z.string().max(256).nullable(),
++        avatarUrl: z.string().min(1).max(2048).nullable(),
++      })
++      .strict(),
++    source: z
++      .object({
++        pluginId: z.string().min(1).max(256),
++        generation: z.string().min(1).max(256),
++      })
++      .strict(),
++  })
++  .strict();
++export type P6rMentionTarget = z.infer<typeof p6rMentionTargetSchema>;
++
+ export const turnRequestEventDataSchema = z.object({
+   direction: z.literal("outbound"),
+   requestId: clientTurnRequestIdSchema,
+@@ -80,6 +108,9 @@ export const turnRequestEventDataSchema = z.object({
+   systemMessageSubject: systemMessageSubjectSchema.nullable().optional(),
+   input: z.array(promptInputSchema),
+   inputGroups: z.array(z.array(promptInputSchema).min(1)).min(1).optional(),
++  p6rAuthors: z.array(p6rMessageAuthorSchema.nullable()).max(256).optional(),
++  p6rEditors: z.array(p6rMessageAuthorSchema.nullable()).max(256).optional(),
++  p6rMentionedTargets: z.array(p6rMentionTargetSchema).max(256).optional(),
+   target: turnRequestTargetSchema,
+   request: z.object({
+     method: z.enum(["thread/start", "turn/start"]),
+diff --git a/packages/domain/src/thread-facet.ts b/packages/domain/src/thread-facet.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..4a97680fd16bce8a0d1e83186cb564d17cb40ae3
+--- /dev/null
++++ b/packages/domain/src/thread-facet.ts
+@@ -0,0 +1,147 @@
++import { z } from "zod";
++import { rawThreadIdSchema } from "./raw-thread-id.js";
++import { threadOriginKindSchema } from "./thread-origin-kind.js";
++
++const localNamePattern = /^[a-z][a-z0-9._-]{0,63}$/u;
++
++export const threadFacetLocalNameSchema = z.string().regex(localNamePattern);
++export const threadFacetMemberIdSchema = threadFacetLocalNameSchema;
++export const threadFacetPrincipalKeySchema = z.string().min(1).max(512);
++export const threadFacetMemberKindSchema = z.enum(["principal-key", "enum"]);
++export const threadFacetCardinalitySchema = z.enum(["one", "many"]);
++export const threadFacetAssignmentScopeSchema = z.literal("shared-thread");
++export const threadFacetOwnerStateSchema = z.enum([
++  "ready",
++  "reconciling",
++  "unavailable",
++]);
++
++export type ThreadFacetLocalName = z.infer<typeof threadFacetLocalNameSchema>;
++export type ThreadFacetMemberKind = z.infer<typeof threadFacetMemberKindSchema>;
++export type ThreadFacetCardinality = z.infer<typeof threadFacetCardinalitySchema>;
++export type ThreadFacetAssignmentScope = z.infer<
++  typeof threadFacetAssignmentScopeSchema
++>;
++export type ThreadFacetOwnerState = z.infer<typeof threadFacetOwnerStateSchema>;
++
++export type ThreadFacetTypeParts =
++  | { scope: "core"; owner: "core"; localName: ThreadFacetLocalName }
++  | { scope: "plugin"; owner: string; localName: ThreadFacetLocalName };
++
++function serializedTypeId(parts: ThreadFacetTypeParts): string {
++  const localName = threadFacetLocalNameSchema.parse(parts.localName);
++  return parts.scope === "core"
++    ? `core/${localName}`
++    : `plugin/${encodeURIComponent(parts.owner)}/${localName}`;
++}
++
++export function parseThreadFacetTypeId(value: string): ThreadFacetTypeParts {
++  const segments = value.split("/");
++  if (segments.length === 2 && segments[0] === "core") {
++    const parts: ThreadFacetTypeParts = {
++      scope: "core",
++      owner: "core",
++      localName: threadFacetLocalNameSchema.parse(segments[1]),
++    };
++    if (serializedTypeId(parts) === value) return parts;
++  }
++  if (segments.length === 3 && segments[0] === "plugin") {
++    try {
++      const owner = decodeURIComponent(segments[1] ?? "");
++      if (owner.length === 0 || owner.length > 256) throw new Error();
++      const parts: ThreadFacetTypeParts = {
++        scope: "plugin",
++        owner,
++        localName: threadFacetLocalNameSchema.parse(segments[2]),
++      };
++      if (serializedTypeId(parts) === value) return parts;
++    } catch {}
++  }
++  throw new Error("Invalid thread facet type id");
++}
++
++export const threadFacetTypeIdSchema = z
++  .string()
++  .min(3)
++  .max(512)
++  .refine((value) => {
++    try {
++      parseThreadFacetTypeId(value);
++      return true;
++    } catch {
++      return false;
++    }
++  })
++  .brand<"ThreadFacetTypeId">();
++export type ThreadFacetTypeId = z.infer<typeof threadFacetTypeIdSchema>;
++
++export function serializeThreadFacetTypeId(
++  parts: ThreadFacetTypeParts,
++): ThreadFacetTypeId {
++  return threadFacetTypeIdSchema.parse(serializedTypeId(parts));
++}
++
++export const CORE_PARTICIPANTS_FACET_TYPE_ID = serializeThreadFacetTypeId({
++  scope: "core",
++  owner: "core",
++  localName: "participants",
++});
++
++export const threadFacetFilterSchema = z.discriminatedUnion("operator", [
++  z.object({ typeId: threadFacetTypeIdSchema, operator: z.literal("present") }).strict(),
++  z.object({ typeId: threadFacetTypeIdSchema, operator: z.literal("absent") }).strict(),
++  z.object({
++    typeId: threadFacetTypeIdSchema,
++    operator: z.enum(["contains", "notContains"]),
++    member: z.union([
++      threadFacetPrincipalKeySchema,
++      z.object({ perspective: z.literal("request-principal") }).strict(),
++    ]),
++  }).strict(),
++]);
++export type ThreadFacetFilter = z.infer<typeof threadFacetFilterSchema>;
++export type ResolvedThreadFacetFilter =
++  | Exclude<ThreadFacetFilter, { operator: "contains" | "notContains" }>
++  | { typeId: ThreadFacetTypeId; operator: "contains" | "notContains"; member: string };
++
++export const threadFacetOrderSchema = z.object({
++  typeId: threadFacetTypeIdSchema,
++  direction: z.enum(["asc", "desc"]),
++  absent: z.enum(["first", "last"]),
++  unknown: z.enum(["first", "last"]),
++}).strict();
++export type ThreadFacetOrder = z.infer<typeof threadFacetOrderSchema>;
++
++export const threadFacetListScopeSchema = z.object({
++  projectId: z.string().min(1).optional(),
++  archived: z.boolean().optional(),
++  includeHidden: z.boolean().optional(),
++  parentThreadId: rawThreadIdSchema.optional(),
++  sourceThreadId: rawThreadIdSchema.optional(),
++  sectionId: z.string().min(1).optional(),
++  unsectioned: z.boolean().optional(),
++  hasParent: z.boolean().optional(),
++  originKind: threadOriginKindSchema.optional(),
++  originPluginId: z.string().min(1).optional(),
++  experimental_latestAttentionAtOrAfter: z.number().int().nonnegative().optional(),
++}).strict();
++export type ThreadFacetListScope = z.infer<typeof threadFacetListScopeSchema>;
++
++export const threadFacetQueryRequestSchema = z.object({
++  scope: threadFacetListScopeSchema.default({}),
++  filters: z.array(threadFacetFilterSchema).max(4).default([]),
++  order: threadFacetOrderSchema.optional(),
++  pageSize: z.number().int().min(1).max(100).default(50),
++  cursor: z.string().max(4096).optional(),
++  experimental_includeExecution: z.boolean().optional(),
++}).strict();
++export type ThreadFacetQueryRequest = z.infer<typeof threadFacetQueryRequestSchema>;
++
++export const threadFacetParticipantPageRequestSchema = z.object({
++  threadId: rawThreadIdSchema,
++  pageSize: z.number().int().min(1).max(100).default(50),
++  cursor: z.string().max(4096).optional(),
++}).strict();
++export type ThreadFacetParticipantPageRequest = z.infer<
++  typeof threadFacetParticipantPageRequestSchema
++>;
+diff --git a/packages/domain/src/thread.ts b/packages/domain/src/thread.ts
+index 7ca9d71ffb80a69cc1a7b5498887178a14e0727b..7e33b1696999c6450b8f04a4041f49e066a90f32 100644
+--- a/packages/domain/src/thread.ts
++++ b/packages/domain/src/thread.ts
+@@ -64,7 +64,8 @@ export const threadQueuedMessageSchema = z.object({
+    * both hand out rows with no surrounding thread to read it from.
+    */
+   threadId: z.string(),
+-  content: z.array(promptInputSchema).min(1),
++  initialForkSeed: z.boolean().default(false),
++  content: z.array(promptInputSchema),
+   model: z.string().min(1),
+   reasoningLevel: reasoningLevelSchema,
+   permissionMode: permissionModeSchema,
+@@ -106,6 +107,16 @@ export const threadQueuedMessageSchema = z.object({
+   editable: z.boolean(),
+   createdAt: z.number(),
+   updatedAt: z.number(),
++}).superRefine((value, context) => {
++  if (value.initialForkSeed && value.content.length === 0) return;
++  if (!value.initialForkSeed && value.content.length > 0) return;
++  context.addIssue({
++    code: z.ZodIssueCode.custom,
++    message: value.initialForkSeed
++      ? "initialForkSeed requires an empty content array"
++      : "queued message content must not be empty",
++    path: ["content"],
++  });
+ });
+ export type ThreadQueuedMessage = z.infer<typeof threadQueuedMessageSchema>;
+ 
+@@ -154,6 +165,12 @@ export const threadQueuedWorkValues = ["none", "waiting", "failed"] as const;
+ export const threadQueuedWorkSchema = z.enum(threadQueuedWorkValues);
+ export type ThreadQueuedWork = z.infer<typeof threadQueuedWorkSchema>;
+ 
++const threadListP6rParticipantSchema = z.object({
++  p6rPrincipalKey: z.string().min(1),
++  p6rDisplayName: z.string(),
++  p6rImageUrl: z.string().nullable(),
++});
++
+ export const threadListEntrySchema = threadWithRuntimeSchema.extend({
+   activity: threadActivityStateSchema,
+   queuedWork: threadQueuedWorkSchema,
+@@ -166,5 +183,6 @@ export const threadListEntrySchema = threadWithRuntimeSchema.extend({
+   environmentProviderId: z.string().nullable(),
+   environmentIsWorktree: z.boolean().nullable(),
+   environmentWorkspaceDisplayKind: environmentWorkspaceDisplayKindSchema,
++  p6rParticipants: z.array(threadListP6rParticipantSchema).optional(),
+ });
+ export type ThreadListEntry = z.infer<typeof threadListEntrySchema>;
+diff --git a/packages/domain/test/environment-credential-projection.test.ts b/packages/domain/test/environment-credential-projection.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..c31306da1041bfa8eead9097494fbbf72902defb
+--- /dev/null
++++ b/packages/domain/test/environment-credential-projection.test.ts
+@@ -0,0 +1,110 @@
++import { describe, expect, it } from "vitest";
++import {
++  parseStoredThreadEvent,
++  parseThreadEventRow,
++} from "../src/stored-thread-event.js";
++import { threadScope } from "../src/thread-event-scope.js";
++
++const secret = "synthetic-retained-authentication-secret";
++const provenance = {
++  reason:
++    "https://home.test:8443/path · 100.100.1.2 · account-id · full diagnostic context",
++};
++
++describe("source-attested credential-slot diagnostic projection", () => {
++  it.each([
++    ["account-pool", "ANTHROPIC_AUTH_TOKEN"],
++    ["account-pool", "CODEX_POOL_AUTH_TOKEN"],
++    ["account-pool", "BB_ACCOUNT_POOL_PARENT_TOKEN"],
++    ["subscription-router", "ANTHROPIC_AUTH_TOKEN"],
++    ["subscription-router", "CODEX_POOL_AUTH_TOKEN"],
++  ])(
++    "masks only the value of %s/%s without changing the original event",
++    (plugin, name) => {
++      const data = {
++        providerThreadId: "provider",
++        entries: [{ name, source: { plugin }, value: secret, ...provenance }],
++      };
++      const original = JSON.stringify(data);
++      const row = parseThreadEventRow({
++        id: "event",
++        type: "provider.env-resolved",
++        threadId: "thread",
++        providerThreadId: "provider",
++        scope: threadScope(),
++        seq: 1,
++        createdAt: 1,
++        data,
++      });
++      expect(row.data).toEqual({
++        providerThreadId: "provider",
++        entries: [
++          { name, source: { plugin }, value: { masked: true }, ...provenance },
++        ],
++      });
++      expect(JSON.stringify(data)).toBe(original);
++      expect(JSON.stringify(row)).not.toContain(secret);
++    },
++  );
++
++  it("preserves ordinary values, public sentinels, unknown names and different provenance", () => {
++    const entries = [
++      {
++        name: "ANTHROPIC_BASE_URL",
++        source: { plugin: "account-pool" },
++        value: "https://home.test",
++        ...provenance,
++      },
++      {
++        name: "ENABLE_TOOL_SEARCH",
++        source: { plugin: "account-pool" },
++        value: "true",
++        ...provenance,
++      },
++      {
++        name: "CODEX_POOL_AUTH_TOKEN",
++        source: { plugin: "subscription-router" },
++        value: "csr.unresolved",
++        ...provenance,
++      },
++      {
++        name: "ANTHROPIC_AUTH_TOKEN",
++        source: { plugin: "account-pool" },
++        value: "",
++        ...provenance,
++      },
++      {
++        name: "ANTHROPIC_AUTH_TOKEN",
++        source: { plugin: "different-plugin" },
++        value: "ordinary-value",
++        ...provenance,
++      },
++      {
++        name: "ANTHROPIC_AUTH_TOKEN",
++        source: "shell",
++        value: "ordinary-shell-value",
++        ...provenance,
++      },
++      {
++        name: "UNKNOWN",
++        source: { plugin: "account-pool" },
++        value: "ordinary-unknown-value",
++        ...provenance,
++      },
++      {
++        name: "OLD_CORE_VALUE",
++        source: { core: "machine-environment" },
++        value: { masked: true },
++        ...provenance,
++      },
++    ];
++    const event = parseStoredThreadEvent({
++      type: "provider.env-resolved",
++      threadId: "thread",
++      providerThreadId: "provider",
++      scope: threadScope(),
++      data: { entries },
++    });
++    expect(event).toMatchObject({ entries });
++  });
++});
+diff --git a/packages/domain/test/p6r-message-author.test.ts b/packages/domain/test/p6r-message-author.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..64d40f1d97d69153cb0b530c8339516e36d43d43
+--- /dev/null
++++ b/packages/domain/test/p6r-message-author.test.ts
+@@ -0,0 +1,32 @@
++import { describe, expect, it } from "vitest";
++import { p6rMessageAuthorSchema, p6rStoredMessageAttributionSchema } from "../src/p6r-message-author.js";
++
++const machine = {
++  evidence: "machine",
++  identity: { kind: "machine", key: "p6r-machine:v1:instance:server", instanceId: "instance", hostId: null },
++  presentation: { displayName: "bb-machine", handle: null, avatarUrl: null },
++};
++const person = {
++  evidence: "provider-verified",
++  identity: { kind: "person", key: "person:cole", issuer: "tailnet", subject: "cole" },
++  presentation: { displayName: "Cole", handle: "cole@example.test", avatarUrl: null },
++};
++
++describe("durable machine attribution", () => {
++  it("round trips mixed authors and editors without changing historical unknowns", () => {
++    const stored = { authors: [person, machine, null], editors: [machine, null, person] };
++    expect(p6rStoredMessageAttributionSchema.parse(JSON.parse(JSON.stringify(stored)))).toEqual(stored);
++    expect(p6rStoredMessageAttributionSchema.parse([person, null])).toEqual([person, null]);
++  });
++
++  it("does not permit machine fallback to claim provider verification", () => {
++    expect(p6rMessageAuthorSchema.safeParse({ ...machine, evidence: "provider-verified" }).success).toBe(false);
++    expect(p6rMessageAuthorSchema.safeParse({ ...person, evidence: "machine" }).success).toBe(false);
++    expect(p6rMessageAuthorSchema.safeParse({ ...machine, identity: { ...machine.identity, instanceId: "" } }).success).toBe(false);
++  });
++
++  it("keeps identity stable when machine presentation changes", () => {
++    const renamed = p6rMessageAuthorSchema.parse({ ...machine, presentation: { ...machine.presentation, displayName: "renamed" } });
++    expect(renamed.identity).toEqual(machine.identity);
++  });
++});
+diff --git a/packages/domain/test/stored-thread-event.test.ts b/packages/domain/test/stored-thread-event.test.ts
+index 4e64516789b47cf2f5d561106fc006d07620c6cb..a2e2f01a0da986ee53d5c08de508152fd6528ae6 100644
+--- a/packages/domain/test/stored-thread-event.test.ts
++++ b/packages/domain/test/stored-thread-event.test.ts
+@@ -154,6 +154,76 @@ describe("parseStoredThreadEvent", () => {
+     expect(event).not.toHaveProperty("turnId");
+   });
+ 
++  it("round-trips agent-message phase with its causal identity and preserves legacy absence", () => {
++    const data = {
++      providerThreadId: "provider-1",
++      item: {
++        type: "agentMessage",
++        id: "assistant-1",
++        text: "final",
++        phase: "final_answer",
++      },
++    } as const;
++    const event = parseStoredThreadEvent({
++      type: "item/completed",
++      threadId: "thread-1",
++      providerThreadId: "provider-1",
++      scope: turnScope("turn-1"),
++      data,
++    });
++    expect(event).toMatchObject({
++      type: "item/completed",
++      threadId: "thread-1",
++      providerThreadId: "provider-1",
++      scope: turnScope("turn-1"),
++      item: {
++        type: "agentMessage",
++        id: "assistant-1",
++        phase: "final_answer",
++      },
++    });
++    expect(
++      parseThreadEventRow({
++        id: "event-1",
++        type: "item/completed",
++        threadId: "thread-1",
++        seq: 1,
++        createdAt: 1,
++        scope: turnScope("turn-1"),
++        data,
++      }),
++    ).toMatchObject({
++      data: {
++        providerThreadId: "provider-1",
++        item: {
++          id: "assistant-1",
++          phase: "final_answer",
++        },
++      },
++    });
++
++    const legacy = parseStoredThreadEvent({
++      type: "item/completed",
++      threadId: "thread-1",
++      providerThreadId: "provider-1",
++      scope: turnScope("turn-1"),
++      data: {
++        item: {
++          type: "agentMessage",
++          id: "assistant-legacy",
++          text: "legacy",
++        },
++      },
++    });
++    expect(legacy).toMatchObject({ type: "item/completed" });
++    if (
++      legacy.type === "item/completed" &&
++      legacy.item.type === "agentMessage"
++    ) {
++      expect(legacy.item).not.toHaveProperty("phase");
++    }
++  });
++
+   it("keeps host connection loss compatible with legacy interruption readers", () => {
+     const data = {
+       reason: "host-daemon-restarted",
+diff --git a/packages/domain/test/thread.test.ts b/packages/domain/test/thread.test.ts
+index d79c6a6d141e794d4edc6fd0b1303451f45b3f9b..846921d80de513dce5010a9695890f499eb33c9a 100644
+--- a/packages/domain/test/thread.test.ts
++++ b/packages/domain/test/thread.test.ts
+@@ -2,6 +2,51 @@ import { describe, expect, it } from "vitest";
+ import { threadQueuedMessageSchema } from "../src/thread.js";
+ 
+ describe("thread queued message schema", () => {
++  const queuedMessage = (overrides: Record<string, unknown> = {}) => ({
++    id: "qmsg_123",
++    origin: null,
++    originPluginId: null,
++    initiator: "user",
++    senderThreadId: null,
++    threadId: "thread_1",
++    content: [{ type: "text", text: "Queued message", mentions: [] }],
++    model: "gpt-5",
++    reasoningLevel: "medium",
++    permissionMode: "accept-edits",
++    serviceTier: "default",
++    groupWithNext: false,
++    sendAt: null,
++    state: "queued",
++    waitingOn: null,
++    failureReason: null,
++    payload: { kind: "inline" },
++    editable: true,
++    createdAt: 1,
++    updatedAt: 1,
++    ...overrides,
++  });
++
++  it("allows an empty content array only for a server-derived initial fork seed", () => {
++    expect(
++      threadQueuedMessageSchema.parse(
++        queuedMessage({ content: [], initialForkSeed: true }),
++      ),
++    ).toMatchObject({ content: [], initialForkSeed: true });
++    expect(() =>
++      threadQueuedMessageSchema.parse(queuedMessage({ content: [] })),
++    ).toThrow("must not be empty");
++    expect(() =>
++      threadQueuedMessageSchema.parse(
++        queuedMessage({ content: [], initialForkSeed: false }),
++      ),
++    ).toThrow("must not be empty");
++    expect(() =>
++      threadQueuedMessageSchema.parse(
++        queuedMessage({ initialForkSeed: true }),
++      ),
++    ).toThrow("requires an empty");
++  });
++
+   it("requires the explicit grouping boundary flag", () => {
+     expect(
+       threadQueuedMessageSchema.parse({
+diff --git a/packages/host-daemon-contract/src/commands.ts b/packages/host-daemon-contract/src/commands.ts
+index fbb5f6b3818716a5796bd2314997a22cd9bfd2a9..b7d15150e404352cdd90b49f33262ee0ff89ab18 100644
+--- a/packages/host-daemon-contract/src/commands.ts
++++ b/packages/host-daemon-contract/src/commands.ts
+@@ -188,6 +188,7 @@ export type HostDaemonBridgeLaunch = z.infer<
+ export const hostDaemonContributedEnvEntrySchema = z
+   .object({
+     name: z.string().regex(/^[A-Z_][A-Z0-9_]*$/u),
++    secret: z.boolean(),
+     value: z.union([
+       z.string(),
+       z.object({ serverPath: z.string().startsWith("/") }).strict(),
+@@ -915,6 +916,10 @@ const hostListBranchOptionsCommandSchema = z
+   .strict();
+ 
+ const providerListModelsCommandSchema = z.object({
++  requiredExternalCatalog: z.object({
++    models: z.array(availableModelSchema).min(1),
++    selectedOnlyModels: z.array(availableModelSchema),
++  }).strict().optional(),
+   type: z.literal("provider.list_models"),
+   providerId: z.string().min(1),
+   bridgeLaunch: hostDaemonBridgeLaunchSchema,
+diff --git a/packages/host-daemon-contract/test/contract.test.ts b/packages/host-daemon-contract/test/contract.test.ts
+index 499644197996f7cf25909b5222ec75fe2d048464..d16a594210852481ea3366f6fd7ed90e30ad832d 100644
+--- a/packages/host-daemon-contract/test/contract.test.ts
++++ b/packages/host-daemon-contract/test/contract.test.ts
+@@ -610,6 +610,52 @@ function terminalDataBase64(byteLength: number): string {
+ }
+ 
+ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog":
++    "present only when the BB server has fetched the required shared-pool catalogue; absence selects native discovery only outside the required profile.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.sessionOptions":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.sessionOptions.category":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.sessionOptions.description":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.sessionOptions.fixed":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.sessionOptions.values.description":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.sessionOptions.values.group":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.supportedReasoningEfforts.label":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.routeProviderId":
++    "pooled catalogue models can omit a separate route-provider identity; the existing AvailableModel contract defines the same omission semantics.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.supportedServiceTiers":
++    "model facts need not advertise service tiers; the existing AvailableModel contract defines the same omission semantics.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.supportedServiceTiers.description":
++    "service tier descriptions are optional display metadata; the existing AvailableModel contract defines the same omission semantics.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.models.supportedServiceTiers.label":
++    "service tier labels are optional display metadata; the existing AvailableModel contract defines the same omission semantics.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.sessionOptions":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.sessionOptions.category":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.sessionOptions.description":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.sessionOptions.fixed":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.sessionOptions.values.description":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.sessionOptions.values.group":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.supportedReasoningEfforts.label":
++    "Optional model display and session capability facts follow the upstream AvailableModel contract.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.routeProviderId":
++    "pooled catalogue models can omit a separate route-provider identity; the existing AvailableModel contract defines the same omission semantics.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.supportedServiceTiers":
++    "model facts need not advertise service tiers; the existing AvailableModel contract defines the same omission semantics.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.supportedServiceTiers.description":
++    "service tier descriptions are optional display metadata; the existing AvailableModel contract defines the same omission semantics.",
++  "hostDaemonOnlineRpcCommandSchema.requiredExternalCatalog.selectedOnlyModels.supportedServiceTiers.label":
++    "service tier labels are optional display metadata; the existing AvailableModel contract defines the same omission semantics.",
+   "hostDaemonCommandSchema.resolution.description":
+     "the interaction.resolve command's resolution is the persisted union, so it also admits the plugin_submitted arm and the description a plugin's describeSubmission returned. It never reaches the wire: a plugin interaction is settled in the server against its waiting requestInput promise and never queues a daemon command, so an older daemon never sees the field.",
+   "hostDaemonCommandSchema.resolution.description.detail":
+@@ -1038,6 +1084,7 @@ const ACP_BRIDGE_LAUNCH = {
+ const CONTRIBUTED_ENV = [
+   {
+     name: "PLUGIN_API_URL",
++    secret: false,
+     value: { serverPath: "/plugins/auth-proxy/api" },
+     source: { plugin: "auth-proxy" },
+     reason: "Route provider traffic through the plugin",
+diff --git a/packages/host-daemon-contract/test/environment-classification.test.ts b/packages/host-daemon-contract/test/environment-classification.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f6e04b932bb0a86c413d50d47f9f681b17536241
+--- /dev/null
++++ b/packages/host-daemon-contract/test/environment-classification.test.ts
+@@ -0,0 +1,28 @@
++import { expect, it } from "vitest";
++import { hostDaemonContributedEnvEntrySchema } from "../src/commands.js";
++
++const entry = {
++  name: "ARBITRARY",
++  value: "synthetic-value",
++  source: { plugin: "producer" },
++  reason: "Explicit producer classification",
++};
++
++it.each([true, false])(
++  "preserves the required environment classification secret=%s",
++  (secret) => {
++    expect(
++      hostDaemonContributedEnvEntrySchema.parse({ ...entry, secret }),
++    ).toEqual({ ...entry, secret });
++  },
++);
++
++it.each([undefined, null, "false", 0])(
++  "rejects missing or nonboolean environment classification %s",
++  (secret) => {
++    expect(
++      hostDaemonContributedEnvEntrySchema.safeParse({ ...entry, secret })
++        .success,
++    ).toBe(false);
++  },
++);
+diff --git a/packages/plugin-sdk/package.json b/packages/plugin-sdk/package.json
+index ad87a4b7ccaf906609aba9fceffc3d78c1b55bc6..0feaa48a91a222dc423798b87aa1afbde1bd70cb 100644
+--- a/packages/plugin-sdk/package.json
++++ b/packages/plugin-sdk/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "@get-bb/plugin-sdk",
+-  "version": "0.6.143",
++  "version": "0.6.143+phosphor.05199007.upgrade1",
+   "homepage": "https://github.com/get-bb/bb#readme",
+   "bugs": {
+     "url": "https://github.com/get-bb/bb/issues"
+@@ -170,6 +170,7 @@
+     "zod": "^4.6.7"
+   },
+   "devDependencies": {
++    "@bb/client-core": "workspace:*",
+     "@bb/domain": "workspace:*",
+     "@bb/process-utils": "workspace:*",
+     "@bb/provider-bridge-acp": "workspace:*",
+diff --git a/packages/plugin-sdk/src/__tests__/frontend-exports.test.ts b/packages/plugin-sdk/src/__tests__/frontend-exports.test.ts
+index d1f8cb3035f6c722446752b446ed93080d2c0168..37a3bc06eebda03a886f7c1a9e6b298254743e6e 100644
+--- a/packages/plugin-sdk/src/__tests__/frontend-exports.test.ts
++++ b/packages/plugin-sdk/src/__tests__/frontend-exports.test.ts
+@@ -1,5 +1,6 @@
+ import { readFile } from "node:fs/promises";
+-import { describe, expect, it } from "vitest";
++import { describe, expect, expectTypeOf, it } from "vitest";
++import type { P6rParticipantProfile, PluginSidebarThread } from "../app.js";
+ import * as frontendRuntime from "../app.js";
+ 
+ const RUNTIME_ONLY_COMPAT_EXPORTS = [
+@@ -14,6 +15,12 @@ function declarationValueExports(declarations: string): string[] {
+ }
+ 
+ describe("frontend plugin SDK export parity", () => {
++  it("exports the optional sidebar P6r participant contract", () => {
++    expectTypeOf<PluginSidebarThread["p6rParticipants"]>().toEqualTypeOf<
++      readonly P6rParticipantProfile[] | undefined
++    >();
++  });
++
+   it("declares every public runtime value except the compatibility exports", async () => {
+     const declarations = await readFile(
+       new URL("../../bundled-types/bb-plugin-sdk-app.d.ts", import.meta.url),
+diff --git a/packages/plugin-sdk/src/__tests__/public-types.test.ts b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+index 3738cc9dbd25e3c2cd17c3b58350004d360161c9..86e643686d65c7ae77a78959577b32facd1336a7 100644
+--- a/packages/plugin-sdk/src/__tests__/public-types.test.ts
++++ b/packages/plugin-sdk/src/__tests__/public-types.test.ts
+@@ -7,6 +7,12 @@ import type {
+   PluginEnvironmentProviderDeclaration,
+   PluginEnvironments,
+   ReadonlyJsonValue,
++  ExperimentalP6rAcceptanceRequest,
++  ExperimentalP6rIdentityProtocol,
++  ExperimentalP6rInvocationContext,
++  ExperimentalP6rInvocationScope,
++  P6rExperimentalPluginRoutes,
++  P6rPluginRequestContext,
+ } from "../index.js";
+ import type {
+   ComposerAttachment,
+@@ -23,10 +29,13 @@ type ExpectedBbPluginApiKey =
+   | "events"
+   | "experimental_aiServices"
+   | "experimental_environments"
++  | "experimental_facets"
+   | "experimental_hooks"
+   | "experimental_machines"
+   | "onInstall"
+   | "experimental_serverAccess"
++  | "experimental_p6rIdentity"
++  | "experimental_p6rRoutes"
+   | "hosts"
+   | "http"
+   | "log"
+@@ -52,6 +61,13 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
+   "PluginAiServiceStatus",
+   "PluginAiServices",
+   "PluginAiTranscribeOptions",
++  "ExperimentalThreadFacetCardinality",
++  "ExperimentalThreadFacetHandle",
++  "ExperimentalThreadFacetReplacement",
++  "ExperimentalThreadFacets",
++  "ExperimentalThreadFacetTarget",
++  "ExperimentalThreadFacetTargetGrant",
++  "ExperimentalThreadFacetTargetPage",
+   "PluginAgentConfiguration",
+   "PluginAgentConfigurationContext",
+   "PluginAgentToolContentPart",
+@@ -80,6 +96,7 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
+   "PluginDispatchExecutionSources",
+   "PluginDispatchInput",
+   "PluginEvents",
++  "ExperimentalPluginMentionTargetSelector",
+   "ExperimentalPluginWebSocket",
+   "ExperimentalPluginWebSocketContext",
+   "ExperimentalPluginWebSocketHandler",
+@@ -92,6 +109,8 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
+   "PluginHttp",
+   "PluginHttpAuthMode",
+   "PluginHttpHandler",
++  "P6rExperimentalPluginRoutes",
++  "P6rPluginRequestContext",
+   "PluginInteractionCancelReason",
+   "PluginInteractionDescription",
+   "PluginInteractionRequest",
+@@ -277,6 +296,40 @@ describe("backend plugin SDK public surface", () => {
+     expectTypeOf(borrowNestedValue).toBeFunction();
+   });
+ 
++  it("keeps presentation routes and HTTP context optional for baseline hosts", () => {
++    expectTypeOf<BbPluginApi["experimental_p6rRoutes"]>().toEqualTypeOf<
++      P6rExperimentalPluginRoutes | undefined
++    >();
++    expectTypeOf<P6rPluginRequestContext["experimental_p6rExternalOrigin"]>().toEqualTypeOf<
++      string | undefined
++    >();
++  });
++
++  it("exposes the optional enhanced identity protocol without product models", () => {
++    expectTypeOf<
++      BbPluginApi["experimental_p6rIdentity"]
++    >().toEqualTypeOf<ExperimentalP6rIdentityProtocol | undefined>();
++    expectTypeOf<ExperimentalP6rIdentityProtocol["instanceId"]>().toEqualTypeOf<string>();
++    expectTypeOf<
++      ExperimentalP6rIdentityProtocol["experimental_useProducerMessageRendering"]
++    >().toEqualTypeOf<(() => void) | undefined>();
++    expectTypeOf<
++      ExperimentalP6rInvocationContext<{ readonly requestId: string }>["scope"]
++    >().toEqualTypeOf<ExperimentalP6rInvocationScope>();
++    expectTypeOf<
++      ExperimentalP6rAcceptanceRequest<
++        { readonly body: string },
++        { readonly subject: string }
++      >["source"]
++    >().toEqualTypeOf<
++      | { readonly kind: "scope"; readonly scope: ExperimentalP6rInvocationScope }
++      | {
++          readonly kind: "external";
++          readonly author: { readonly subject: string };
++        }
++    >();
++  });
++
+   it("keeps every backend contract export in the root declaration bundle", async () => {
+     const [backendContract, declarations] = await Promise.all([
+       readFile(new URL("../backend-contract.ts", import.meta.url), "utf8"),
+diff --git a/packages/plugin-sdk/src/app-contract.ts b/packages/plugin-sdk/src/app-contract.ts
+index 94b0c519aaf8dd11ba93291fb1d5d97b30007c70..47b4af0c211e591c5a99c54d8cb54c0016adec8b 100644
+--- a/packages/plugin-sdk/src/app-contract.ts
++++ b/packages/plugin-sdk/src/app-contract.ts
+@@ -1477,6 +1477,8 @@ export interface PluginSidebarThread {
+    */
+   indicatorLabel: string | null;
+ 
++  p6rParticipants?: readonly P6rParticipantProfile[];
++
+   isUnread: boolean;
+   isPinned: boolean;
+   /** When the thread was pinned (epoch ms); null when unpinned. */
+@@ -1539,6 +1541,13 @@ export interface PluginSidebarThread {
+   latestAttentionAt: number;
+ }
+ 
++/** A canonical P6r participant profile projected by the host for a sidebar. */
++export interface P6rParticipantProfile {
++  p6rPrincipalKey: string;
++  p6rDisplayName: string;
++  p6rImageUrl: string | null;
++}
++
+ /** One project in the sidebar's live view. */
+ export interface PluginSidebarProject {
+   id: string;
+@@ -3930,6 +3939,32 @@ export interface PluginMachineProviderInputsRegistration {
+ // definePluginApp
+ // ---------------------------------------------------------------------------
+ 
++/** A declarative layout for BB's native sidebar navigation. */
++export interface ExperimentalSidebarLayout {
++  readonly order: readonly string[];
++  readonly visible: readonly string[];
++}
++
++/**
++ * An experimental provider may supply a resolved layout and receive native
++ * customization changes. BB remains the sole sidebar renderer and interaction
++ * owner; a provider never receives navigation actions or DOM ownership. This
++ * is an exclusive slot: when more than one provider is active, the first one
++ * in BB's deterministic plugin-slot order wins.
++ */
++export interface ExperimentalSidebarLayoutProviderProps {
++  publish(layout: ExperimentalSidebarLayout | null): void;
++  subscribeChanges(
++    listener: (layout: ExperimentalSidebarLayout) => void,
++  ): () => void;
++}
++
++/** Supply data to BB's native sidebar layout resolver. One active provider is selected by slot order. */
++export interface ExperimentalSidebarLayoutProviderRegistration {
++  id: string;
++  component: ComponentType<ExperimentalSidebarLayoutProviderProps>;
++}
++
+ export interface PluginAppSlots {
+   homepageSection(registration: PluginHomepageSectionRegistration): void;
+   settingsSection(registration: PluginSettingsSectionRegistration): void;
+@@ -3970,6 +4005,9 @@ export interface PluginAppSlots {
+    * {@link PluginThreadListRegistration}). Experimental: see
+    * docs/api_to_audit.md for what to audit before the prefix drops.
+    */
++  experimental_sidebarLayoutProvider(
++    registration: ExperimentalSidebarLayoutProviderRegistration,
++  ): void;
+   experimental_threadList(registration: PluginThreadListRegistration): void;
+   /**
+    * Draw the sidebar navigation and its header controls (see
+diff --git a/packages/plugin-sdk/src/backend-contract.ts b/packages/plugin-sdk/src/backend-contract.ts
+index 6aaaa00542c3a9839a63719cbd2bf31fb18ce7e0..02dc5a219a26bb566b7863b225c1139174cb017e 100644
+--- a/packages/plugin-sdk/src/backend-contract.ts
++++ b/packages/plugin-sdk/src/backend-contract.ts
+@@ -36,6 +36,7 @@ import type {
+   TerminalSession,
+ } from "@bb/server-contract";
+ import type { JsonValue, ReadonlyJsonValue } from "./json-value.js";
++import type { ExperimentalP6rIdentityProtocol } from "./experimental-p6r-identity.js";
+ import type {
+   ExperimentalPluginRpcHandlersWithContext,
+   PluginRpcContract,
+@@ -828,8 +829,22 @@ export interface PluginHooks {
+ 
+ export type PluginHttpAuthMode = "local" | "token" | "none";
+ 
++/**
++ * Server-authored presentation facts for a plugin HTTP invocation.
++ *
++ * When supplied, `experimental_p6rExternalOrigin` is the configured
++ * `BB_APP_URL` origin when one is available; otherwise it is the direct
++ * request URL origin. It exists only for token-free links. It carries no
++ * actor, principal, credential, or forwarded-header authority. Baseline hosts
++ * may omit the whole context or this optional presentation field.
++ */
++export interface P6rPluginRequestContext {
++  readonly experimental_p6rExternalOrigin?: string;
++}
++
+ export type PluginHttpHandler = (
+   context: Context,
++  p6rRequestContext?: P6rPluginRequestContext,
+ ) => Response | Promise<Response>;
+ 
+ export interface ExperimentalPluginWebSocket {
+@@ -870,6 +885,11 @@ export interface PluginHttp {
+    * - "token": requires the per-plugin token (`bb plugin token <id>`) via
+    *   the x-bb-plugin-token header or ?token=.
+    * - "none": no checks — only for signature-verified webhooks.
++   *
++   * Plugin HTTP OPTIONS requests bypass the host CORS responder. A route that
++   * supports browser callers must register its own OPTIONS handler and return
++   * the exact CORS headers its GET/POST handlers require. Route authentication
++   * remains enforced independently for every non-OPTIONS request.
+    */
+   route(
+     method: string,
+@@ -1809,6 +1829,8 @@ export interface ExperimentalPluginProviderEnvContext {
+ export interface ExperimentalPluginProviderEnvEntry {
+   name: string;
+   value: string | { serverPath: string };
++  /** True only when this value is an API key or equivalent authentication secret. Ordinary diagnostic values remain visible. */
++  experimental_secret: boolean;
+   reason: string;
+ }
+ 
+@@ -1857,6 +1879,8 @@ export type ExperimentalPluginMentionImage =
+   | { type: "image"; url: string; context?: string }
+   | { type: "localImage"; path: string; context?: string };
+ 
++export type ExperimentalPluginMentionTargetSelector = { kind: "p6r-person"; issuer: string; subject: string };
++
+ export interface PluginMentionProviderRegistration {
+   /** Unique within this plugin: [a-zA-Z0-9_-]+ (no ":" — the host composes
+    * wire item ids as "<providerId>:<itemId>"). */
+@@ -1881,16 +1905,20 @@ export interface PluginMentionProviderRegistration {
+    * Resolves one picked item into agent context, called once per unique
+    * item at message send time. The returned `context` is attached to the
+    * message as an agent-visible (user-hidden) prompt input. Throwing blocks
+-   * the send with a visible error.
++   * the send with a visible error. `experimental_target` selects a person
++   * from this plugin's active identity provider. The host resolves its key and
++   * presentation; the selector never supplies authorship or a profile.
+    */
+   resolve(itemId: string):
+     | {
+         context: string;
+         experimental_images?: readonly ExperimentalPluginMentionImage[];
++        experimental_target?: ExperimentalPluginMentionTargetSelector;
+       }
+     | Promise<{
+         context: string;
+         experimental_images?: readonly ExperimentalPluginMentionImage[];
++        experimental_target?: ExperimentalPluginMentionTargetSelector;
+       }>;
+ }
+ 
+@@ -1933,6 +1961,11 @@ export interface PluginEvents {
+ // Server info.
+ // ---------------------------------------------------------------------------
+ 
++/** Pure, server-owned route construction for existing plugin presentation links. */
++export interface P6rExperimentalPluginRoutes {
++  p6rThreadPath(args: { projectId: string; threadId: string }): string;
++}
++
+ export interface PluginServerApi {
+   /**
+    * The operator-configured public app URL from `BB_APP_URL`, or `null` when
+@@ -2199,6 +2232,52 @@ export interface PluginHosts {
+   ): () => void;
+ }
+ 
++export type ExperimentalThreadFacetCardinality = "one" | "many";
++
++declare const experimentalThreadFacetTargetGrantBrand: unique symbol;
++
++export interface ExperimentalThreadFacetTargetGrant {
++  readonly [experimentalThreadFacetTargetGrantBrand]: true;
++}
++
++export type ExperimentalThreadFacetTarget =
++  | Awaited<ReturnType<BbSdk["threads"]["get"]>>
++  | Awaited<ReturnType<BbSdk["threads"]["list"]>>[number];
++
++export type ExperimentalThreadFacetReplacement<
++  Cardinality extends ExperimentalThreadFacetCardinality,
++  Member extends string,
++> = Cardinality extends "one" ? readonly [] | readonly [Member] : readonly Member[];
++
++export interface ExperimentalThreadFacetTargetPage {
++  targets: readonly ExperimentalThreadFacetTarget[];
++  nextCursor: string | null;
++}
++
++export interface ExperimentalThreadFacetHandle<
++  Cardinality extends ExperimentalThreadFacetCardinality,
++  Member extends string,
++> {
++  replace(target: ExperimentalThreadFacetTargetGrant, members: ExperimentalThreadFacetReplacement<Cardinality, Member>): Promise<void>;
++  clear(target: ExperimentalThreadFacetTargetGrant): Promise<void>;
++  listPriorTargets(args?: { cursor?: string; pageSize?: number }): Promise<ExperimentalThreadFacetTargetPage>;
++  markReady(): Promise<void>;
++}
++
++export interface ExperimentalThreadFacets {
++  target(thread: ExperimentalThreadFacetTarget): ExperimentalThreadFacetTargetGrant;
++  declare<
++    const Cardinality extends ExperimentalThreadFacetCardinality,
++    const Members extends readonly string[],
++  >(declaration: {
++    assignmentScope: "shared-thread";
++    cardinality: Cardinality;
++    localName: string;
++    memberKind: "enum";
++    members: Members;
++  }): ExperimentalThreadFacetHandle<Cardinality, Members[number]>;
++}
++
+ // ---------------------------------------------------------------------------
+ // Status + the API root.
+ // ---------------------------------------------------------------------------
+@@ -2255,6 +2334,9 @@ export type PluginBbSdk = Omit<BbSdk, "threads"> & {
+ export interface BbPluginApi {
+   /** Internal: counts one meaningful use of a first-party plugin's UI. */
+   internal_DO_NOT_USE_recordPluginUse(): void;
++  /** Server-owned, identity-free route paths for existing presentation links. */
++  readonly experimental_p6rRoutes?: P6rExperimentalPluginRoutes;
++  readonly experimental_p6rIdentity?: ExperimentalP6rIdentityProtocol;
+   /** The plugin's own id (namespaces storage, routes, commands). */
+   readonly pluginId: string;
+   /** Leveled, plugin-scoped logger. */
+@@ -2311,6 +2393,11 @@ export interface BbPluginApi {
+    * commit messages, and voice input.
+    */
+   readonly experimental_aiServices: PluginAiServices;
++  readonly experimental_facets: ExperimentalThreadFacets;
++  /**
++   * Optional enhanced identity host capability. It is absent on ordinary
++   * hosts; product adapters validate the structural protocol before use.
++   */
+   /**
+    * The full BB SDK, bound to this server over loopback (design §4.1).
+    * Bind-gated: reading this before the host binds the SDK throws. The real
+diff --git a/packages/plugin-sdk/src/experimental-p6r-identity.ts b/packages/plugin-sdk/src/experimental-p6r-identity.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..82462047bc2cb368a52d9525cb2269a71657ff68
+--- /dev/null
++++ b/packages/plugin-sdk/src/experimental-p6r-identity.ts
+@@ -0,0 +1,194 @@
++/**
++ * Experimental host-owned identity extension primitives.
++ *
++ * Product packages own identity, acceptance, provenance, and directory
++ * models. This module intentionally defines only the generic host boundary.
++ */
++
++export type ExperimentalP6rInvocationRouteClass =
++  | "interactive-session"
++  | "external-credential"
++  | "anonymous"
++  | "plugin-background"
++  | "agent-tool"
++  | "local-cli";
++
++export type ExperimentalP6rInvocationValidity =
++  | { readonly ok: true }
++  | {
++      readonly ok: false;
++      readonly code: "invalidated" | "retired";
++    };
++
++/** A captured request scope carries the host request lifecycle. */
++export interface ExperimentalP6rInvocationScope {
++  readonly signal: AbortSignal;
++  release(): void;
++  validate(): ExperimentalP6rInvocationValidity;
++}
++
++/** The host supplies this context only to a handler returned by bindInvocation. */
++export interface ExperimentalP6rInvocationContext<RequestContext = unknown> {
++  readonly request: RequestContext;
++  readonly scope: ExperimentalP6rInvocationScope;
++}
++
++/** A generation-bound registration owned by the host lifecycle. */
++export interface ExperimentalP6rInvocationRegistration {
++  readonly generation: string;
++  readonly status: "staged" | "active" | "retired";
++  dispose(): void;
++}
++
++export interface ExperimentalP6rRequestHandle<
++  Session = unknown,
++  Validation = unknown,
++  ExpectedValidation = unknown,
++> {
++  readonly signal: AbortSignal;
++  readonly session: Session;
++  release(): void;
++  validate(expected: ExpectedValidation): Validation;
++}
++
++/** Enhanced hosts attach the original host-issued scope to this request handle. */
++export interface ExperimentalP6rForkRequestHandle<
++  Session = unknown,
++  Validation = unknown,
++  ExpectedValidation = unknown,
++> extends ExperimentalP6rRequestHandle<
++  Session,
++  Validation,
++  ExpectedValidation
++> {
++  readonly scope: ExperimentalP6rInvocationScope;
++}
++
++export type ExperimentalP6rResult<Value, Failure = unknown> =
++  | { readonly ok: true; readonly value: Value }
++  | { readonly ok: false; readonly error: Failure };
++
++export type ExperimentalP6rAcceptanceSource<ExternalAuthor = unknown> =
++  | { readonly kind: "scope"; readonly scope: ExperimentalP6rInvocationScope }
++  | { readonly kind: "external"; readonly author: ExternalAuthor };
++
++export interface ExperimentalP6rAcceptanceRequest<
++  Input = unknown,
++  ExternalAuthor = unknown,
++> {
++  readonly input: Input;
++  readonly source: ExperimentalP6rAcceptanceSource<ExternalAuthor>;
++}
++
++export interface ExperimentalP6rProviderRegistration<
++  Configuration = unknown,
++  InvalidationChange = unknown,
++  InvalidationResult = unknown,
++  PersonResult = unknown,
++  Subscription = () => void,
++> {
++  readonly configuration: Configuration;
++  readonly generation: string;
++  readonly signal: AbortSignal;
++  dispose(): void;
++  getStatus(): "staged" | "active" | "retired";
++  invalidate(change: InvalidationChange): InvalidationResult;
++  person(issuer: string, subject: string): PersonResult;
++  subscribe(
++    listener: (status: "staged" | "active" | "retired") => void,
++  ): Subscription;
++}
++
++/**
++ * Structural enhanced-host protocol. Product packages validate and narrow
++ * its opaque product values when they discover this optional capability.
++ */
++export interface ExperimentalP6rIdentityProtocol<
++  RequestContext = unknown,
++  ToolContext = unknown,
++  Input = unknown,
++  ExternalAuthor = unknown,
++  SessionResult = unknown,
++  SelfProfileResult = unknown,
++  RequestSession = unknown,
++  RequestValidation = unknown,
++  RequestValidationExpected = unknown,
++  ResultFailure = unknown,
++  AcceptanceResult = unknown,
++  LookupResult = unknown,
++  ProvenanceResult = unknown,
++  ContributionsQuery = unknown,
++  ContributionsResult = unknown,
++  AttemptsQuery = unknown,
++  AttemptsResult = unknown,
++  DirectorySource = unknown,
++  ParticipantsInput = unknown,
++  ParticipantsResult = unknown,
++  ForwardInput = unknown,
++  Provider = unknown,
++  ProviderRegistration = ExperimentalP6rProviderRegistration,
++  Event = unknown,
++  Subscription = () => void,
++  ReadOptions = unknown,
++  ForwardResult = unknown,
++> {
++  readonly instanceId: string;
++  readonly version: 1;
++  /** Enable producer-owned message envelopes for this plugin generation. */
++  experimental_useProducerMessageRendering?(): void;
++  bindInvocation<Args extends readonly unknown[], Output>(input: {
++    readonly handler: (
++      context: ExperimentalP6rInvocationContext<RequestContext>,
++      ...args: Args
++    ) => Output;
++    readonly routeClass: ExperimentalP6rInvocationRouteClass;
++  }): {
++    readonly handler: (...args: Args) => Output;
++    readonly registration: ExperimentalP6rInvocationRegistration;
++  };
++  session(context: RequestContext): Promise<SessionResult>;
++  selfProfile(
++    context: RequestContext,
++    options?: ReadOptions,
++  ): Promise<SelfProfileResult>;
++  openRequest(
++    context: RequestContext,
++  ): Promise<
++    ExperimentalP6rResult<
++      ExperimentalP6rForkRequestHandle<
++        RequestSession,
++        RequestValidation,
++        RequestValidationExpected
++      >,
++      ResultFailure
++    >
++  >;
++  accept(
++    input: ExperimentalP6rAcceptanceRequest<Input, ExternalAuthor>,
++    options?: ReadOptions,
++  ): Promise<AcceptanceResult>;
++  lookup(operationId: string, options?: ReadOptions): Promise<LookupResult>;
++  provenance(context: ToolContext): Promise<ProvenanceResult>;
++  historyContributions(
++    query: ContributionsQuery,
++    options?: ReadOptions,
++  ): Promise<ContributionsResult>;
++  historyAttempts(
++    query: AttemptsQuery,
++    options?: ReadOptions,
++  ): Promise<AttemptsResult>;
++  directorySources(): readonly DirectorySource[];
++  participants(
++    input: ParticipantsInput,
++    options?: ReadOptions,
++  ): Promise<ParticipantsResult>;
++  forwardRpc(
++    scope: ExperimentalP6rInvocationScope,
++    destination: { readonly method: string; readonly pluginId: string },
++    input: ForwardInput,
++  ): Promise<ForwardResult>;
++  registerProvider(
++    provider: Provider,
++  ): Promise<ExperimentalP6rResult<ProviderRegistration, ResultFailure>>;
++  subscribe(listener: (event: Event) => void): Subscription;
++}
+diff --git a/packages/plugin-sdk/src/index.ts b/packages/plugin-sdk/src/index.ts
+index e479fe06dbbe767e0eb8f0585cf4f1c2bae06ba2..bceafa6a94d3b769a1e777bbfea5333978df1e86 100644
+--- a/packages/plugin-sdk/src/index.ts
++++ b/packages/plugin-sdk/src/index.ts
+@@ -10,6 +10,7 @@
+ export * from "./app-contract.js";
+ export * from "./backend-contract.js";
+ export * from "./cli-spec.js";
++export * from "./experimental-p6r-identity.js";
+ export * from "./host-contract.js";
+ export type * from "./json-value.js";
+ export * from "./rpc-contract.js";
+diff --git a/packages/plugin-sdk/src/internal/host-policy.ts b/packages/plugin-sdk/src/internal/host-policy.ts
+index 4eee2a2c2de636c0bf5676232b3d5317de339ac6..9644b844beed544c9c35f8fb9c16f536fae64d25 100644
+--- a/packages/plugin-sdk/src/internal/host-policy.ts
++++ b/packages/plugin-sdk/src/internal/host-policy.ts
+@@ -129,6 +129,7 @@ export const PLUGIN_PROVIDER_ENV_MAX_ENTRIES = 32;
+ const pluginProviderEnvEntrySchema = z
+   .object({
+     name: z.string().regex(PLUGIN_PROVIDER_ENV_NAME_PATTERN),
++    experimental_secret: z.boolean(),
+     value: z.union([
+       z.string(),
+       z.object({ serverPath: z.string().startsWith("/") }).strict(),
+diff --git a/packages/plugin-sdk/src/internal/plugin-app-registration-collector.ts b/packages/plugin-sdk/src/internal/plugin-app-registration-collector.ts
+index 4967646ed4169b39c0d887699cfeffacaf15f948..f503d8e7ee28d99738e658810d235d051b8b62e5 100644
+--- a/packages/plugin-sdk/src/internal/plugin-app-registration-collector.ts
++++ b/packages/plugin-sdk/src/internal/plugin-app-registration-collector.ts
+@@ -31,6 +31,7 @@ import type {
+   ExperimentalIconRegistration,
+   PluginSettingsSectionRegistration,
+   PluginSidebarFooterActionRegistration,
++  ExperimentalSidebarLayoutProviderRegistration,
+   PluginSourceCodeRendererRegistration,
+   ExperimentalThreadContextSegmentRegistration,
+   ExperimentalThreadInfoRowRegistration,
+@@ -321,6 +322,7 @@ export interface CollectedPluginAppRegistrations {
+   pendingInteractions: PluginPendingInteractionRegistration[];
+   sidebarFooterActions: PluginSidebarFooterActionRegistration[];
+   experimentalSidebarFooterItems: CollectedExperimentalSidebarFooterItem[];
++  experimentalSidebarLayoutProviders: ExperimentalSidebarLayoutProviderRegistration[];
+   threadLists: PluginThreadListRegistration[];
+   experimentalSidebarNavigations: CollectedSidebarNavigationRegistration[];
+   threadHeaderActions: LegacyThreadHeaderActionRegistration[];
+@@ -467,6 +469,7 @@ export function collectPluginAppRegistrations(
+     pendingInteractions: [],
+     sidebarFooterActions: [],
+     experimentalSidebarFooterItems: [],
++    experimentalSidebarLayoutProviders: [],
+     threadLists: [],
+     experimentalSidebarNavigations: [],
+     threadHeaderActions: [],
+@@ -509,6 +512,7 @@ export function collectPluginAppRegistrations(
+     composerPopup: new Set<string>(),
+     pendingInteraction: new Set<string>(),
+     sidebarFooterItem: new Set<string>(),
++    sidebarLayoutProvider: new Set<string>(),
+     threadList: new Set<string>(),
+     sidebarNavigation: new Set<string>(),
+     sidebarHeader: new Set<string>(),
+@@ -942,6 +946,12 @@ export function collectPluginAppRegistrations(
+           ),
+         );
+       },
++      experimental_sidebarLayoutProvider(registration) {
++        const kind = "slots.experimental_sidebarLayoutProvider";
++        const id = requireSlotId(kind, registration?.id);
++        requireUniqueId(kind, seenIds.sidebarLayoutProvider, id);
++        collected.experimentalSidebarLayoutProviders.push({ id, component: requireComponent(kind, registration.component) });
++      },
+       experimental_sidebarNavigation(registration) {
+         const kind = "slots.experimental_sidebarNavigation";
+         const collectedRegistration = collectTitledComponent(
+diff --git a/packages/plugin-sdk/src/rpc-contract.ts b/packages/plugin-sdk/src/rpc-contract.ts
+index dd9e4b401e3e6ba3d6950270010c42cec06e8802..46a5d3c19951f0f5058304223515856d964307f8 100644
+--- a/packages/plugin-sdk/src/rpc-contract.ts
++++ b/packages/plugin-sdk/src/rpc-contract.ts
+@@ -10,6 +10,8 @@ export interface PluginRpcValidationIssue {
+ }
+ 
+ const rpcErrorCodes = [
++  "unauthenticated",
++  "unavailable",
+   "forbidden",
+   "not_found",
+   "conflict",
+diff --git a/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts b/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
+index 18c976ae9e3d3bdeb8c31b10c4a4f09898fc0dd6..d861ffcac86f4b4a41622ac5eeccc4728d8292cc 100644
+--- a/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
++++ b/packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts
+@@ -2067,6 +2067,7 @@ describe("providers.experimental_contributeEnv", () => {
+         {
+           name: "PLUGIN_API_URL",
+           value: { serverPath: "/plugins/auth-proxy/api" },
++          experimental_secret: false,
+           reason: "Route provider traffic through the plugin",
+         },
+       ];
+@@ -2082,6 +2083,7 @@ describe("providers.experimental_contributeEnv", () => {
+       {
+         name: "PLUGIN_API_URL",
+         value: { serverPath: "/plugins/auth-proxy/api" },
++        experimental_secret: false,
+         reason: "Route provider traffic through the plugin",
+       },
+     ]);
+@@ -2134,6 +2136,7 @@ describe("providers.experimental_contributeEnv", () => {
+       {
+         name: "lowercase",
+         value: "hidden",
++        experimental_secret: true,
+         reason: "invalid name",
+       },
+     ]);
+@@ -2147,14 +2150,32 @@ describe("providers.experimental_contributeEnv", () => {
+         projectId: "project-1",
+         hostId: "host-1",
+       }),
+-    ).resolves.toEqual([]);
+-    expect(harness.inspection.logEntries.at(-1)).toMatchObject({
+-      level: "warn",
+-    });
++    ).rejects.toThrow(/provider environment contribution/);
+     expect(JSON.stringify(harness.inspection.logEntries)).not.toContain(
+       "hidden",
+     );
+   });
++
++  it("rejects missing credential classification instead of dropping the contribution", async () => {
++    const { bb, harness } = createFakePluginHost();
++    bb.providers.experimental_contributeEnv("codex", () => [
++      {
++        name: "TOKEN",
++        value: "synthetic-secret",
++        reason: "Unclassified",
++      } as never,
++    ]);
++    await expect(
++      harness.behavior.resolveProviderEnv("codex", {
++        threadId: "thread",
++        projectId: "project",
++        hostId: "host",
++      }),
++    ).rejects.toThrow(/experimental_secret/);
++    expect(JSON.stringify(harness.inspection.logEntries)).not.toContain(
++      "synthetic-secret",
++    );
++  });
+ });
+ 
+ describe("experimental_aiServices.register", () => {
+diff --git a/packages/plugin-sdk/src/testing/fake-plugin-host.ts b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+index 2914af2f594d1103afe737beacbe3fa596bd45ea..131cba4dac6196d588957350304b0f95789f9262 100644
+--- a/packages/plugin-sdk/src/testing/fake-plugin-host.ts
++++ b/packages/plugin-sdk/src/testing/fake-plugin-host.ts
+@@ -1,3 +1,4 @@
++import { getThreadRoutePath } from "@bb/client-core";
+ import { experimental_PluginRpcCallError } from "../rpc-contract.js";
+ import {
+   rpcInvalidationTags,
+@@ -60,6 +61,10 @@ import { CronExpressionParser } from "cron-parser";
+ import { Hono } from "hono";
+ import type {
+   BbPluginApi,
++  ExperimentalThreadFacetCardinality,
++  ExperimentalThreadFacetHandle,
++  ExperimentalThreadFacetTargetGrant,
++  ExperimentalThreadFacets,
+   PluginAgentConfiguration,
+   PluginAgentConfigurationContext,
+   PluginAgentToolContext,
+@@ -107,6 +112,7 @@ import type {
+   PluginRealtime,
+   PluginRpc,
+   PluginServerApi,
++  P6rExperimentalPluginRoutes,
+   PluginSettingDescriptors,
+   PluginSettingValue,
+   PluginSettings,
+@@ -1632,6 +1638,32 @@ function createFakePluginHostInternal(
+     },
+   };
+ 
++  const experimental_facets: ExperimentalThreadFacets = {
++    target() {
++      return Object.freeze({}) as ExperimentalThreadFacetTargetGrant;
++    },
++    declare<
++      const Cardinality extends ExperimentalThreadFacetCardinality,
++      const Members extends readonly string[],
++    >(): ExperimentalThreadFacetHandle<Cardinality, Members[number]> {
++      return {
++        async replace() {},
++        async clear() {},
++        async listPriorTargets() {
++          return { targets: [], nextCursor: null };
++        },
++        async markReady() {},
++      };
++    },
++  };
++
++  const experimentalRoutes: P6rExperimentalPluginRoutes = {
++    p6rThreadPath(args) {
++      assertLive();
++      return getThreadRoutePath(args);
++    },
++  };
++
+   const bb: BbPluginApi = {
+     internal_DO_NOT_USE_recordPluginUse() {
+       assertLive();
+@@ -1671,6 +1703,8 @@ function createFakePluginHostInternal(
+     server,
+     hosts,
+     experimental_aiServices,
++    experimental_facets,
++    experimental_p6rRoutes: experimentalRoutes,
+     get sdk() {
+       assertLive();
+       return sdk;
+@@ -1857,15 +1891,21 @@ function createFakePluginHostInternal(
+       assertLive();
+       const resolve = providerEnvResolvers.get(providerId);
+       if (resolve === undefined) return [];
++      let entries: readonly ExperimentalPluginProviderEnvEntry[];
+       try {
+-        return validatePluginProviderEnvEntries(await resolve(context));
++        entries = await resolve(context);
+       } catch (error) {
+         emitLog(
+           "warn",
+           `provider environment contribution failed: ${error instanceof Error ? error.message : String(error)}`,
+         );
+-        return [];
++        if (error instanceof Error && error.name === "AbortError") throw error;
++        throw new Error(
++          `Plugin ${pluginId} provider environment resolver failed for ${providerId}: ${error instanceof Error ? error.message : String(error)}; inference was not started.`,
++          { cause: error },
++        );
+       }
++      return validatePluginProviderEnvEntries(entries);
+     },
+     async resolveProviderEnvHealth(providerId, context) {
+       assertLive();
+@@ -2054,7 +2094,14 @@ function createFakePluginHostInternal(
+       const app = new Hono();
+       app.on(route.method, route.path, async (context) => {
+         try {
+-          return adoptHttpRouteResponse(await route.handler(context));
++          return adoptHttpRouteResponse(
++            await route.handler(context, {
++              experimental_p6rExternalOrigin:
++                appUrl === null
++                  ? new URL(context.req.url).origin
++                  : new URL(appUrl).origin,
++            }),
++          );
+         } catch (error) {
+           const message = errorMessage(error);
+           emitLog(
+diff --git a/packages/plugin-sdk/src/testing/fixtures.ts b/packages/plugin-sdk/src/testing/fixtures.ts
+index 2eda6378dc2fc9f2a993147e6743ec3174828d13..1950898fbbd6166fe68e49bd04b0ad647f1f155e 100644
+--- a/packages/plugin-sdk/src/testing/fixtures.ts
++++ b/packages/plugin-sdk/src/testing/fixtures.ts
+@@ -317,6 +317,7 @@ export function makeQueueEntry(
+     origin: null,
+     originPluginId: null,
+     initiator: "user",
++    initialForkSeed: false,
+     senderThreadId: null,
+     threadId: "thread-1",
+     content: [{ type: "text", text: "Queued turn", mentions: [] }],
+diff --git a/packages/sdk/src/areas/projects.ts b/packages/sdk/src/areas/projects.ts
+index 5c508f1bed9115f22e8ce72b2c8b49c29c85850e..b182848be0d55d6489425981156f64b37da2f9c7 100644
+--- a/packages/sdk/src/areas/projects.ts
++++ b/packages/sdk/src/areas/projects.ts
+@@ -560,7 +560,12 @@ export function createProjectsArea(args: CreateSdkAreaArgs): ProjectsArea {
+       return transport.readJson(
+         transport.api.v1.projects[":id"]["machine-environment"].$post({
+           param: { id: input.projectId },
+-          json: { name: input.name, value: input.value, note: input.note },
++          json: {
++            name: input.name,
++            value: input.value,
++            note: input.note,
++            secret: input.secret,
++          },
+         }),
+       );
+     },
+diff --git a/packages/sdk/src/areas/system.ts b/packages/sdk/src/areas/system.ts
+index fdc4ae6e9b522e03fc436ae53a2ab07204cbe25c..05a3e39bdad9c244b74bcd06b399f0313aa0a9dc 100644
+--- a/packages/sdk/src/areas/system.ts
++++ b/packages/sdk/src/areas/system.ts
+@@ -1,4 +1,5 @@
+ import { mobileAppDownloads } from "@bb/domain";
++import type { P6rIdentityResponse } from "@bb/server-contract";
+ import type {
+   MachineEnvironmentReplace,
+   MachineEnvironmentSet,
+@@ -176,6 +177,7 @@ export interface SystemArea {
+     input: MachineEnvironmentReplace,
+   ): Promise<MachineEnvironmentList>;
+   aiServices(args?: SystemAiServicesArgs): Promise<SystemAiServicesResult>;
++  p6rIdentity(args?: SystemConfigArgs): Promise<P6rIdentityResponse>;
+   attention(args?: SystemAttentionArgs): Promise<SystemAttentionResult>;
+   config(args?: SystemConfigArgs): Promise<SystemConfigResult>;
+   executionOptions(
+@@ -307,6 +309,14 @@ export function createSystemArea(args: CreateSdkAreaArgs): SystemArea {
+         transport.api.v1.settings["machine-environment"].$put({ json: input }),
+       );
+     },
++    async p6rIdentity(input) {
++      return transport.readJson(
++        transport.api.v1.system.p6rIdentity.$get(
++          {},
++          ...signalRequestArgs(input?.signal),
++        ),
++      );
++    },
+     async attention(input) {
+       return transport.readJson(
+         transport.api.v1.system.attention.$get(
+diff --git a/packages/sdk/src/areas/threads.ts b/packages/sdk/src/areas/threads.ts
+index 102f6a03857f589f5bc2fbd98cbe25a954389559..0f5c4c939692fe074e391bf4c497bd50c9fe94f5 100644
+--- a/packages/sdk/src/areas/threads.ts
++++ b/packages/sdk/src/areas/threads.ts
+@@ -35,6 +35,13 @@ import type {
+   ThreadCountResponse,
+   ThreadListResponse,
+   ThreadMessageResponse,
++  ThreadFacetParticipantsResponse,
++  ThreadFacetQueryRequest,
++  ThreadFacetQueryResponse,
++  ExperimentalThreadExecutionPreflightRequest,
++  ExperimentalThreadExecutionPreflightResponse as ExperimentalThreadExecutionPreflightWireResponse,
++  ExperimentalThreadExecutionApplyRequest,
++  ExperimentalThreadExecutionApplyResponse as ExperimentalThreadExecutionApplyWireResponse,
+   ThreadRunningResponse,
+   ThreadOpenResponse,
+   ThreadPaneAction,
+@@ -115,6 +122,32 @@ export interface ThreadListArgs {
+   unsectioned?: boolean;
+ }
+ 
++export interface ThreadFacetQueryArgs {
++  cursor?: string;
++  filters?: ThreadFacetQueryRequest["filters"];
++  order?: ThreadFacetQueryRequest["order"];
++  pageSize?: number;
++  scope?: ThreadFacetQueryRequest["scope"];
++  experimental_includeExecution?: boolean;
++  signal?: AbortSignal;
++}
++
++export interface ThreadFacetParticipantsArgs {
++  cursor?: string;
++  pageSize?: number;
++  signal?: AbortSignal;
++  threadId: string;
++}
++
++export type ExperimentalThreadExecutionPreflightArgs =
++  ExperimentalThreadExecutionPreflightRequest & { signal?: AbortSignal };
++export type ExperimentalThreadExecutionApplyArgs =
++  ExperimentalThreadExecutionApplyRequest & { signal?: AbortSignal };
++export type ExperimentalThreadExecutionPreflightResponse =
++  ExperimentalThreadExecutionPreflightWireResponse;
++export type ExperimentalThreadExecutionApplyResponse =
++  ExperimentalThreadExecutionApplyWireResponse;
++
+ export interface ThreadSearchArgs extends ThreadSearchQuery {
+   signal?: AbortSignal;
+ }
+@@ -176,6 +209,8 @@ export type ThreadCountResult = ThreadCountResponse;
+  */
+ export type ThreadRunningResult = ThreadRunningResponse;
+ export type ThreadListResult = ThreadListResponse;
++export type ThreadFacetQueryResult = ThreadFacetQueryResponse;
++export type ThreadFacetParticipantsResult = ThreadFacetParticipantsResponse;
+ export type ThreadSearchResult = ThreadSearchResponse;
+ export type ThreadMessageResult = ThreadMessageResponse;
+ export type ThreadResolveMentionsResult = ResolveThreadMentionsResponse;
+@@ -693,6 +728,16 @@ export interface ThreadsArea {
+   queue: ThreadQueueArea;
+   interactions: ThreadInteractionsArea;
+   list(args?: ThreadListArgs): Promise<ThreadListResult>;
++  queryFacets(args?: ThreadFacetQueryArgs): Promise<ThreadFacetQueryResult>;
++  experimental_preflightExecutionOverrides(
++    args: ExperimentalThreadExecutionPreflightArgs,
++  ): Promise<ExperimentalThreadExecutionPreflightResponse>;
++  experimental_applyExecutionOverrides(
++    args: ExperimentalThreadExecutionApplyArgs,
++  ): Promise<ExperimentalThreadExecutionApplyResponse>;
++  facetParticipants(
++    args: ThreadFacetParticipantsArgs,
++  ): Promise<ThreadFacetParticipantsResult>;
+   listRunning(args?: { signal?: AbortSignal }): Promise<ThreadRunningResult>;
+   markRead(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
+   markUnread(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
+@@ -1465,6 +1510,60 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
+         ),
+       );
+     },
++    async queryFacets(input) {
++      return transport.readJson(
++        transport.api.v1.threads["facet-query"].$post(
++          {
++            json: {
++              scope: input?.scope ?? {},
++              filters: input?.filters ?? [],
++              pageSize: input?.pageSize ?? 50,
++              ...(input?.order === undefined ? {} : { order: input.order }),
++              ...(input?.cursor === undefined ? {} : { cursor: input.cursor }),
++              ...(input?.experimental_includeExecution === undefined
++                ? {}
++                : {
++                    experimental_includeExecution:
++                      input.experimental_includeExecution,
++                  }),
++            },
++          },
++          ...signalRequestArgs(input?.signal),
++        ),
++      );
++    },
++    async experimental_preflightExecutionOverrides(input) {
++      return transport.readJson(
++        transport.api.v1.threads["execution-overrides"].preflight.$post(
++          { json: { items: input.items } },
++          ...signalRequestArgs(input.signal),
++        ),
++      );
++    },
++    async experimental_applyExecutionOverrides(input) {
++      return transport.readJson(
++        transport.api.v1.threads["execution-overrides"].apply.$post(
++          { json: { items: input.items } },
++          ...signalRequestArgs(input.signal),
++        ),
++      );
++    },
++    async facetParticipants(input) {
++      return transport.readJson(
++        transport.api.v1.threads[":id"]["facet-participants"].$get(
++          {
++            param: { id: input.threadId },
++            query: {
++              ...(input.pageSize === undefined
++                ? {}
++                : { pageSize: String(input.pageSize) }),
++              ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
++            },
++          },
++          ...signalRequestArgs(input.signal),
++        ),
++      );
++    },
+     async markRead(input) {
+       return transport.readJson(
+         transport.api.v1.threads[":id"].read.$post(
+diff --git a/packages/sdk/src/realtime-client.ts b/packages/sdk/src/realtime-client.ts
+index c84c9e683bb4f44ea40141f69c7c5691533882ec..e482017cd29b780d633a5bcbac6d190393b48080 100644
+--- a/packages/sdk/src/realtime-client.ts
++++ b/packages/sdk/src/realtime-client.ts
+@@ -130,8 +130,15 @@ export function createRealtimeSocketAdapter(socket: {
+   readonly readyState: number;
+   send(data: string): void;
+ }): BbRealtimeSocket {
++  let closeRequested = false;
+   return {
+-    close: () => socket.close(),
++    close: () => {
++      if (closeRequested || socket.readyState > SOCKET_OPEN) {
++        return;
++      }
++      closeRequested = true;
++      socket.close();
++    },
+     onclose: null,
+     onerror: null,
+     onmessage: null,
+diff --git a/packages/sdk/test/public-types.test.ts b/packages/sdk/test/public-types.test.ts
+index 7df2e13f8b88a82c0887150a0496c6df6ff845c1..ac8620cf963954cf1e64f7030be43cb4f28e6ab9 100644
+--- a/packages/sdk/test/public-types.test.ts
++++ b/packages/sdk/test/public-types.test.ts
+@@ -362,6 +362,7 @@ type ExpectedSystemKey =
+   | "machineEnvironment"
+   | "replaceMachineEnvironment"
+   | "aiServices"
++  | "p6rIdentity"
+   | "attention"
+   | "cliSkillsStatus"
+   | "config"
+@@ -414,7 +415,10 @@ type ExpectedThreadsKey =
+   | "defaultExecutionOptions"
+   | "delete"
+   | "editMessage"
++  | "experimental_applyExecutionOverrides"
++  | "experimental_preflightExecutionOverrides"
+   | "events"
++  | "facetParticipants"
+   | "fork"
+   | "get"
+   | "interactions"
+@@ -429,6 +433,7 @@ type ExpectedThreadsKey =
+   | "pin"
+   | "promptHistory"
+   | "queue"
++  | "queryFacets"
+   | "queuedMessages"
+   | "reorderPinned"
+   | "resolveMentions"
+diff --git a/packages/sdk/test/realtime-adapter-close.test.ts b/packages/sdk/test/realtime-adapter-close.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..23ede341635cc2b2bbb9350181d2614de468da1e
+--- /dev/null
++++ b/packages/sdk/test/realtime-adapter-close.test.ts
+@@ -0,0 +1,26 @@
++import { describe, expect, it } from "vitest";
++import { wrapStandardWebsocket } from "../src/realtime-client.js";
++
++describe("wrapStandardWebsocket()", () => {
++  it("closes the underlying socket once when close synchronously emits an error", () => {
++    let closeCalls = 0;
++    const socket = {
++      close() {
++        closeCalls += 1;
++        socket.onerror?.(new Event("error"));
++      },
++      onclose: null,
++      onerror: null,
++      onmessage: null,
++      onopen: null,
++      readyState: WebSocket.OPEN,
++      send() {},
++    } as unknown as WebSocket;
++    const adapter = wrapStandardWebsocket(socket);
++    adapter.onerror = () => adapter.close();
++
++    adapter.close();
++
++    expect(closeCalls).toBe(1);
++  });
++});
+diff --git a/packages/sdk/test/sdk.test.ts b/packages/sdk/test/sdk.test.ts
+index 2563a37e7c809667f26dc0c8cde5945256b7174f..b05616491eda08279c33bbd457e9f4dfef80218f 100644
+--- a/packages/sdk/test/sdk.test.ts
++++ b/packages/sdk/test/sdk.test.ts
+@@ -349,6 +349,109 @@ describe("@bb/sdk", () => {
+     ]);
+   });
+ 
++  it("preserves phase and causal identity through thread event list and wait", async () => {
++    const providerThreadId = "provider-phase-1";
++    const scope = { kind: "turn", turnId: "turn-phase-1" };
++    const rows: JsonValue[] = [
++      {
++        id: "evt-legacy",
++        seq: 1,
++        threadId: "thr_test",
++        createdAt: 1,
++        scope,
++        type: "item/completed",
++        data: {
++          providerThreadId,
++          item: { id: "msg-legacy", text: "legacy", type: "agentMessage" },
++        },
++      },
++      {
++        id: "evt-null",
++        seq: 2,
++        threadId: "thr_test",
++        createdAt: 2,
++        scope,
++        type: "item/completed",
++        data: {
++          providerThreadId,
++          item: {
++            id: "msg-null",
++            phase: null,
++            text: "unknown",
++            type: "agentMessage",
++          },
++        },
++      },
++      {
++        id: "evt-final",
++        seq: 3,
++        threadId: "thr_test",
++        createdAt: 3,
++        scope,
++        type: "item/completed",
++        data: {
++          providerThreadId,
++          item: {
++            id: "msg-final",
++            phase: "final_answer",
++            text: "final",
++            type: "agentMessage",
++          },
++        },
++      },
++    ];
++    const queue = createFetchQueue([{ body: rows }, { body: rows[2] }]);
++    const sdk = createBbSdk({
++      transport: createHttpTransport({
++        baseUrl: "http://bb.test",
++        fetch: queue.fetch,
++        runtime: "node",
++      }),
++    });
++
++    const listed = await sdk.threads.events.list({
++      threadId: "thr_test",
++      types: ["item/completed"],
++    });
++    expect(listed).toMatchObject(rows);
++    expect(listed[0]?.data).not.toHaveProperty("item.phase");
++
++    const waited = await sdk.threads.events.wait({
++      afterSeq: "2",
++      threadId: "thr_test",
++      type: "item/completed",
++      waitMs: "1000",
++    });
++    expect(waited).toMatchObject({
++      id: "evt-final",
++      seq: 3,
++      threadId: "thr_test",
++      scope,
++      type: "item/completed",
++      data: {
++        providerThreadId,
++        item: {
++          id: "msg-final",
++          phase: "final_answer",
++          text: "final",
++          type: "agentMessage",
++        },
++      },
++    });
++    expect(queue.requests).toEqual([
++      {
++        bodyText: undefined,
++        method: "GET",
++        url: "http://bb.test/api/v1/threads/thr_test/events?types=item%2Fcompleted",
++      },
++      {
++        bodyText: undefined,
++        method: "GET",
++        url: "http://bb.test/api/v1/threads/thr_test/events/wait?afterSeq=2&type=item%2Fcompleted&waitMs=1000",
++      },
++    ]);
++  });
++
+   it("forwards read abort signals to fetch", async () => {
+     const controller = new AbortController();
+     let receivedSignal: AbortSignal | null | undefined;
+diff --git a/packages/server-contract/src/api/machine-environment.ts b/packages/server-contract/src/api/machine-environment.ts
+index 3570b4d2f83522e661a9720e3279a5a443070607..7addd7e65d8c59d9003bcc772c099c09e26f6034 100644
+--- a/packages/server-contract/src/api/machine-environment.ts
++++ b/packages/server-contract/src/api/machine-environment.ts
+@@ -7,6 +7,7 @@ export const machineEnvironmentNameSchema = z
+ export const machineEnvironmentSetSchema = z
+   .object({
+     name: machineEnvironmentNameSchema,
++    secret: z.boolean(),
+     value: z
+       .string()
+       .max(65536)
+@@ -18,14 +19,24 @@ export const machineEnvironmentSetSchema = z
+   })
+   .strict();
+ export type MachineEnvironmentSet = z.infer<typeof machineEnvironmentSetSchema>;
+-export const machineEnvironmentVariableSchema = z
+-  .object({
+-    name: machineEnvironmentNameSchema,
+-    value: z.null(),
+-    secret: z.literal(true),
+-    note: z.string().nullable(),
+-  })
+-  .strict();
++export const machineEnvironmentVariableSchema = z.discriminatedUnion("secret", [
++  z
++    .object({
++      name: machineEnvironmentNameSchema,
++      value: z.null(),
++      secret: z.literal(true),
++      note: z.string().nullable(),
++    })
++    .strict(),
++  z
++    .object({
++      name: machineEnvironmentNameSchema,
++      value: z.string(),
++      secret: z.literal(false),
++      note: z.string().nullable(),
++    })
++    .strict(),
++]);
+ export type MachineEnvironmentVariable = z.infer<
+   typeof machineEnvironmentVariableSchema
+ >;
+diff --git a/packages/server-contract/src/api/system.ts b/packages/server-contract/src/api/system.ts
+index aeb4c6297de3314d90688d1c922db25534092fdc..303a767f038a44e44786869d7c01e37e2204d847 100644
+--- a/packages/server-contract/src/api/system.ts
++++ b/packages/server-contract/src/api/system.ts
+@@ -1,3 +1,4 @@
++import { p6rMessageAuthorSchema } from "@bb/domain";
+ import { rejectMultipleWorkspaceSelectors } from "./shared.js";
+ import { z } from "zod";
+ import {
+@@ -877,3 +878,15 @@ export const systemProviderEnabledRequestSchema = z
+ export type SystemProviderEnabledRequest = z.infer<
+   typeof systemProviderEnabledRequestSchema
+ >;
++
++export const p6rIdentityResponseSchema = z.discriminatedUnion("status", [
++  z.object({
++    status: z.literal("ready"),
++    actor: p6rMessageAuthorSchema,
++    providerId: z.string(),
++  }),
++  z.object({ status: z.literal("unconfigured") }),
++  z.object({ status: z.literal("unauthenticated"), message: z.string() }),
++  z.object({ status: z.literal("unavailable"), message: z.string() }),
++]);
++export type P6rIdentityResponse = z.infer<typeof p6rIdentityResponseSchema>;
+diff --git a/packages/server-contract/src/api/threads.ts b/packages/server-contract/src/api/threads.ts
+index 36d444f8e3dad6014d929528e28a8ad91edd7af7..3d6cce9ad102b53d9e2dd71ecded9680be9f825a 100644
+--- a/packages/server-contract/src/api/threads.ts
++++ b/packages/server-contract/src/api/threads.ts
+@@ -34,6 +34,9 @@ import {
+   threadTimelinePendingTodosSchema,
+   threadEventTypeValues,
+   threadParentNotificationsSchema,
++  threadFacetOwnerStateSchema,
++  threadFacetQueryRequestSchema,
++  threadFacetTypeIdSchema,
+   threadVisibilitySchema,
+   threadWithRuntimeSchema,
+ } from "@bb/domain";
+@@ -495,6 +498,330 @@ export type SendQueuedMessageResponse = z.infer<
+ export const threadListResponseSchema = z.array(threadListEntrySchema);
+ export type ThreadListResponse = z.infer<typeof threadListResponseSchema>;
+ 
++export const experimentalThreadExecutionModelSourceSchema = z.enum([
++  "thread-override",
++  "last-turn",
++  "project-default",
++  "builtin-default",
++  "unresolved",
++]);
++export const experimentalThreadExecutionReasoningSourceSchema = z.enum([
++  "thread-override",
++  "last-turn",
++  "project-default",
++  "builtin-default",
++  "unresolved",
++]);
++
++const experimentalThreadExecutionSummaryBaseSchema = z
++  .object({
++    providerId: z.string().min(1),
++    catalogDependsOnWorkspace: z.boolean(),
++    projectId: z.string().min(1),
++    environmentId: z.string().min(1).nullable(),
++    hostId: z.string().min(1).nullable(),
++    workspacePath: z.string().min(1).nullable(),
++    effectiveReasoningLevel: reasoningLevelSchema.nullable(),
++    modelOverride: z.string().min(1).nullable(),
++    reasoningLevelOverride: reasoningLevelSchema.nullable(),
++    reasoningSource: experimentalThreadExecutionReasoningSourceSchema,
++    latestRequestSequence: z.number().int().nonnegative().nullable(),
++    witness: z.string().regex(/^[a-f0-9]{64}$/u),
++  })
++  .strict();
++
++export const experimentalThreadExecutionSummarySchema = z.discriminatedUnion(
++  "state",
++  [
++    experimentalThreadExecutionSummaryBaseSchema.extend({
++      state: z.literal("resolved"),
++      effectiveModel: z.string().min(1),
++      modelSource: experimentalThreadExecutionModelSourceSchema.exclude([
++        "unresolved",
++      ]),
++    }),
++    experimentalThreadExecutionSummaryBaseSchema.extend({
++      state: z.literal("unresolved"),
++      effectiveModel: z.null(),
++      modelSource: z.literal("unresolved"),
++      issue: z.enum(["missing-model", "malformed-history"]),
++    }),
++  ],
++);
++export type ExperimentalThreadExecutionSummary = z.infer<
++  typeof experimentalThreadExecutionSummarySchema
++>;
++
++export const EXPERIMENTAL_THREAD_EXECUTION_BATCH_LIMIT = 5_000;
++
++export const experimentalThreadExecutionOverridePatchSchema = z
++  .object({
++    model: z.string().min(1).nullable().optional(),
++    reasoningLevel: reasoningLevelSchema.nullable().optional(),
++  })
++  .strict()
++  .refine(
++    (patch) => "model" in patch || "reasoningLevel" in patch,
++    "At least one execution override field is required",
++  );
++export type ExperimentalThreadExecutionOverridePatch = z.infer<
++  typeof experimentalThreadExecutionOverridePatchSchema
++>;
++
++export const experimentalThreadExecutionPreflightRequestSchema = z
++  .object({
++    items: z
++      .array(
++        z
++          .object({
++            threadId: rawThreadIdSchema,
++            witness: z.string().regex(/^[a-f0-9]{64}$/u),
++            patch: experimentalThreadExecutionOverridePatchSchema,
++          })
++          .strict(),
++      )
++      .min(1)
++      .max(EXPERIMENTAL_THREAD_EXECUTION_BATCH_LIMIT),
++  })
++  .strict()
++  .superRefine((request, ctx) => {
++    const seen = new Set<string>();
++    request.items.forEach(({ threadId }, index) => {
++      if (seen.has(threadId)) {
++        ctx.addIssue({
++          code: "custom",
++          message: "Each thread may appear only once",
++          path: ["items", index, "threadId"],
++        });
++      }
++      seen.add(threadId);
++    });
++  });
++export type ExperimentalThreadExecutionPreflightRequest = z.infer<
++  typeof experimentalThreadExecutionPreflightRequestSchema
++>;
++
++const experimentalThreadExecutionUnavailableReasonSchema = z.enum([
++  "thread-not-found",
++  "unresolved-execution",
++  "catalog-unavailable",
++  "invalid-target",
++]);
++
++export const experimentalThreadExecutionPreflightResultSchema =
++  z.discriminatedUnion("status", [
++    z
++      .object({
++        status: z.literal("ready"),
++        threadId: rawThreadIdSchema,
++        current: experimentalThreadExecutionSummarySchema,
++        nextModelOverride: z.string().min(1).nullable(),
++        nextReasoningLevelOverride: reasoningLevelSchema.nullable(),
++        nextEffectiveModel: z.string().min(1).nullable(),
++        nextEffectiveReasoningLevel: reasoningLevelSchema.nullable(),
++        unchanged: z.boolean(),
++        applyToken: z.string().min(1).max(4096),
++      })
++      .strict(),
++    z
++      .object({
++        status: z.literal("stale"),
++        threadId: rawThreadIdSchema,
++        current: experimentalThreadExecutionSummarySchema,
++      })
++      .strict(),
++    z
++      .object({
++        status: z.literal("unavailable"),
++        threadId: rawThreadIdSchema,
++        reason: experimentalThreadExecutionUnavailableReasonSchema,
++        message: z.string().min(1),
++        current: experimentalThreadExecutionSummarySchema.optional(),
++      })
++      .strict(),
++  ]);
++export type ExperimentalThreadExecutionPreflightResult = z.infer<
++  typeof experimentalThreadExecutionPreflightResultSchema
++>;
++
++export const experimentalThreadExecutionPreflightResponseSchema = z
++  .object({
++    results: z.array(experimentalThreadExecutionPreflightResultSchema),
++  })
++  .strict();
++export type ExperimentalThreadExecutionPreflightResponse = z.infer<
++  typeof experimentalThreadExecutionPreflightResponseSchema
++>;
++
++export const experimentalThreadExecutionApplyRequestSchema = z
++  .object({
++    items: z
++      .array(
++        z
++          .object({
++            threadId: rawThreadIdSchema,
++            applyToken: z.string().min(1).max(4096),
++          })
++          .strict(),
++      )
++      .min(1)
++      .max(EXPERIMENTAL_THREAD_EXECUTION_BATCH_LIMIT),
++  })
++  .strict()
++  .superRefine((request, ctx) => {
++    const seen = new Set<string>();
++    request.items.forEach(({ threadId }, index) => {
++      if (seen.has(threadId)) {
++        ctx.addIssue({
++          code: "custom",
++          message: "Each thread may appear only once",
++          path: ["items", index, "threadId"],
++        });
++      }
++      seen.add(threadId);
++    });
++  });
++export type ExperimentalThreadExecutionApplyRequest = z.infer<
++  typeof experimentalThreadExecutionApplyRequestSchema
++>;
++
++export const experimentalThreadExecutionApplyResultSchema =
++  z.discriminatedUnion("status", [
++    z
++      .object({
++        status: z.enum(["applied", "unchanged"]),
++        threadId: rawThreadIdSchema,
++        finalModelOverride: z.string().min(1).nullable(),
++        finalReasoningLevelOverride: reasoningLevelSchema.nullable(),
++      })
++      .strict(),
++    z
++      .object({
++        status: z.literal("stale"),
++        threadId: rawThreadIdSchema,
++        current: experimentalThreadExecutionSummarySchema,
++      })
++      .strict(),
++    z
++      .object({
++        status: z.literal("rejected"),
++        threadId: rawThreadIdSchema,
++        reason: z.enum([
++          "invalid-token",
++          "thread-not-found",
++          "catalog-changed",
++        ]),
++        retryable: z.boolean(),
++      })
++      .strict(),
++    z
++      .object({
++        status: z.literal("failed"),
++        threadId: rawThreadIdSchema,
++        reason: z.enum(["write-conflict", "transaction-failed"]),
++        retryable: z.boolean(),
++      })
++      .strict(),
++  ]);
++export type ExperimentalThreadExecutionApplyResult = z.infer<
++  typeof experimentalThreadExecutionApplyResultSchema
++>;
++
++export const experimentalThreadExecutionApplyResponseSchema = z
++  .object({
++    results: z.array(experimentalThreadExecutionApplyResultSchema),
++  })
++  .strict();
++export type ExperimentalThreadExecutionApplyResponse = z.infer<
++  typeof experimentalThreadExecutionApplyResponseSchema
++>;
++
++export const threadFacetParticipantSummarySchema = z
++  .object({
++    totalCount: z.number().int().nonnegative(),
++    profiles: z
++      .array(
++        z
++          .object({
++            p6rPrincipalKey: z.string().min(1),
++            p6rIdentityKind: z.enum(["external", "person", "machine"]),
++            p6rDisplayName: z.string().min(1),
++            p6rImageUrl: z.string().min(1).nullable(),
++          })
++          .strict(),
++      )
++      .max(3),
++    nextCursor: z.string().max(4096).nullable(),
++  })
++  .strict();
++export type ThreadFacetParticipantSummary = z.infer<
++  typeof threadFacetParticipantSummarySchema
++>;
++
++export const threadFacetQueryThreadSchema = threadListEntrySchema.extend({
++  participantSummary: threadFacetParticipantSummarySchema,
++  experimental_execution: experimentalThreadExecutionSummarySchema.optional(),
++});
++export type ThreadFacetQueryThread = z.infer<
++  typeof threadFacetQueryThreadSchema
++>;
++
++export { threadFacetQueryRequestSchema };
++export type ThreadFacetQueryRequest = z.infer<
++  typeof threadFacetQueryRequestSchema
++>;
++
++export const threadFacetQueryResponseSchema = z
++  .object({
++    threads: z.array(threadFacetQueryThreadSchema),
++    nextCursor: z.string().max(4096).nullable(),
++    facetStates: z
++      .array(
++        z
++          .object({
++            typeId: threadFacetTypeIdSchema,
++            ownerState: threadFacetOwnerStateSchema,
++          })
++          .strict(),
++      )
++      .max(5),
++  })
++  .strict();
++export type ThreadFacetQueryResponse = z.infer<
++  typeof threadFacetQueryResponseSchema
++>;
++
++export const threadFacetParticipantsQuerySchema = z
++  .object({
++    pageSize: z.string().regex(/^\d+$/u).optional(),
++    cursor: z.string().max(4096).optional(),
++  })
++  .strict();
++export type ThreadFacetParticipantsQuery = z.infer<
++  typeof threadFacetParticipantsQuerySchema
++>;
++
++export const threadFacetParticipantsResponseSchema = z
++  .object({
++    totalCount: z.number().int().nonnegative(),
++    profiles: z.array(
++      z
++        .object({
++          p6rPrincipalKey: z.string().min(1),
++          p6rIdentityKind: z.enum(["external", "person", "machine"]),
++          p6rDisplayName: z.string().min(1),
++          p6rImageUrl: z.string().min(1).nullable(),
++        })
++        .strict(),
++    ),
++    nextCursor: z.string().max(4096).nullable(),
++  })
++  .strict();
++export type ThreadFacetParticipantsResponse = z.infer<
++  typeof threadFacetParticipantsResponseSchema
++>;
++
++
+ export const resolveThreadMentionsRequestSchema = z
+   .object({
+     threadIds: z.array(rawThreadIdSchema).max(THREAD_MENTION_RESOLVE_MAX_IDS),
+diff --git a/packages/server-contract/src/public-api.ts b/packages/server-contract/src/public-api.ts
+index 74107e06ef715234369121bb7cb7be49f94afc7e..4b21dd92e75150037a2fbc127694196ccf16087e 100644
+--- a/packages/server-contract/src/public-api.ts
++++ b/packages/server-contract/src/public-api.ts
+@@ -1,3 +1,9 @@
++import type {
++ ThreadFacetParticipantsQuery, ThreadFacetParticipantsResponse,
++ ThreadFacetQueryRequest, ThreadFacetQueryResponse,
++ ExperimentalThreadExecutionPreflightRequest, ExperimentalThreadExecutionPreflightResponse,
++ ExperimentalThreadExecutionApplyRequest, ExperimentalThreadExecutionApplyResponse,
++} from "./api-types.js";
+ import {
+   machineEnvironmentSetSchema,
+   machineEnvironmentDeleteSchema,
+@@ -50,6 +56,7 @@ import {
+   type ExperimentalDesktopBrowserImportSources,
+   type ExperimentalDesktopBrowserImportOutcome,
+ } from "./api/desktop-browsers.js";
++import type { P6rIdentityResponse } from "./api/system.js";
+ import type { Hono } from "hono";
+ import {
+   type AppTheme,
+@@ -378,6 +385,10 @@ import {
+   threadGetQuerySchema,
+   threadCountQuerySchema,
+   threadListQuerySchema,
++  threadFacetParticipantsQuerySchema,
++  threadFacetQueryRequestSchema,
++  experimentalThreadExecutionPreflightRequestSchema,
++  experimentalThreadExecutionApplyRequestSchema,
+   threadOpenRequestSchema,
+   threadPaneActionRequestSchema,
+   threadSearchQuerySchema,
+@@ -1308,6 +1319,39 @@ export const publicApiRoutes = {
+       ),
+       response: jsonResponse<ThreadListResponse>(),
+     }),
++    facetQuery: defineRoute({
++      path: "/threads/facet-query",
++      method: "post",
++      request: jsonRequest<EmptyInput, ThreadFacetQueryRequest>(
++        threadFacetQueryRequestSchema,
++      ),
++      response: jsonResponse<ThreadFacetQueryResponse>(),
++    }),
++    experimentalExecutionPreflight: defineRoute({
++      path: "/threads/execution-overrides/preflight",
++      method: "post",
++      request: jsonRequest<
++        EmptyInput,
++        ExperimentalThreadExecutionPreflightRequest
++      >(experimentalThreadExecutionPreflightRequestSchema),
++      response: jsonResponse<ExperimentalThreadExecutionPreflightResponse>(),
++    }),
++    experimentalExecutionApply: defineRoute({
++      path: "/threads/execution-overrides/apply",
++      method: "post",
++      request: jsonRequest<EmptyInput, ExperimentalThreadExecutionApplyRequest>(
++        experimentalThreadExecutionApplyRequestSchema,
++      ),
++      response: jsonResponse<ExperimentalThreadExecutionApplyResponse>(),
++    }),
++    facetParticipants: defineRoute({
++      path: "/threads/:id/facet-participants",
++      method: "get",
++      request: optionalQueryRequest<PathId, ThreadFacetParticipantsQuery>(
++        threadFacetParticipantsQuerySchema,
++      ),
++      response: jsonResponse<ThreadFacetParticipantsResponse>(),
++    }),
+     /**
+      * Grouped `SELECT count(*)` over threads. Exists because a plugin gate
+      * that limits concurrency must count without loading: `threads.list`
+@@ -1913,6 +1957,12 @@ export const publicApiRoutes = {
+       ),
+       response: jsonResponse<MachineEnvironmentList>(),
+     }),
++    p6rIdentity: defineRoute({
++      path: "/system/p6rIdentity",
++      method: "get",
++      request: noRequest(),
++      response: jsonResponse<P6rIdentityResponse>(),
++    }),
+     attention: defineRoute({
+       path: "/system/attention",
+       method: "get",
+diff --git a/packages/server-contract/src/thread-timeline.ts b/packages/server-contract/src/thread-timeline.ts
+index c08315b9f9ab2a673ffc1fbe3d3a2933d6664d83..89bf63857d75693851b632fb42fd5065eb6195f4 100644
+--- a/packages/server-contract/src/thread-timeline.ts
++++ b/packages/server-contract/src/thread-timeline.ts
+@@ -1,3 +1,4 @@
++import { p6rMessageAuthorSchema } from "@bb/domain";
+ import { z } from "zod";
+ import {
+   backgroundTaskStatusSchema,
+@@ -123,6 +124,8 @@ const timelineConversationRowBaseSchema = timelineRowBaseSchema.extend({
+ export const timelineUserConversationRowSchema =
+   timelineConversationRowBaseSchema.extend({
+     role: z.literal("user"),
++    p6rAuthor: p6rMessageAuthorSchema.optional(),
++    p6rEditor: p6rMessageAuthorSchema.optional(),
+     initiator: threadTurnInitiatorSchema,
+     senderThreadId: z.string().nullable(),
+     systemMessageKind: systemMessageKindSchema,
+diff --git a/packages/server-contract/test/contract.test.ts b/packages/server-contract/test/contract.test.ts
+index c19b4ffbd76c310fe914f7fb5a24ac996f61d0d9..763acd0593a6ff4cacadeace055cdbe95e90b98a 100644
+--- a/packages/server-contract/test/contract.test.ts
++++ b/packages/server-contract/test/contract.test.ts
+@@ -1,4 +1,7 @@
+-import { collectOptionalFieldPaths } from "@bb/test-helpers";
++import {
++  collectOptionalFieldPaths,
++} from "@bb/test-helpers";
++import { makeThreadQueuedMessage } from "@bb/test-helpers/domain-fixtures";
+ import { readFileSync } from "node:fs";
+ import { fileURLToPath } from "node:url";
+ import ts from "typescript";
+@@ -46,7 +49,7 @@ interface OptionalServerFieldGroup {
+   reason: string;
+ }
+ 
+-const OPTIONAL_SERVER_FIELD_GROUP_LIMIT = 46;
++const OPTIONAL_SERVER_FIELD_GROUP_LIMIT = 47;
+ 
+ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
+   {
+@@ -574,6 +577,20 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
+       "Timeline deltas carry rowOrder only when membership or ordering changed.",
+     fields: ["timelineDeltaSchema.rowOrder"],
+   },
++  {
++    reason:
++      "P6R attribution is best-effort native provenance. A provider or bridge that cannot supply a verified author or editor omits it; absence means attribution is unavailable, never a claimed identity. When present, the typed output preserves provider-verified or machine evidence and rejects malformed attribution.",
++    fields: [
++      "sendQueuedMessageResponseSchema.queuedMessage.payload.p6rAuthors",
++      "sendQueuedMessageResponseSchema.queuedMessage.payload.p6rEditors",
++      "threadTimelineResponseSchema.delta.upsertRows.p6rAuthor",
++      "threadTimelineResponseSchema.delta.upsertRows.p6rEditor",
++      "threadTimelineResponseSchema.rows.p6rAuthor",
++      "threadTimelineResponseSchema.rows.p6rEditor",
++      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.p6rAuthor",
++      "threadTimelineResponseSchema.timelinePage.olderRowUpdates.p6rEditor",
++    ],
++  },
+   {
+     reason:
+       "Uploaded attachments may omit mime type when the client could not determine one. A source project is present only while an uploaded attachment still belongs to a different project, and a machine only on an absolute-path attachment from prompt history or a draft; the server checks and strips both, and destination-relative and legacy references omit them.",
+@@ -2023,6 +2040,113 @@ describe("server-contract clients", () => {
+     });
+   });
+ 
++  it("round-trips valid P6R provenance and rejects malformed output attribution", () => {
++    const author = {
++      evidence: "provider-verified" as const,
++      identity: {
++        kind: "person" as const,
++        key: "idp:alice",
++        issuer: "idp",
++        subject: "alice",
++      },
++      presentation: {
++        displayName: "Alice",
++        handle: "alice",
++        avatarUrl: null,
++      },
++    };
++    const queued = contract.sendQueuedMessageResponseSchema.parse({
++      ok: true,
++      delivery: "queued",
++      queuedMessage: makeThreadQueuedMessage({
++        payload: {
++          kind: "inline",
++          p6rAuthors: [author],
++          p6rEditors: [null],
++        },
++      }),
++    });
++    const row = {
++      id: "row_1",
++      threadId: "thr_1",
++      turnId: "turn_1",
++      sourceSeqStart: 1,
++      sourceSeqEnd: 1,
++      startedAt: 1,
++      createdAt: 1,
++      kind: "conversation" as const,
++      messageSeq: 1,
++      role: "user" as const,
++      initiator: "user" as const,
++      senderThreadId: null,
++      systemMessageKind: "unlabeled" as const,
++      systemMessageSubject: null,
++      text: "Attributed message",
++      mentions: [],
++      attachments: null,
++      turnRequest: {
++        isGrouped: false,
++        kind: "message" as const,
++        status: "accepted" as const,
++      },
++      p6rAuthor: author,
++      p6rEditor: author,
++    };
++    const timeline = contract.threadTimelineResponseSchema.parse({
++      rows: [row],
++      contextBoundarySeq: null,
++      completedTurnDisplay: "collapse",
++      activePromptMode: null,
++      activeThinking: null,
++      activeWorkflows: [],
++      activeBackgroundCommands: [],
++      pendingTodos: null,
++      goal: null,
++      modelFallback: null,
++      providerCommands: null,
++      sessionOptions: null,
++      timelinePage: {
++        historySnapshot: "fixture",
++        olderRowsSourceSeqEnd: null,
++        returnedSegmentCount: 1,
++        olderCursor: null,
++      },
++      maxSeq: 1,
++      delta: { upsertRows: [row], rowOrder: [row.id] },
++    });
++
++    if (queued.delivery !== "queued") {
++      throw new Error("Expected queued response");
++    }
++    expect(queued).toMatchObject({
++      queuedMessage: { payload: { p6rAuthors: [author], p6rEditors: [null] } },
++    });
++    expect(timeline).toMatchObject({
++      rows: [{ p6rAuthor: author, p6rEditor: author }],
++      delta: { upsertRows: [{ p6rAuthor: author, p6rEditor: author }] },
++    });
++
++    const malformedAuthor = {
++      ...author,
++      identity: { ...author.identity, key: "" },
++    };
++    expect(
++      contract.sendQueuedMessageResponseSchema.safeParse({
++        ...queued,
++        queuedMessage: {
++          ...queued.queuedMessage,
++          payload: { kind: "inline", p6rAuthors: [malformedAuthor] },
++        },
++      }).success,
++    ).toBe(false);
++    expect(
++      contract.threadTimelineResponseSchema.safeParse({
++        ...timeline,
++        rows: [{ ...row, p6rAuthor: malformedAuthor }],
++      }).success,
++    ).toBe(false);
++  });
++
+   it("keeps contract optional fields on an explicit allowlist", () => {
+     const optionalFieldPaths = collectOptionalFieldPaths({
+       apiErrorSchema: contract.apiErrorSchema,
+diff --git a/packages/test-helpers/src/domain-fixtures.ts b/packages/test-helpers/src/domain-fixtures.ts
+index 254436853c6946a2e3e8181cbe078a96f68ed1a4..aa04a5bda6a0df0ba06d7b9c5a17265f84ce62a3 100644
+--- a/packages/test-helpers/src/domain-fixtures.ts
++++ b/packages/test-helpers/src/domain-fixtures.ts
+@@ -210,6 +210,7 @@ export function makeThreadQueuedMessage(
+     origin: null,
+     originPluginId: null,
+     initiator: "user",
++    initialForkSeed: false,
+     senderThreadId: null,
+     threadId: "thr_test",
+     content: [{ type: "text", text: "Queued message", mentions: [] }],
+diff --git a/packages/thread-view/src/build-thread-timeline.ts b/packages/thread-view/src/build-thread-timeline.ts
+index 72b8a0083c925e2ac3daa4a159d52943932773a3..626fc1e6a6f1eda0d837ffc8fbd2cb925cb1aa19 100644
+--- a/packages/thread-view/src/build-thread-timeline.ts
++++ b/packages/thread-view/src/build-thread-timeline.ts
+@@ -545,6 +545,8 @@ function convertMessage(
+           attachments: toConversationAttachments(message.attachments),
+           initiator: message.initiator,
+           senderThreadId: message.senderThreadId,
++          ...(message.p6rAuthor === undefined ? {} : { p6rAuthor: message.p6rAuthor }),
++          ...(message.p6rEditor === undefined ? {} : { p6rEditor: message.p6rEditor }),
+           systemMessageKind: message.systemMessageKind,
+           systemMessageSubject: message.systemMessageSubject,
+           turnRequest: message.turnRequest,
+@@ -914,6 +916,8 @@ function convertSteerMessage(
+     attachments: toConversationAttachments(message.attachments),
+     initiator: message.initiator,
+     senderThreadId: message.senderThreadId,
++          ...(message.p6rAuthor === undefined ? {} : { p6rAuthor: message.p6rAuthor }),
++          ...(message.p6rEditor === undefined ? {} : { p6rEditor: message.p6rEditor }),
+     systemMessageKind: message.systemMessageKind,
+     systemMessageSubject: message.systemMessageSubject,
+     turnRequest: message.turnRequest,
+diff --git a/packages/thread-view/src/event-projection-message.ts b/packages/thread-view/src/event-projection-message.ts
+index 3aa4980fb2ddb5d78490898638f77efb3d73a797..d23b8ac90f6953b3a1e01b1be316029c180b60e9 100644
+--- a/packages/thread-view/src/event-projection-message.ts
++++ b/packages/thread-view/src/event-projection-message.ts
+@@ -1,3 +1,4 @@
++import type { P6rMessageAuthor } from "@bb/domain";
+ import type {
+   BackgroundTaskStatus,
+   BackgroundTaskUsage,
+@@ -99,6 +100,8 @@ export interface EventProjectionTurnRequest {
+ }
+ 
+ export interface EventProjectionUserMessage extends EventProjectionMessageBase {
++  p6rAuthor?: P6rMessageAuthor;
++  p6rEditor?: P6rMessageAuthor;
+   kind: "user";
+   messageSeq: number;
+   initiator: ThreadTurnInitiator;
+diff --git a/packages/thread-view/src/user-message-parsing.ts b/packages/thread-view/src/user-message-parsing.ts
+index df8e051035f922a7f5b30515ab66bd2369bd213f..429438bbe6090dd920240e2b37e47ef894d72f3d 100644
+--- a/packages/thread-view/src/user-message-parsing.ts
++++ b/packages/thread-view/src/user-message-parsing.ts
+@@ -307,6 +307,10 @@ function buildClientUserMessage({
+     acceptedClientRequest && turnRequest.kind === "steer"
+       ? acceptedClientRequest.meta
+       : meta;
++  const attributionIndex =
++    decoded.inputGroups?.findIndex((group) => group === input) ?? 0;
++  const p6rAuthor = decoded.p6rAuthors?.[attributionIndex];
++  const p6rEditor = decoded.p6rEditors?.[attributionIndex];
+   const agentEnvelope = parseAgentMessageEnvelope(parsedInput.text);
+   const initiator =
+     decoded.initiator === "user" && agentEnvelope !== null
+@@ -334,6 +338,8 @@ function buildClientUserMessage({
+     ...(targetTurnId
+       ? eventProjectionMessageTurnScopeFields(targetTurnId)
+       : { scope: decoded.scope }),
++    ...(p6rAuthor ? { p6rAuthor } : {}),
++    ...(p6rEditor ? { p6rEditor } : {}),
+     initiator,
+     senderThreadId,
+     systemMessageKind: decoded.systemMessageKind ?? "unlabeled",
+diff --git a/packages/thread-view/test/user-message-parsing.test.ts b/packages/thread-view/test/user-message-parsing.test.ts
+index 2d6b17b5b1b7e535a2b82b710f3de6a0e12d0dc5..2a26d44ce3d174822fc6ca25962e6af84c682ddf 100644
+--- a/packages/thread-view/test/user-message-parsing.test.ts
++++ b/packages/thread-view/test/user-message-parsing.test.ts
+@@ -587,3 +587,22 @@ describe("user message parsing", () => {
+     });
+   });
+ });
++
++
++it("projects frozen per-group native authors without attributing historical or unknown groups", () => {
++  const factory = createTimelineEventFactory({ threadId: "thread-1" });
++  const row = factory.clientTurnRequested({
++    initiator: "user", target: { kind: "new-turn" }, text: "First\n\nSecond",
++    inputGroups: [[{ type: "text", text: "First", mentions: [] }], [{ type: "text", text: "Second", mentions: [] }]],
++  });
++  const author = { evidence: "provider-verified" as const, identity: { kind: "person" as const, key: "opaque-person", issuer: "test:people", subject: "alice" }, presentation: { displayName: "Alice", handle: "alice", avatarUrl: null } };
++  const stored = row.data;
++  row.data = { ...stored, p6rAuthors: [author, null] };
++  const { event, meta } = decodeThreadEventRow(row);
++  const messages = parseUsersFromClientRequest({ decoded: event, meta, options: standardProjectionOptions });
++  expect(messages.map((message) => message.p6rAuthor)).toEqual([author, undefined]);
++  expect(messages.map((message) => message.text)).toEqual(["First", "Second"]);
++  row.data = stored;
++  const historical = decodeThreadEventRow(row);
++  expect(parseUsersFromClientRequest({ decoded: historical.event, meta: historical.meta, options: standardProjectionOptions }).every((message) => message.p6rAuthor === undefined)).toBe(true);
++});
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,2472 @@
+From 091bdb4606708eddbfda6aa129a66710919f38a8 Mon Sep 17 00:00:00 2001
+From: Cole Lawrence <cole@colelawrence.com>
+Date: Fri, 13 Nov 2026 19:01:32 -0300
+Subject: [PATCH] Team navigation and diagnostics
+
+---
+ .../RemotePathBrowser.createFolder.test.tsx   |   3 +-
+ .../MachineEnvironmentImportDialog.tsx        |   3 +-
+ .../MachineEnvironmentSettings.stories.tsx    |  47 +++++-
+ .../MachineEnvironmentSettings.test.tsx       | 154 ++++++++++++++++-
+ .../settings/MachineEnvironmentSettings.tsx   |  90 +++++++---
+ .../P6rIdentitySettingsSection.test.tsx       | 157 ++++++++++++++++++
+ .../settings/P6rIdentitySettingsSection.tsx   | 125 ++++++++++++++
+ .../components/settings/settings-search.ts    |   4 +
+ .../components/settings/settings-sections.ts  |   1 +
+ .../sidebar/SidebarNavigationModel.tsx        | 106 ++++++++++++
+ .../sidebar/SidebarNavigationRail.test.tsx    |  27 +++
+ .../useSidebarNavigationArrangement.ts        |  32 ++--
+ .../composer/useQueuedMessageActions.ts       |  13 ++
+ .../timeline/ConversationMessageContent.tsx   |  13 ++
+ .../thread/timeline/P6rMessageAuthorLabel.tsx |  54 ++++++
+ .../thread/timeline/ThreadTimelineRows.tsx    |   2 +
+ .../ui/markdown-code-highlight.test.ts        |  74 +++++++++
+ .../components/ui/markdown-code-highlight.ts  |  37 +++++
+ .../cache-owners/realtime-cache-registry.ts   |   8 +
+ .../hooks/cache-owners/thread-entity-store.ts |   1 +
+ .../thread-runtime-cache-owner.ts             |   1 +
+ .../src/hooks/realtime-cache-effects.test.ts  |  26 +++
+ apps/app/src/lib/mutation-errors.test.ts      | 147 ++++++++++++++++
+ apps/app/src/lib/mutation-errors.ts           | 114 ++++++++++++-
+ .../src/lib/plugin-sidebar-threads.test.ts    |  22 +++
+ apps/app/src/lib/plugin-sidebar-threads.ts    |   1 +
+ apps/app/src/lib/plugin-slots.ts              |   8 +
+ apps/app/src/views/SettingsView.tsx           |   3 +
+ .../ThreadDetailPromptArea.test.tsx           |   1 +
+ packages/shared-ui/package.json               |   5 +
+ packages/shared-ui/src/lib/pkl-highlight.ts   | 135 +++++++++++++++
+ plugins/monaco-editor/lib/languages.ts        |   1 +
+ plugins/monaco-editor/lib/pkl-highlight.ts    | 135 +++++++++++++++
+ plugins/monaco-editor/lib/pkl-language.ts     |  56 +++++++
+ plugins/monaco-editor/monaco-bundle/editor.js |   4 +
+ 35 files changed, 1558 insertions(+), 52 deletions(-)
+ create mode 100644 apps/app/src/components/settings/P6rIdentitySettingsSection.test.tsx
+ create mode 100644 apps/app/src/components/settings/P6rIdentitySettingsSection.tsx
+ create mode 100644 apps/app/src/components/thread/timeline/P6rMessageAuthorLabel.tsx
+ create mode 100644 packages/shared-ui/src/lib/pkl-highlight.ts
+ create mode 100644 plugins/monaco-editor/lib/pkl-highlight.ts
+ create mode 100644 plugins/monaco-editor/lib/pkl-language.ts
+
+diff --git a/apps/app/src/components/dialogs/RemotePathBrowser.createFolder.test.tsx b/apps/app/src/components/dialogs/RemotePathBrowser.createFolder.test.tsx
+index 0912bbf67fc57b8a42dc359361a11d58d84f5c1b..a02d308985605e226ca5068f54afe50b2cb39c74 100644
+--- a/apps/app/src/components/dialogs/RemotePathBrowser.createFolder.test.tsx
++++ b/apps/app/src/components/dialogs/RemotePathBrowser.createFolder.test.tsx
+@@ -49,7 +49,8 @@ beforeEach(() => {
+   );
+ });
+ 
+-afterEach(() => {
++afterEach(async () => {
++  await new Promise((resolve) => setTimeout(resolve, 200));
+   cleanup();
+   vi.clearAllMocks();
+   vi.restoreAllMocks();
+diff --git a/apps/app/src/components/settings/MachineEnvironmentImportDialog.tsx b/apps/app/src/components/settings/MachineEnvironmentImportDialog.tsx
+index 49047d9b175477742c811a8d49ae9c077dc3fc3f..a95e9fb33ab8af5dfb9cfff5a535ff70d660f4c4 100644
+--- a/apps/app/src/components/settings/MachineEnvironmentImportDialog.tsx
++++ b/apps/app/src/components/settings/MachineEnvironmentImportDialog.tsx
+@@ -36,7 +36,8 @@ export function MachineEnvironmentImportDialog({
+           <DialogTitle>Import from .env</DialogTitle>
+           <DialogDescription>
+             Paste the contents of a .env file. Existing variables with the same
+-            name are replaced; nothing is saved until you save the section.
++            name are replaced. Choose a value type for each imported variable
++            before saving the section; nothing is saved by importing.
+           </DialogDescription>
+         </DialogHeader>
+         <Textarea
+diff --git a/apps/app/src/components/settings/MachineEnvironmentSettings.stories.tsx b/apps/app/src/components/settings/MachineEnvironmentSettings.stories.tsx
+index 239665184b6ca89977c26c4465cf68dcd138e96a..082d56a8e8210600136565e3a87a807d72f2abcd 100644
+--- a/apps/app/src/components/settings/MachineEnvironmentSettings.stories.tsx
++++ b/apps/app/src/components/settings/MachineEnvironmentSettings.stories.tsx
+@@ -22,6 +22,14 @@ function secret(name: string, note: string | null = null): Variable {
+   return { name, value: null, secret: true, note };
+ }
+ 
++function plain(
++  name: string,
++  value: string,
++  note: string | null = null,
++): Variable {
++  return { name, value, secret: false, note };
++}
++
+ const LOGGED_IN: MachineEnvironmentList["builtInGit"] = {
+   status: "logged in",
+   statusMessage: "gh is authenticated",
+@@ -40,9 +48,13 @@ const LONG_NOTE =
+ 
+ const GLOBAL_VARIABLES = [
+   secret("ANTHROPIC_API_KEY"),
+-  secret("DATABASE_URL", "Points at the staging replica, not production."),
++  plain(
++    "DATABASE_URL",
++    "postgres://staging.internal/analytics",
++    "Points at the staging replica, not production.",
++  ),
+   secret(LONG_NAME, LONG_NOTE),
+-  secret("SENTRY_DSN"),
++  plain("SENTRY_DSN", "https://errors.internal/project"),
+ ];
+ 
+ function environment(
+@@ -170,7 +182,7 @@ export function Section() {
+       </StoryRow>
+       <StoryRow
+         label="saved variables"
+-        hint="saved secrets never come back from the server; notes wrap under their row"
++        hint="ordinary settings remain visible; saved authentication secrets never come back from the server"
+       >
+         <Stage environment={environment(LOGGED_IN, GLOBAL_VARIABLES)} />
+       </StoryRow>
+@@ -214,6 +226,7 @@ function draftRow(
+   name: string,
+   overrides: {
+     value?: string | null;
++    secret?: boolean | null;
+     note?: string | null;
+     nameLocked?: boolean;
+   } = {},
+@@ -221,7 +234,7 @@ function draftRow(
+   return {
+     id: name,
+     name,
+-    secret: true as const,
++    secret: overrides.secret === undefined ? true : overrides.secret,
+     value: overrides.value ?? null,
+     note: overrides.note ?? null,
+     nameLocked: overrides.nameLocked ?? true,
+@@ -232,6 +245,7 @@ const rowHandlers = {
+   onBlur: noop,
+   onNameChange: noop,
+   onValueChange: noop,
++  onSecretChange: noop,
+   onToggleReveal: noop,
+   onRemove: noop,
+ };
+@@ -325,7 +339,7 @@ export function Rows() {
+       </StoryRow>
+       <StoryRow
+         label="new variable"
+-        hint="an unsaved row: the name is editable, the value is empty, and the reveal toggle works"
++        hint="an unsaved row: choose a value type before entering or saving its value"
+       >
+         <RowStage>
+           <MachineEnvironmentVariableRow
+@@ -333,7 +347,7 @@ export function Rows() {
+               id: "new",
+               name: "",
+               value: "",
+-              secret: true,
++              secret: null,
+               note: null,
+               nameLocked: false,
+             }}
+@@ -342,6 +356,21 @@ export function Rows() {
+           />
+         </RowStage>
+       </StoryRow>
++      <StoryRow
++        label="ordinary variable"
++        hint="nonsecret values remain visible, including URLs and identifiers"
++      >
++        <RowStage>
++          <MachineEnvironmentVariableRow
++            row={draftRow("INFERENCE_URL", {
++              secret: false,
++              value: "https://case.internal:8443/usage?request=req-123",
++            })}
++            index={0}
++            {...rowHandlers}
++          />
++        </RowStage>
++      </StoryRow>
+       <StoryRow
+         label="new variable · revealed"
+         hint="the entered value is shown in place; only rows with a pending value can reveal"
+@@ -413,7 +442,11 @@ export function Rows() {
+             onOverride={noop}
+           />
+           <MachineEnvironmentInheritedRow
+-            variable={secret("DATABASE_URL", "Points at the staging replica.")}
++            variable={plain(
++              "DATABASE_URL",
++              "postgres://staging.internal/analytics",
++              "Points at the staging replica.",
++            )}
+             onOverride={noop}
+           />
+         </RowStage>
+diff --git a/apps/app/src/components/settings/MachineEnvironmentSettings.test.tsx b/apps/app/src/components/settings/MachineEnvironmentSettings.test.tsx
+index a56ee2b5045ff0c2025f058224213ba3c4747edd..c5c8f05620bdd12e2b6677be141e6129b3faa701 100644
+--- a/apps/app/src/components/settings/MachineEnvironmentSettings.test.tsx
++++ b/apps/app/src/components/settings/MachineEnvironmentSettings.test.tsx
+@@ -78,12 +78,33 @@ async function show(
+   await screen.findByDisplayValue("API_KEY");
+ }
+ 
++async function chooseType(name: string, secret: boolean) {
++  fireEvent.pointerDown(
++    screen.getByRole("button", { name: `Value type for ${name}` }),
++    { button: 0 },
++  );
++  fireEvent.click(
++    await screen.findByRole("menuitem", {
++      name: secret ? /^Authentication secret/u : /^Ordinary value/u,
++    }),
++  );
++}
++
+ it("stages additions and preserves an unchanged saved secret", async () => {
+   await show();
+   fireEvent.click(screen.getByRole("button", { name: "Add variable" }));
+   fireEvent.change(screen.getByLabelText("Variable name 2"), {
+     target: { value: "NEW_VALUE" },
+   });
++  expect(
++    screen
++      .getByRole("button", { name: "Save variables" })
++      .hasAttribute("disabled"),
++  ).toBe(true);
++  expect(
++    screen.getByLabelText("Value for NEW_VALUE").hasAttribute("disabled"),
++  ).toBe(true);
++  await chooseType("NEW_VALUE", false);
+   fireEvent.change(screen.getByLabelText("Value for NEW_VALUE"), {
+     target: { value: "example" },
+   });
+@@ -92,8 +113,8 @@ it("stages additions and preserves an unchanged saved secret", async () => {
+   await waitFor(() =>
+     expect(mocks.replace).toHaveBeenCalledExactlyOnceWith({
+       variables: [
+-        { name: "API_KEY", value: null, note: null },
+-        { name: "NEW_VALUE", value: "example", note: null },
++        { name: "API_KEY", value: null, secret: true, note: null },
++        { name: "NEW_VALUE", value: "example", secret: false, note: null },
+       ],
+     }),
+   );
+@@ -149,13 +170,13 @@ it("saves an empty project override without copying inherited secrets and remove
+   await waitFor(() =>
+     expect(mocks.projectReplace).toHaveBeenCalledWith({
+       projectId: "project-a",
+-      variables: [{ name: "REGION", value: "", note: null }],
++      variables: [{ name: "REGION", value: "", secret: true, note: null }],
+     }),
+   );
+   await waitFor(() =>
+     expect(
+       screen.getByLabelText("Value for REGION").getAttribute("placeholder"),
+-    ).toContain("Saved secret"),
++    ).toContain("Saved value retained"),
+   );
+   fireEvent.click(screen.getByRole("button", { name: "Remove REGION" }));
+   mocks.projectList.mockResolvedValue(view);
+@@ -209,11 +230,134 @@ it("imports an inherited variable as one override and rejects partial malformed
+   fireEvent.click(screen.getByRole("button", { name: "Import" }));
+   expect(variableNameOrder()).toEqual(["REGION"]);
+   expect(screen.queryByRole("button", { name: "Override REGION" })).toBeNull();
++  expect(
++    screen
++      .getByRole("button", { name: "Save variables" })
++      .hasAttribute("disabled"),
++  ).toBe(true);
++  await chooseType("REGION", false);
+   fireEvent.click(screen.getByRole("button", { name: "Save variables" }));
+   await waitFor(() =>
+     expect(mocks.projectReplace).toHaveBeenCalledWith({
+       projectId: "project-a",
+-      variables: [{ name: "REGION", value: "west", note: null }],
++      variables: [{ name: "REGION", value: "west", secret: false, note: null }],
++    }),
++  );
++});
++
++it("shows ordinary saved and inherited values without making unchanged data dirty", async () => {
++  const value = "https://100.100.113.117:8443/usage?request=request-123";
++  mocks.projectList.mockResolvedValue({
++    builtInGit: { status: "disabled", statusMessage: "Disabled" },
++    variables: [
++      { name: "API_ENDPOINT", value, secret: false, note: "Case route" },
++    ],
++    inheritedVariables: [
++      { name: "REGION", value: "west", secret: false, note: null },
++      { name: "ACCOUNT_TOKEN", value: null, secret: true, note: null },
++    ],
++  });
++  render(
++    <QueryClientProvider
++      client={
++        new QueryClient({ defaultOptions: { queries: { retry: false } } })
++      }
++    >
++      <MemoryRouter>
++        <ScopedMachineEnvironmentSettings projectId="project-a" />
++      </MemoryRouter>
++    </QueryClientProvider>,
++  );
++  const ordinary = await screen.findByLabelText("Value for API_ENDPOINT");
++  expect(ordinary.getAttribute("type")).toBe("text");
++  expect((ordinary as HTMLInputElement).value).toBe(value);
++  expect(
++    (screen.getByLabelText("Global value for REGION") as HTMLInputElement)
++      .value,
++  ).toBe("west");
++  expect(
++    (
++      screen.getByLabelText(
++        "Global value for ACCOUNT_TOKEN",
++      ) as HTMLInputElement
++    ).value,
++  ).toBe("••••••••");
++  expect(
++    screen.queryByRole("button", { name: "Show API_ENDPOINT" }),
++  ).toBeNull();
++  expect(
++    screen
++      .getByRole("button", { name: "Save variables" })
++      .hasAttribute("disabled"),
++  ).toBe(true);
++  expect(mocks.projectReplace).not.toHaveBeenCalled();
++  fireEvent.change(ordinary, {
++    target: { value: `${value}&session=session-456` },
++  });
++  fireEvent.click(screen.getByRole("button", { name: "Save variables" }));
++  await waitFor(() =>
++    expect(mocks.projectReplace).toHaveBeenCalledExactlyOnceWith({
++      projectId: "project-a",
++      variables: [
++        {
++          name: "API_ENDPOINT",
++          value: `${value}&session=session-456`,
++          secret: false,
++          note: "Case route",
++        },
++      ],
++    }),
++  );
++});
++
++it("requires a fresh choice for every imported value, including an existing credential slot", async () => {
++  await show();
++  fireEvent.click(screen.getByRole("button", { name: "Import from .env" }));
++  fireEvent.change(screen.getByLabelText("Environment file contents"), {
++    target: { value: "API_KEY=ordinary-diagnostic\nAUTH=new-credential" },
++  });
++  fireEvent.click(screen.getByRole("button", { name: "Import" }));
++  expect(
++    screen
++      .getByRole("button", { name: "Save variables" })
++      .hasAttribute("disabled"),
++  ).toBe(true);
++  await chooseType("API_KEY", false);
++  expect(
++    screen
++      .getByRole("button", { name: "Save variables" })
++      .hasAttribute("disabled"),
++  ).toBe(true);
++  await chooseType("AUTH", true);
++  expect(screen.getByLabelText("Value for API_KEY").getAttribute("type")).toBe(
++    "text",
++  );
++  expect(screen.getByLabelText("Value for AUTH").getAttribute("type")).toBe(
++    "password",
++  );
++  fireEvent.click(screen.getByRole("button", { name: "Save variables" }));
++  await waitFor(() =>
++    expect(mocks.replace).toHaveBeenCalledExactlyOnceWith({
++      variables: [
++        {
++          name: "API_KEY",
++          value: "ordinary-diagnostic",
++          secret: false,
++          note: null,
++        },
++        { name: "AUTH", value: "new-credential", secret: true, note: null },
++      ],
++    }),
++  );
++});
++
++it("changes a saved classification without inventing or submitting a masked credential value", async () => {
++  await show();
++  await chooseType("API_KEY", false);
++  fireEvent.click(screen.getByRole("button", { name: "Save variables" }));
++  await waitFor(() =>
++    expect(mocks.replace).toHaveBeenCalledExactlyOnceWith({
++      variables: [{ name: "API_KEY", value: null, secret: false, note: null }],
+     }),
+   );
+ });
+diff --git a/apps/app/src/components/settings/MachineEnvironmentSettings.tsx b/apps/app/src/components/settings/MachineEnvironmentSettings.tsx
+index 54aa9d08a7fe3c409b38a6a4810ec4135c181b0f..8e48ac9428da7dd77f4382460ed05561051a64ff 100644
+--- a/apps/app/src/components/settings/MachineEnvironmentSettings.tsx
++++ b/apps/app/src/components/settings/MachineEnvironmentSettings.tsx
+@@ -28,10 +28,13 @@ import { machineEnvironmentQueryKey } from "@/hooks/queries/query-keys";
+ 
+ const GLOBAL_SCOPE = "global";
+ 
+-type DraftRow = Omit<MachineEnvironmentVariable, "value"> & {
++type DraftRow = {
+   id: string;
++  name: string;
+   nameLocked: boolean;
+   value: string | null;
++  secret: boolean | null;
++  note: string | null;
+ };
+ 
+ type EnvironmentEntry =
+@@ -93,6 +96,7 @@ export function ScopedMachineEnvironmentSettings({
+       variables: rows.map((row) => ({
+         name: row.name,
+         value: row.value,
++        secret: requireClassification(row),
+         note: row.note,
+       })),
+     };
+@@ -164,11 +168,14 @@ export function MachineEnvironmentSettingsContent({
+       nameLocked: true,
+     }));
+   const issues = rows.map((row) => {
++    if (row.secret === null)
++      return "Choose Ordinary value or Authentication secret before saving.";
+     if (rows.filter((other) => other.name === row.name).length > 1)
+       return "Variable name already exists.";
+     const result = machineEnvironmentSetSchema.safeParse({
+       name: row.name,
+       value: row.value ?? "",
++      secret: row.secret,
+       note: row.note,
+     });
+     return result.success
+@@ -203,7 +210,8 @@ export function MachineEnvironmentSettingsContent({
+           base === undefined ||
+           base.name !== row.name ||
+           base.note !== row.note ||
+-          row.value !== null
++          base.secret !== row.secret ||
++          base.value !== row.value
+         );
+       }));
+   const change = (id: string, patch: Partial<DraftRow>) => {
+@@ -218,7 +226,7 @@ export function MachineEnvironmentSettingsContent({
+         nameLocked: false,
+         name: "",
+         value: "",
+-        secret: true,
++        secret: null,
+         note: null,
+       },
+     ]);
+@@ -227,14 +235,15 @@ export function MachineEnvironmentSettingsContent({
+     for (const entry of entries) {
+       const index = next.findIndex((row) => row.name === entry.name);
+       const existing = index === -1 ? undefined : next[index];
+-      if (existing) next[index] = { ...existing, value: entry.value };
++      if (existing)
++        next[index] = { ...existing, value: entry.value, secret: null };
+       else
+         next.push({
+           id: nanoid(),
+           nameLocked: false,
+           name: entry.name,
+           value: entry.value,
+-          secret: true,
++          secret: null,
+           note: null,
+         });
+     }
+@@ -333,6 +342,7 @@ export function MachineEnvironmentSettingsContent({
+                 }
+                 onNameChange={(name) => change(entry.row.id, { name })}
+                 onValueChange={(value) => change(entry.row.id, { value })}
++                onSecretChange={(secret) => change(entry.row.id, { secret })}
+                 onToggleReveal={() =>
+                   setVisible((current) => {
+                     const next = new Set(current);
+@@ -559,7 +569,7 @@ export function MachineEnvironmentInheritedRow({
+         <Input
+           className="font-mono"
+           aria-label={`Global value for ${variable.name}`}
+-          value="••••••••"
++          value={variable.secret ? "••••••••" : variable.value}
+           readOnly
+         />
+         <Button
+@@ -595,6 +605,7 @@ export function MachineEnvironmentVariableRow({
+   onBlur,
+   onNameChange,
+   onValueChange,
++  onSecretChange,
+   onToggleReveal,
+   onRemove,
+ }: {
+@@ -607,6 +618,7 @@ export function MachineEnvironmentVariableRow({
+   onBlur: () => void;
+   onNameChange: (name: string) => void;
+   onValueChange: (value: string) => void;
++  onSecretChange: (secret: boolean) => void;
+   onToggleReveal: () => void;
+   onRemove: () => void;
+ }) {
+@@ -628,25 +640,31 @@ export function MachineEnvironmentVariableRow({
+           <Input
+             className="min-w-0 pr-9 font-mono"
+             aria-label={`Value for ${row.name || `variable ${index + 1}`}`}
+-            type={revealed ? "text" : "password"}
++            type={row.secret === true && !revealed ? "password" : "text"}
+             placeholder={
+-              row.value === null ? "Saved secret · enter to replace" : "VALUE"
++              row.secret === null
++                ? "Choose value type first"
++                : row.value === null
++                  ? "Saved value retained · enter to replace"
++                  : "VALUE"
+             }
+             value={row.value ?? ""}
+             autoComplete="off"
+-            disabled={disabled}
++            disabled={disabled || row.secret === null}
+             onChange={(event) => onValueChange(event.target.value)}
+           />
+-          <Button
+-            size="icon"
+-            variant="ghost"
+-            className="absolute inset-y-0 right-0 my-auto size-8 text-subtle-foreground"
+-            aria-label={`${revealed ? "Hide" : "Show"} ${row.name || "value"}`}
+-            disabled={disabled || row.value === null}
+-            onClick={onToggleReveal}
+-          >
+-            <Icon name={revealed ? "EyeOff" : "Eye"} className="size-4" />
+-          </Button>
++          {row.secret === true && (
++            <Button
++              size="icon"
++              variant="ghost"
++              className="absolute inset-y-0 right-0 my-auto size-8 text-subtle-foreground"
++              aria-label={`${revealed ? "Hide" : "Show"} ${row.name || "value"}`}
++              disabled={disabled || row.value === null}
++              onClick={onToggleReveal}
++            >
++              <Icon name={revealed ? "EyeOff" : "Eye"} className="size-4" />
++            </Button>
++          )}
+         </div>
+         <Button
+           size="icon"
+@@ -659,6 +677,32 @@ export function MachineEnvironmentVariableRow({
+           <Icon name="X" className="size-4" />
+         </Button>
+       </div>
++      <OptionPicker
++        modal={false}
++        label={`Value type for ${row.name || `variable ${index + 1}`}`}
++        value={
++          row.secret === null ? "unselected" : row.secret ? "secret" : "plain"
++        }
++        disabled={disabled}
++        options={[
++          { value: "unselected", label: "Choose value type", disabled: true },
++          {
++            value: "plain",
++            label: "Ordinary value",
++            description: "Visible in settings and diagnostics.",
++          },
++          {
++            value: "secret",
++            label: "Authentication secret",
++            description:
++              "Hide API keys and equivalent authentication credentials.",
++          },
++        ]}
++        onChange={(value) => {
++          if (value === "plain") onSecretChange(false);
++          else if (value === "secret") onSecretChange(true);
++        }}
++      />
+       {caption && <p className={ROW_CAPTION_CLASS_NAME}>{caption}</p>}
+       {error && (
+         <p role="alert" className="text-xs text-destructive-text">
+@@ -668,3 +712,11 @@ export function MachineEnvironmentVariableRow({
+     </div>
+   );
+ }
++
++function requireClassification(row: DraftRow): boolean {
++  if (row.secret === null)
++    throw new Error(
++      "Choose a value type for every environment variable before saving.",
++    );
++  return row.secret;
++}
+diff --git a/apps/app/src/components/settings/P6rIdentitySettingsSection.test.tsx b/apps/app/src/components/settings/P6rIdentitySettingsSection.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..934e9842657c96d692958b05643f5f7b8e3eeb57
+--- /dev/null
++++ b/apps/app/src/components/settings/P6rIdentitySettingsSection.test.tsx
+@@ -0,0 +1,157 @@
++// @vitest-environment jsdom
++import {
++  cleanup,
++  fireEvent,
++  render,
++  screen,
++  waitFor,
++} from "@testing-library/react";
++import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
++import { MemoryRouter } from "react-router-dom";
++import { afterEach, expect, it, vi } from "vitest";
++import { P6rIdentitySettingsSection } from "./P6rIdentitySettingsSection";
++import { P6rMessageAuthorLabel } from "../thread/timeline/P6rMessageAuthorLabel";
++import type { P6rIdentityResponse } from "@bb/server-contract";
++
++const mocks = vi.hoisted(() => ({
++  identity: vi.fn<() => Promise<P6rIdentityResponse>>(),
++}));
++vi.mock("@/lib/sdk", () => ({
++  sdk: { system: { p6rIdentity: mocks.identity } },
++}));
++vi.mock("@/hooks/queries/system-queries", () => ({
++  useSystemConfig: () => ({ data: { appearance: { themeId: "system" } } }),
++}));
++afterEach(() => {
++  cleanup();
++  mocks.identity.mockReset();
++});
++const actor = {
++  evidence: "provider-verified" as const,
++  identity: {
++    kind: "person" as const,
++    key: "opaque-person",
++    issuer: "test:people",
++    subject: "person-1",
++  },
++  presentation: {
++    displayName: "Test Person",
++    handle: "test-person",
++    avatarUrl: null,
++  },
++};
++const machineActor = {
++  evidence: "machine" as const,
++  identity: {
++    kind: "machine" as const,
++    key: "machine:rosetta",
++    instanceId: "instance-1",
++    hostId: "host-1",
++  },
++  presentation: {
++    displayName: "machine:rosetta",
++    handle: null,
++    avatarUrl: null,
++  },
++};
++
++function mount() {
++  return render(
++    <QueryClientProvider
++      client={
++        new QueryClient({ defaultOptions: { queries: { retry: false } } })
++      }
++    >
++      <MemoryRouter>
++        <P6rIdentitySettingsSection />
++      </MemoryRouter>
++    </QueryClientProvider>,
++  );
++}
++it("shows the resolved person and shared appearance without editable identity or personal override controls", async () => {
++  mocks.identity.mockResolvedValue({
++    status: "ready",
++    actor,
++    providerId: "people",
++  });
++  mount();
++  expect(await screen.findByText("@test-person")).toBeTruthy();
++  expect(screen.getByText("Verified by people")).toBeTruthy();
++  expect(screen.getByText("test:people")).toBeTruthy();
++  expect(
++    screen.getByRole("link", { name: /Appearance/ }).getAttribute("href"),
++  ).toBe("/settings/appearance");
++  expect(screen.queryAllByRole("textbox")).toHaveLength(0);
++  expect(
++    screen.getByText(/Personal theme overrides are not available/),
++  ).toBeTruthy();
++});
++it("shows machine attribution without presenting it as a verified person", async () => {
++  mocks.identity.mockResolvedValue({
++    status: "ready",
++    actor: machineActor,
++    providerId: "unused-for-machine",
++  });
++  mount();
++  expect(await screen.findByText("machine:rosetta")).toBeTruthy();
++  expect(screen.getByText("Machine attribution")).toBeTruthy();
++  expect(screen.queryByText(/Verified by/)).toBeNull();
++  fireEvent.click(screen.getByText("Machine details"));
++  expect(screen.getByText("instance-1")).toBeTruthy();
++  expect(screen.getByText("host-1")).toBeTruthy();
++});
++it("removes the previously verified identity while rechecking and after provider failure", async () => {
++  mocks.identity.mockResolvedValueOnce({
++    status: "ready",
++    actor,
++    providerId: "people",
++  });
++  mount();
++  await screen.findByText("@test-person");
++  let resolve: (value: P6rIdentityResponse) => void = () => {};
++  mocks.identity.mockImplementationOnce(
++    () =>
++      new Promise((done) => {
++        resolve = done;
++      }),
++  );
++  fireEvent.click(screen.getByRole("button", { name: "Check again" }));
++  await screen.findByText("Checking identity…");
++  expect(screen.queryByText("@test-person")).toBeNull();
++  resolve({ status: "unavailable", message: "Provider is unavailable" });
++  await screen.findByText("Provider is unavailable");
++  expect(screen.queryByText("@test-person")).toBeNull();
++});
++it("shows baseline status without claiming a person and renders only supplied historical authors", async () => {
++  mocks.identity.mockResolvedValue({ status: "unconfigured" });
++  mount();
++  await waitFor(() =>
++    expect(screen.getByText(/No identity provider is configured/)).toBeTruthy(),
++  );
++  expect(screen.queryByText("@test-person")).toBeNull();
++  render(<P6rMessageAuthorLabel author={actor} />);
++  expect(screen.getByText("@test-person")).toBeTruthy();
++});
++
++it("labels an editor without presenting that person as the unknown author", () => {
++  render(<P6rMessageAuthorLabel editor={actor} />);
++  expect(screen.getByText("Edited by @test-person")).toBeTruthy();
++  expect(screen.queryByText("@test-person", { exact: true })).toBeNull();
++});
++
++it("keeps the original sender and latest editor visibly distinct", () => {
++  const editor = {
++    ...actor,
++    presentation: { ...actor.presentation, handle: "editor-person" },
++  };
++  render(<P6rMessageAuthorLabel author={actor} editor={editor} />);
++  expect(screen.getByText("@test-person", { exact: true })).toBeTruthy();
++  expect(screen.getByText("Edited by @editor-person")).toBeTruthy();
++});
++
++it("labels a machine sender without verification wording", () => {
++  render(<P6rMessageAuthorLabel author={machineActor} />);
++  expect(screen.getByText("machine:rosetta")).toBeTruthy();
++  expect(screen.getByTitle("Machine sender: machine:rosetta")).toBeTruthy();
++  expect(screen.queryByTitle(/Verified/)).toBeNull();
++});
+diff --git a/apps/app/src/components/settings/P6rIdentitySettingsSection.tsx b/apps/app/src/components/settings/P6rIdentitySettingsSection.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..e1bce7b21de380facc0ea531ae30b82b738ec5d9
+--- /dev/null
++++ b/apps/app/src/components/settings/P6rIdentitySettingsSection.tsx
+@@ -0,0 +1,125 @@
++import { useQuery } from "@tanstack/react-query";
++import { Link } from "react-router-dom";
++import { Button } from "@bb/shared-ui/button";
++import { Avatar, AvatarImage, AvatarFallback } from "@bb/shared-ui/avatar";
++import { SettingsSection } from "@/components/ui/settings-section";
++import { useSystemConfig } from "@/hooks/queries/system-queries";
++import { sdk } from "@/lib/sdk";
++
++export function P6rIdentitySettingsSection() {
++  const identity = useQuery({
++    queryKey: ["system", "p6r-identity"],
++    queryFn: ({ signal }) => sdk.system.p6rIdentity({ signal }),
++    staleTime: 0,
++    gcTime: 0,
++    retry: false,
++  });
++  const config = useSystemConfig();
++  const result = identity.isError ? undefined : identity.data;
++  return (
++    <SettingsSection
++      title="Identity"
++      description="The identity BB resolves for your current connection."
++    >
++      <div className="space-y-5">
++        <div className="min-h-20" aria-live="polite">
++          {identity.isFetching ? (
++            <p className="text-muted-foreground">Checking identity…</p>
++          ) : result?.status === "ready" ? (
++            <div className="space-y-1">
++              <div className="flex items-center gap-3">
++                <Avatar key={result.actor.identity.key} aria-hidden="true">
++                  <AvatarImage
++                    src={result.actor.presentation.avatarUrl ?? undefined}
++                    alt=""
++                    referrerPolicy="no-referrer"
++                    className="object-cover"
++                  />
++                  <AvatarFallback>
++                    {result.actor.presentation.displayName.slice(0, 1)}
++                  </AvatarFallback>
++                </Avatar>
++                <div className="min-w-0 space-y-1 break-words">
++                  <p className="font-medium">
++                    {result.actor.presentation.displayName}
++                  </p>
++                  {result.actor.presentation.handle && (
++                    <p className="text-muted-foreground">
++                      @{result.actor.presentation.handle}
++                    </p>
++                  )}
++                </div>
++              </div>
++              <p className="text-sm text-muted-foreground">
++                {result.actor.identity.kind === "machine"
++                  ? "Machine attribution"
++                  : `Verified by ${result.providerId}`}
++              </p>
++              <details className="pt-2 text-sm">
++                <summary>
++                  {result.actor.identity.kind === "machine"
++                    ? "Machine details"
++                    : "Identity details"}
++                </summary>
++                <dl className="mt-2 space-y-2 break-all">
++                  {result.actor.identity.kind === "machine" ? (
++                    <>
++                      <div>
++                        <dt className="text-muted-foreground">Instance</dt>
++                        <dd>{result.actor.identity.instanceId}</dd>
++                      </div>
++                      <div>
++                        <dt className="text-muted-foreground">Host</dt>
++                        <dd>{result.actor.identity.hostId ?? "Unknown"}</dd>
++                      </div>
++                    </>
++                  ) : (
++                    <>
++                      <div>
++                        <dt className="text-muted-foreground">Issuer</dt>
++                        <dd>{result.actor.identity.issuer}</dd>
++                      </div>
++                      <div>
++                        <dt className="text-muted-foreground">Subject</dt>
++                        <dd>{result.actor.identity.subject}</dd>
++                      </div>
++                    </>
++                  )}
++                </dl>
++              </details>
++            </div>
++          ) : result?.status === "unconfigured" ? (
++            <p>
++              No identity provider is configured. This instance uses its
++              ordinary local-user behavior.
++            </p>
++          ) : (
++            <p role="alert">
++              {result?.message ??
++                "Could not check your identity. Check your connection and try again."}
++            </p>
++          )}
++        </div>
++        <Button
++          variant="outline"
++          disabled={identity.isFetching}
++          onClick={() => void identity.refetch()}
++        >
++          Check again
++        </Button>
++        <div className="space-y-1">
++          <p className="font-medium">Appearance</p>
++          <p className="text-sm text-muted-foreground">
++            {config.data
++              ? `Shared theme: ${config.data.appearance.themeId}. `
++              : ""}
++            Personal theme overrides are not available in this version.
++          </p>
++          <Link className="text-sm underline" to="/settings/appearance">
++            Open Appearance settings
++          </Link>
++        </div>
++      </div>
++    </SettingsSection>
++  );
++}
+diff --git a/apps/app/src/components/settings/settings-search.ts b/apps/app/src/components/settings/settings-search.ts
+index c7d16a556b938b4bbed5d3a820a4a2a5a64ccdf6..d901d0bd3018041cc78bc1ed639fcf42393978be 100644
+--- a/apps/app/src/components/settings/settings-search.ts
++++ b/apps/app/src/components/settings/settings-search.ts
+@@ -36,6 +36,10 @@ export const SETTINGS_SEARCH_INDEX: Record<
+   SettingsSectionId,
+   SettingsSearchSection
+ > = {
++  p6rIdentity: {
++    keywords: ["identity", "attribution", "actor", "machine"],
++    settings: [],
++  },
+   general: {
+     keywords: ["preferences"],
+     settings: [
+diff --git a/apps/app/src/components/settings/settings-sections.ts b/apps/app/src/components/settings/settings-sections.ts
+index 2b8f333a8e28532753cc8b2cb9eca7d33255ac32..5b13658ca51c0abd5d055e7ab6135b18cb60e922 100644
+--- a/apps/app/src/components/settings/settings-sections.ts
++++ b/apps/app/src/components/settings/settings-sections.ts
+@@ -3,6 +3,7 @@ import { SETTINGS_ROUTE_PATH, getSettingsRoutePath } from "@/lib/route-paths";
+ 
+ export const SETTINGS_NAV_SECTIONS = [
+   { icon: "Settings", id: "general", label: "General" },
++  { icon: "UserRound", id: "p6rIdentity", label: "Identity" },
+   { icon: "Bot", id: "providers", label: "Providers" },
+   { icon: "AiBrain01", id: "ai-services", label: "AI services" },
+   { icon: "Palette", id: "appearance", label: "Appearance" },
+diff --git a/apps/app/src/components/sidebar/SidebarNavigationModel.tsx b/apps/app/src/components/sidebar/SidebarNavigationModel.tsx
+index 13e7c41af66c119b7398b02b1145440c7b4775ec..fb05ba3659e5b150e1b926354f336a64a91e1898 100644
+--- a/apps/app/src/components/sidebar/SidebarNavigationModel.tsx
++++ b/apps/app/src/components/sidebar/SidebarNavigationModel.tsx
+@@ -1,5 +1,6 @@
+ import {
+   createContext,
++  useCallback,
+   useContext,
+   useEffect,
+   useLayoutEffect,
+@@ -17,6 +18,9 @@ import type {
+   ExperimentalSidebarNavigationItem,
+   ExperimentalSidebarNavigationState,
+ } from "@get-bb/plugin-sdk";
++import type { ExperimentalSidebarLayout } from "@get-bb/plugin-sdk";
++import { PluginSlotMount } from "@/components/plugin/PluginSlotMount";
++import { usePluginSlots, type ExperimentalSidebarLayoutProviderSlot } from "@/lib/plugin-slots";
+ import { Icon, type IconName } from "@bb/shared-ui/icon";
+ import {
+   useAppCommandRunner,
+@@ -79,6 +83,53 @@ export interface SidebarNavigationModel {
+ const SidebarNavigationModelContext =
+   createContext<SidebarNavigationModel | null>(null);
+ 
++const MAX_EXTERNAL_LAYOUT_ITEMS = 100;
++const MAX_EXTERNAL_LAYOUT_KEY_LENGTH = 256;
++
++function normalizeExternalLayout(
++  layout: ExperimentalSidebarLayout | null,
++): ExperimentalSidebarLayout | null {
++  if (layout === null) return null;
++  const copy = (keys: readonly unknown[]): string[] | null => {
++    if (!Array.isArray(keys) || keys.length > MAX_EXTERNAL_LAYOUT_ITEMS) return null;
++    const result: string[] = [];
++    for (const key of keys) {
++      if (
++        typeof key !== "string" ||
++        key.length === 0 ||
++        key.length > MAX_EXTERNAL_LAYOUT_KEY_LENGTH
++      ) return null;
++      if (!result.includes(key)) result.push(key);
++    }
++    return result;
++  };
++  const order = copy(layout.order);
++  const visible = copy(layout.visible);
++  return order === null || visible === null ? null : { order, visible };
++}
++
++function SidebarLayoutProviderMount({
++  slot,
++  publish,
++  subscribeChanges,
++}: {
++  slot: ExperimentalSidebarLayoutProviderSlot;
++  publish: (layout: ExperimentalSidebarLayout | null) => void;
++  subscribeChanges: (listener: (layout: ExperimentalSidebarLayout) => void) => () => void;
++}) {
++  const Component = slot.component;
++  return (
++    <PluginSlotMount
++      pluginId={slot.pluginId}
++      slotKind="sidebarLayoutProvider"
++      slotId={slot.id}
++      crashFallback={null}
++    >
++      <Component publish={publish} subscribeChanges={subscribeChanges} />
++    </PluginSlotMount>
++  );
++}
++
+ const HOST_ICON_NAMES: Record<
+   Extract<ExperimentalSidebarNavigationIcon, { kind: "host" }>["name"],
+   IconName
+@@ -154,9 +205,56 @@ export function SidebarNavigationModelProvider({
+     () => createSidebarNavigationRows(panelEntries),
+     [panelEntries],
+   );
++  const { experimentalSidebarLayoutProviders } = usePluginSlots();
++  const layoutProvider = experimentalSidebarLayoutProviders[0] ?? null;
++  const providerKey = layoutProvider
++    ? `${layoutProvider.pluginId}:${layoutProvider.id}:${layoutProvider.generation}`
++    : null;
++  const [publishedLayout, setPublishedLayout] = useState<{
++    providerKey: string;
++    layout: ExperimentalSidebarLayout | null;
++  } | null>(null);
++  const listenerRef = useRef<{
++    providerKey: string;
++    listener: (layout: ExperimentalSidebarLayout) => void;
++  } | null>(null);
++  const externalLayout =
++    publishedLayout?.providerKey === providerKey
++      ? publishedLayout.layout
++      : null;
++  const publishLayout = useCallback(
++    (layout: ExperimentalSidebarLayout | null) => {
++      if (providerKey === null) return;
++      setPublishedLayout({ providerKey, layout: normalizeExternalLayout(layout) });
++    },
++    [providerKey],
++  );
++  const subscribeLayoutChanges = useCallback(
++    (listener: (layout: ExperimentalSidebarLayout) => void) => {
++      if (providerKey === null) return () => {};
++      listenerRef.current = { providerKey, listener };
++      return () => {
++        if (listenerRef.current?.listener === listener) listenerRef.current = null;
++      };
++    },
++    [providerKey],
++  );
++  const onExternalLayoutChange = useCallback(
++    (layout: ExperimentalSidebarLayout) => {
++      if (providerKey === null) return;
++      const normalized = normalizeExternalLayout(layout);
++      if (normalized === null) return;
++      setPublishedLayout({ providerKey, layout: normalized });
++      if (listenerRef.current?.providerKey === providerKey)
++        listenerRef.current.listener(normalized);
++    },
++    [providerKey],
++  );
+   const arrangement = useSidebarNavigationArrangement(
+     rows,
+     SIDEBAR_NAVIGATION_LEADING_KEYS,
++    externalLayout,
++    onExternalLayoutChange,
+   );
+   const rowsById = useMemo(
+     () => new Map(rows.map((row) => [getPluginNavPanelKey(row), row])),
+@@ -425,6 +523,14 @@ export function SidebarNavigationModelProvider({
+   return (
+     <SidebarNavigationModelContext.Provider value={model}>
+       <NavigationBadgeSources panels={badgedPanels} setBadges={setBadges} />
++      {layoutProvider ? (
++        <SidebarLayoutProviderMount
++          key={providerKey}
++          slot={layoutProvider}
++          publish={publishLayout}
++          subscribeChanges={subscribeLayoutChanges}
++        />
++      ) : null}
+       {children}
+     </SidebarNavigationModelContext.Provider>
+   );
+diff --git a/apps/app/src/components/sidebar/SidebarNavigationRail.test.tsx b/apps/app/src/components/sidebar/SidebarNavigationRail.test.tsx
+index 220c0a8e596a6549f5fae682769aeaa414af106c..41fa3e15bae1fc559324abc6b177b1698df63dde 100644
+--- a/apps/app/src/components/sidebar/SidebarNavigationRail.test.tsx
++++ b/apps/app/src/components/sidebar/SidebarNavigationRail.test.tsx
+@@ -11,6 +11,7 @@ import {
+ import { useSyncExternalStore } from "react";
+ import type { ExperimentalBadge } from "@get-bb/plugin-sdk";
+ import { experimental_useSidebarNavigation } from "@get-bb/plugin-sdk/app";
++import { useEffect } from "react";
+ import { createStore, Provider } from "jotai";
+ import { MemoryRouter, useLocation } from "react-router-dom";
+ import {
+@@ -69,6 +70,7 @@ import { NavRailSettingsButton } from "./NavRailSettingsButton";
+ import { SidebarVisibilityCustomize } from "./SidebarVisibilityControls";
+ import { SidebarNavigationModelProvider } from "./SidebarNavigationModel";
+ 
++import type { ExperimentalSidebarLayoutProviderProps } from "@get-bb/plugin-sdk";
+ const mocks = vi.hoisted(() => ({
+   dispatch: vi.fn(),
+   onNavigate: vi.fn(),
+@@ -775,6 +777,31 @@ describe("Rail", () => {
+     ).toBe("warning");
+   });
+ 
++  it("applies layout provider data to the native rail and returns visibility changes", async () => {
++    const onChange = vi.fn();
++    function LayoutProvider({ publish, subscribeChanges }: ExperimentalSidebarLayoutProviderProps) {
++      useEffect(() => {
++        publish({ order: ALL_KEYS, visible: ["__bb__/skills"] });
++        return subscribeChanges(onChange);
++      }, [publish, subscribeChanges]);
++      return null;
++    }
++    setPluginSlotRegistrations("sidebar-defaults", registrationSet({
++      experimentalSidebarLayoutProviders: [{ id: "layout", component: LayoutProvider }],
++    }));
++    renderRail(THREAD_PATH, { isCompactViewport: true });
++    await waitFor(() => expect(railLabels()).toEqual(["Home", "Skills", "More", "Settings"]));
++    fireEvent.click(railButton("More"));
++    fireEvent.click(await screen.findByRole("menuitem", { name: "Customize rail" }));
++    const editor = await screen.findByTestId("nav-rail-customize");
++    fireEvent.click(within(editor).getByRole("checkbox", { name: "Show Docs in sidebar" }));
++    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
++      visible: expect.arrayContaining(["__bb__/skills", "garden/docs"]),
++    }));
++    act(() => setPluginSlotRegistrations("sidebar-defaults", registrationSet()));
++    await waitFor(() => expect(railLabels()).toContain("Plugins"));
++  });
++
+   it("keeps hidden destinations out of the rail", () => {
+     renderRail(THREAD_PATH, {
+       visibleKeys: ["__bb__/new-thread", "__bb__/extensions"],
+diff --git a/apps/app/src/components/sidebar/useSidebarNavigationArrangement.ts b/apps/app/src/components/sidebar/useSidebarNavigationArrangement.ts
+index 5d8ed2ce6684790a7b69edf1823256bc6e992d7a..47e3404208aedac38fdb09dd8c154c439484b1bd 100644
+--- a/apps/app/src/components/sidebar/useSidebarNavigationArrangement.ts
++++ b/apps/app/src/components/sidebar/useSidebarNavigationArrangement.ts
+@@ -1,5 +1,6 @@
+ import { useCallback, useMemo } from "react";
+ import { useAtom } from "jotai";
++import type { ExperimentalSidebarLayout } from "@get-bb/plugin-sdk";
+ import {
+   pluginNavPanelOrderAtom,
+   pluginNavVisiblePanelKeysAtom,
+@@ -29,6 +30,8 @@ export interface SidebarNavigationArrangement<Row extends ArrangeableRow> {
+ export function useSidebarNavigationArrangement<Row extends ArrangeableRow>(
+   rows: readonly Row[],
+   leadingOrderKeys: readonly string[],
++  externalLayout: ExperimentalSidebarLayout | null = null,
++  onExternalLayoutChange?: (layout: ExperimentalSidebarLayout) => void,
+ ): SidebarNavigationArrangement<Row> {
+   const [storedOrder, setStoredOrder] = useAtom(pluginNavPanelOrderAtom);
+   const [storedVisibleKeys, setStoredVisibleKeys] = useAtom(
+@@ -38,10 +41,13 @@ export function useSidebarNavigationArrangement<Row extends ArrangeableRow>(
+     () => seedSkillsNavigationPreference(storedOrder, storedVisibleKeys),
+     [storedOrder, storedVisibleKeys],
+   );
++  const effectiveOrder = externalLayout?.order ?? seededPreferences.order;
++  const effectiveVisibleKeys =
++    externalLayout?.visible ?? seededPreferences.visibleKeys;
+   const newLeadingKeys = useMemo(
+     () =>
+-      leadingOrderKeys.filter((key) => !seededPreferences.order.includes(key)),
+-    [leadingOrderKeys, seededPreferences.order],
++      leadingOrderKeys.filter((key) => !effectiveOrder.includes(key)),
++    [effectiveOrder, leadingOrderKeys],
+   );
+   const newVisibleKeys = useMemo(
+     () =>
+@@ -49,12 +55,12 @@ export function useSidebarNavigationArrangement<Row extends ArrangeableRow>(
+         .map(getPluginNavPanelKey)
+         .filter(
+           (key) =>
+-            !seededPreferences.order.includes(key) &&
++            !effectiveOrder.includes(key) &&
+             !DEFAULT_HIDDEN_SIDEBAR_NAVIGATION_KEYS.some(
+               (hiddenKey) => hiddenKey === key,
+             ),
+         ),
+-    [rows, seededPreferences.order],
++    [effectiveOrder, rows],
+   );
+   const { ordered, normalizedOrder, normalizedVisibleKeys, visibleKeys } =
+     useMemo(
+@@ -63,16 +69,16 @@ export function useSidebarNavigationArrangement<Row extends ArrangeableRow>(
+           panels: rows,
+           storedOrder:
+             newLeadingKeys.length === 0
+-              ? seededPreferences.order
+-              : [...newLeadingKeys, ...seededPreferences.order],
++              ? effectiveOrder
++              : [...newLeadingKeys, ...effectiveOrder],
+           storedVisibleKeys:
+-            seededPreferences.visibleKeys === null ||
++            effectiveVisibleKeys === null ||
+             newVisibleKeys.length === 0
+-              ? seededPreferences.visibleKeys
+-              : [...newVisibleKeys, ...seededPreferences.visibleKeys],
++              ? effectiveVisibleKeys
++              : [...newVisibleKeys, ...effectiveVisibleKeys],
+           defaultHiddenKeys: DEFAULT_HIDDEN_SIDEBAR_NAVIGATION_KEYS,
+         }),
+-      [newLeadingKeys, newVisibleKeys, rows, seededPreferences],
++      [effectiveOrder, effectiveVisibleKeys, newLeadingKeys, newVisibleKeys, rows],
+     );
+   const orderedKeys = useMemo(
+     () => ordered.map(getPluginNavPanelKey),
+@@ -81,6 +87,10 @@ export function useSidebarNavigationArrangement<Row extends ArrangeableRow>(
+ 
+   const persist = useCallback(
+     (order: string[], nextVisibleKeys: string[] | null) => {
++      if (externalLayout !== null && onExternalLayoutChange) {
++        onExternalLayoutChange({ order, visible: nextVisibleKeys ?? [] });
++        return;
++      }
+       if (!haveSameOrder(storedOrder, order)) setStoredOrder(order);
+       if (
+         storedVisibleKeys === nextVisibleKeys ||
+@@ -92,7 +102,7 @@ export function useSidebarNavigationArrangement<Row extends ArrangeableRow>(
+       }
+       setStoredVisibleKeys(nextVisibleKeys);
+     },
+-    [setStoredOrder, setStoredVisibleKeys, storedOrder, storedVisibleKeys],
++    [externalLayout, onExternalLayoutChange, setStoredOrder, setStoredVisibleKeys, storedOrder, storedVisibleKeys],
+   );
+ 
+   const setVisible = useCallback(
+diff --git a/apps/app/src/components/thread/composer/useQueuedMessageActions.ts b/apps/app/src/components/thread/composer/useQueuedMessageActions.ts
+index 5803b72ee7f9849512c83f14e52aca8ae31e9ab7..e78e1f18f728481356a041d40f78ef19575d2e6e 100644
+--- a/apps/app/src/components/thread/composer/useQueuedMessageActions.ts
++++ b/apps/app/src/components/thread/composer/useQueuedMessageActions.ts
+@@ -158,6 +158,19 @@ export function useQueuedMessageActions({
+           error,
+           fallbackMessage: "Failed to send queued message",
+           lifecycleOperation: "send_queued_message",
++          details: {
++            threadId,
++            queuedMessageId: messageId,
++            mode,
++            queuedMessageState:
++              queuedMessagesRef.current.find(
++                (message) => message.id === messageId,
++              )?.state ?? null,
++            queuedMessageWaitingOn:
++              queuedMessagesRef.current.find(
++                (message) => message.id === messageId,
++              )?.waitingOn?.kind ?? null,
++          },
+         });
+       }
+     },
+diff --git a/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx b/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx
+index 6690da607e2c8f9ce1d0d1b819e10e58424853b1..9a56d467add21becb3f524ff5b5c40f35c23a4c4 100644
+--- a/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx
++++ b/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx
+@@ -6,6 +6,8 @@ import {
+   type CSSProperties,
+   type ReactNode,
+ } from "react";
++import type { P6rMessageAuthor } from "@bb/domain";
++import { P6rMessageAuthorLabel } from "./P6rMessageAuthorLabel";
+ import type {
+   TimelineConversationAttachments,
+   TimelineRowBase,
+@@ -103,6 +105,8 @@ interface ConversationMessageContentUserProps extends ConversationMessageContent
+   onEdit?: () => void;
+   resolveMentionLink?: PromptMentionLinkResolver;
+   onTitleAction?: TimelineTitleActionResolver;
++  p6rAuthor?: P6rMessageAuthor;
++  p6rEditor?: P6rMessageAuthor;
+   senderThreadId: TimelineUserConversationRow["senderThreadId"];
+   senderThreadProjectId?: string;
+   senderThreadTitle: string | null;
+@@ -164,6 +168,8 @@ interface UserConversationMessageProps {
+   projectId?: string;
+   resolveMentionLink?: PromptMentionLinkResolver;
+   onTitleAction?: TimelineTitleActionResolver;
++  p6rAuthor?: P6rMessageAuthor;
++  p6rEditor?: P6rMessageAuthor;
+   senderThreadId: TimelineUserConversationRow["senderThreadId"];
+   senderThreadProjectId: string | null;
+   senderThreadTitle: string | null;
+@@ -344,6 +350,8 @@ function UserConversationMessage({
+   projectId,
+   resolveMentionLink,
+   onTitleAction,
++  p6rAuthor,
++  p6rEditor,
+   senderThreadId,
+   senderThreadProjectId,
+   senderThreadTitle,
+@@ -429,6 +437,9 @@ function UserConversationMessage({
+   return (
+     <div className="w-full" data-message-column="">
+       <div className="group/message ml-auto flex w-fit max-w-[70%] flex-col items-end">
++        {(p6rAuthor || p6rEditor) && (
++          <P6rMessageAuthorLabel author={p6rAuthor} editor={p6rEditor} />
++        )}
+         {requestLabel ? (
+           <div className="mb-1 flex items-center justify-end gap-2">
+             <TurnRequestLabel
+@@ -693,6 +704,8 @@ export function ConversationMessageContent(
+         projectId={projectId}
+         resolveMentionLink={props.resolveMentionLink}
+         onTitleAction={props.onTitleAction}
++        p6rAuthor={props.p6rAuthor}
++        p6rEditor={props.p6rEditor}
+         senderThreadId={props.senderThreadId}
+         senderThreadProjectId={props.senderThreadProjectId ?? null}
+         senderThreadTitle={props.senderThreadTitle}
+diff --git a/apps/app/src/components/thread/timeline/P6rMessageAuthorLabel.tsx b/apps/app/src/components/thread/timeline/P6rMessageAuthorLabel.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..0703782db51a4b59226693130d7e41404130c56b
+--- /dev/null
++++ b/apps/app/src/components/thread/timeline/P6rMessageAuthorLabel.tsx
+@@ -0,0 +1,54 @@
++import { Avatar, AvatarImage, AvatarFallback } from "@bb/shared-ui/avatar";
++import type { P6rMessageAuthor } from "@bb/domain";
++
++function actorLabel(actor: P6rMessageAuthor): string {
++  if (actor.identity.kind === "person" && actor.presentation.handle) {
++    return `@${actor.presentation.handle}`;
++  }
++  return actor.presentation.displayName;
++}
++
++function actorTitle(
++  actor: P6rMessageAuthor,
++  role: "sender" | "latest editor",
++): string {
++  const label = actor.presentation.displayName;
++  if (actor.identity.kind === "machine") {
++    return `Machine ${role}: ${label}`;
++  }
++  return `Verified ${role}: ${label}`;
++}
++
++export function P6rMessageAuthorLabel({
++  author,
++  editor,
++}: {
++  author?: P6rMessageAuthor;
++  editor?: P6rMessageAuthor;
++}) {
++  const principal = author ?? editor;
++  if (!principal) return null;
++  return (
++    <div
++      className="mb-1 flex min-w-0 items-center justify-end gap-2 text-sm text-muted-foreground"
++      title={actorTitle(principal, author ? "sender" : "latest editor")}
++    >
++      <Avatar className="size-5" aria-hidden="true">
++        <AvatarImage
++          src={principal.presentation.avatarUrl ?? undefined}
++          alt=""
++          referrerPolicy="no-referrer"
++        />
++        <AvatarFallback>
++          {principal.presentation.displayName.slice(0, 1)}
++        </AvatarFallback>
++      </Avatar>
++      <span className="truncate">
++        {author ? actorLabel(principal) : `Edited by ${actorLabel(principal)}`}
++      </span>
++      {author && editor && (
++        <span className="truncate">Edited by {actorLabel(editor)}</span>
++      )}
++    </div>
++  );
++}
+diff --git a/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx b/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
+index a3d18741012f12b3741ab2250ce83fe0b3e8e797..c2fff0364882d6e01d837d2b638a5053fac5fddd 100644
+--- a/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
++++ b/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
+@@ -996,6 +996,8 @@ const ConversationRowContent = memo(function ConversationRowContent({
+           projectId={projectId}
+           resolveMentionLink={resolveMentionLink}
+           resolveUserAttachmentImageSrc={resolveUserAttachmentImageSrc}
++          p6rAuthor={row.p6rAuthor}
++          p6rEditor={row.p6rEditor}
+           role="user"
+           onTitleAction={onTitleAction}
+           senderThreadId={row.senderThreadId}
+diff --git a/apps/app/src/components/ui/markdown-code-highlight.test.ts b/apps/app/src/components/ui/markdown-code-highlight.test.ts
+index bca1c3a5082a1ab880187f6d24f7bdc08279dfb9..6d5a0ab27a1425dd73e574d8ba664347a5951cd7 100644
+--- a/apps/app/src/components/ui/markdown-code-highlight.test.ts
++++ b/apps/app/src/components/ui/markdown-code-highlight.test.ts
+@@ -1,3 +1,7 @@
++import {
++  tokenizePklLine,
++  type PklHighlightState,
++} from "@bb/shared-ui/pkl-highlight";
+ import { readFileSync } from "node:fs";
+ import { highlight } from "sugar-high";
+ import { describe, expect, it, vi } from "vitest";
+@@ -198,3 +202,73 @@ describe("highlightMarkdownCode", () => {
+     expect(highlight).toHaveBeenCalledTimes(1);
+   });
+ });
++
++describe("Pkl highlighting", () => {
++  it.each(["pkl", "Pkl", ".pkl"])(
++    "recognizes %s fences and Pkl declarations",
++    (language) => {
++      const result = tokens(
++        highlightMarkdownCode({
++          language,
++          code: 'amends "base.pkl"\nlocal port: Int = 8080\nfraction = .23\nenabled = true',
++        }),
++      );
++      expect(result).toContainEqual(["keyword", "amends"]);
++      expect(result).toContainEqual(["keyword", "local"]);
++      expect(result).toContainEqual(["class", "Int"]);
++      expect(result).toContainEqual(["class", "8080"]);
++      expect(result).toContainEqual(["class", ".23"]);
++      expect(result).toContainEqual(["keyword", "true"]);
++    },
++  );
++
++  it("carries raw multiline strings and nested comments without leaking state between fences", () => {
++    const code =
++      'text = #"""\n// literal "quoted" text\n"""#\n/* outer /* nested */ still comment */\nlocal x = 1';
++    const result = tokens(highlightMarkdownCode({ language: "pkl", code }));
++    expect(result).toContainEqual([
++      "string",
++      "// literal &quot;quoted&quot; text",
++    ]);
++    expect(result).toContainEqual([
++      "comment",
++      "/* outer /* nested */ still comment */",
++    ]);
++    expect(result).toContainEqual(["keyword", "local"]);
++    highlightMarkdownCode({ language: "pkl", code: "/* unfinished" });
++    expect(
++      tokens(highlightMarkdownCode({ language: "pkl", code: "local y = 2" })),
++    ).toContainEqual(["keyword", "local"]);
++  });
++
++  it("resumes a raw string after nested interpolation and preserves every source character", () => {
++    const code = String.raw`value = ##"hello \##(if (true) "world" else "<script>")!"##`;
++    const parsed = tokenizePklLine(code);
++    expect(parsed.tokens.map((token) => token.value).join("")).toBe(code);
++    expect(parsed.tokens).toContainEqual(
++      expect.objectContaining({ kind: "keyword", value: "if" }),
++    );
++    expect(parsed.tokens).toContainEqual(
++      expect.objectContaining({ kind: "string", value: '!"##' }),
++    );
++    expect(parsed.state).toEqual([]);
++    const html = highlightMarkdownCode({ language: "pkl", code });
++    expect(html).not.toContain("<script>");
++    expect(html).toContain("&lt;script&gt;");
++  });
++
++  it("does not mutate incremental editor state, and recovers after incomplete single-line strings", () => {
++    const previous = tokenizePklLine('x = """').state;
++    const snapshot = JSON.stringify(previous);
++    expect(tokenizePklLine('end"""', previous).state).toEqual([]);
++    expect(JSON.stringify(previous)).toBe(snapshot);
++    expect(tokenizePklLine('"unfinished').state).toEqual([]);
++    let state: PklHighlightState = [];
++    for (const line of ["/* outer", "/* nested */", "end */ const x = 0xFF"]) {
++      const parsed = tokenizePklLine(line, state);
++      expect(parsed.tokens.map((token) => token.value).join("")).toBe(line);
++      state = parsed.state;
++    }
++    expect(state).toEqual([]);
++  });
++});
+diff --git a/apps/app/src/components/ui/markdown-code-highlight.ts b/apps/app/src/components/ui/markdown-code-highlight.ts
+index 368f0d5c023bbe68dd4aae62bb5b7d3d339ffbb9..bd00808c6a970b3428300e0e5a50900ef84fe7aa 100644
+--- a/apps/app/src/components/ui/markdown-code-highlight.ts
++++ b/apps/app/src/components/ui/markdown-code-highlight.ts
+@@ -1,3 +1,9 @@
++import {
++  tokenizePklLine,
++  type PklHighlightState,
++  type PklTokenKind,
++} from "@bb/shared-ui/pkl-highlight";
++import { render, type ParsedLine, type TokenType } from "sugar-high/core";
+ import { highlight, type LanguageName } from "sugar-high";
+ import { lang } from "sugar-high/lang";
+ 
+@@ -27,6 +33,8 @@ function highlightUncached({
+   code,
+   language,
+ }: HighlightMarkdownCodeArgs): string {
++  if (language?.trim().toLowerCase().replace(/^\./, "") === "pkl")
++    return highlightPkl(code);
+   const resolved =
+     language === null
+       ? undefined
+@@ -73,3 +81,32 @@ export function highlightMarkdownCode(args: HighlightMarkdownCodeArgs): string {
+   }
+   return html;
+ }
++
++const PKL_TOKEN_TYPES: Record<PklTokenKind, TokenType> = {
++  keyword: "keyword",
++  type: "class",
++  identifier: "identifier",
++  number: "class",
++  string: "string",
++  comment: "comment",
++  delimiter: "sign",
++  white: "space",
++};
++
++function highlightPkl(code: string): string {
++  let state: PklHighlightState = [];
++  const lines: ParsedLine[] = code.split("\n").map((value, index) => {
++    const parsed = tokenizePklLine(value, state);
++    state = parsed.state;
++    return {
++      index,
++      value,
++      annotations: [],
++      tokens: parsed.tokens.map(({ kind, value }) => ({
++        type: PKL_TOKEN_TYPES[kind],
++        value,
++      })),
++    };
++  });
++  return render({ value: code, lines });
++}
+diff --git a/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts b/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts
+index e7c5ffb397772ff09e9cc04f0164d14003e69978..187d7812d185724fe56ca483a715ba515d752c22 100644
+--- a/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts
++++ b/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts
+@@ -431,6 +431,14 @@ export const REALTIME_THREAD_CHANGE_REGISTRY = {
+       dirtyThreadStorageQueriesForThread,
+     ],
+   },
++  "execution-options-changed": {
++    flush: "immediate",
++    dirty: [
++      dirtyThreadListQueries,
++      dirtyThreadDetailQueries,
++      dirtyThreadDefaultExecutionOptionsQueries,
++    ],
++  },
+   "read-state-changed": {
+     flush: "debounced",
+     dirty: [markThreadDetailQueryStale, dirtyActiveThreadListQueries],
+diff --git a/apps/app/src/hooks/cache-owners/thread-entity-store.ts b/apps/app/src/hooks/cache-owners/thread-entity-store.ts
+index 0810fc091aaa40113f972f4a8f28c0fe2294e54e..efc4ce8af0c8e229f48e7a83015432d7ff5867e9 100644
+--- a/apps/app/src/hooks/cache-owners/thread-entity-store.ts
++++ b/apps/app/src/hooks/cache-owners/thread-entity-store.ts
+@@ -45,6 +45,7 @@ export interface ThreadEntity {
+ 
+ const LIST_FACET: Record<ListFacetKey, true> = {
+   activity: true,
++  p6rParticipants: true,
+   queuedWork: true,
+   pinSortKey: true,
+   hasPendingInteraction: true,
+diff --git a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
+index 136d78f53c7f7342f732d2dd3960ec5af11b99a4..b030d52e4753607ffce47925cfc995bca77a3e5f 100644
+--- a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
++++ b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
+@@ -378,6 +378,7 @@ function buildOptimisticQueuedMessage({
+     origin: null,
+     originPluginId: null,
+     initiator: "user",
++    initialForkSeed: false,
+     senderThreadId: null,
+     threadId: request.id,
+     content: request.input,
+diff --git a/apps/app/src/hooks/realtime-cache-effects.test.ts b/apps/app/src/hooks/realtime-cache-effects.test.ts
+index 143e18c11004839ab2e6287084f7509a882b41d4..376f2da042bbceb751d6905ef67fc60acc814946 100644
+--- a/apps/app/src/hooks/realtime-cache-effects.test.ts
++++ b/apps/app/src/hooks/realtime-cache-effects.test.ts
+@@ -1586,6 +1586,32 @@ describe("createRealtimeCacheEffects", () => {
+     effects.dispose();
+   });
+ 
++  it("invalidates the list, detail, and defaults when execution options change", () => {
++    const { effects, queryClient } = createRealtimeEffectsTestContext();
++    const listKey = threadListQueryKey({
++      archived: false,
++      projectId: "project-1",
++    });
++    const detailKey = threadQueryKey("thr_1");
++    const defaultsKey = threadDefaultExecutionOptionsQueryKey("thr_1");
++    queryClient.setQueryData(listKey, []);
++    queryClient.setQueryData(detailKey, {});
++    queryClient.setQueryData(defaultsKey, null);
++
++    effects.handleChanged({
++      type: "changed",
++      entity: "thread",
++      id: "thr_1",
++      metadata: { projectId: "project-1" },
++      changes: ["execution-options-changed"],
++    });
++
++    expect(queryClient.getQueryState(listKey)?.isInvalidated).toBe(true);
++    expect(queryClient.getQueryState(detailKey)?.isInvalidated).toBe(true);
++    expect(queryClient.getQueryState(defaultsKey)?.isInvalidated).toBe(true);
++    effects.dispose();
++  });
++
+   it("keeps timeline invalidations debounced when status-changed rides the same publish", () => {
+     vi.useFakeTimers();
+     const { effects, queryClient } = createRealtimeEffectsTestContext();
+diff --git a/apps/app/src/lib/mutation-errors.test.ts b/apps/app/src/lib/mutation-errors.test.ts
+index 9ef1a676a60768124d637a94696af43ba063a9d9..09140cdba9a8bab06897fc16c1241052b7dad5e1 100644
+--- a/apps/app/src/lib/mutation-errors.test.ts
++++ b/apps/app/src/lib/mutation-errors.test.ts
+@@ -4,6 +4,7 @@ import { toast } from "sonner";
+ import { attachSonnerToast } from "@/components/ui/app-toast-runtime";
+ import { HttpError } from "./api";
+ import {
++  formatMutationErrorDetails,
+   getMutationErrorMessage,
+   getMutationErrorMeta,
+   shouldShowMutationErrorToast,
+@@ -11,6 +12,10 @@ import {
+ } from "./mutation-errors";
+ 
+ interface CapturedToastProps {
++  action?: {
++    label: ReactNode;
++    onClick: (event: { preventDefault: () => void }) => void;
++  };
+   description?: ReactNode;
+   title: ReactNode;
+   tone: string;
+@@ -55,6 +60,17 @@ const mutationToastState = vi.hoisted(() => {
+   };
+ });
+ 
++const clipboardState = vi.hoisted(() => ({
++  copyToClipboardWithToast: vi.fn(
++    async (_text: string, _options?: { successMessage?: string | null }) =>
++      true,
++  ),
++}));
++
++vi.mock("./clipboard", () => ({
++  copyToClipboardWithToast: clipboardState.copyToClipboardWithToast,
++}));
++
+ vi.mock("sonner", () => ({
+   toast: {
+     custom: mutationToastState.custom,
+@@ -82,6 +98,7 @@ afterEach(() => {
+   mutationToastState.invocations.splice(0);
+   mutationToastState.custom.mockClear();
+   mutationToastState.dismiss.mockClear();
++  clipboardState.copyToClipboardWithToast.mockClear();
+ });
+ 
+ describe("getMutationErrorMeta", () => {
+@@ -189,7 +206,137 @@ describe("shouldShowMutationErrorToast", () => {
+   });
+ });
+ 
++describe("formatMutationErrorDetails", () => {
++  it("retains the server code, status, body and caller context", () => {
++    const details: unknown = JSON.parse(
++      formatMutationErrorDetails({
++        capturedAt: Date.UTC(2026, 10, 12, 15, 2, 0),
++        description: "This message cannot be sent yet",
++        details: {
++          threadId: "thr_example",
++          queuedMessageId: "qmsg_example",
++          mode: "auto",
++        },
++        error: new HttpError({
++          body: {
++            code: "queued_message_still_waiting",
++            message: "This message cannot be sent yet",
++          },
++          code: "queued_message_still_waiting",
++          message: "This message cannot be sent yet",
++          status: 409,
++        }),
++        lifecycleOperation: "send_queued_message",
++        pageUrl: "https://bb.example/threads/thr_example",
++        title: "Failed to send queued message",
++      }),
++    );
++    expect(details).toEqual({
++      kind: "bb-error-details",
++      version: 1,
++      capturedAt: "2026-11-12T15:02:00.000Z",
++      title: "Failed to send queued message",
++      description: "This message cannot be sent yet",
++      operation: "send_queued_message",
++      context: {
++        threadId: "thr_example",
++        queuedMessageId: "qmsg_example",
++        mode: "auto",
++      },
++      error: {
++        type: "HttpError",
++        httpStatus: 409,
++        code: "queued_message_still_waiting",
++        message: "HTTP 409: This message cannot be sent yet",
++        body: {
++          code: "queued_message_still_waiting",
++          message: "This message cannot be sent yet",
++        },
++      },
++      pageUrl: "https://bb.example/threads/thr_example",
++    });
++  });
++
++  it("keeps a code carried by the error when the body has none", () => {
++    const details: unknown = JSON.parse(
++      formatMutationErrorDetails({
++        capturedAt: 0,
++        description: null,
++        error: new HttpError({
++          code: "known_code",
++          message: "busy",
++          status: 409,
++        }),
++        pageUrl: null,
++        title: "Failed to send queued message",
++      }),
++    );
++    expect(details).toMatchObject({
++      error: { code: "known_code", httpStatus: 409 },
++    });
++  });
++
++  it("describes an error that never reached the server", () => {
++    const details: unknown = JSON.parse(
++      formatMutationErrorDetails({
++        capturedAt: 0,
++        description: null,
++        error: new TypeError("Failed to fetch"),
++        pageUrl: null,
++        title: "Failed to send queued message",
++      }),
++    );
++    expect(details).toMatchObject({
++      context: {},
++      error: { type: "TypeError", message: "Failed to fetch" },
++      operation: null,
++    });
++  });
++});
++
+ describe("showMutationErrorToast", () => {
++  it("offers the error details for copying", () => {
++    showMutationErrorToast({
++      error: new Error("The queue is busy."),
++      fallbackMessage: "Failed to send queued message.",
++      details: { queuedMessageId: "qmsg_example" },
++    });
++
++    expect(readLatestToastProps().action?.label).toBe("Copy details");
++  });
++
++  it("copies the failing request's details and keeps the toast open", () => {
++    showMutationErrorToast({
++      error: new HttpError({
++        body: {
++          code: "queued_message_still_waiting",
++          message: "This message cannot be sent yet",
++        },
++        code: "queued_message_still_waiting",
++        message: "This message cannot be sent yet",
++        status: 409,
++      }),
++      fallbackMessage: "Failed to send queued message",
++      details: { threadId: "thr_example", queuedMessageId: "qmsg_example" },
++    });
++    const preventDefault = vi.fn();
++
++    readLatestToastProps().action?.onClick({ preventDefault });
++
++    expect(preventDefault).toHaveBeenCalledTimes(1);
++    expect(clipboardState.copyToClipboardWithToast).toHaveBeenCalledTimes(1);
++    const [copied, options] =
++      clipboardState.copyToClipboardWithToast.mock.calls[0] ?? [];
++    expect(options).toEqual({ successMessage: "Error details copied" });
++    expect(JSON.parse(String(copied))).toMatchObject({
++      kind: "bb-error-details",
++      title: "Failed to send queued message",
++      description: "This message cannot be sent yet",
++      context: { threadId: "thr_example", queuedMessageId: "qmsg_example" },
++      error: { httpStatus: 409, code: "queued_message_still_waiting" },
++    });
++  });
++
+   it("splits the generic mutation fallback into title and description", () => {
+     showMutationErrorToast({
+       error: {},
+diff --git a/apps/app/src/lib/mutation-errors.ts b/apps/app/src/lib/mutation-errors.ts
+index a62daab69dc4cbd363efebea713622b870f0b3e1..927c1f846a423f100b6efa289f5134981fb18fd5 100644
+--- a/apps/app/src/lib/mutation-errors.ts
++++ b/apps/app/src/lib/mutation-errors.ts
+@@ -1,5 +1,6 @@
+ import { extractErrorMessage, toRecord } from "@bb/core-ui";
+-import { appToast } from "@/components/ui/app-toast";
++import { appToast, type AppToastOptions } from "@/components/ui/app-toast";
++import { copyToClipboardWithToast } from "./clipboard";
+ import { asHttpError, getHttpErrorMessage } from "./http-error";
+ import {
+   describeLifecycleError,
+@@ -12,10 +13,26 @@ const NETWORK_TRANSPORT_ERROR_MESSAGE =
+ const GENERIC_REQUEST_FAILED_MESSAGE = "Request failed";
+ const TRAILING_PERIOD_PATTERN = /\.$/u;
+ 
++export type MutationErrorDetailValue = string | number | boolean | null;
++export type MutationErrorDetails = Readonly<
++  Record<string, MutationErrorDetailValue>
++>;
++
+ interface MutationErrorMessageOptions {
+   error: unknown;
+   fallbackMessage: string;
+   lifecycleOperation?: LifecycleErrorOperation | undefined;
++  details?: MutationErrorDetails | undefined;
++}
++
++interface FormatMutationErrorDetailsArgs {
++  capturedAt: number;
++  description: string | null;
++  details?: MutationErrorDetails | undefined;
++  error: unknown;
++  lifecycleOperation?: LifecycleErrorOperation | undefined;
++  pageUrl: string | null;
++  title: string;
+ }
+ 
+ interface MutationErrorMeta {
+@@ -143,10 +160,71 @@ export function shouldShowMutationErrorToast(error: unknown): boolean {
+   return !isAbortLikeError(error);
+ }
+ 
++export function formatMutationErrorDetails({
++  capturedAt,
++  description,
++  details,
++  error,
++  lifecycleOperation,
++  pageUrl,
++  title,
++}: FormatMutationErrorDetailsArgs): string {
++  const httpError = asHttpError(error);
++  const record = toRecord(error);
++  return JSON.stringify(
++    {
++      kind: "bb-error-details",
++      version: 1,
++      capturedAt: new Date(capturedAt).toISOString(),
++      title,
++      description,
++      operation: lifecycleOperation ?? null,
++      context: details ?? {},
++      error:
++        httpError === null
++          ? {
++              type: typeof record?.name === "string" ? record.name : null,
++              message: extractErrorMessage(error),
++            }
++          : {
++              type: httpError.name,
++              httpStatus: httpError.status,
++              code: httpError.code ?? toRecord(httpError.body)?.code ?? null,
++              message: httpError.message,
++              body: httpError.body ?? null,
++            },
++      pageUrl,
++    },
++    null,
++    2,
++  );
++}
++
++function errorDetailsToastOptions(
++  args: Omit<FormatMutationErrorDetailsArgs, "capturedAt" | "pageUrl">,
++): AppToastOptions {
++  const capturedAt = Date.now();
++  const pageUrl = typeof window === "undefined" ? null : window.location.href;
++  return {
++    ...(args.description === null ? {} : { description: args.description }),
++    action: {
++      label: "Copy details",
++      onClick: (event) => {
++        event.preventDefault();
++        void copyToClipboardWithToast(
++          formatMutationErrorDetails({ ...args, capturedAt, pageUrl }),
++          { successMessage: "Error details copied" },
++        );
++      },
++    },
++  };
++}
++
+ export function showMutationErrorToast({
+   error,
+   fallbackMessage,
+   lifecycleOperation,
++  details,
+ }: MutationErrorMessageOptions): void {
+   if (!shouldShowMutationErrorToast(error)) {
+     return;
+@@ -157,9 +235,16 @@ export function showMutationErrorToast({
+     operation: lifecycleOperation,
+   });
+   if (lifecycleDescription) {
+-    appToast.error(lifecycleDescription.title, {
+-      description: lifecycleDescription.body,
+-    });
++    appToast.error(
++      lifecycleDescription.title,
++      errorDetailsToastOptions({
++        description: lifecycleDescription.body,
++        details,
++        error,
++        lifecycleOperation,
++        title: lifecycleDescription.title,
++      }),
++    );
+     return;
+   }
+ 
+@@ -169,9 +254,16 @@ export function showMutationErrorToast({
+     lifecycleOperation,
+   }).replace(TRAILING_PERIOD_PATTERN, "");
+   if (message === GENERIC_REQUEST_FAILED_MESSAGE) {
+-    appToast.error("Request failed", {
+-      description: "Please try again",
+-    });
++    appToast.error(
++      "Request failed",
++      errorDetailsToastOptions({
++        description: "Please try again",
++        details,
++        error,
++        lifecycleOperation,
++        title: "Request failed",
++      }),
++    );
+     return;
+   }
+ 
+@@ -181,7 +273,13 @@ export function showMutationErrorToast({
+   );
+   appToast.error(
+     title,
+-    message === title ? undefined : { description: message },
++    errorDetailsToastOptions({
++      description: message === title ? null : message,
++      details,
++      error,
++      lifecycleOperation,
++      title,
++    }),
+   );
+ }
+ 
+diff --git a/apps/app/src/lib/plugin-sidebar-threads.test.ts b/apps/app/src/lib/plugin-sidebar-threads.test.ts
+index 62b3b83b7d2f5dc485e8f752f4982ff45f317aec..96fa2d982fad602b65faf735ee3300c13370c63e 100644
+--- a/apps/app/src/lib/plugin-sidebar-threads.test.ts
++++ b/apps/app/src/lib/plugin-sidebar-threads.test.ts
+@@ -185,6 +185,28 @@ describe("toPluginSidebarThread", () => {
+     expect(toPluginSidebarThread(makeThread()).providerId).toBe("codex");
+   });
+ 
++  it("passes through the host-projected P6r participant profiles", () => {
++    expect(
++      toPluginSidebarThread(
++        makeThread({
++          p6rParticipants: [
++            {
++              p6rPrincipalKey: "tailnet:alex",
++              p6rDisplayName: "Alex",
++              p6rImageUrl: null,
++            },
++          ],
++        }),
++      ).p6rParticipants,
++    ).toEqual([
++      {
++        p6rPrincipalKey: "tailnet:alex",
++        p6rDisplayName: "Alex",
++        p6rImageUrl: null,
++      },
++    ]);
++  });
++
+   it("resolves the machine name for the thread's host", () => {
+     const mapped = toPluginSidebarThread(
+       makeThread({ environmentHostId: "host_1" }),
+diff --git a/apps/app/src/lib/plugin-sidebar-threads.ts b/apps/app/src/lib/plugin-sidebar-threads.ts
+index efea5f415e7662d49896b7a665545afbac48ca44..94113ddb6e20ef5be6d885996b842ef090250be5 100644
+--- a/apps/app/src/lib/plugin-sidebar-threads.ts
++++ b/apps/app/src/lib/plugin-sidebar-threads.ts
+@@ -70,6 +70,7 @@ export function toPluginSidebarThread(
+     providerId: entry.providerId,
+     indicator,
+     indicatorLabel: label,
++    p6rParticipants: entry.p6rParticipants,
+     isPinned: entry.pinnedAt !== null,
+     pinnedAt: entry.pinnedAt,
+     pinSortKey: entry.pinSortKey,
+diff --git a/apps/app/src/lib/plugin-slots.ts b/apps/app/src/lib/plugin-slots.ts
+index 03046d006415c6a007c0eb808d0d1701b3d383b7..981b8c3242c6e6d988c947f5c3079ad06d8f421b 100644
+--- a/apps/app/src/lib/plugin-slots.ts
++++ b/apps/app/src/lib/plugin-slots.ts
+@@ -23,6 +23,7 @@ import type {
+   ExperimentalIconRegistration,
+   PluginSettingsSectionRegistration,
+   PluginSidebarFooterActionRegistration,
++  ExperimentalSidebarLayoutProviderRegistration,
+   PluginSourceCodeRendererRegistration,
+   ExperimentalThreadContextSegmentRegistration,
+   ExperimentalThreadInfoRowRegistration,
+@@ -64,6 +65,7 @@ export interface PluginRegistrationSet {
+   pendingInteractions?: readonly PluginPendingInteractionRegistration[];
+   sidebarFooterActions: readonly PluginSidebarFooterActionRegistration[];
+   experimentalSidebarFooterItems?: readonly CollectedExperimentalSidebarFooterItem[];
++  experimentalSidebarLayoutProviders?: readonly ExperimentalSidebarLayoutProviderRegistration[];
+   threadLists?: readonly PluginThreadListRegistration[];
+   experimentalSidebarNavigations?: readonly CollectedSidebarNavigationRegistration[];
+   threadHeaderActions?: readonly LegacyThreadHeaderActionRegistration[];
+@@ -137,6 +139,8 @@ export interface PluginPendingInteractionSlot
+   extends PluginPendingInteractionRegistration, PluginSlotBase {}
+ export type PluginSidebarFooterItemSlot = CollectedSidebarFooterItem &
+   PluginSlotBase;
++export interface ExperimentalSidebarLayoutProviderSlot
++  extends ExperimentalSidebarLayoutProviderRegistration, PluginSlotBase {}
+ export interface PluginThreadListSlot
+   extends PluginThreadListRegistration, PluginSlotBase {}
+ export interface ExperimentalSidebarNavigationSlot
+@@ -204,6 +208,7 @@ export interface PluginSlotSnapshot {
+   composerCustomizations: readonly PluginComposerCustomizationSlot[];
+   pendingInteractions: readonly PluginPendingInteractionSlot[];
+   sidebarFooterItems: readonly PluginSidebarFooterItemSlot[];
++  experimentalSidebarLayoutProviders: readonly ExperimentalSidebarLayoutProviderSlot[];
+   threadLists: readonly PluginThreadListSlot[];
+   experimentalSidebarNavigations: readonly ExperimentalSidebarNavigationSlot[];
+   threadHeaderActions: readonly PluginThreadHeaderActionSlot[];
+@@ -245,6 +250,7 @@ export const EMPTY_PLUGIN_SLOT_SNAPSHOT: PluginSlotSnapshot = {
+   composerCustomizations: [],
+   pendingInteractions: [],
+   sidebarFooterItems: [],
++  experimentalSidebarLayoutProviders: [],
+   threadLists: [],
+   experimentalSidebarNavigations: [],
+   threadHeaderActions: [],
+@@ -293,6 +299,7 @@ const SLOT_KINDS: readonly SlotKind[] = [
+   "composerCustomizations",
+   "pendingInteractions",
+   "sidebarFooterItems",
++  "experimentalSidebarLayoutProviders",
+   "threadLists",
+   "experimentalSidebarNavigations",
+   "threadHeaderActions",
+@@ -389,6 +396,7 @@ function flattenRegistrations(
+     composerCustomizations: stamp(set.composerCustomizations),
+     pendingInteractions: stamp(set.pendingInteractions),
+     sidebarFooterItems: stamp<CollectedSidebarFooterItem>(sidebarFooterItems),
++    experimentalSidebarLayoutProviders: stamp(set.experimentalSidebarLayoutProviders),
+     threadLists: stamp(set.threadLists),
+     experimentalSidebarNavigations: stamp(set.experimentalSidebarNavigations),
+     threadHeaderActions: stamp(set.threadHeaderActions),
+diff --git a/apps/app/src/views/SettingsView.tsx b/apps/app/src/views/SettingsView.tsx
+index 43dea1a4ca085c692fddd21d6feb7052939028fd..1bd35db631bc139a48c3b0c2fcdaa396b3a96ba8 100644
+--- a/apps/app/src/views/SettingsView.tsx
++++ b/apps/app/src/views/SettingsView.tsx
+@@ -2,6 +2,7 @@ import { ApplicationLinkApprovalsSettings } from "@/components/settings/Applicat
+ import { MobileAppSection } from "@/components/settings/MobileAppSection";
+ import { MachineEnvironmentSettings } from "@/components/settings/MachineEnvironmentSettings";
+ import { MachineAccessSettings } from "@/components/settings/MachineAccessSettings";
++import { P6rIdentitySettingsSection } from "@/components/settings/P6rIdentitySettingsSection";
+ import { useMemo, useRef, useState, type ReactNode } from "react";
+ import {
+   Navigate,
+@@ -1343,6 +1344,8 @@ export function SettingsView() {
+     );
+   } else if (activeSection === "ai-services") {
+     content = <AiServicesSettingsSection />;
++  } else if (activeSection === "p6rIdentity") {
++    content = <P6rIdentitySettingsSection />;
+   } else if (activeSection === "appearance") {
+     content = (
+       <AppearanceSettingsSection
+diff --git a/apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx b/apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx
+index e94360ffba9859f5ded1d9fdde54352d8ec81cf4..002b185366c745b54886af0f089525815cad864f 100644
+--- a/apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx
++++ b/apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx
+@@ -1516,6 +1516,7 @@ describe("ThreadDetailPromptArea", () => {
+         "Failed to update queued message",
+         {
+           description: "Queued message changed",
++          action: { label: "Copy details", onClick: expect.any(Function) },
+         },
+       ),
+     );
+diff --git a/packages/shared-ui/package.json b/packages/shared-ui/package.json
+index de35652b4085c52a028134e8999e60f01f672b99..294d1c20042b2bd1933206ff2d5e0f88a2f83389 100644
+--- a/packages/shared-ui/package.json
++++ b/packages/shared-ui/package.json
+@@ -538,6 +538,11 @@
+       "source": "./src/components/ui/list-loading-placeholder.tsx",
+       "types": "./src/components/ui/list-loading-placeholder.tsx",
+       "default": "./src/components/ui/list-loading-placeholder.tsx"
++    },
++    "./pkl-highlight": {
++      "source": "./src/lib/pkl-highlight.ts",
++      "types": "./src/lib/pkl-highlight.ts",
++      "default": "./src/lib/pkl-highlight.ts"
+     }
+   },
+   "scripts": {
+diff --git a/packages/shared-ui/src/lib/pkl-highlight.ts b/packages/shared-ui/src/lib/pkl-highlight.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..8be2aabfe772325fe72df996c368e2df36ebc761
+--- /dev/null
++++ b/packages/shared-ui/src/lib/pkl-highlight.ts
+@@ -0,0 +1,135 @@
++export type PklTokenKind =
++  | "keyword"
++  | "type"
++  | "identifier"
++  | "number"
++  | "string"
++  | "comment"
++  | "delimiter"
++  | "white";
++export interface PklToken {
++  startIndex: number;
++  value: string;
++  kind: PklTokenKind;
++}
++type Frame =
++  | { kind: "comment" }
++  | { kind: "string"; close: string; escape: string; multiline: boolean }
++  | { kind: "interpolation"; depth: number };
++export type PklHighlightState = readonly Frame[];
++
++const keywords = new Set(
++  "abstract amends as class const else extends external false fixed for function hidden if import in is let local module new nothing null open out outer read super this throw trace true typealias unknown when".split(
++    " ",
++  ),
++);
++const types = new Set(
++  "Any Boolean Class Collection DataSize Duration Dynamic Float Int Int8 Int16 Int32 Int64 List Listing Map Mapping Module NonNull Number Pair Regex Set String Typed UInt UInt8 UInt16 UInt32 UInt64 VarArgs".split(
++    " ",
++  ),
++);
++
++export function tokenizePklLine(
++  line: string,
++  previous: PklHighlightState = [],
++): { tokens: PklToken[]; state: PklHighlightState } {
++  const state = previous.map((frame) => ({ ...frame }));
++  const tokens: PklToken[] = [];
++  let index = 0;
++  function emit(kind: PklTokenKind, length: number) {
++    const value = line.slice(index, index + length);
++    const last = tokens.at(-1);
++    if (last?.kind === kind) last.value += value;
++    else tokens.push({ startIndex: index, value, kind });
++    index += length;
++  }
++  while (index < line.length) {
++    const frame = state.at(-1);
++    if (frame?.kind === "comment") {
++      if (line.startsWith("/*", index)) {
++        state.push({ kind: "comment" });
++        emit("comment", 2);
++      } else if (line.startsWith("*/", index)) {
++        state.pop();
++        emit("comment", 2);
++      } else emit("comment", 1);
++      continue;
++    }
++    if (frame?.kind === "string") {
++      if (line.startsWith(frame.close, index)) {
++        state.pop();
++        emit("string", frame.close.length);
++      } else if (line.startsWith(frame.escape + "(", index)) {
++        emit("delimiter", frame.escape.length + 1);
++        state.push({ kind: "interpolation", depth: 1 });
++      } else if (line.startsWith(frame.escape, index))
++        emit("string", Math.min(frame.escape.length + 1, line.length - index));
++      else emit("string", 1);
++      continue;
++    }
++    if (line.startsWith("//", index)) {
++      emit("comment", line.length - index);
++      continue;
++    }
++    if (line.startsWith("/*", index)) {
++      state.push({ kind: "comment" });
++      emit("comment", 2);
++      continue;
++    }
++    const rest = line.slice(index);
++    const string = /^(#*)("""|")/.exec(rest);
++    if (string) {
++      const hashes = string[1]!;
++      const quote = string[2]!;
++      state.push({
++        kind: "string",
++        close: quote + hashes,
++        escape: "\\" + hashes,
++        multiline: quote.length === 3,
++      });
++      emit("string", string[0].length);
++      continue;
++    }
++    if (line[index] === "`") {
++      const end = line.indexOf("`", index + 1);
++      emit("identifier", end < 0 ? line.length - index : end - index + 1);
++      continue;
++    }
++    const whitespace = /^\s+/.exec(rest);
++    if (whitespace) {
++      emit("white", whitespace[0].length);
++      continue;
++    }
++    const number =
++      /^(?:0[xX][\da-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?[\d_]+)?|\.\d[\d_]*(?:[eE][+-]?[\d_]+)?)/.exec(
++        rest,
++      );
++    if (number) {
++      emit("number", number[0].length);
++      continue;
++    }
++    const word = /^[\p{L}_$][\p{L}\p{N}_$]*/u.exec(rest);
++    if (word) {
++      const value = word[0];
++      emit(
++        keywords.has(value)
++          ? "keyword"
++          : types.has(value) || /^\p{Lu}/u.test(value)
++            ? "type"
++            : "identifier",
++        value.length,
++      );
++      continue;
++    }
++    if (frame?.kind === "interpolation") {
++      if (line[index] === "(") frame.depth++;
++      if (line[index] === ")" && --frame.depth === 0) state.pop();
++    }
++    emit("delimiter", 1);
++  }
++  const singleLine = state.findIndex(
++    (frame) => frame.kind === "string" && !frame.multiline,
++  );
++  if (singleLine >= 0) state.splice(singleLine);
++  return { tokens, state };
++}
+diff --git a/plugins/monaco-editor/lib/languages.ts b/plugins/monaco-editor/lib/languages.ts
+index ea8496450363f5a59656f695235819536fa260c6..3f7ecd743e12f975c570b651e32bd9402d209d66 100644
+--- a/plugins/monaco-editor/lib/languages.ts
++++ b/plugins/monaco-editor/lib/languages.ts
+@@ -20,6 +20,7 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
+   yaml: "yaml",
+   yml: "yaml",
+   toml: "ini",
++  pkl: "pkl",
+   ini: "ini",
+   properties: "ini",
+   cfg: "ini",
+diff --git a/plugins/monaco-editor/lib/pkl-highlight.ts b/plugins/monaco-editor/lib/pkl-highlight.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..8be2aabfe772325fe72df996c368e2df36ebc761
+--- /dev/null
++++ b/plugins/monaco-editor/lib/pkl-highlight.ts
+@@ -0,0 +1,135 @@
++export type PklTokenKind =
++  | "keyword"
++  | "type"
++  | "identifier"
++  | "number"
++  | "string"
++  | "comment"
++  | "delimiter"
++  | "white";
++export interface PklToken {
++  startIndex: number;
++  value: string;
++  kind: PklTokenKind;
++}
++type Frame =
++  | { kind: "comment" }
++  | { kind: "string"; close: string; escape: string; multiline: boolean }
++  | { kind: "interpolation"; depth: number };
++export type PklHighlightState = readonly Frame[];
++
++const keywords = new Set(
++  "abstract amends as class const else extends external false fixed for function hidden if import in is let local module new nothing null open out outer read super this throw trace true typealias unknown when".split(
++    " ",
++  ),
++);
++const types = new Set(
++  "Any Boolean Class Collection DataSize Duration Dynamic Float Int Int8 Int16 Int32 Int64 List Listing Map Mapping Module NonNull Number Pair Regex Set String Typed UInt UInt8 UInt16 UInt32 UInt64 VarArgs".split(
++    " ",
++  ),
++);
++
++export function tokenizePklLine(
++  line: string,
++  previous: PklHighlightState = [],
++): { tokens: PklToken[]; state: PklHighlightState } {
++  const state = previous.map((frame) => ({ ...frame }));
++  const tokens: PklToken[] = [];
++  let index = 0;
++  function emit(kind: PklTokenKind, length: number) {
++    const value = line.slice(index, index + length);
++    const last = tokens.at(-1);
++    if (last?.kind === kind) last.value += value;
++    else tokens.push({ startIndex: index, value, kind });
++    index += length;
++  }
++  while (index < line.length) {
++    const frame = state.at(-1);
++    if (frame?.kind === "comment") {
++      if (line.startsWith("/*", index)) {
++        state.push({ kind: "comment" });
++        emit("comment", 2);
++      } else if (line.startsWith("*/", index)) {
++        state.pop();
++        emit("comment", 2);
++      } else emit("comment", 1);
++      continue;
++    }
++    if (frame?.kind === "string") {
++      if (line.startsWith(frame.close, index)) {
++        state.pop();
++        emit("string", frame.close.length);
++      } else if (line.startsWith(frame.escape + "(", index)) {
++        emit("delimiter", frame.escape.length + 1);
++        state.push({ kind: "interpolation", depth: 1 });
++      } else if (line.startsWith(frame.escape, index))
++        emit("string", Math.min(frame.escape.length + 1, line.length - index));
++      else emit("string", 1);
++      continue;
++    }
++    if (line.startsWith("//", index)) {
++      emit("comment", line.length - index);
++      continue;
++    }
++    if (line.startsWith("/*", index)) {
++      state.push({ kind: "comment" });
++      emit("comment", 2);
++      continue;
++    }
++    const rest = line.slice(index);
++    const string = /^(#*)("""|")/.exec(rest);
++    if (string) {
++      const hashes = string[1]!;
++      const quote = string[2]!;
++      state.push({
++        kind: "string",
++        close: quote + hashes,
++        escape: "\\" + hashes,
++        multiline: quote.length === 3,
++      });
++      emit("string", string[0].length);
++      continue;
++    }
++    if (line[index] === "`") {
++      const end = line.indexOf("`", index + 1);
++      emit("identifier", end < 0 ? line.length - index : end - index + 1);
++      continue;
++    }
++    const whitespace = /^\s+/.exec(rest);
++    if (whitespace) {
++      emit("white", whitespace[0].length);
++      continue;
++    }
++    const number =
++      /^(?:0[xX][\da-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?[\d_]+)?|\.\d[\d_]*(?:[eE][+-]?[\d_]+)?)/.exec(
++        rest,
++      );
++    if (number) {
++      emit("number", number[0].length);
++      continue;
++    }
++    const word = /^[\p{L}_$][\p{L}\p{N}_$]*/u.exec(rest);
++    if (word) {
++      const value = word[0];
++      emit(
++        keywords.has(value)
++          ? "keyword"
++          : types.has(value) || /^\p{Lu}/u.test(value)
++            ? "type"
++            : "identifier",
++        value.length,
++      );
++      continue;
++    }
++    if (frame?.kind === "interpolation") {
++      if (line[index] === "(") frame.depth++;
++      if (line[index] === ")" && --frame.depth === 0) state.pop();
++    }
++    emit("delimiter", 1);
++  }
++  const singleLine = state.findIndex(
++    (frame) => frame.kind === "string" && !frame.multiline,
++  );
++  if (singleLine >= 0) state.splice(singleLine);
++  return { tokens, state };
++}
+diff --git a/plugins/monaco-editor/lib/pkl-language.ts b/plugins/monaco-editor/lib/pkl-language.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ea61599754ead8ca4e9692afc6aea1b9ec57b72b
+--- /dev/null
++++ b/plugins/monaco-editor/lib/pkl-language.ts
+@@ -0,0 +1,56 @@
++import type * as Monaco from "monaco-editor";
++import {
++  tokenizePklLine,
++  type PklHighlightState,
++} from "./pkl-highlight.js";
++
++class PklState implements Monaco.languages.IState {
++  constructor(readonly frames: PklHighlightState = []) {}
++  clone(): PklState {
++    return new PklState(this.frames);
++  }
++  equals(other: Monaco.languages.IState): boolean {
++    return (
++      other instanceof PklState &&
++      JSON.stringify(this.frames) === JSON.stringify(other.frames)
++    );
++  }
++}
++
++export function registerPkl(monaco: typeof Monaco): void {
++  monaco.languages.register({
++    id: "pkl",
++    extensions: [".pkl"],
++    aliases: ["Pkl", "pkl"],
++  });
++  monaco.languages.setTokensProvider("pkl", {
++    getInitialState: () => new PklState(),
++    tokenize(line, state) {
++      const parsed = tokenizePklLine(
++        line,
++        state instanceof PklState ? state.frames : [],
++      );
++      return {
++        tokens: parsed.tokens.map(({ startIndex, kind }) => ({
++          startIndex,
++          scopes: kind,
++        })),
++        endState: new PklState(parsed.state),
++      };
++    },
++  });
++  monaco.languages.setLanguageConfiguration("pkl", {
++    comments: { lineComment: "//", blockComment: ["/*", "*/"] },
++    brackets: [
++      ["{", "}"],
++      ["[", "]"],
++      ["(", ")"],
++    ],
++    autoClosingPairs: [
++      { open: "{", close: "}" },
++      { open: "[", close: "]" },
++      { open: "(", close: ")" },
++      { open: '"', close: '"', notIn: ["string", "comment"] },
++    ],
++  });
++}
+diff --git a/plugins/monaco-editor/monaco-bundle/editor.js b/plugins/monaco-editor/monaco-bundle/editor.js
+index 2b6ea63e0ada1cd3712102f7372e65774204dd9b..32421336c2a5754ea1e619548894f032ba4de66c 100644
+--- a/plugins/monaco-editor/monaco-bundle/editor.js
++++ b/plugins/monaco-editor/monaco-bundle/editor.js
+@@ -1,2 +1,6 @@
+ export * as monaco from "monaco-editor/editor/editor.api.js";
+ import "monaco-editor/editor/editor.main.js";
++
++import * as monacoApi from "monaco-editor/editor/editor.api.js";
++import { registerPkl } from "../lib/pkl-language.ts";
++registerPkl(monacoApi);
+-- 
+2.50.1 (Apple Git-155)
+
