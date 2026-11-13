@@ -5,7 +5,7 @@
 This is the selected source delta: **8 capabilities / 8 patches**. It is not a deployment or live-test receipt.
 
 - Reviewed upstream: `05199007ecad513b714b244e46b0ab2a9a06279f`
-- Reviewed result tree: `5f26ab482f09dc3909fb56f6f36cdfd354d3fc36`
+- Reviewed result tree: `ddfc171fe3ec7d6b403bcb1bd25d8858d60be32a`
 
 The checker enforces explicit source coverage and review freshness. Each capability digest binds its primary patches and all selected patches touching the same source files, requiring shared-source dependency review. Human review establishes whether explanations and state/API identities are semantically complete. Historical notes remain in [DOWNSTREAM.md](DOWNSTREAM.md).
 
@@ -200,7 +200,7 @@ Remove bridge logic only when no supported retained database has its exact histo
 
 - [0001-retained-state-and-migrations.patch](patches/0001-retained-state-and-migrations.patch)
 
-Reviewed source digest: `5af296e2166adcd783f5895be650d63d4afcead06db51d2f6a5ffba6b80e3905`
+Reviewed source digest: `af62dcbe611fcfe03f659c6f4b06a2146ecbb4b75b81eebfbadf9bc60fb5525f`
 
 </details>
 
@@ -402,7 +402,7 @@ Retire custom authorship plumbing when upstream exposes equivalent provenance an
 
 - [0002-trusted-authorship-and-dispatch.patch](patches/0002-trusted-authorship-and-dispatch.patch)
 
-Reviewed source digest: `196d71d18dd7d10379e4ff3e753e3a57b24d623bce56d1ddbbe1a54319221d4a`
+Reviewed source digest: `064c7ef74ff504e39c89e7cae21fcda70d6d1e294f17d8a94672968e5ce980fb`
 
 </details>
 
@@ -631,7 +631,7 @@ Retire individual seams as equivalent native SDK contracts become available.
 
 - [0003-shared-plugin-contracts.patch](patches/0003-shared-plugin-contracts.patch)
 
-Reviewed source digest: `691f57e936d596d9b9bac23908a62f2fec56bd40ebaf2d8f329411411dfa332e`
+Reviewed source digest: `fc41d871a51c7d35055e4a6e9b922b3ed79474588197b488df0588613f0e39f7`
 
 </details>
 
@@ -946,7 +946,7 @@ Retire relay patches only when native provider configuration enforces the same d
 
 - [0004-inference-relay-and-provider-evidence.patch](patches/0004-inference-relay-and-provider-evidence.patch)
 
-Reviewed source digest: `406b71bca05daf6f582c0addb70dc5fa8577961c42176171ff2d80b75820bff9`
+Reviewed source digest: `e10018536e397aad73cb753f1591c0e724be02196866a03333ce5e5565c97112`
 
 </details>
 
@@ -1089,7 +1089,7 @@ Retire individual UI seams when native SDK surfaces supply the same information.
 
 - [0005-team-navigation-and-diagnostics.patch](patches/0005-team-navigation-and-diagnostics.patch)
 
-Reviewed source digest: `7f3c24f1ac3665b8d5e447d5510a3c140457848f60cf8cd564da0edf96ae0ad2`
+Reviewed source digest: `d05199154f893df4242903c5a2afaed530f92c19b453f05228e47b59266818ad`
 
 </details>
 
@@ -1258,7 +1258,7 @@ Retire each operational patch after native upstream provides equivalent bounds a
 
 - [0006-service-lifecycle-and-transport.patch](patches/0006-service-lifecycle-and-transport.patch)
 
-Reviewed source digest: `7b37167edb55a1f75de98c6e5c1ebc56ab553d91bc472f83d3a8c6a47c20e846`
+Reviewed source digest: `fc74d1908b7f2e16acb154ff6f35b396ec8f83825a24510feda15305b3780877`
 
 </details>
 
@@ -1505,6 +1505,12 @@ The selected native server, CLI, daemon and SDK must build as one cohort and ret
 - **Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.**
   - Why: Protect the accepted behavior and its failure cases across source refreshes. Server P6R provider-admission/provider-registry resolve actors; invocation-registry owns request/generation lifetimes.
   - Source: `tests/integration/fake/smoke/dynamic-acp-agent.test.ts`
+- **Integrate and verify the selected upstream cohort: helpers/harness.ts**
+  - Why: The selected native server, CLI, daemon and SDK must build as one cohort and retain native sandbox and dependency policy.
+  - Source: `tests/integration/helpers/harness.ts`
+- **Integrate and verify the selected upstream cohort: turbo.json**
+  - Why: The selected native server, CLI, daemon and SDK must build as one cohort and retain native sandbox and dependency policy.
+  - Source: `turbo.json`
 
 ### Verification references
 
@@ -1524,7 +1530,7 @@ Reevaluate every integration adjustment on the next upstream upgrade rather than
 
 - [0007-integration-and-verification.patch](patches/0007-integration-and-verification.patch)
 
-Reviewed source digest: `8824765a9c0dff0ff8a1a67bf38ba9d616c3fda0df7e99d5fa4dbec7ef59c5ff`
+Reviewed source digest: `772ff01b1fd1b6b278bde424b3e311b96428762589b48284011b11d6c78797ad`
 
 </details>
 
@@ -1565,6 +1571,6 @@ Retire this wording patch when native guide configuration supports the same text
 
 - [0008-prompt-wording.patch](patches/0008-prompt-wording.patch)
 
-Reviewed source digest: `0e9affa463c7dfaccbd4f0210a893f68868831a2afd145427518321ced3e85e8`
+Reviewed source digest: `794035b65b31fb5007412b595b53acb30456e103e8da2ffe8535d88aab4d2107`
 
 </details>
