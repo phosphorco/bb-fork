@@ -1,0 +1,91 @@
+import { once } from "node:events";
+import { Socket } from "node:net";
+import { expect, it } from "vitest";
+import WebSocket, { WebSocketServer } from "ws";
+import { NotificationHub } from "../../src/ws/hub.js";
+
+it("terminates a real stalled WebSocket before its pending write queue can grow without bound", async () => {
+  const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(wss, "listening");
+  const address = wss.address();
+  if (!address || typeof address === "string")
+    throw Error("Expected ephemeral TCP listener");
+  const connected = once(wss, "connection");
+  const client = new WebSocket(`ws://127.0.0.1:${address.port}`);
+  await once(client, "open");
+  const [raw] = await connected;
+  if (!(raw instanceof WebSocket))
+    throw Error("Expected native WebSocket peer");
+  const transport = Reflect.get(client, "_socket");
+  if (!(transport instanceof Socket))
+    throw Error("Expected native TCP transport");
+  transport.pause();
+  const hub = new NotificationHub();
+  hub.registerClient({
+    raw,
+    send: (payload) => raw.send(payload),
+    close: (code, reason) => raw.close(code, reason),
+  });
+  try {
+    const closed = once(raw, "close");
+    const payload = { value: "x".repeat(4096) };
+    for (let i = 0; i < 20000; i++)
+      hub.notifyPluginSignal("probe", "changed", payload);
+    expect(raw.readyState).not.toBe(WebSocket.OPEN);
+    await closed;
+    expect(raw.bufferedAmount).toBeLessThan(2 * 1024 * 1024);
+  } finally {
+    client.terminate();
+    raw.terminate();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  }
+});
+
+it("keeps a healthy compressed client connected through repeated reload-sized bursts", async () => {
+  const wss = new WebSocketServer({
+    host: "127.0.0.1",
+    port: 0,
+    perMessageDeflate: { threshold: 0 },
+  });
+  await once(wss, "listening");
+  const address = wss.address();
+  if (!address || typeof address === "string")
+    throw Error("Expected ephemeral TCP listener");
+  const connected = once(wss, "connection");
+  const client = new WebSocket(`ws://127.0.0.1:${address.port}`);
+  await once(client, "open");
+  const [raw] = await connected;
+  if (!(raw instanceof WebSocket))
+    throw Error("Expected native WebSocket peer");
+  expect(client.extensions).toContain("permessage-deflate");
+  let received = 0;
+  client.on("message", () => {
+    received += 1;
+  });
+  const hub = new NotificationHub();
+  hub.registerClient({
+    raw,
+    send: (payload, options) => raw.send(payload, options ?? {}),
+    close: (code, reason) => raw.close(code, reason),
+  });
+  try {
+    for (let burst = 0; burst < 2; burst++) {
+      for (let i = 0; i < 1200; i++)
+        hub.notifyPluginSignal("reload", "changed", {
+          sequence: burst * 1200 + i,
+        });
+      expect(raw.bufferedAmount).toBeGreaterThan(0);
+      expect(raw.bufferedAmount).toBeLessThan(1024 * 1024);
+      expect(raw.readyState).toBe(WebSocket.OPEN);
+      await expect
+        .poll(() => received, { timeout: 5000 })
+        .toBe((burst + 1) * 1200);
+      await expect.poll(() => raw.bufferedAmount, { timeout: 5000 }).toBe(0);
+    }
+    expect(client.readyState).toBe(WebSocket.OPEN);
+  } finally {
+    client.terminate();
+    raw.terminate();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  }
+});

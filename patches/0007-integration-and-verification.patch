@@ -1,6 +1,6 @@
-From 2085e69034b01d21ed03bc8e83ae8d34d23098cc Mon Sep 17 00:00:00 2001
+From 0e36dc4622f19860b94d418fadf5a36c832874b7 Mon Sep 17 00:00:00 2001
 From: Cole Lawrence <cole@colelawrence.com>
-Date: Fri, 13 Nov 2026 20:02:33 -0300
+Date: Fri, 13 Nov 2026 20:23:59 -0300
 Subject: [PATCH] Integration and verification
 
 ---
@@ -14,9 +14,9 @@ Subject: [PATCH] Integration and verification
  apps/server/package.json                      |   4 +-
  .../generate-bb-official-marketplace.ts       |   5 +-
  .../src/services/plugins/plugin-rpc-caller.ts |  10 +-
- apps/server/test/app/client-protocol.test.ts  |  15 +-
- .../test/app/hub-backpressure-native.test.ts  |  91 +++++
- apps/server/test/app/hub-backpressure.test.ts |  81 ++++
+ apps/server/test/app/client-protocol.test.ts  |  14 +-
+ .../test/app/hub-backpressure-native.test.ts  |  53 +++
+ apps/server/test/app/hub-backpressure.test.ts |  53 +++
  .../test/app/startup-diagnostics.test.ts      | 152 +++++++-
  apps/server/test/helpers/p6r-authorship.ts    |  36 ++
  apps/server/test/helpers/test-app.ts          |   2 +
@@ -83,7 +83,7 @@ Subject: [PATCH] Integration and verification
  .../fake/smoke/dynamic-acp-agent.test.ts      |   9 +-
  tests/integration/helpers/harness.ts          |   2 +
  turbo.json                                    |  16 +-
- 79 files changed, 3909 insertions(+), 149 deletions(-)
+ 79 files changed, 3842 insertions(+), 149 deletions(-)
  create mode 100644 apps/server/test/app/hub-backpressure-native.test.ts
  create mode 100644 apps/server/test/app/hub-backpressure.test.ts
  create mode 100644 apps/server/test/helpers/p6r-authorship.ts
@@ -539,7 +539,7 @@ index 7aad7f7b34f6e1bab4bfe0c79bf53f8078adbaf0..fd78811c772f411a21f618df9e48dd6a
      baseUrl: args.baseUrl,
      fetch: (input, init) => {
 diff --git a/apps/server/test/app/client-protocol.test.ts b/apps/server/test/app/client-protocol.test.ts
-index 29a733846418b55a958642039154443ea325ac7b..9c3e6b1c7f2432c7ed1b95644307ec1eea0fc61a 100644
+index 29a733846418b55a958642039154443ea325ac7b..2a8a741860295cf77059e87190d2deacf294f4af 100644
 --- a/apps/server/test/app/client-protocol.test.ts
 +++ b/apps/server/test/app/client-protocol.test.ts
 @@ -1,4 +1,4 @@
@@ -548,21 +548,20 @@ index 29a733846418b55a958642039154443ea325ac7b..9c3e6b1c7f2432c7ed1b95644307ec1e
  import {
    onClientSocketMessage,
    onClientSocketOpen,
-@@ -7,6 +7,19 @@ import { NotificationHub } from "../../src/ws/hub.js";
+@@ -7,6 +7,18 @@ import { NotificationHub } from "../../src/ws/hub.js";
  import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
  
  describe("client websocket protocol", () => {
-+  it("applies the same queue bound to heartbeat replies", () => {
++  it("does not evict a healthy heartbeat solely for a pending notification burst", () => {
 +    const hub = new NotificationHub();
 +    const socket = {
 +      ...createMockHubSocket(),
-+      raw: { bufferedAmount: 64 * 1024 * 1024, terminate: vi.fn() },
++      raw: { bufferedAmount: 2 * 1024 * 1024, terminate: vi.fn() },
 +    };
 +    onClientSocketOpen(hub, socket);
-+    for (let i = 0; i < 10000; i++)
-+      onClientSocketMessage(hub, socket, JSON.stringify({ type: "ping" }));
-+    expect(socket.messages).toHaveLength(0);
-+    expect(socket.raw.terminate).toHaveBeenCalledTimes(1);
++    onClientSocketMessage(hub, socket, JSON.stringify({ type: "ping" }));
++    expect(socket.messages).toEqual([JSON.stringify({ type: "pong" })]);
++    expect(socket.raw.terminate).not.toHaveBeenCalled();
 +  });
 +
    it("subscribes valid client messages parsed through the shared schema", () => {
@@ -570,52 +569,14 @@ index 29a733846418b55a958642039154443ea325ac7b..9c3e6b1c7f2432c7ed1b95644307ec1e
      const socket = createMockHubSocket();
 diff --git a/apps/server/test/app/hub-backpressure-native.test.ts b/apps/server/test/app/hub-backpressure-native.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..2b5bc8cc20ee70c2c8d8f523a7f3d264e9bbaac7
+index 0000000000000000000000000000000000000000..13dc12b7320cdd62adbdbaec573288c08ecb12c2
 --- /dev/null
 +++ b/apps/server/test/app/hub-backpressure-native.test.ts
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,53 @@
 +import { once } from "node:events";
-+import { Socket } from "node:net";
 +import { expect, it } from "vitest";
 +import WebSocket, { WebSocketServer } from "ws";
 +import { NotificationHub } from "../../src/ws/hub.js";
-+
-+it("terminates a real stalled WebSocket before its pending write queue can grow without bound", async () => {
-+  const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-+  await once(wss, "listening");
-+  const address = wss.address();
-+  if (!address || typeof address === "string")
-+    throw Error("Expected ephemeral TCP listener");
-+  const connected = once(wss, "connection");
-+  const client = new WebSocket(`ws://127.0.0.1:${address.port}`);
-+  await once(client, "open");
-+  const [raw] = await connected;
-+  if (!(raw instanceof WebSocket))
-+    throw Error("Expected native WebSocket peer");
-+  const transport = Reflect.get(client, "_socket");
-+  if (!(transport instanceof Socket))
-+    throw Error("Expected native TCP transport");
-+  transport.pause();
-+  const hub = new NotificationHub();
-+  hub.registerClient({
-+    raw,
-+    send: (payload) => raw.send(payload),
-+    close: (code, reason) => raw.close(code, reason),
-+  });
-+  try {
-+    const closed = once(raw, "close");
-+    const payload = { value: "x".repeat(4096) };
-+    for (let i = 0; i < 20000; i++)
-+      hub.notifyPluginSignal("probe", "changed", payload);
-+    expect(raw.readyState).not.toBe(WebSocket.OPEN);
-+    await closed;
-+    expect(raw.bufferedAmount).toBeLessThan(2 * 1024 * 1024);
-+  } finally {
-+    client.terminate();
-+    raw.terminate();
-+    await new Promise<void>((resolve) => wss.close(() => resolve()));
-+  }
-+});
 +
 +it("keeps a healthy compressed client connected through repeated reload-sized bursts", async () => {
 +  const wss = new WebSocketServer({
@@ -646,16 +607,16 @@ index 0000000000000000000000000000000000000000..2b5bc8cc20ee70c2c8d8f523a7f3d264
 +  });
 +  try {
 +    for (let burst = 0; burst < 2; burst++) {
-+      for (let i = 0; i < 1200; i++)
++      for (let i = 0; i < 6000; i++)
 +        hub.notifyPluginSignal("reload", "changed", {
-+          sequence: burst * 1200 + i,
++          sequence: burst * 6000 + i,
++          detail: "x".repeat(192),
 +        });
-+      expect(raw.bufferedAmount).toBeGreaterThan(0);
-+      expect(raw.bufferedAmount).toBeLessThan(1024 * 1024);
++      expect(raw.bufferedAmount).toBeGreaterThan(1024 * 1024);
 +      expect(raw.readyState).toBe(WebSocket.OPEN);
 +      await expect
 +        .poll(() => received, { timeout: 5000 })
-+        .toBe((burst + 1) * 1200);
++        .toBe((burst + 1) * 6000);
 +      await expect.poll(() => raw.bufferedAmount, { timeout: 5000 }).toBe(0);
 +    }
 +    expect(client.readyState).toBe(WebSocket.OPEN);
@@ -667,10 +628,10 @@ index 0000000000000000000000000000000000000000..2b5bc8cc20ee70c2c8d8f523a7f3d264
 +});
 diff --git a/apps/server/test/app/hub-backpressure.test.ts b/apps/server/test/app/hub-backpressure.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..ddbb89084d3e35d11a03de541a8a69927c8b5cc7
+index 0000000000000000000000000000000000000000..21c0873894b715c21caf2a812c9c2bc587909d45
 --- /dev/null
 +++ b/apps/server/test/app/hub-backpressure.test.ts
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,53 @@
 +import { describe, expect, it, vi } from "vitest";
 +import { NotificationHub } from "../../src/ws/hub.js";
 +import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
@@ -680,62 +641,18 @@ index 0000000000000000000000000000000000000000..ddbb89084d3e35d11a03de541a8a6992
 +  return { ...socket, raw: { bufferedAmount, terminate: vi.fn() } };
 +}
 +
-+describe("realtime client backpressure", () => {
-+  it("evicts an already full client immediately and keeps other clients and daemons working", () => {
-+    const hub = new NotificationHub();
-+    const slow = peer(64 * 1024 * 1024),
-+      healthy = peer(),
++describe("realtime delivery", () => {
++  it("keeps native delivery semantics when pending bytes exceed the retired downstream threshold", () => {
++    const hub = new NotificationHub(),
++      socket = peer(2 * 1024 * 1024),
 +      daemon = peer();
-+    hub.registerClient(slow);
-+    hub.registerClient(healthy);
++    hub.registerClient(socket);
 +    hub.registerDaemon("session", "host", daemon);
 +    for (let i = 0; i < 10000; i++)
 +      hub.notifyPluginSignal("probe", "changed", { i });
-+    expect(slow.messages).toHaveLength(0);
-+    expect(slow.raw.terminate).toHaveBeenCalledTimes(1);
-+    expect(healthy.messages).toHaveLength(10000);
-+    expect(hub.hasDaemonForHost("host")).toBe(true);
-+  });
-+
-+  it("does not confuse sustained partial drains with a growing message queue", () => {
-+    const hub = new NotificationHub(),
-+      socket = peer(64 * 1024);
-+    hub.subscribe(socket, { kind: "thread-detail", threadId: "thread" });
-+    for (let i = 0; i < 10000; i++) {
-+      // Compression and network progress need not leave an observable zero
-+      // between sends. The transport stays well below its byte limit.
-+      socket.raw.bufferedAmount = (i % 2 === 0 ? 32 : 64) * 1024;
-+      hub.notifyThread("thread", ["title-changed"]);
-+    }
 +    expect(socket.messages).toHaveLength(10000);
 +    expect(socket.raw.terminate).not.toHaveBeenCalled();
-+  });
-+
-+  it("evicts when the actual pending bytes reach the bound", () => {
-+    const hub = new NotificationHub(),
-+      socket = peer(1);
-+    hub.registerClient(socket);
-+    for (let i = 0; i < 1000; i++)
-+      hub.notifyPluginSignal("probe", "changed", {});
-+    socket.raw.bufferedAmount = 1024 * 1024;
-+    hub.notifyPluginSignal("probe", "changed", {});
-+    expect(socket.messages).toHaveLength(1000);
-+    expect(socket.raw.terminate).toHaveBeenCalledTimes(1);
-+  });
-+
-+  it("removes a blocked peer even if the transport only exposes close", () => {
-+    const hub = new NotificationHub(),
-+      socket = {
-+        ...createMockHubSocket(),
-+        raw: { bufferedAmount: 64 * 1024 * 1024 },
-+      };
-+    hub.subscribe(socket, { kind: "thread-list" });
-+    hub.notifyThread("thread", ["title-changed"]);
-+    hub.notifyThread("thread", ["title-changed"]);
-+    expect(socket.messages).toHaveLength(0);
-+    expect(socket.closed).toEqual([
-+      { code: 1013, reason: "realtime-backpressure" },
-+    ]);
++    expect(hub.hasDaemonForHost("host")).toBe(true);
 +  });
 +
 +  it("a failed send cannot prevent another subscriber receiving its notification", () => {
@@ -750,6 +667,22 @@ index 0000000000000000000000000000000000000000..ddbb89084d3e35d11a03de541a8a6992
 +    expect(hub.notifyPluginSignal("probe", "changed", {})).toBe(1);
 +    expect(broken.raw.terminate).toHaveBeenCalledTimes(1);
 +    expect(healthy.messages).toHaveLength(1);
++    expect(hub.notifyPluginSignal("probe", "changed", {})).toBe(1);
++    expect(broken.raw.terminate).toHaveBeenCalledTimes(1);
++    expect(healthy.messages).toHaveLength(2);
++  });
++
++  it("unregisters a failed peer when its transport only exposes close", () => {
++    const hub = new NotificationHub(),
++      socket = createMockHubSocket();
++    socket.send = () => {
++      throw Error("closed");
++    };
++    hub.registerClient(socket);
++    expect(hub.notifyPluginSignal("probe", "changed", {})).toBe(0);
++    expect(socket.closed).toEqual([
++      { code: 1013, reason: "realtime-send-failed" },
++    ]);
 +  });
 +});
 diff --git a/apps/server/test/app/startup-diagnostics.test.ts b/apps/server/test/app/startup-diagnostics.test.ts

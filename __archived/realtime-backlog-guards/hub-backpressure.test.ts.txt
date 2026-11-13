@@ -1,0 +1,81 @@
+import { describe, expect, it, vi } from "vitest";
+import { NotificationHub } from "../../src/ws/hub.js";
+import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
+
+function peer(bufferedAmount = 0) {
+  const socket = createMockHubSocket();
+  return { ...socket, raw: { bufferedAmount, terminate: vi.fn() } };
+}
+
+describe("realtime client backpressure", () => {
+  it("evicts an already full client immediately and keeps other clients and daemons working", () => {
+    const hub = new NotificationHub();
+    const slow = peer(64 * 1024 * 1024),
+      healthy = peer(),
+      daemon = peer();
+    hub.registerClient(slow);
+    hub.registerClient(healthy);
+    hub.registerDaemon("session", "host", daemon);
+    for (let i = 0; i < 10000; i++)
+      hub.notifyPluginSignal("probe", "changed", { i });
+    expect(slow.messages).toHaveLength(0);
+    expect(slow.raw.terminate).toHaveBeenCalledTimes(1);
+    expect(healthy.messages).toHaveLength(10000);
+    expect(hub.hasDaemonForHost("host")).toBe(true);
+  });
+
+  it("does not confuse sustained partial drains with a growing message queue", () => {
+    const hub = new NotificationHub(),
+      socket = peer(64 * 1024);
+    hub.subscribe(socket, { kind: "thread-detail", threadId: "thread" });
+    for (let i = 0; i < 10000; i++) {
+      // Compression and network progress need not leave an observable zero
+      // between sends. The transport stays well below its byte limit.
+      socket.raw.bufferedAmount = (i % 2 === 0 ? 32 : 64) * 1024;
+      hub.notifyThread("thread", ["title-changed"]);
+    }
+    expect(socket.messages).toHaveLength(10000);
+    expect(socket.raw.terminate).not.toHaveBeenCalled();
+  });
+
+  it("evicts when the actual pending bytes reach the bound", () => {
+    const hub = new NotificationHub(),
+      socket = peer(1);
+    hub.registerClient(socket);
+    for (let i = 0; i < 1000; i++)
+      hub.notifyPluginSignal("probe", "changed", {});
+    socket.raw.bufferedAmount = 1024 * 1024;
+    hub.notifyPluginSignal("probe", "changed", {});
+    expect(socket.messages).toHaveLength(1000);
+    expect(socket.raw.terminate).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes a blocked peer even if the transport only exposes close", () => {
+    const hub = new NotificationHub(),
+      socket = {
+        ...createMockHubSocket(),
+        raw: { bufferedAmount: 64 * 1024 * 1024 },
+      };
+    hub.subscribe(socket, { kind: "thread-list" });
+    hub.notifyThread("thread", ["title-changed"]);
+    hub.notifyThread("thread", ["title-changed"]);
+    expect(socket.messages).toHaveLength(0);
+    expect(socket.closed).toEqual([
+      { code: 1013, reason: "realtime-backpressure" },
+    ]);
+  });
+
+  it("a failed send cannot prevent another subscriber receiving its notification", () => {
+    const hub = new NotificationHub(),
+      broken = peer(),
+      healthy = peer();
+    broken.send = () => {
+      throw Error("closed");
+    };
+    hub.registerClient(broken);
+    hub.registerClient(healthy);
+    expect(hub.notifyPluginSignal("probe", "changed", {})).toBe(1);
+    expect(broken.raw.terminate).toHaveBeenCalledTimes(1);
+    expect(healthy.messages).toHaveLength(1);
+  });
+});
