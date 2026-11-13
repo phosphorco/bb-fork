@@ -1,46 +1,48 @@
-From 20c61fdb880d02e3b34be15f172e6850b5ce1cfd Mon Sep 17 00:00:00 2001
+From b53be1f7826321eb08f7c8f9043e197a9e2975bb Mon Sep 17 00:00:00 2001
 From: bb-fork materializer <bb-fork@invalid.local>
 Date: Sun, 20 Sep 2026 20:00:00 +0200
 Subject: [PATCH] feat(context-magnet): add provider admission
 
 ---
- apps/host-daemon/src/command-dispatch.test.ts |  63 +++++-
+ apps/host-daemon/src/command-dispatch.test.ts |  63 +++-
  .../src/command-handlers/thread.ts            |   8 +-
  .../plugins/plugin-agent-contributions.ts     |   1 +
  .../plugins/plugin-service-internal.ts        |   1 +
  .../src/services/plugins/plugin-service.ts    |  18 +-
  .../src/services/threads/thread-commands.ts   |   1 +
  .../services/threads/thread-edit-message.ts   |   5 +-
- .../src/services/threads/thread-lifecycle.ts  |  45 ++++
+ .../src/services/threads/thread-lifecycle.ts  |  45 +++
  .../services/threads/thread-runtime-config.ts |   2 +
  apps/server/test/helpers/commands.ts          |  12 +-
- .../thread-lifecycle-admission.test.ts        |  62 ++++++
+ .../thread-lifecycle-admission.test.ts        |  62 ++++
  .../src/bridge-protocol-adapter.ts            |   1 +
  packages/agent-runtime/src/index.ts           |   1 +
  .../agent-runtime/src/provider-adapter.ts     |   3 +
- packages/agent-runtime/src/runtime.ts         |  42 +++-
+ packages/agent-runtime/src/runtime.ts         |  42 ++-
  packages/agent-runtime/src/types.ts           |   6 +
- .../context-magnet-contribution-traces.ts     | 126 +++++++++++-
+ .../context-magnet-contribution-traces.ts     | 130 +++++++-
  packages/db/src/data/index.ts                 |   2 +
  packages/db/src/ids.ts                        |   1 +
- packages/db/src/schema.ts                     |  57 ++++++
- ...context-magnet-contribution-traces.test.ts |  98 ++++++++-
- .../src/context-magnet-contribution-trace.ts  |  28 +++
+ packages/db/src/schema.ts                     |  57 ++++
+ ...context-magnet-admission-sequences.test.ts | 291 ++++++++++++++++++
+ ...context-magnet-contribution-traces.test.ts |  98 +++++-
+ .../src/context-magnet-contribution-trace.ts  |  28 ++
  .../context-magnet-contribution-trace.test.ts |   7 +-
  packages/host-daemon-contract/src/commands.ts |  16 +-
- .../test/contract.test.ts                     | 116 +++++++++++
- .../provider-bridge-protocol/src/requests.ts  |  15 ++
- .../src/bridge/app-server-connection.test.ts  |  87 ++++++++
- .../src/bridge/app-server-connection.ts       | 100 +++++++--
- .../src/bridge/bridge.admission.test.ts       | 192 ++++++++++++++++++
+ .../test/contract.test.ts                     | 116 +++++++
+ .../provider-bridge-protocol/src/requests.ts  |  15 +
+ .../src/bridge/app-server-connection.test.ts  |  87 ++++++
+ .../src/bridge/app-server-connection.ts       | 100 +++++-
+ .../src/bridge/bridge.admission.test.ts       | 192 ++++++++++++
  .../bridge/bridge.archive-idempotency.test.ts |   4 +-
  .../src/bridge/bridge.recovery.test.ts        |   2 +-
- plugins/provider-codex/src/bridge/bridge.ts   | 145 ++++++++++---
+ plugins/provider-codex/src/bridge/bridge.ts   | 145 +++++++--
  .../src/bridge/bridge.writer-lock.test.ts     |   4 +-
  .../src/bridge/bridge.zero-work-turn.test.ts  |   8 +-
- .../src/bridge/fake-codex-app-server.mjs      |  24 ++-
- 35 files changed, 1216 insertions(+), 87 deletions(-)
+ .../src/bridge/fake-codex-app-server.mjs      |  24 +-
+ 36 files changed, 1511 insertions(+), 87 deletions(-)
  create mode 100644 apps/server/test/threads/thread-lifecycle-admission.test.ts
+ create mode 100644 packages/db/test/data/context-magnet-admission-sequences.test.ts
  create mode 100644 plugins/provider-codex/src/bridge/bridge.admission.test.ts
 
 diff --git a/apps/host-daemon/src/command-dispatch.test.ts b/apps/host-daemon/src/command-dispatch.test.ts
@@ -678,7 +680,7 @@ index d3bd0c7d561ebf9767ed3cce1373a3dab55270dd..358c3208dc2fa31383c69c0fffd22789
    prepareThreadRewind(
      args: PrepareThreadRewindArgs,
 diff --git a/packages/db/src/data/context-magnet-contribution-traces.ts b/packages/db/src/data/context-magnet-contribution-traces.ts
-index 64e804de3c582ae9a03960b5f82d8158248eb099..068b616f1642755db3964a9d196fc51db2c54c87 100644
+index 64e804de3c582ae9a03960b5f82d8158248eb099..1e71b02bdf9b29d85740593cb99e6e30b99adc61 100644
 --- a/packages/db/src/data/context-magnet-contribution-traces.ts
 +++ b/packages/db/src/data/context-magnet-contribution-traces.ts
 @@ -4,13 +4,18 @@ import {
@@ -720,7 +722,7 @@ index 64e804de3c582ae9a03960b5f82d8158248eb099..068b616f1642755db3964a9d196fc51d
      contributionKey: {
        id: createContextMagnetContributionTraceId(),
        threadId: args.threadId,
-@@ -128,6 +135,59 @@ export function appendContextMagnetContributionTrace(
+@@ -128,6 +135,63 @@ export function appendContextMagnetContributionTrace(
    return trace;
  }
  
@@ -769,7 +771,11 @@ index 64e804de3c582ae9a03960b5f82d8158248eb099..068b616f1642755db3964a9d196fc51d
 +      throw new Error("Provider admission observations are append-only and terminal");
 +    }
 +    const sequenceState = tx.select().from(contextMagnetProviderAdmissionSequences).where(eq(contextMagnetProviderAdmissionSequences.threadId, args.threadId)).get();
-+    const prior = sequenceState?.lastObservationSequence ?? 0;
++    const retainedObservationSequence = tx
++      .select({ value: max(contextMagnetProviderAdmissionObservations.admissionObservationSequence) })
++      .from(contextMagnetProviderAdmissionObservations)
++      .get()?.value ?? 0;
++    const prior = Math.max(sequenceState?.lastObservationSequence ?? 0, retainedObservationSequence);
 +    tx.insert(contextMagnetProviderAdmissionSequences).values({ threadId: args.threadId, lastObservationSequence: prior + args.observations.length }).onConflictDoUpdate({ target: contextMagnetProviderAdmissionSequences.threadId, set: { lastObservationSequence: prior + args.observations.length } }).run();
 +    for (const [index, observation] of args.observations.entries()) {
 +      tx.insert(contextMagnetProviderAdmissionObservations).values({ admissionId: args.admissionId, admissionObservationSequence: prior + index + 1, kind: observation.kind, observedAt: args.now, settlement: observation.kind === "failed-settlement" ? observation.settlement : null, threadId: args.threadId }).run();
@@ -780,7 +786,7 @@ index 64e804de3c582ae9a03960b5f82d8158248eb099..068b616f1642755db3964a9d196fc51d
  export function recordContextMagnetContributionReceipt(
    db: DbConnection,
    args: {
-@@ -261,6 +321,20 @@ export function listContextMagnetContributionTracePage(
+@@ -261,6 +325,20 @@ export function listContextMagnetContributionTracePage(
                )
                .where(eq(contextMagnetContributionTraces.threadId, args.threadId))
                .get()?.value ?? 0,
@@ -801,7 +807,7 @@ index 64e804de3c582ae9a03960b5f82d8158248eb099..068b616f1642755db3964a9d196fc51d
            id: snapshotId(),
            threadId: args.threadId,
          };
-@@ -343,11 +417,47 @@ export function listContextMagnetContributionTracePage(
+@@ -343,11 +421,47 @@ export function listContextMagnetContributionTracePage(
      const trace = contextMagnetContributionTraceSchema.parse(
        JSON.parse(row.trace.traceJson),
      );
@@ -851,7 +857,7 @@ index 64e804de3c582ae9a03960b5f82d8158248eb099..068b616f1642755db3964a9d196fc51d
            operation: {
              kind: "exact" as const,
              renderedAnchor: {
-@@ -369,11 +479,12 @@ export function listContextMagnetContributionTracePage(
+@@ -369,11 +483,12 @@ export function listContextMagnetContributionTracePage(
          };
    });
    const terminal = pageRows.at(-1);
@@ -865,7 +871,7 @@ index 64e804de3c582ae9a03960b5f82d8158248eb099..068b616f1642755db3964a9d196fc51d
            ? "partial"
            : "complete",
      contributions,
-@@ -406,6 +517,9 @@ export function listContextMagnetContributionTracePage(
+@@ -406,6 +521,9 @@ export function listContextMagnetContributionTracePage(
        state: boundary === null ? "unavailable" : "known",
      },
      snapshot: {
@@ -975,6 +981,303 @@ index b8d5f86480efa7f655b7eb5848439da0ab7feee8..7435d1d5106fca734786b17a54ae1980
  export const threadPluginMetadata = sqliteTable(
    "thread_plugin_metadata",
    {
+diff --git a/packages/db/test/data/context-magnet-admission-sequences.test.ts b/packages/db/test/data/context-magnet-admission-sequences.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..1e83b159996fa7163d875247c57da3b8265ad410
+--- /dev/null
++++ b/packages/db/test/data/context-magnet-admission-sequences.test.ts
+@@ -0,0 +1,291 @@
++import { spawnSync } from "node:child_process";
++import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { describe, expect, it } from "vitest";
++import { createConnection, type DbConnection } from "../../src/connection.js";
++import {
++  appendContextMagnetContributionTrace,
++  appendContextMagnetProviderAdmissionObservations,
++  createContextMagnetProviderAdmission,
++  listContextMagnetContributionTracePage,
++  pruneContextMagnetContributionTraces,
++} from "../../src/data/context-magnet-contribution-traces.js";
++import { upsertHost } from "../../src/data/hosts.js";
++import { createProject } from "../../src/data/projects.js";
++import { createThread } from "../../src/data/threads.js";
++import { migrate } from "../../src/migrate.js";
++import { noopNotifier } from "../../src/notifier.js";
++import { contextMagnetProviderAdmissionObservations } from "../../src/schema.js";
++import { createMigratedConnection } from "../../src/testing.js";
++
++function setup() {
++  const db = createMigratedConnection();
++  const host = upsertHost(db, noopNotifier, { name: "admission-host" });
++  const { project } = createProject(db, noopNotifier, {
++    name: "admission-project",
++    source: { hostId: host.id, path: "/tmp/admission", type: "local_path" },
++  });
++  const threads = Array.from({ length: 3 }, () =>
++    createThread(db, noopNotifier, {
++      projectId: project.id,
++      providerId: "codex",
++    }),
++  );
++  return { db, threads };
++}
++
++function admission(db: DbConnection, threadId: string, sequence = 1) {
++  const trace = appendContextMagnetContributionTrace(db, {
++    declaration: {
++      evidence: {
++        original: {},
++        redactions: [],
++        source: "context-magnet-host",
++        sourceSchemaVersion: "v1",
++        unknownFields: {},
++      },
++      inclusionReason: { category: "other-safe" },
++      operation: {
++        kind: "exact",
++        renderedAnchor: {
++          eventSeq: sequence,
++          operationId: `evt_${sequence}`,
++          threadId,
++        },
++        target: {
++          eventSeq: sequence,
++          operationId: `evt_${sequence}`,
++          threadId,
++        },
++      },
++      outcome: { kind: "delivered" },
++      receiptTool: "context_magnet_receipt",
++      trigger: { factKey: null, locator: "unknown", renderState: "unknown" },
++    },
++    now: sequence,
++    pluginId: "context-magnet",
++    threadId,
++  });
++  return createContextMagnetProviderAdmission(db, {
++    attempt: {
++      instructionMode: "append",
++      providerKind: "codex",
++      requestKind: "start",
++      selectedToolSummary: "one-or-more",
++    },
++    contributionId: trace.contributionKey.id,
++    now: sequence,
++    threadId,
++  });
++}
++
++function append(
++  db: DbConnection,
++  threadId: string,
++  admissionId: string,
++  terminal = false,
++) {
++  appendContextMagnetProviderAdmissionObservations(db, {
++    admissionId,
++    now: 10,
++    observations: terminal ? [{ kind: "accepted" }] : [{ kind: "constructed" }],
++    threadId,
++  });
++}
++
++function sequences(db: DbConnection) {
++  return db
++    .select()
++    .from(contextMagnetProviderAdmissionObservations)
++    .orderBy(
++      contextMagnetProviderAdmissionObservations.admissionObservationSequence,
++    )
++    .all();
++}
++
++function threadAt(threads: ReturnType<typeof setup>["threads"], index: number) {
++  const thread = threads[index];
++  if (thread === undefined) throw new Error("Missing test thread");
++  return thread.id;
++}
++
++describe("Context Magnet admission sequence allocation", () => {
++  it("allocates distinct observations across interleaved threads and batches", () => {
++    const { db, threads } = setup();
++    try {
++      const ids = threads.map((thread) => admission(db, thread.id));
++      threads.forEach((thread, index) => {
++        const admissionId = ids[index];
++        if (admissionId === undefined)
++          throw new Error("Missing test admission");
++        appendContextMagnetProviderAdmissionObservations(db, {
++          admissionId,
++          now: 10,
++          observations: [{ kind: "constructed" }, { kind: "accepted" }],
++          threadId: thread.id,
++        });
++      });
++      expect(
++        sequences(db).map((row) => row.admissionObservationSequence),
++      ).toEqual([1, 2, 3, 4, 5, 6]);
++      threads.forEach((thread, index) => {
++        const page = listContextMagnetContributionTracePage(db, {
++          now: 11,
++          threadId: thread.id,
++        });
++        expect(page.snapshot.admissionObservationSeqHighWatermark).toBe(
++          (index + 1) * 2,
++        );
++        expect(
++          page.contributions[0]?.admissions[0]?.observations.map(
++            (row) => row.kind,
++          ),
++        ).toEqual(["constructed", "accepted"]);
++      });
++    } finally {
++      db.$client.close();
++    }
++  });
++
++  it("preserves thread watermarks after all retained observations are pruned", () => {
++    const { db, threads } = setup();
++    try {
++      const first = threadAt(threads, 0);
++      const second = threadAt(threads, 1);
++      const firstAdmission = admission(db, first);
++      const secondAdmission = admission(db, second);
++      append(db, first, firstAdmission);
++      append(db, second, secondAdmission);
++      append(db, first, firstAdmission, true);
++      append(db, second, secondAdmission, true);
++      expect(
++        sequences(db).map((row) => row.admissionObservationSequence),
++      ).toEqual([1, 2, 3, 4]);
++      expect(
++        pruneContextMagnetContributionTraces(db, { keep: 0, threadId: first }),
++      ).toBe(1);
++      expect(
++        pruneContextMagnetContributionTraces(db, { keep: 0, threadId: second }),
++      ).toBe(1);
++      expect(sequences(db)).toEqual([]);
++      const nextFirst = admission(db, first, 2);
++      const nextSecond = admission(db, second, 2);
++      append(db, first, nextFirst);
++      append(db, second, nextSecond);
++      expect(
++        sequences(db).map((row) => row.admissionObservationSequence),
++      ).toEqual([4, 5]);
++      expect(
++        listContextMagnetContributionTracePage(db, { now: 12, threadId: first })
++          .snapshot.admissionObservationSeqHighWatermark,
++      ).toBe(4);
++      expect(
++        listContextMagnetContributionTracePage(db, {
++          now: 12,
++          threadId: second,
++        }).snapshot.admissionObservationSeqHighWatermark,
++      ).toBe(5);
++    } finally {
++      db.$client.close();
++    }
++  });
++
++  it("retains frozen cursors and appends through fresh processes and startup migration", () => {
++    const { db: template, threads } = setup();
++    const directory = mkdtempSync(join(tmpdir(), "bb-admission-restart-"));
++    const path = join(directory, "bb.db");
++    writeFileSync(path, template.$client.serialize());
++    template.$client.close();
++    let db = createConnection(path);
++    try {
++      const first = threadAt(threads, 0);
++      const second = threadAt(threads, 1);
++      const firstAdmission = admission(db, first, 1);
++      const laterAdmission = admission(db, first, 2);
++      const secondAdmission = admission(db, second, 1);
++      append(db, first, firstAdmission);
++      append(db, first, laterAdmission);
++      const page = listContextMagnetContributionTracePage(db, {
++        limit: 1,
++        now: 11,
++        threadId: first,
++      });
++      expect(page.snapshot.admissionObservationSeqHighWatermark).toBe(2);
++      expect(page.nextCursor).not.toBeNull();
++      db.$client.close();
++      const connectionUrl = new URL("../../src/connection.ts", import.meta.url)
++        .href;
++      const migrateUrl = new URL("../../src/migrate.ts", import.meta.url).href;
++      const traceUrl = new URL(
++        "../../src/data/context-magnet-contribution-traces.ts",
++        import.meta.url,
++      ).href;
++      for (const [threadId, admissionId, terminal] of [
++        [second, secondAdmission, false],
++        [first, laterAdmission, true],
++      ] as const) {
++        const code = `
++          import { createConnection } from ${JSON.stringify(connectionUrl)};
++          import { migrate } from ${JSON.stringify(migrateUrl)};
++          import { appendContextMagnetProviderAdmissionObservations } from ${JSON.stringify(traceUrl)};
++          const db = createConnection(${JSON.stringify(path)});
++          try {
++            migrate(db);
++            appendContextMagnetProviderAdmissionObservations(db, ${JSON.stringify({ admissionId, now: 12, observations: [{ kind: terminal ? "accepted" : "constructed" }], threadId })});
++          } finally { db.$client.close(); }
++        `;
++        const result = spawnSync(
++          process.execPath,
++          [
++            "--conditions=source",
++            "--import",
++            "tsx",
++            "--input-type=module",
++            "--eval",
++            code,
++          ],
++          { encoding: "utf8", timeout: 10_000 },
++        );
++        expect(result.error).toBeUndefined();
++        expect(result.stderr).toBe("");
++        expect(result.status).toBe(0);
++      }
++      db = createConnection(path);
++      migrate(db);
++      expect(
++        sequences(db).map((row) => row.admissionObservationSequence),
++      ).toEqual([1, 2, 3, 4]);
++      const continued = listContextMagnetContributionTracePage(db, {
++        cursor: page.nextCursor ?? undefined,
++        now: 13,
++        threadId: first,
++      });
++      expect(continued.snapshot.id).toBe(page.snapshot.id);
++      expect(
++        continued.contributions[0]?.admissions[0]?.observations.map(
++          (row) => row.kind,
++        ),
++      ).toEqual(["constructed"]);
++      const fresh = listContextMagnetContributionTracePage(db, {
++        now: 14,
++        threadId: first,
++      });
++      expect(
++        fresh.contributions[1]?.admissions[0]?.observations.map(
++          (row) => row.kind,
++        ),
++      ).toEqual(["constructed", "accepted"]);
++      expect(fresh.snapshot.admissionObservationSeqHighWatermark).toBe(4);
++      expect(
++        listContextMagnetContributionTracePage(db, {
++          now: 14,
++          threadId: second,
++        }).snapshot.admissionObservationSeqHighWatermark,
++      ).toBe(3);
++    } finally {
++      if (db.$client.open) db.$client.close();
++      rmSync(directory, { recursive: true, force: true });
++    }
++  });
++});
 diff --git a/packages/db/test/data/context-magnet-contribution-traces.test.ts b/packages/db/test/data/context-magnet-contribution-traces.test.ts
 index 202abd6e90cd5b66ea018dda173d3f787675dc93..5f6fb5165e442cc21744ffe11003d71bb7a8b019 100644
 --- a/packages/db/test/data/context-magnet-contribution-traces.test.ts
@@ -2253,5 +2556,5 @@ index 408bfd3a1147c4399d751678bc88391a62fca201..8b47f799bae5d2a0803eb8fb27c44f12
        return;
      }
 -- 
-2.43.0
+2.50.1 (Apple Git-155)
 
