@@ -2,10 +2,10 @@
 
 <!-- Generated from capabilities.json by scripts/check-capability-catalog.mjs. Do not edit by hand. -->
 
-This is the selected source delta: **11 capabilities / 72 patches**. It is not a deployment or live-test receipt.
+This is the selected source delta: **12 capabilities / 75 patches**. It is not a deployment or live-test receipt.
 
 - Reviewed upstream: `01affc197dc621cddc7343e09b1c5c10a5b9efcb`
-- Reviewed result tree: `5afd72027e5e998a9da2ef819e407b7d30cfaa0b`
+- Reviewed result tree: `e7f4c174a6f3456c54dc2f523c638e7a8169e417`
 
 The checker enforces explicit source coverage and review freshness. Each capability digest binds its primary patches and all selected patches touching the same source files, requiring shared-source dependency review. Human review establishes whether explanations and state/API identities are semantically complete. Historical notes remain in [DOWNSTREAM.md](DOWNSTREAM.md).
 
@@ -13,10 +13,11 @@ The checker enforces explicit source coverage and review freshness. Each capabil
 | --- | --- | --- |
 | [Know who is participating without blocking ordinary work](#shared-identity) | Phosphor shares one trusted BB deployment and provider accounts. Native clients and integrations need durable, honest authorship and discoverable people without turning an identity lookup outage into an application outage. | 8 |
 | [Let plugins organize shared threads and change execution deliberately](#thread-views-execution) | Shared thread navigation needs authoritative filters, participant summaries and execution state. Plugins should provide organization/layout data while core retains native rendering and validates effects. | 7 |
-| [Accept, queue, edit and retry messages without losing their original meaning](#message-acceptance-delivery) | A slow, restarted or ambiguous operation must not silently change what the user accepted, duplicate a one-use effect, or erase the record needed to recover. | 8 |
+| [Accept, queue, edit and retry messages without losing their original meaning](#message-acceptance-delivery) | A slow, restarted or ambiguous operation must not silently change what the user accepted, duplicate a one-use effect, or erase the record needed to recover. | 9 |
 | [Explain and customize the context sent to an agent](#context-prompts) | Context assembly should be inspectable and customizable at named producer boundaries, with evidence that says precisely what was constructed, accepted or consumed. | 5 |
 | [Use the required shared inference route and retain native provider facts](#shared-inference-providers) | BB must use the company inference route without silently falling back to a host login. Failures and native response identity must survive the bridge so diagnostics can explain what happened. | 9 |
 | [Keep diagnostics useful while masking only actual authentication secrets](#diagnostic-environment) | This is a trusted single-company deployment. Debugging needs concrete IDs, URLs, paths and ordinary environment values, while real authentication bytes must not become retained diagnostic output. | 1 |
+| [Copy concrete failure evidence from the UI](#actionable-client-failures) | When a mutation fails, an operator needs the exact error and the client context for the attempted action rather than a disappearing generic toast. | 2 |
 | [Upgrade existing BB state without rewriting or guessing its history](#data-upgrades) | The fork has real historical databases and sidecar state. Refreshing upstream must preserve their exact identities/history and reject unrecognized ledgers before accepting traffic. | 6 |
 | [Load plugin frontends coherently and keep plugin network policy explicit](#plugin-artifacts-transport) | A plugin UI must load one coherent generation even during rebuild/reload, and foreign-origin plugin routes must explicitly own their CORS policy without weakening core APIs. | 5 |
 | [Keep realtime, long-thread reads and lifecycle waits bounded](#bounded-runtime-responsiveness) | A busy thread, stalled browser or slow startup must not create repeated wasted reads, unbounded queues or indefinite waits for every other user. | 9 |
@@ -488,6 +489,7 @@ A slow, restarted or ambiguous operation must not silently change what the user 
 - Core admission owns acceptance and delivery transitions; plugins own evaluator logic within the published protocol. Accepted retries reuse the same operation; a separately evaluated correction has a distinct submission/revision.
 - Queued external contributions retain their immutable reservation and turn-link history. Explicit queued delivery mode remains authoritative instead of being overwritten by frozen semantic intent.
 - Reprovisioning retains accepted authors/editors and correlation. Cancelled historical revisions remain retained and are not accidentally revived. UI/CLI/SDK expose preparations and explicit repair/correction actions.
+- Periodic idle recovery rechecks host-offline queue waits whose host is already connected, using the same automatic dispatch and claim owner as reconnect recovery with requeue pacing. Failed attempts record the resulting row state, wait, next retry and host connection.
 - Selected token/data-directory-bound test fault barriers can pause queue/parent-notification effect boundaries for restart tests; they are testing instrumentation, not a production workflow engine.
 
 ### Responsibility
@@ -654,7 +656,7 @@ A slow, restarted or ambiguous operation must not silently change what the user 
 
 - **Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.**
   - Why: Protect the accepted behavior and its failure cases across source refreshes. NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle.
-  - Source: `apps/app/src/components/plugin/PluginNewThreadComposer.test.tsx`, `apps/app/src/components/thread/ThreadAdmissionPreparations.test.tsx`, `apps/app/src/components/thread/embedded-chat/EmbeddedThreadChat.test.tsx`, `apps/app/src/hooks/mutations/thread-runtime-mutations.test.ts`, `apps/app/src/views/thread-detail/ThreadDetailPromptArea.keystrokes.test.tsx`, `apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx`, `apps/cli/src/__tests__/command-output/thread-correction.test.ts`, `apps/cli/src/__tests__/command-output/thread-organization.test.ts`, `apps/cli/src/__tests__/command-output/thread-tell.test.ts`, `apps/host-daemon/test/command/thread-dispatch.test.ts`, `apps/server/src/testing/test-fault-barriers.ts`, `apps/server/test/environments/environment-provisioning.test.ts`, `apps/server/test/helpers/seed.ts`, `apps/server/test/providers/provider-model-catalog-store.test.ts`, `apps/server/test/public/public-thread-compaction.test.ts`, `apps/server/test/public/public-thread-data.test.ts`, `apps/server/test/public/public-thread-fork.test.ts`, `apps/server/test/public/public-thread-offline-followup.test.ts`, `apps/server/test/public/public-thread-queued-steer-admission.p6r.test.ts`, `apps/server/test/services/p6r/external-contribution.test.ts`, `apps/server/test/services/p6r/identity-protocol.test.ts`, `apps/server/test/services/p6r/native-acceptance-admission.p6r.test.ts`, `apps/server/test/services/p6r/native-acceptance.test.ts`, `apps/server/test/services/p6r/native-message-authorship.test.ts`, `apps/server/test/services/plugins/plugin-authoring-docs.test.ts`, `apps/server/test/services/threads/message-admission.test.ts`, `apps/server/test/services/threads/message-originals.p6r.test.ts`, `apps/server/test/services/threads/test-fault-barriers.test.ts`, `apps/server/test/services/threads/thread-runtime-display.test.ts`, `apps/server/test/threads/deferred-first-turn-context.p6r.test.ts`, `apps/server/test/threads/dispatch-hooks.test.ts`, `apps/server/test/threads/environment-providers.test.ts`, `apps/server/test/threads/message-admission-permission.p6r.test.ts`, `apps/server/test/threads/message-admission-preparations.test.ts`, `apps/server/test/threads/message-admission-runtime.p6r.test.ts`, `apps/server/test/threads/message-correction.p6r.test.ts`, `apps/server/test/threads/message-original-delivery.p6r.test.ts`, `apps/server/test/threads/queued-message-admission.test.ts`, `apps/server/test/threads/queued-message-ingress-recovery.p6r.test.ts`, `apps/server/test/threads/queued-message-readiness.test.ts`, `apps/server/test/threads/requested-queue-drain.test.ts`, `apps/server/test/threads/thread-checkpoint-identity.test.ts`, `apps/server/test/threads/thread-create-idempotency.p6r.test.ts`, `apps/server/test/threads/thread-edit-message.test.ts`, `apps/server/test/threads/thread-send-dispatch.test.ts`, `apps/server/test/threads/thread-turn-dispatch.test.ts`, `apps/server/test/threads/turn-failed-retry.test.ts`, `packages/client-core/test/submission-identity.test.ts`, `packages/db/test/data/message-admission-thread-create.test.ts`, `packages/db/test/data/message-admission.test.ts`, `packages/db/test/data/queued-message-atomic-batch.p6r.test.ts`, `packages/db/test/data/queued-thread-messages.test.ts`, `packages/db/test/environment-classification-migration.test.ts`, `packages/db/test/helpers/rewind.ts`, `packages/db/test/migrate.test.ts`, `packages/db/test/thread-drafts-migration.test.ts`, `packages/domain/test/message-originals.p6r.test.ts`, `packages/plugin-build/src/zod-resolution.test.ts`, `packages/plugin-sdk/scripts/runtime-entries.test.mjs`, `packages/plugin-sdk/src/__tests__/public-types.test.ts`, `packages/plugin-sdk/src/internal/composer-handle.test.ts`, `packages/sdk/test/public-types.test.ts`, `packages/sdk/test/sdk.test.ts`, `packages/server-contract/test/contract.test.ts`, `packages/templates/test/plugin-scaffold-external.test.ts`, `packages/thread-view/test/message-originals.p6r.test.ts`
+  - Source: `apps/app/src/components/plugin/PluginNewThreadComposer.test.tsx`, `apps/app/src/components/thread/ThreadAdmissionPreparations.test.tsx`, `apps/app/src/components/thread/embedded-chat/EmbeddedThreadChat.test.tsx`, `apps/app/src/hooks/mutations/thread-runtime-mutations.test.ts`, `apps/app/src/views/thread-detail/ThreadDetailPromptArea.keystrokes.test.tsx`, `apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx`, `apps/cli/src/__tests__/command-output/thread-correction.test.ts`, `apps/cli/src/__tests__/command-output/thread-organization.test.ts`, `apps/cli/src/__tests__/command-output/thread-tell.test.ts`, `apps/host-daemon/test/command/thread-dispatch.test.ts`, `apps/server/src/testing/test-fault-barriers.ts`, `apps/server/test/environments/environment-provisioning.test.ts`, `apps/server/test/helpers/seed.ts`, `apps/server/test/providers/provider-model-catalog-store.test.ts`, `apps/server/test/public/public-thread-compaction.test.ts`, `apps/server/test/public/public-thread-data.test.ts`, `apps/server/test/public/public-thread-fork.test.ts`, `apps/server/test/public/public-thread-offline-followup.test.ts`, `apps/server/test/public/public-thread-queued-steer-admission.p6r.test.ts`, `apps/server/test/services/p6r/external-contribution.test.ts`, `apps/server/test/services/p6r/identity-protocol.test.ts`, `apps/server/test/services/p6r/native-acceptance-admission.p6r.test.ts`, `apps/server/test/services/p6r/native-acceptance.test.ts`, `apps/server/test/services/p6r/native-message-authorship.test.ts`, `apps/server/test/services/plugins/plugin-authoring-docs.test.ts`, `apps/server/test/services/threads/message-admission.test.ts`, `apps/server/test/services/threads/message-originals.p6r.test.ts`, `apps/server/test/services/threads/test-fault-barriers.test.ts`, `apps/server/test/services/threads/thread-runtime-display.test.ts`, `apps/server/test/threads/deferred-first-turn-context.p6r.test.ts`, `apps/server/test/threads/dispatch-hooks.test.ts`, `apps/server/test/threads/environment-providers.test.ts`, `apps/server/test/threads/message-admission-permission.p6r.test.ts`, `apps/server/test/threads/message-admission-preparations.test.ts`, `apps/server/test/threads/message-admission-runtime.p6r.test.ts`, `apps/server/test/threads/message-correction.p6r.test.ts`, `apps/server/test/threads/message-original-delivery.p6r.test.ts`, `apps/server/test/threads/queue-drain-failure.test.ts`, `apps/server/test/threads/queued-message-admission.test.ts`, `apps/server/test/threads/queued-message-ingress-recovery.p6r.test.ts`, `apps/server/test/threads/queued-message-readiness.test.ts`, `apps/server/test/threads/requested-queue-drain.test.ts`, `apps/server/test/threads/thread-checkpoint-identity.test.ts`, `apps/server/test/threads/thread-create-idempotency.p6r.test.ts`, `apps/server/test/threads/thread-edit-message.test.ts`, `apps/server/test/threads/thread-send-dispatch.test.ts`, `apps/server/test/threads/thread-turn-dispatch.test.ts`, `apps/server/test/threads/turn-failed-retry.test.ts`, `packages/client-core/test/submission-identity.test.ts`, `packages/db/test/data/message-admission-thread-create.test.ts`, `packages/db/test/data/message-admission.test.ts`, `packages/db/test/data/queued-message-atomic-batch.p6r.test.ts`, `packages/db/test/data/queued-thread-messages.test.ts`, `packages/db/test/environment-classification-migration.test.ts`, `packages/db/test/helpers/rewind.ts`, `packages/db/test/migrate.test.ts`, `packages/db/test/thread-drafts-migration.test.ts`, `packages/domain/test/message-originals.p6r.test.ts`, `packages/plugin-build/src/zod-resolution.test.ts`, `packages/plugin-sdk/scripts/runtime-entries.test.mjs`, `packages/plugin-sdk/src/__tests__/public-types.test.ts`, `packages/plugin-sdk/src/internal/composer-handle.test.ts`, `packages/sdk/test/public-types.test.ts`, `packages/sdk/test/sdk.test.ts`, `packages/server-contract/test/contract.test.ts`, `packages/templates/test/plugin-scaffold-external.test.ts`, `packages/thread-view/test/message-originals.p6r.test.ts`
 - **Native client presentation and cache lifecycle. Native create/send/queue/edit/correction flows evaluate submissions under published message policies and retain operation identities, evaluations, immutable accepted originals, acknowledgements, advice and preparation state.**
   - Why: NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle. packages/db/src/data/message-admission.ts owns operations, publications, evaluations, originals and transition transactions. Thread queue/send/edit/provision owners perform the concrete effect under frozen accepted data; client submission-identity store preserves retry identity.
   - Source: `apps/app/src/components/promptbox/NewThreadComposer.tsx`, `apps/app/src/components/thread/ThreadAdmissionPreparations.tsx`, `apps/app/src/components/thread/embedded-chat/EmbeddedThreadChat.tsx`, `apps/app/src/components/thread/thread-admission-correction.ts`, `apps/app/src/hooks/cache-owners/cache-invalidation-groups.ts`, `apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts`, `apps/app/src/hooks/mutations/thread-runtime-mutations.ts`, `apps/app/src/hooks/queries/query-keys.ts`, `apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx`
@@ -666,7 +668,7 @@ A slow, restarted or ambiguous operation must not silently change what the user 
   - Source: `apps/server/package.json`, `packages/plugin-sdk/package.json`, `packages/server-contract/package.json`, `pnpm-lock.yaml`
 - **Server effect and read owners. Native create/send/queue/edit/correction flows evaluate submissions under published message policies and retain operation identities, evaluations, immutable accepted originals, acknowledgements, advice and preparation state.**
   - Why: NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle. packages/db/src/data/message-admission.ts owns operations, publications, evaluations, originals and transition transactions. Thread queue/send/edit/provision owners perform the concrete effect under frozen accepted data; client submission-identity store preserves retry identity.
-  - Source: `apps/server/src/services/plugins/plugin-api.ts`, `apps/server/src/services/plugins/plugin-runtime.ts`, `apps/server/src/services/threads/child-thread-notifications.ts`, `apps/server/src/services/threads/deferred-first-turn-context.ts`, `apps/server/src/services/threads/dispatch-attempt.ts`, `apps/server/src/services/threads/dispatch-hooks.ts`, `apps/server/src/services/threads/message-admission-capture.ts`, `apps/server/src/services/threads/message-admission-create-binding.ts`, `apps/server/src/services/threads/message-admission-dispatch.ts`, `apps/server/src/services/threads/message-admission-input.ts`, `apps/server/src/services/threads/message-admission-placement.ts`, `apps/server/src/services/threads/message-admission-queue-edit.ts`, `apps/server/src/services/threads/message-originals.ts`, `apps/server/src/services/threads/queue-drain-failure.ts`, `apps/server/src/services/threads/queue-waits.ts`, `apps/server/src/services/threads/queued-message-dispatch.ts`, `apps/server/src/services/threads/queued-messages.ts`, `apps/server/src/services/threads/thread-commands.ts`, `apps/server/src/services/threads/thread-create-helpers.ts`, `apps/server/src/services/threads/thread-create-request.ts`, `apps/server/src/services/threads/thread-create.ts`, `apps/server/src/services/threads/thread-edit-message.ts`, `apps/server/src/services/threads/thread-events.ts`, `apps/server/src/services/threads/thread-execution-plan.ts`, `apps/server/src/services/threads/thread-lifecycle.ts`, `apps/server/src/services/threads/thread-provisioning.ts`, `apps/server/src/services/threads/thread-queued-messages.ts`, `apps/server/src/services/threads/thread-send-request.ts`, `apps/server/src/services/threads/thread-send.ts`, `apps/server/src/services/threads/thread-turn-dispatch.ts`, `apps/server/src/services/threads/turn-retry.ts`, `apps/server/src/start-server.ts`
+  - Source: `apps/server/src/services/plugins/plugin-api.ts`, `apps/server/src/services/plugins/plugin-runtime.ts`, `apps/server/src/services/threads/child-thread-notifications.ts`, `apps/server/src/services/threads/deferred-first-turn-context.ts`, `apps/server/src/services/threads/dispatch-attempt.ts`, `apps/server/src/services/threads/dispatch-hooks.ts`, `apps/server/src/services/threads/message-admission-capture.ts`, `apps/server/src/services/threads/message-admission-create-binding.ts`, `apps/server/src/services/threads/message-admission-dispatch.ts`, `apps/server/src/services/threads/message-admission-input.ts`, `apps/server/src/services/threads/message-admission-placement.ts`, `apps/server/src/services/threads/message-admission-queue-edit.ts`, `apps/server/src/services/threads/message-originals.ts`, `apps/server/src/services/threads/queue-drain-failure.ts`, `apps/server/src/services/threads/queue-waits.ts`, `apps/server/src/services/threads/queued-messages.ts`, `apps/server/src/services/threads/thread-commands.ts`, `apps/server/src/services/threads/thread-create-helpers.ts`, `apps/server/src/services/threads/thread-create-request.ts`, `apps/server/src/services/threads/thread-create.ts`, `apps/server/src/services/threads/thread-edit-message.ts`, `apps/server/src/services/threads/thread-events.ts`, `apps/server/src/services/threads/thread-execution-plan.ts`, `apps/server/src/services/threads/thread-lifecycle.ts`, `apps/server/src/services/threads/thread-provisioning.ts`, `apps/server/src/services/threads/thread-queued-messages.ts`, `apps/server/src/services/threads/thread-send-request.ts`, `apps/server/src/services/threads/thread-send.ts`, `apps/server/src/services/threads/thread-turn-dispatch.ts`, `apps/server/src/services/threads/turn-retry.ts`, `apps/server/src/start-server.ts`
 - **Guides and references describe the capability and its consumer/maintenance obligations.**
   - Why: Make the owning contract and recovery/retirement requirements discoverable without treating historical receipts as current runtime proof.
   - Source: `docs/api_to_audit.md`, `packages/templates/src/templates/bb-guide-thread-messaging.md`, `plugins/bb-guide/skills/bb-cli/references/command-index.md`, `plugins/bb-guide/skills/bb-plugin-authoring/SKILL.md`
@@ -679,6 +681,9 @@ A slow, restarted or ambiguous operation must not silently change what the user 
 - **Native plugin-api-docs plugin. Native create/send/queue/edit/correction flows evaluate submissions under published message policies and retain operation identities, evaluations, immutable accepted originals, acknowledgements, advice and preparation state.**
   - Why: NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle. packages/db/src/data/message-admission.ts owns operations, publications, evaluations, originals and transition transactions. Thread queue/send/edit/provision owners perform the concrete effect under frozen accepted data; client submission-identity store preserves retry identity.
   - Source: `plugins/plugin-api-docs/src/surfaces.ts`
+- **Owns automatic queued dispatch and revisits host-offline waits for currently connected hosts during periodic idle recovery; reconnect and periodic recovery share the same attempt path. Failed attempts include resulting row state/wait/retry and connection evidence.**
+  - Why: An interrupted reconnect or lost claim must not leave an accepted row parked indefinitely after its host is back. This repairs the native-admission overlay recovery gap without new state, public APIs or daemon wire fields.
+  - Source: `apps/server/src/services/threads/queued-message-dispatch.ts`
 
 ### Verification references
 
@@ -694,18 +699,20 @@ These identify relevant checks; listing them does not assert that they passed fo
 - thread-create-idempotency.p6r.test.ts
 - ThreadAdmissionPreparations.test.tsx
 - test-fault-barriers.test.ts
+- apps/server/test/threads/queue-drain-failure.test.ts
 
 ### Known limitations
 
 - 0073 is the largest cross-cutting patch: 149 paths, including migrations, protocol package integration, native effects and composer surfaces. A catalog should not hide it under a generic identity label.
 - 0036 adds runtime code, but it is selected test instrumentation. 0043 is a dispatch-result contract test, not a new dispatch feature.
 - Acceptance, provider admission and model consumption are separate facts. No catalog sentence should equate them.
+- 0083 tests seeded parked-state recovery and still-offline refusal; those tests do not reproduce the original daemon-reconnect claim-loss race.
 
 ### Retirement condition
 
 Retire only after upstream has one equivalent durable native admission/delivery owner, all ingress surfaces use it, accepted originals/revisions are preserved, and restart/uncertain-effect/queue correction tests pass against migrated history.
 
-<details><summary>Selected patches (8) and source binding</summary>
+<details><summary>Selected patches (9) and source binding</summary>
 
 - [0010-fix-agent-connect-preserve-active-external-queues.patch](patches/0010-fix-agent-connect-preserve-active-external-queues.patch)
 - [0011-fix-agent-connect-retain-pending-call-history.patch](patches/0011-fix-agent-connect-retain-pending-call-history.patch)
@@ -715,8 +722,9 @@ Retire only after upstream has one equivalent durable native admission/delivery 
 - [0073-feat-native-message-admission-and-original-delivery.patch](patches/0073-feat-native-message-admission-and-original-delivery.patch)
 - [0074-fix-retain-cancelled-historical-revision-identity.patch](patches/0074-fix-retain-cancelled-historical-revision-identity.patch)
 - [0078-fix-honor-explicit-queued-delivery-mode.patch](patches/0078-fix-honor-explicit-queued-delivery-mode.patch)
+- [0083-fix-recover-host-offline-waits-on-connected-hosts.patch](patches/0083-fix-recover-host-offline-waits-on-connected-hosts.patch)
 
-Reviewed source digest: `405f0c7958a511b6a9dfc9c72504f6e68aa694ec61cbdadb724d009f83edf0d1`
+Reviewed source digest: `deb99f734bff7ecd03b6cc77b49c2ce0b349e8590da9b351311bc8c66842c00d`
 
 </details>
 
@@ -1224,6 +1232,58 @@ Retire only when upstream carries equivalent explicit role/provenance classifica
 - [0065-fix-env-preserve-explicit-credential-provenance.patch](patches/0065-fix-env-preserve-explicit-credential-provenance.patch)
 
 Reviewed source digest: `d712aa8e7ac0a29f264259d743c9c698c2b18b91d1f8004c2f45415195cf5e74`
+
+</details>
+
+<a id="actionable-client-failures"></a>
+## Copy concrete failure evidence from the UI
+
+When a mutation fails, an operator needs the exact error and the client context for the attempted action rather than a disappearing generic toast.
+
+### What this delivers
+
+- Mutation error toasts offer Copy details without changing their lifetime. The copied versioned JSON retains the title, message, operation, HTTP status, server code/body, page URL and capture time.
+- Queued-message sends include the thread, queued message, requested mode and the row state/wait observed by the client after the failure. That observation is not an authoritative server receipt.
+
+### Responsibility
+
+- The app mutation-errors helper formats copied evidence and supplies the existing toast action; the clipboard helper owns the copy operation.
+- useQueuedMessageActions supplies queue-specific context. Server effect authority and protocol ownership stay unchanged.
+
+### Other affected areas
+
+- **Attaches thread/queue identity, send mode and the latest client-observed state/wait to a failed queued-send toast.**
+  - Why: Make the failed action identifiable while retaining the distinction between client observation and server state.
+  - Source: `apps/app/src/components/thread/embedded-chat/useQueuedMessageActions.ts`
+- **Formats bb-error-details version1 JSON and adds the existing Copy details toast action. Preserves transport errors and structured HTTP status/code/body when supplied.**
+  - Why: The user can report actionable evidence without altering mutation acceptance, retry behavior or toast lifetime. This is an internal app helper and clipboard format, not a core SDK or server API.
+  - Source: `apps/app/src/lib/mutation-errors.ts`
+- **Checks copied fields, non-HTTP failures, clipboard action behavior and the queue-edit toast action.**
+  - Why: Keep the failure-copy capability and its queue UI integration consistent; these are instrument references rather than live-test claims.
+  - Source: `apps/app/src/lib/mutation-errors.test.ts`, `apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx`
+
+### Verification references
+
+These identify relevant checks; listing them does not assert that they passed for a deployment.
+
+- apps/app/src/lib/mutation-errors.test.ts
+- apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx
+
+### Known limitations
+
+- The copied queued-row state reflects the client after the failure, not a fresh server query.
+- A content-script alternative was possible but not selected: it would decorate toast DOM and intercept fetch responses. This catalog records the selected core patch; it does not assert that a plugin was impossible.
+
+### Retirement condition
+
+Retire when upstream offers equivalent copyable mutation error evidence or the independently possible plugin alternative is implemented and verified. This can retire separately from queue-wait recovery.
+
+<details><summary>Selected patches (2) and source binding</summary>
+
+- [0084-feat-copy-error-details-from-error-toasts.patch](patches/0084-feat-copy-error-details-from-error-toasts.patch)
+- [0086-test-assert-queue-edit-copy-details-action.patch](patches/0086-test-assert-queue-edit-copy-details-action.patch)
+
+Reviewed source digest: `3041e33401222b4517e0d3e58d7a5c4d95208f1a485c5280126608a3da26b71c`
 
 </details>
 

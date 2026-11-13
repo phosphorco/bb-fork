@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "reviewedUpstream": "01affc197dc621cddc7343e09b1c5c10a5b9efcb",
-  "reviewedResultTree": "5afd72027e5e998a9da2ef819e407b7d30cfaa0b",
+  "reviewedResultTree": "e7f4c174a6f3456c54dc2f523c638e7a8169e417",
   "capabilities": [
     {
       "id": "shared-identity",
@@ -47,7 +47,7 @@
           "paths": [
             "apps/server/src/routes/plugins.ts"
           ],
-          "summary": "Existing POST /api/v1/plugins/:id/rpc/:method captures a host-owned HTTP ingress/request scope. Identity failures return unauthenticated→401 or unavailable→503; invalid_input remains400.",
+          "summary": "Existing POST /api/v1/plugins/:id/rpc/:method captures a host-owned HTTP ingress/request scope. Identity failures return unauthenticated\u2192401 or unavailable\u2192503; invalid_input remains400.",
           "why": "Preserve identity failure semantics at the existing plugin RPC route. This capability does not own the asset-generation endpoint change; see plugin-artifacts-transport.",
           "symbols": [
             "registerPluginRoutes"
@@ -285,7 +285,7 @@
           "paths": [
             "apps/server/src/services/p6r/sidecar-schema.ts"
           ],
-          "summary": "Defines this capability’s six P6R tables and nine explicit indexes: contributions, attempts, attempt inputs, operation receipts, queued-dispatch reservations and metadata. They share the core SQLite connection and declare no SQL foreign keys.",
+          "summary": "Defines this capability\u2019s six P6R tables and nine explicit indexes: contributions, attempts, attempt inputs, operation receipts, queued-dispatch reservations and metadata. They share the core SQLite connection and declare no SQL foreign keys.",
           "why": "Application transactions own accepted lineage and receipt consistency. The separately catalogued participant watermark table is a later derived-cache addition.",
           "symbols": [
             "p6r_attempt_inputs",
@@ -471,7 +471,7 @@
             "packages/db/src/schema.ts"
           ],
           "summary": "Adds eight thread-facet tables and their indexes, queued_thread_messages.p6r_authors and threads.execution_revision. The cursor signing secret belongs to thread_facet_cursor_keys; environment classification belongs to diagnostic-environment.",
-          "why": "Persist queryable owner-scoped facets and accepted queue attribution, with revision fencing for execution changes. These are the model additions made by this capability’s patches.",
+          "why": "Persist queryable owner-scoped facets and accepted queue attribution, with revision fencing for execution changes. These are the model additions made by this capability\u2019s patches.",
           "symbols": [
             "thread_facet_cursor_keys",
             "thread_facet_declarations",
@@ -984,7 +984,7 @@
           "paths": [
             "packages/db/src/data/events.ts"
           ],
-          "summary": "Adds a variable-bounded batch read for each thread’s latest retained client turn/start request, using the existing events_thread_type_sequence_idx. No event authority rule or index DDL is introduced here.",
+          "summary": "Adds a variable-bounded batch read for each thread\u2019s latest retained client turn/start request, using the existing events_thread_type_sequence_idx. No event authority rule or index DDL is introduced here.",
           "why": "Execution/participant read models need the latest request evidence across many threads without repeating independent per-thread reads.",
           "symbols": [
             "ListLastStoredTurnRequestEventsByThreadIdsArgs",
@@ -1298,6 +1298,7 @@
         "Core admission owns acceptance and delivery transitions; plugins own evaluator logic within the published protocol. Accepted retries reuse the same operation; a separately evaluated correction has a distinct submission/revision.",
         "Queued external contributions retain their immutable reservation and turn-link history. Explicit queued delivery mode remains authoritative instead of being overwritten by frozen semantic intent.",
         "Reprovisioning retains accepted authors/editors and correlation. Cancelled historical revisions remain retained and are not accidentally revived. UI/CLI/SDK expose preparations and explicit repair/correction actions.",
+        "Periodic idle recovery rechecks host-offline queue waits whose host is already connected, using the same automatic dispatch and claim owner as reconnect recovery with requeue pacing. Failed attempts record the resulting row state, wait, next retry and host connection.",
         "Selected token/data-directory-bound test fault barriers can pause queue/parent-notification effect boundaries for restart tests; they are testing instrumentation, not a production workflow engine."
       ],
       "owners": [
@@ -1313,9 +1314,10 @@
         "0064-fix-p6r-preserve-acceptance-during-reprovisioning.patch",
         "0073-feat-native-message-admission-and-original-delivery.patch",
         "0074-fix-retain-cancelled-historical-revision-identity.patch",
-        "0078-fix-honor-explicit-queued-delivery-mode.patch"
+        "0078-fix-honor-explicit-queued-delivery-mode.patch",
+        "0083-fix-recover-host-offline-waits-on-connected-hosts.patch"
       ],
-      "sourceDigest": "405f0c7958a511b6a9dfc9c72504f6e68aa694ec61cbdadb724d009f83edf0d1",
+      "sourceDigest": "deb99f734bff7ecd03b6cc77b49c2ce0b349e8590da9b351311bc8c66842c00d",
       "surfaces": [
         {
           "kind": "api",
@@ -1868,6 +1870,7 @@
             "apps/server/test/threads/message-admission-runtime.p6r.test.ts",
             "apps/server/test/threads/message-correction.p6r.test.ts",
             "apps/server/test/threads/message-original-delivery.p6r.test.ts",
+            "apps/server/test/threads/queue-drain-failure.test.ts",
             "apps/server/test/threads/queued-message-admission.test.ts",
             "apps/server/test/threads/queued-message-ingress-recovery.p6r.test.ts",
             "apps/server/test/threads/queued-message-readiness.test.ts",
@@ -1955,7 +1958,6 @@
             "apps/server/src/services/threads/message-originals.ts",
             "apps/server/src/services/threads/queue-drain-failure.ts",
             "apps/server/src/services/threads/queue-waits.ts",
-            "apps/server/src/services/threads/queued-message-dispatch.ts",
             "apps/server/src/services/threads/queued-messages.ts",
             "apps/server/src/services/threads/thread-commands.ts",
             "apps/server/src/services/threads/thread-create-helpers.ts",
@@ -2024,6 +2026,14 @@
           ],
           "summary": "Native plugin-api-docs plugin. Native create/send/queue/edit/correction flows evaluate submissions under published message policies and retain operation identities, evaluations, immutable accepted originals, acknowledgements, advice and preparation state.",
           "why": "NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle. packages/db/src/data/message-admission.ts owns operations, publications, evaluations, originals and transition transactions. Thread queue/send/edit/provision owners perform the concrete effect under frozen accepted data; client submission-identity store preserves retry identity."
+        },
+        {
+          "kind": "runtime",
+          "paths": [
+            "apps/server/src/services/threads/queued-message-dispatch.ts"
+          ],
+          "summary": "Owns automatic queued dispatch and revisits host-offline waits for currently connected hosts during periodic idle recovery; reconnect and periodic recovery share the same attempt path. Failed attempts include resulting row state/wait/retry and connection evidence.",
+          "why": "An interrupted reconnect or lost claim must not leave an accepted row parked indefinitely after its host is back. This repairs the native-admission overlay recovery gap without new state, public APIs or daemon wire fields."
         }
       ],
       "verification": [
@@ -2036,13 +2046,15 @@
         "public-thread-queued-steer-admission.p6r.test.ts",
         "thread-create-idempotency.p6r.test.ts",
         "ThreadAdmissionPreparations.test.tsx",
-        "test-fault-barriers.test.ts"
+        "test-fault-barriers.test.ts",
+        "apps/server/test/threads/queue-drain-failure.test.ts"
       ],
       "retirement": "Retire only after upstream has one equivalent durable native admission/delivery owner, all ingress surfaces use it, accepted originals/revisions are preserved, and restart/uncertain-effect/queue correction tests pass against migrated history.",
       "limitations": [
         "0073 is the largest cross-cutting patch: 149 paths, including migrations, protocol package integration, native effects and composer surfaces. A catalog should not hide it under a generic identity label.",
         "0036 adds runtime code, but it is selected test instrumentation. 0043 is a dispatch-result contract test, not a new dispatch feature.",
-        "Acceptance, provider admission and model consumption are separate facts. No catalog sentence should equate them."
+        "Acceptance, provider admission and model consumption are separate facts. No catalog sentence should equate them.",
+        "0083 tests seeded parked-state recovery and still-offline refusal; those tests do not reproduce the original daemon-reconnect claim-loss race."
       ]
     },
     {
@@ -2806,34 +2818,34 @@
         {
           "kind": "runtime",
           "paths": [
-            "packages/provider-bridge-protocol/recordings/claude-code/approval-allow/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/claude-code/approval-deny/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/claude-code/auth-failure/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/claude-code/compaction/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/claude-code/fork/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/claude-code/plan-mode/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/claude-code/resume/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/claude-code/steer/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/claude-code/stop-interrupt/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/claude-code/subagent/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/claude-code/turn-tools/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/claude-code/user-question/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/claude-code/web-search/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/codex/approval-allow/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/codex/approval-deny/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/codex/archived-resume/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/codex/compaction/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/codex/empty-rollout/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/codex/fork/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/codex/missing-rollout/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/codex/plan-mode/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/codex/resume/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/codex/steer/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/codex/stop-interrupt/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/codex/subagent/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/codex/turn-tools/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/codex/user-question/bridge→runtime.current.ndjson",
-            "packages/provider-bridge-protocol/recordings/codex/web-search/bridge→runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/claude-code/approval-allow/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/claude-code/approval-deny/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/claude-code/auth-failure/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/claude-code/compaction/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/claude-code/fork/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/claude-code/plan-mode/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/claude-code/resume/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/claude-code/steer/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/claude-code/stop-interrupt/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/claude-code/subagent/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/claude-code/turn-tools/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/claude-code/user-question/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/claude-code/web-search/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/codex/approval-allow/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/codex/approval-deny/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/codex/archived-resume/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/codex/compaction/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/codex/empty-rollout/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/codex/fork/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/codex/missing-rollout/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/codex/plan-mode/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/codex/resume/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/codex/steer/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/codex/stop-interrupt/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/codex/subagent/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/codex/turn-tools/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/codex/user-question/bridge\u2192runtime.current.ndjson",
+            "packages/provider-bridge-protocol/recordings/codex/web-search/bridge\u2192runtime.current.ndjson",
             "packages/provider-bridge-protocol/recordings/row-counts.json"
           ],
           "summary": "provider-bridge-protocol package integration. Required external mode routes Claude/Codex through Account Pooler with server-held upstream credentials and scoped host invocation tokens. Local credential/login maintenance is disabled in that mode; invalid route configuration fails start/resume.",
@@ -3060,7 +3072,7 @@
           "paths": [
             "packages/host-daemon-contract/src/protocol.ts"
           ],
-          "summary": "HOST_DAEMON_PROTOCOL_VERSION changes238→240 in the selected fork cohort.",
+          "summary": "HOST_DAEMON_PROTOCOL_VERSION changes238\u2192240 in the selected fork cohort.",
           "why": "Fence incompatible native command/result/provenance assumptions, including required contributed-env secret:boolean. Deploy matching server and daemon; a version bump alone adds no inference routing behavior.",
           "symbols": [
             "HOST_DAEMON_PROTOCOL_VERSION"
@@ -3263,6 +3275,60 @@
       "retirement": "Retire only when upstream carries equivalent explicit role/provenance classification end to end and native diagnostic readers mask exactly those values while retaining nonsecret detail; migrate historical classification deliberately.",
       "limitations": [
         "This is not a general PII-redaction feature. No blanket URL/email/ID/environment masking and no mutation of live provider authentication are intended."
+      ]
+    },
+    {
+      "id": "actionable-client-failures",
+      "title": "Copy concrete failure evidence from the UI",
+      "motivation": "When a mutation fails, an operator needs the exact error and the client context for the attempted action rather than a disappearing generic toast.",
+      "behavior": [
+        "Mutation error toasts offer Copy details without changing their lifetime. The copied versioned JSON retains the title, message, operation, HTTP status, server code/body, page URL and capture time.",
+        "Queued-message sends include the thread, queued message, requested mode and the row state/wait observed by the client after the failure. That observation is not an authoritative server receipt."
+      ],
+      "owners": [
+        "The app mutation-errors helper formats copied evidence and supplies the existing toast action; the clipboard helper owns the copy operation.",
+        "useQueuedMessageActions supplies queue-specific context. Server effect authority and protocol ownership stay unchanged."
+      ],
+      "patches": [
+        "0084-feat-copy-error-details-from-error-toasts.patch",
+        "0086-test-assert-queue-edit-copy-details-action.patch"
+      ],
+      "sourceDigest": "3041e33401222b4517e0d3e58d7a5c4d95208f1a485c5280126608a3da26b71c",
+      "surfaces": [
+        {
+          "kind": "runtime",
+          "paths": [
+            "apps/app/src/components/thread/embedded-chat/useQueuedMessageActions.ts"
+          ],
+          "summary": "Attaches thread/queue identity, send mode and the latest client-observed state/wait to a failed queued-send toast.",
+          "why": "Make the failed action identifiable while retaining the distinction between client observation and server state."
+        },
+        {
+          "kind": "runtime",
+          "paths": [
+            "apps/app/src/lib/mutation-errors.ts"
+          ],
+          "summary": "Formats bb-error-details version1 JSON and adds the existing Copy details toast action. Preserves transport errors and structured HTTP status/code/body when supplied.",
+          "why": "The user can report actionable evidence without altering mutation acceptance, retry behavior or toast lifetime. This is an internal app helper and clipboard format, not a core SDK or server API."
+        },
+        {
+          "kind": "verification",
+          "paths": [
+            "apps/app/src/lib/mutation-errors.test.ts",
+            "apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx"
+          ],
+          "summary": "Checks copied fields, non-HTTP failures, clipboard action behavior and the queue-edit toast action.",
+          "why": "Keep the failure-copy capability and its queue UI integration consistent; these are instrument references rather than live-test claims."
+        }
+      ],
+      "verification": [
+        "apps/app/src/lib/mutation-errors.test.ts",
+        "apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx"
+      ],
+      "retirement": "Retire when upstream offers equivalent copyable mutation error evidence or the independently possible plugin alternative is implemented and verified. This can retire separately from queue-wait recovery.",
+      "limitations": [
+        "The copied queued-row state reflects the client after the failure, not a fresh server query.",
+        "A content-script alternative was possible but not selected: it would decorate toast DOM and intercept fetch responses. This catalog records the selected core patch; it does not assert that a plugin was impossible."
       ]
     },
     {
