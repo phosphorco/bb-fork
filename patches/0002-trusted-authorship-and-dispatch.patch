@@ -1,6 +1,6 @@
-From b92a9938f059af52ce06a2cf965e6c8ac1f3f0ba Mon Sep 17 00:00:00 2001
+From 26bf2db0640b45fe04d5f39ede9578c757b66a4b Mon Sep 17 00:00:00 2001
 From: Cole Lawrence <cole@colelawrence.com>
-Date: Fri, 13 Nov 2026 19:23:45 -0300
+Date: Fri, 13 Nov 2026 19:47:08 -0300
 Subject: [PATCH] Trusted authorship and dispatch
 
 ---
@@ -20,7 +20,7 @@ Subject: [PATCH] Trusted authorship and dispatch
  .../src/services/p6r/receipt-outcome.ts       |   45 +
  .../services/p6r/tool-correlation-registry.ts |  132 ++
  .../threads/child-thread-notifications.ts     |   10 +
- .../src/services/threads/dispatch-attempt.ts  |  172 ++-
+ .../src/services/threads/dispatch-attempt.ts  |  174 ++-
  .../src/services/threads/queue-waits.ts       |    6 +
  .../threads/queued-message-dispatch.ts        |   73 +-
  .../src/services/threads/queued-messages.ts   |  181 ++-
@@ -53,7 +53,7 @@ Subject: [PATCH] Trusted authorship and dispatch
  .../threads/thread-execution-override.test.ts |   24 +
  .../threads/thread-queued-messages.test.ts    |  174 +++
  .../threads/thread-runtime-display.test.ts    |   45 +
- 49 files changed, 10850 insertions(+), 135 deletions(-)
+ 49 files changed, 10852 insertions(+), 135 deletions(-)
  create mode 100644 apps/server/src/services/p6r/external-contribution.ts
  create mode 100644 apps/server/src/services/p6r/identity-protocol.ts
  create mode 100644 apps/server/src/services/p6r/invocation-registry.ts
@@ -2849,7 +2849,7 @@ index f3b79e2670b7883c39f585c00533a56f38101e1e..5d1ab0cdaf96dca457180ab3c3e2f76e
    } catch (error) {
      deps.logger.error(
 diff --git a/apps/server/src/services/threads/dispatch-attempt.ts b/apps/server/src/services/threads/dispatch-attempt.ts
-index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b4091fd12 100644
+index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..dd20759bf2ad500c11b538e2844e0695f48648e2 100644
 --- a/apps/server/src/services/threads/dispatch-attempt.ts
 +++ b/apps/server/src/services/threads/dispatch-attempt.ts
 @@ -6,6 +6,11 @@ import {
@@ -2928,7 +2928,16 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
    trigger: "auto-dispatch" | "user";
  }
  
-@@ -457,7 +482,7 @@ async function runDispatchAttempt(
+@@ -345,6 +370,8 @@ async function runOperationDispatch(
+   await sendThreadMessage(deps, {
+     environment: source.environment,
+     originPluginId: args.originPluginId,
++    p6rAuthors: args.p6rAuthors,
++    p6rEditors: args.p6rEditors,
+     payload: args.payload,
+     thread: args.thread,
+     trigger: args.trigger,
+@@ -457,7 +484,7 @@ async function runDispatchAttempt(
    );
    if (payload.compactFirst) {
      const { compactFirst, ...request } = payload;
@@ -2937,7 +2946,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
      payload = request;
      args = { ...args, payload };
    }
-@@ -469,7 +494,18 @@ async function runDispatchAttempt(
+@@ -469,7 +496,18 @@ async function runDispatchAttempt(
      origin: args.origin,
      originPluginId: args.originPluginId,
      requestedBy: args.startedOnBehalfOf,
@@ -2957,7 +2966,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
      systemNotice,
      deliveryMode: run.deliveryMode,
    };
-@@ -487,6 +523,9 @@ async function runDispatchAttempt(
+@@ -487,6 +525,9 @@ async function runDispatchAttempt(
        waitingOn,
        sendAt,
        claimed,
@@ -2967,7 +2976,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
      });
      if (entry === null) {
        // The row vanished under a re-queue (the user deleted it). Nothing is
-@@ -499,7 +538,8 @@ async function runDispatchAttempt(
+@@ -499,7 +540,8 @@ async function runDispatchAttempt(
  
    // --- 1. plugin policy ---------------------------------------------------
  
@@ -2977,7 +2986,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
      value: null,
    };
    const continued: {
-@@ -639,6 +679,7 @@ async function runDispatchAttempt(
+@@ -639,6 +681,7 @@ async function runDispatchAttempt(
      }
  
      if (firstDispatch) {
@@ -2985,7 +2994,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
        admitted.value = await admitPendingThread(deps, {
          author,
          claimed,
-@@ -655,6 +696,9 @@ async function runDispatchAttempt(
+@@ -655,6 +698,9 @@ async function runDispatchAttempt(
                },
          respectManualStopPause,
          retryOf: args.retryOf,
@@ -2995,7 +3004,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
          startContext: args.startContext ?? retryStartContext,
          thread,
        });
-@@ -694,8 +738,20 @@ async function runDispatchAttempt(
+@@ -694,8 +740,20 @@ async function runDispatchAttempt(
        originPluginId: args.originPluginId,
        startedOnBehalfOf: args.startedOnBehalfOf,
        parentThreadId: thread.parentThreadId,
@@ -3018,7 +3027,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
        continueAfterHooks: continueThroughCoreWaits,
      });
      if (outcome.kind === "wait") {
-@@ -731,7 +787,23 @@ async function runDispatchAttempt(
+@@ -731,7 +789,23 @@ async function runDispatchAttempt(
    // --- 2. dispatch --------------------------------------------------------
  
    if (firstDispatch) {
@@ -3043,7 +3052,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
      if (admission === null) {
        // The thread left `pending` underneath this attempt — a concurrent
        // attempt admitted it, or it was archived. Nothing was consumed and
-@@ -750,6 +822,8 @@ async function runDispatchAttempt(
+@@ -750,6 +824,8 @@ async function runDispatchAttempt(
    const environment = await requireThreadCommandEnvironment(deps, { thread });
    try {
      await sendThreadMessage(deps, {
@@ -3052,7 +3061,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
        environment,
        originPluginId: args.originPluginId,
        payload: resolvedPayload,
-@@ -757,10 +831,19 @@ async function runDispatchAttempt(
+@@ -757,10 +833,19 @@ async function runDispatchAttempt(
        trigger: args.trigger,
        ...(systemNotice !== null ? { systemNotice } : {}),
        ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
@@ -3074,7 +3083,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
          if (claimed !== null) {
            consumeClaimedRows(
              claimed,
-@@ -771,9 +854,7 @@ async function runDispatchAttempt(
+@@ -771,9 +856,7 @@ async function runDispatchAttempt(
        },
      });
    } catch (error) {
@@ -3085,7 +3094,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
      return reattemptDispatchForThreadChange(
        deps,
        args,
-@@ -788,8 +869,6 @@ async function runDispatchAttempt(
+@@ -788,8 +871,6 @@ async function runDispatchAttempt(
    return { kind: "dispatched" };
  }
  
@@ -3094,7 +3103,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
  async function reattemptDispatchForThreadChange(
    deps: LoggedPendingInteractionWorkSessionDeps,
    args: DispatchAttemptArgs,
-@@ -853,9 +932,12 @@ function consumeClaimedRows(
+@@ -853,9 +934,12 @@ function consumeClaimedRows(
  
  interface AdmitPendingThreadArgs {
    author: DispatchAuthor;
@@ -3107,7 +3116,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
    respectManualStopPause: boolean;
    retryOf: TurnRequestRetryMarker | undefined;
    /** Creation's own record; null on a re-attempt, which reads it back. */
-@@ -865,6 +947,13 @@ interface AdmitPendingThreadArgs {
+@@ -865,6 +949,13 @@ interface AdmitPendingThreadArgs {
  
  interface PendingThreadAdmission {
    claimedRow: ClaimedQueuedThreadMessageRow | null;
@@ -3121,7 +3130,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
    startingThread: Thread;
  }
  
-@@ -891,6 +980,13 @@ class PendingThreadAdmissionLost extends Error {
+@@ -891,6 +982,13 @@ class PendingThreadAdmissionLost extends Error {
    }
  }
  
@@ -3135,7 +3144,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
  async function admitPendingThread(
    deps: LoggedPendingInteractionWorkSessionDeps,
    args: AdmitPendingThreadArgs,
-@@ -914,8 +1010,30 @@ async function admitPendingThread(
+@@ -914,8 +1012,30 @@ async function admitPendingThread(
    const execution = await buildExecutionOptions(deps, args.payload, {
      threadId: args.thread.id,
    });
@@ -3167,7 +3176,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
    try {
      startingThread = deps.db.transaction(
        (tx) => {
-@@ -923,6 +1041,8 @@ async function admitPendingThread(
+@@ -923,6 +1043,8 @@ async function admitPendingThread(
          // flip that loses to a concurrent attempt rolls the consumption back,
          // so the row stays claimed for the caller to hand back rather than
          // being deleted under a message that never dispatched.
@@ -3176,7 +3185,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
          if (args.claimed !== null && args.claimed.length > 0) {
            consumeClaimedRows(
              args.claimed,
-@@ -940,19 +1060,9 @@ async function admitPendingThread(
+@@ -940,19 +1062,9 @@ async function admitPendingThread(
          const starting = getThread(tx, args.thread.id);
          if (starting === null) throw new PendingThreadAdmissionLost();
          requestThreadProvision(deps, {
@@ -3198,7 +3207,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
          });
          return starting;
        },
-@@ -977,6 +1087,13 @@ async function admitPendingThread(
+@@ -977,6 +1089,13 @@ async function admitPendingThread(
    );
    return {
      claimedRow,
@@ -3212,7 +3221,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
      startingThread,
    };
  }
-@@ -986,6 +1103,7 @@ async function launchAdmittedThread(
+@@ -986,6 +1105,7 @@ async function launchAdmittedThread(
    admission: PendingThreadAdmission,
  ): Promise<void> {
    const { claimedRow, startingThread } = admission;
@@ -3220,7 +3229,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
    if (claimedRow !== null) {
      settleQueueRowDispatched({ row: claimedRow });
    }
-@@ -1021,6 +1139,7 @@ function resolveExecutionIntoPayload(
+@@ -1021,6 +1141,7 @@ function resolveExecutionIntoPayload(
  export async function compactThreadContext(
    deps: LoggedPendingInteractionWorkSessionDeps,
    thread: Thread,
@@ -3228,7 +3237,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..bf5460769fe0650fccc2d21a9944262b
  ): Promise<void> {
    ensureThreadIsWritable(thread);
    if (!deps.providerRegistry.supportsManualCompaction(thread.providerId)) {
-@@ -1041,6 +1160,7 @@ export async function compactThreadContext(
+@@ -1041,6 +1162,7 @@ export async function compactThreadContext(
    const environment = await requireThreadCommandEnvironment(deps, { thread });
    await attemptDispatch(deps, {
      thread,
