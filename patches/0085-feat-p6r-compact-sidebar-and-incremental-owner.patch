@@ -1,0 +1,2584 @@
+From 7f34828b92b6fd25c3d46254d31d0ce4dd2abe2f Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Fri, 13 Nov 2026 04:15:47 +0100
+Subject: [PATCH] feat(p6r): compact sidebar reads and own incremental request
+ lifecycle
+
+---
+ .../commands/CommandPalette.test.tsx          |   4 +-
+ .../commands/ThreadSearchPaletteMode.tsx      |   2 +-
+ .../AppLayout.plugin-panel-header.test.tsx    |   4 +-
+ .../AppLayout.root-compose-project.test.tsx   |   4 +-
+ .../src/components/layout/AppLayout.test.tsx  |   4 +-
+ apps/app/src/components/layout/AppLayout.tsx  |   2 +-
+ .../components/onboarding/OnboardingFlow.tsx  |   2 +-
+ .../onboarding/useSetupComplete.test.tsx      |   8 +-
+ .../components/onboarding/useSetupComplete.ts |   2 +-
+ .../plugin/PluginAppOverlays.test.tsx         |   4 +-
+ .../plugin/PluginNewThreadComposer.test.tsx   |   4 +-
+ .../src/components/plugin/PluginSettings.tsx  |   2 +-
+ .../components/plugin/PluginThreadChat.tsx    |   7 +-
+ .../plugin/PluginThreadTitle.test.tsx         |   4 +-
+ .../usePluginBranchPickerState.test.tsx       |   4 +-
+ .../plugin/usePluginBranchPickerState.ts      |   2 +-
+ .../promptbox/NewThreadComposer.tsx           |   2 +-
+ .../mentions/initial-prompt-draft.ts          |   2 +-
+ .../secondary-panel/ThreadMetadataContent.tsx |   2 +-
+ .../ArchivedThreadsSettingsSection.tsx        |   2 +-
+ .../MachineEnvironmentSettings.test.tsx       |   4 +-
+ .../settings/MachineEnvironmentSettings.tsx   |   2 +-
+ .../settings/MachinesSettingsSection.tsx      |   2 +-
+ .../settings/ProjectsSettingsSection.tsx      |   2 +-
+ .../sidebar/PluginThreadList.stories.tsx      |   2 +-
+ .../p6r-sidebar-owner.p6r.test.ts             | 336 ++++++++++++++++++
+ .../hooks/cache-owners/p6r-sidebar-owner.ts   | 329 +++++++++++++++++
+ .../p6r-sidebar-navigation-query.p6r.test.tsx | 166 +++++++++
+ .../queries/p6r-sidebar-navigation-query.ts   | 161 +++++++++
+ apps/app/src/hooks/queries/thread-queries.ts  |   2 +-
+ .../usePromptMentions.thread-context.test.tsx |   8 +-
+ apps/app/src/hooks/usePromptMentions.ts       |   2 +-
+ apps/app/src/lib/p6r-sidebar-switch.ts        |  12 +
+ apps/app/src/lib/p6r-thread-tabs.p6r.test.ts  |  33 ++
+ apps/app/src/lib/p6r-thread-tabs.ts           |  11 +
+ .../app/src/lib/plugin-sidebar-hooks.test.tsx |   4 +-
+ apps/app/src/lib/plugin-sidebar-hooks.ts      |   2 +-
+ apps/app/src/lib/thread-tabs-sync.ts          |   3 +
+ .../test/sidebarThreadEntriesTestProvider.tsx |   2 +-
+ .../thread-detail-prompt-area-harness.tsx     |   4 +-
+ apps/app/src/views/MachineSettingsView.tsx    |   2 +-
+ .../src/views/ProjectDetailSettingsView.tsx   |   2 +-
+ .../thread-detail/ThreadDetailPromptArea.tsx  |   2 +-
+ .../src/views/useMobileRecentsThreadReveal.ts |   2 +-
+ apps/server/src/routes/p6r-sidebar.ts         | 119 +++++++
+ apps/server/src/server.ts                     |   4 +-
+ .../test/public/p6r-sidebar.p6r.test.ts       | 103 ++++++
+ docs/configuration.md                         |   6 +
+ docs/p6r-sidebar-performance.md               |  54 +++
+ packages/server-contract/src/index.ts         |   1 +
+ packages/server-contract/src/p6r-sidebar.ts   | 300 ++++++++++++++++
+ packages/server-contract/src/public-api.ts    |  27 ++
+ .../test/p6r-sidebar.p6r.test.ts              | 142 ++++++++
+ .../src/templates/bb-guide-browser.md         |   7 +
+ 54 files changed, 1870 insertions(+), 55 deletions(-)
+ create mode 100644 apps/app/src/hooks/cache-owners/p6r-sidebar-owner.p6r.test.ts
+ create mode 100644 apps/app/src/hooks/cache-owners/p6r-sidebar-owner.ts
+ create mode 100644 apps/app/src/hooks/queries/p6r-sidebar-navigation-query.p6r.test.tsx
+ create mode 100644 apps/app/src/hooks/queries/p6r-sidebar-navigation-query.ts
+ create mode 100644 apps/app/src/lib/p6r-sidebar-switch.ts
+ create mode 100644 apps/app/src/lib/p6r-thread-tabs.p6r.test.ts
+ create mode 100644 apps/app/src/lib/p6r-thread-tabs.ts
+ create mode 100644 apps/server/src/routes/p6r-sidebar.ts
+ create mode 100644 apps/server/test/public/p6r-sidebar.p6r.test.ts
+ create mode 100644 docs/p6r-sidebar-performance.md
+ create mode 100644 packages/server-contract/src/p6r-sidebar.ts
+ create mode 100644 packages/server-contract/test/p6r-sidebar.p6r.test.ts
+
+diff --git a/apps/app/src/components/commands/CommandPalette.test.tsx b/apps/app/src/components/commands/CommandPalette.test.tsx
+index 7c6d696e8230e257522e67898c756ea9a529ff06..ef6250c158e94fe044de26925f549e7c6e12447e 100644
+--- a/apps/app/src/components/commands/CommandPalette.test.tsx
++++ b/apps/app/src/components/commands/CommandPalette.test.tsx
+@@ -225,8 +225,8 @@ vi.mock("@/hooks/usePromptDraftStorage", () => ({
+     modeState.threadDraftIds.has(scope.threadId ?? ""),
+ }));
+ 
+-vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+-  useSidebarNavigation: () => ({
++vi.mock("@/hooks/queries/p6r-sidebar-navigation-query", () => ({
++  useP6rSidebarNavigation: () => ({
+     data: {
+       projects: [
+         {
+diff --git a/apps/app/src/components/commands/ThreadSearchPaletteMode.tsx b/apps/app/src/components/commands/ThreadSearchPaletteMode.tsx
+index 2155a415a90f2fe0960f0fe1864e126ac2813ef0..732a6098e09c548e3c87d79ed901195366d23be5 100644
+--- a/apps/app/src/components/commands/ThreadSearchPaletteMode.tsx
++++ b/apps/app/src/components/commands/ThreadSearchPaletteMode.tsx
+@@ -39,7 +39,7 @@ import {
+   normalizeThreadLifecycleFilter,
+   type ThreadArchiveFilter,
+ } from "@/lib/thread-lifecycle-filter";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import { usePaletteRecentArchivedThreads } from "@/hooks/queries/palette-thread-queries";
+ import {
+   hasThreadSearchableQuery,
+diff --git a/apps/app/src/components/layout/AppLayout.plugin-panel-header.test.tsx b/apps/app/src/components/layout/AppLayout.plugin-panel-header.test.tsx
+index bf844a797df2f328af02896bc5f234499b751c28..95d84b116f577b416bc1c76ed77f1bdb997e6bab 100644
+--- a/apps/app/src/components/layout/AppLayout.plugin-panel-header.test.tsx
++++ b/apps/app/src/components/layout/AppLayout.plugin-panel-header.test.tsx
+@@ -159,8 +159,8 @@ vi.mock("@/hooks/useQuickCreateProject", () => ({
+   }),
+ }));
+ 
+-vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+-  useSidebarNavigation: () => ({
++vi.mock("@/hooks/queries/p6r-sidebar-navigation-query", () => ({
++  useP6rSidebarNavigation: () => ({
+     data: {
+       sections: [],
+       personalProject: {
+diff --git a/apps/app/src/components/layout/AppLayout.root-compose-project.test.tsx b/apps/app/src/components/layout/AppLayout.root-compose-project.test.tsx
+index 4e8bd27f6011a86a12d41bab40495de238cb48e6..402fc25e3764f8cde53fa33c10561ddfc49a7467 100644
+--- a/apps/app/src/components/layout/AppLayout.root-compose-project.test.tsx
++++ b/apps/app/src/components/layout/AppLayout.root-compose-project.test.tsx
+@@ -127,8 +127,8 @@ vi.mock("@/hooks/useQuickCreateProject", () => ({
+   }),
+ }));
+ 
+-vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+-  useSidebarNavigation: () => ({
++vi.mock("@/hooks/queries/p6r-sidebar-navigation-query", () => ({
++  useP6rSidebarNavigation: () => ({
+     data: {
+       sections: [],
+       personalProject: {
+diff --git a/apps/app/src/components/layout/AppLayout.test.tsx b/apps/app/src/components/layout/AppLayout.test.tsx
+index 458e56ba437d7ae294dea9cf0c43bac9a10f4f90..1e887b42bc94bac200151eb6be3a241e1f9c1f98 100644
+--- a/apps/app/src/components/layout/AppLayout.test.tsx
++++ b/apps/app/src/components/layout/AppLayout.test.tsx
+@@ -150,8 +150,8 @@ vi.mock("@/hooks/useQuickCreateProject", () => ({
+   }),
+ }));
+ 
+-vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+-  useSidebarNavigation: () => ({
++vi.mock("@/hooks/queries/p6r-sidebar-navigation-query", () => ({
++  useP6rSidebarNavigation: () => ({
+     data: {
+       sections: [
+         { id: "sec_planning", name: "Planning" },
+diff --git a/apps/app/src/components/layout/AppLayout.tsx b/apps/app/src/components/layout/AppLayout.tsx
+index b881ba98ed7665a94321670a59a6df9c5f9d4c57..a407af0c627ef8155fbd251a9c342b98e84b397d 100644
+--- a/apps/app/src/components/layout/AppLayout.tsx
++++ b/apps/app/src/components/layout/AppLayout.tsx
+@@ -39,7 +39,7 @@ import { AppBreadcrumbs } from "./AppBreadcrumbs";
+ import { resourceRouteLabelAtom } from "./resourceRouteLabelAtom";
+ import { AppPageHeader, HEADER_ICON_BUTTON_CLASS } from "./AppPageHeader";
+ import { stripProjectThreads } from "@/hooks/queries/project-queries";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import { SidebarThreadEntriesProvider } from "@/lib/sidebar-thread-entries";
+ import {
+   didThreadDetailBootstrapRefreshAfterMount,
+diff --git a/apps/app/src/components/onboarding/OnboardingFlow.tsx b/apps/app/src/components/onboarding/OnboardingFlow.tsx
+index cff191dc08dc9ebb447b1ecf66714316f8b13278..2c53433087d06265c05c0e0d4b4c0a38f56f585d 100644
+--- a/apps/app/src/components/onboarding/OnboardingFlow.tsx
++++ b/apps/app/src/components/onboarding/OnboardingFlow.tsx
+@@ -38,7 +38,7 @@ import {
+   useCatalogEntryInstallJob,
+ } from "@/hooks/queries/plugin-install-job-queries";
+ import { usePluginList } from "@/hooks/queries/plugin-settings-queries";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import { terminalOutputTailQueryKey } from "@/hooks/queries/query-keys";
+ import {
+   useHostProviderCliStatus,
+diff --git a/apps/app/src/components/onboarding/useSetupComplete.test.tsx b/apps/app/src/components/onboarding/useSetupComplete.test.tsx
+index 63f14e676bc628f0adc96cd219c729d613db9a39..21f40977ce7c3f8325748eb385f2d3646e398cd3 100644
+--- a/apps/app/src/components/onboarding/useSetupComplete.test.tsx
++++ b/apps/app/src/components/onboarding/useSetupComplete.test.tsx
+@@ -4,15 +4,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
+ import { useSetupComplete } from "./useSetupComplete";
+ 
+ const mocks = vi.hoisted(() => ({
+-  useSidebarNavigation: vi.fn(),
++  useP6rSidebarNavigation: vi.fn(),
+   useSystemConfig: vi.fn(),
+ }));
+ 
+ vi.mock("@/hooks/queries/system-queries", () => ({
+   useSystemConfig: mocks.useSystemConfig,
+ }));
+-vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+-  useSidebarNavigation: mocks.useSidebarNavigation,
++vi.mock("@/hooks/queries/p6r-sidebar-navigation-query", () => ({
++  useP6rSidebarNavigation: mocks.useP6rSidebarNavigation,
+ }));
+ 
+ function arrange({
+@@ -25,7 +25,7 @@ function arrange({
+   mocks.useSystemConfig.mockReturnValue({
+     data: { generalSettings: { onboardingCompletedAt } },
+   });
+-  mocks.useSidebarNavigation.mockReturnValue({
++  mocks.useP6rSidebarNavigation.mockReturnValue({
+     data: {
+       projects: [{ id: "proj_1", threads: [] }],
+       personalProject: {
+diff --git a/apps/app/src/components/onboarding/useSetupComplete.ts b/apps/app/src/components/onboarding/useSetupComplete.ts
+index 129b43921ea6f481716aa61104db42e77bbffa5f..d8882aba6e23f9586174313228e03aa3b9822e96 100644
+--- a/apps/app/src/components/onboarding/useSetupComplete.ts
++++ b/apps/app/src/components/onboarding/useSetupComplete.ts
+@@ -1,5 +1,5 @@
+ import { listSidebarNavigationThreads } from "@/hooks/cache-owners/query-cache";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import { useSystemConfig } from "@/hooks/queries/system-queries";
+ 
+ export function useSetupComplete(): boolean {
+diff --git a/apps/app/src/components/plugin/PluginAppOverlays.test.tsx b/apps/app/src/components/plugin/PluginAppOverlays.test.tsx
+index 65627e6f9e663bbf0b89c419870217a784012264..92f4cdaf70c8054f8cad1a4221d19492c13ba37c 100644
+--- a/apps/app/src/components/plugin/PluginAppOverlays.test.tsx
++++ b/apps/app/src/components/plugin/PluginAppOverlays.test.tsx
+@@ -65,8 +65,8 @@ vi.mock("@/hooks/queries/system-queries", () => ({
+   useSystemConfig: () => ({ data: undefined }),
+ }));
+ 
+-vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+-  useSidebarNavigation: () => ({
++vi.mock("@/hooks/queries/p6r-sidebar-navigation-query", () => ({
++  useP6rSidebarNavigation: () => ({
+     data: {
+       personalProject: { id: "personal", name: "Personal", threads: [] },
+       projects: [],
+diff --git a/apps/app/src/components/plugin/PluginNewThreadComposer.test.tsx b/apps/app/src/components/plugin/PluginNewThreadComposer.test.tsx
+index ef353f9741c6719700f7537358735b6025bd5868..56140be5e7e1553c2090f2c27842de19e1adbbf3 100644
+--- a/apps/app/src/components/plugin/PluginNewThreadComposer.test.tsx
++++ b/apps/app/src/components/plugin/PluginNewThreadComposer.test.tsx
+@@ -218,8 +218,8 @@ const OTHER_PROJECT = makeProjectWithThreadsResponse({
+   sources: [{ ...PROJECT.sources[0], id: "src_2", projectId: "proj_2" }],
+ });
+ 
+-vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+-  useSidebarNavigation: () =>
++vi.mock("@/hooks/queries/p6r-sidebar-navigation-query", () => ({
++  useP6rSidebarNavigation: () =>
+     mocks.sidebarNavigationSettled
+       ? {
+           data: {
+diff --git a/apps/app/src/components/plugin/PluginSettings.tsx b/apps/app/src/components/plugin/PluginSettings.tsx
+index 79e74408d3133cf902abac738b55680b444ca267..6709adeefc4d4b43881ad10732d9d1b32b0a9f7c 100644
+--- a/apps/app/src/components/plugin/PluginSettings.tsx
++++ b/apps/app/src/components/plugin/PluginSettings.tsx
+@@ -31,7 +31,7 @@ import {
+   type PluginListItem,
+   type PluginSettingFieldDescriptor,
+ } from "@/hooks/queries/plugin-settings-queries";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import { usePluginSlots } from "@/lib/plugin-slots";
+ import { arePluginSettingsAvailable } from "@/lib/plugin-settings-availability";
+ import { getMutationErrorMessage } from "@/lib/mutation-errors";
+diff --git a/apps/app/src/components/plugin/PluginThreadChat.tsx b/apps/app/src/components/plugin/PluginThreadChat.tsx
+index d14355754615b657d3ace12c1dbf62dd1cb26a99..96d75894f4276dc20253548496c9a53c5e57c34f 100644
+--- a/apps/app/src/components/plugin/PluginThreadChat.tsx
++++ b/apps/app/src/components/plugin/PluginThreadChat.tsx
+@@ -22,7 +22,7 @@ import { useThreadTimelineNavigation } from "@/components/thread/timeline/Thread
+ import { PluginContext } from "@/components/plugin/plugin-context";
+ import { ThreadProviderContext } from "@/components/thread/thread-provider-context";
+ import { useEnvironment } from "@/hooks/queries/environment-queries";
+-import { useProjectDisplayName } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rProjectDisplayName as useProjectDisplayName } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import { useSystemProviderInfo } from "@/hooks/queries/system-queries";
+ import { useThread } from "@/hooks/queries/thread-queries";
+ import { useHostDaemon } from "@/hooks/useHostDaemon";
+@@ -255,7 +255,10 @@ function PluginThreadChatBody({
+   }
+   if (thread === undefined) {
+     return (
+-      <ThreadChatLoadingBody leadingContent={leadingContent} variant={variant} />
++      <ThreadChatLoadingBody
++        leadingContent={leadingContent}
++        variant={variant}
++      />
+     );
+   }
+ 
+diff --git a/apps/app/src/components/plugin/PluginThreadTitle.test.tsx b/apps/app/src/components/plugin/PluginThreadTitle.test.tsx
+index ec0f383f5c8f39ca0e5e2aa167eef700c03736dc..4359a5d90fe485436cf7d33baf373fc4587bceab 100644
+--- a/apps/app/src/components/plugin/PluginThreadTitle.test.tsx
++++ b/apps/app/src/components/plugin/PluginThreadTitle.test.tsx
+@@ -14,8 +14,8 @@ const state = vi.hoisted(() => ({
+   threads: [] as ThreadListEntry[],
+ }));
+ 
+-vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+-  useSidebarNavigation: () => ({
++vi.mock("@/hooks/queries/p6r-sidebar-navigation-query", () => ({
++  useP6rSidebarNavigation: () => ({
+     data: {
+       sections: [],
+       projects: [{ id: "proj_app", name: "App", threads: state.threads }],
+diff --git a/apps/app/src/components/plugin/usePluginBranchPickerState.test.tsx b/apps/app/src/components/plugin/usePluginBranchPickerState.test.tsx
+index c71eddb25fa258457c2b2229a1b13ca75bcb8e46..eafe822fdd8139acdfc6fa1595c8aabce94768b6 100644
+--- a/apps/app/src/components/plugin/usePluginBranchPickerState.test.tsx
++++ b/apps/app/src/components/plugin/usePluginBranchPickerState.test.tsx
+@@ -8,8 +8,8 @@ import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+ import { usePluginBranches } from "./usePluginBranchPickerState";
+ 
+-vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+-  useSidebarNavigation: () => ({ data: undefined }),
++vi.mock("@/hooks/queries/p6r-sidebar-navigation-query", () => ({
++  useP6rSidebarNavigation: () => ({ data: undefined }),
+ }));
+ 
+ vi.mock("@/lib/sdk", () => ({
+diff --git a/apps/app/src/components/plugin/usePluginBranchPickerState.ts b/apps/app/src/components/plugin/usePluginBranchPickerState.ts
+index e2484de6174b697c083e4e5e8e4503d32937a850..a92154a9e458b1dda553831c8f7b9b68a8b5d659 100644
+--- a/apps/app/src/components/plugin/usePluginBranchPickerState.ts
++++ b/apps/app/src/components/plugin/usePluginBranchPickerState.ts
+@@ -1,5 +1,5 @@
+ import type { ProjectSource } from "@bb/domain";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import { useCallback, useMemo } from "react";
+ import { useProjectSourceBranches } from "@/hooks/queries/project-queries";
+ import type {
+diff --git a/apps/app/src/components/promptbox/NewThreadComposer.tsx b/apps/app/src/components/promptbox/NewThreadComposer.tsx
+index 06a9a9ebb70dbfbd3d7049cfaf96a3095e1710f8..153046978e4f8616e28964c0e084e58bdae2f93e 100644
+--- a/apps/app/src/components/promptbox/NewThreadComposer.tsx
++++ b/apps/app/src/components/promptbox/NewThreadComposer.tsx
+@@ -97,7 +97,7 @@ import {
+   useProjectPromptHistory,
+   type SidebarProject,
+ } from "@/hooks/queries/project-queries";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import { useSystemConfig } from "@/hooks/queries/system-queries";
+ import { useCommandSuggestions } from "@/hooks/useCommandSuggestions";
+ import {
+diff --git a/apps/app/src/components/promptbox/mentions/initial-prompt-draft.ts b/apps/app/src/components/promptbox/mentions/initial-prompt-draft.ts
+index 544b0c569ed4a71c422d17d74cb39f80b1070eb7..a66f57c2c835add8547f72368390496dc7dc7762 100644
+--- a/apps/app/src/components/promptbox/mentions/initial-prompt-draft.ts
++++ b/apps/app/src/components/promptbox/mentions/initial-prompt-draft.ts
+@@ -8,7 +8,7 @@ import {
+   useSidebarThreadTitleMentionResources,
+ } from "@/components/thread/ThreadTitleMentions";
+ import { sdk } from "@/lib/sdk";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ 
+ export async function resolveInitialPromptDraft(
+   draft: PromptDraftState,
+diff --git a/apps/app/src/components/secondary-panel/ThreadMetadataContent.tsx b/apps/app/src/components/secondary-panel/ThreadMetadataContent.tsx
+index fb7a0badde337161f4e3f36d05f39e5776bb18bc..ffffc96691dc16e96cc82d6695a7ff077f848650 100644
+--- a/apps/app/src/components/secondary-panel/ThreadMetadataContent.tsx
++++ b/apps/app/src/components/secondary-panel/ThreadMetadataContent.tsx
+@@ -40,7 +40,7 @@ import {
+ import { useSystemEnvironmentProviders } from "@/hooks/queries/environment-provider-queries";
+ import { useSystemMachineProviders } from "@/hooks/queries/machine-provider-queries";
+ import { useHosts } from "@/hooks/queries/host-queries";
+-import { useProjectDisplayName } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rProjectDisplayName as useProjectDisplayName } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import { MachineIcon } from "@/components/machines/MachineLabel";
+ import { formatWorkspaceCheckoutDisplay } from "@/lib/workspace-checkout-display";
+ import { Button } from "@bb/shared-ui/button";
+diff --git a/apps/app/src/components/settings/ArchivedThreadsSettingsSection.tsx b/apps/app/src/components/settings/ArchivedThreadsSettingsSection.tsx
+index 6bf75caaf3bf7b729201e8aa909f5e2b88f8e981..97792ced83dcc738aba042e0354f547009b90860 100644
+--- a/apps/app/src/components/settings/ArchivedThreadsSettingsSection.tsx
++++ b/apps/app/src/components/settings/ArchivedThreadsSettingsSection.tsx
+@@ -21,7 +21,7 @@ import {
+   useThreadSearch,
+   type UseArchivedThreadsFilters,
+ } from "@/hooks/queries/thread-queries";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import type { ArchivedThreadsKindFilter } from "@/hooks/queries/query-keys";
+ import { getThreadRoutePath } from "@/lib/route-paths";
+ import { formatRelativeTime } from "@/lib/relative-time";
+diff --git a/apps/app/src/components/settings/MachineEnvironmentSettings.test.tsx b/apps/app/src/components/settings/MachineEnvironmentSettings.test.tsx
+index c5c8f05620bdd12e2b6677be141e6129b3faa701..9e06f3b37d4a1d7565e141087d0d55f71369e331 100644
+--- a/apps/app/src/components/settings/MachineEnvironmentSettings.test.tsx
++++ b/apps/app/src/components/settings/MachineEnvironmentSettings.test.tsx
+@@ -15,8 +15,8 @@ import {
+   ScopedMachineEnvironmentSettings,
+ } from "./MachineEnvironmentSettings";
+ 
+-vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+-  useSidebarNavigation: () => ({
++vi.mock("@/hooks/queries/p6r-sidebar-navigation-query", () => ({
++  useP6rSidebarNavigation: () => ({
+     data: { projects: [{ id: "proj-a", name: "Project A" }] },
+   }),
+ }));
+diff --git a/apps/app/src/components/settings/MachineEnvironmentSettings.tsx b/apps/app/src/components/settings/MachineEnvironmentSettings.tsx
+index 8e48ac9428da7dd77f4382460ed05561051a64ff..b084c9063e53aa3d2dfbec1e942c2c8e64572527 100644
+--- a/apps/app/src/components/settings/MachineEnvironmentSettings.tsx
++++ b/apps/app/src/components/settings/MachineEnvironmentSettings.tsx
+@@ -1,7 +1,7 @@
+ import { nanoid } from "nanoid";
+ import { Link } from "react-router-dom";
+ import { OptionPicker } from "@/components/pickers/OptionPicker";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import { Icon } from "@bb/shared-ui/icon";
+ import { useState, type ReactNode } from "react";
+ import { Switch } from "@bb/shared-ui/switch";
+diff --git a/apps/app/src/components/settings/MachinesSettingsSection.tsx b/apps/app/src/components/settings/MachinesSettingsSection.tsx
+index 4018e8fe7b5d1bfe1f6cbad931510a1d2b291ed6..59a9ffcd5a5bc76fb86daddc6fed8e1e492acee9 100644
+--- a/apps/app/src/components/settings/MachinesSettingsSection.tsx
++++ b/apps/app/src/components/settings/MachinesSettingsSection.tsx
+@@ -42,7 +42,7 @@ import {
+ import { useHosts } from "@/hooks/queries/host-queries";
+ import { useSystemMachineProviders } from "@/hooks/queries/machine-provider-queries";
+ import { useServerMoveStatus } from "@/hooks/queries/server-move-queries";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import { useSystemConfig } from "@/hooks/queries/system-queries";
+ import { machineAttentionIssue } from "@/hooks/useMachineAttention";
+ import { useHostDaemon } from "@/hooks/useHostDaemon";
+diff --git a/apps/app/src/components/settings/ProjectsSettingsSection.tsx b/apps/app/src/components/settings/ProjectsSettingsSection.tsx
+index 222b682a5a19afb130393083af627ad37ee1adf0..829de01ee371a01c7ac33731397e136f541f39ec 100644
+--- a/apps/app/src/components/settings/ProjectsSettingsSection.tsx
++++ b/apps/app/src/components/settings/ProjectsSettingsSection.tsx
+@@ -31,7 +31,7 @@ import {
+   useUpdateProject,
+ } from "@/hooks/mutations/project-mutations";
+ import { selectHosts, useHosts } from "@/hooks/queries/host-queries";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import { useQuickCreateProject } from "@/hooks/useQuickCreateProject";
+ import { getSettingsProjectRoutePath } from "@/lib/route-paths";
+ import {
+diff --git a/apps/app/src/components/sidebar/PluginThreadList.stories.tsx b/apps/app/src/components/sidebar/PluginThreadList.stories.tsx
+index 7247e3a9835c84bfddc62b035cee6e355f55581f..4c6f48ea7661ac6adc310588d4427c93510eaab0 100644
+--- a/apps/app/src/components/sidebar/PluginThreadList.stories.tsx
++++ b/apps/app/src/components/sidebar/PluginThreadList.stories.tsx
+@@ -25,7 +25,7 @@ import {
+ } from "../../../.ladle/story-fixtures";
+ import { PluginThreadList } from "./PluginThreadList";
+ import { useThreadListReplacement } from "./threadListProvider";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import { SidebarThreadEntriesProvider } from "@/lib/sidebar-thread-entries";
+ 
+ installTestPluginRuntime();
+diff --git a/apps/app/src/hooks/cache-owners/p6r-sidebar-owner.p6r.test.ts b/apps/app/src/hooks/cache-owners/p6r-sidebar-owner.p6r.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..46882b37bdc3b7bb220effafb40e1f3df665a63b
+--- /dev/null
++++ b/apps/app/src/hooks/cache-owners/p6r-sidebar-owner.p6r.test.ts
+@@ -0,0 +1,336 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { QueryClient, QueryObserver } from "@tanstack/react-query";
++import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
++import {
++  makeSidebarBootstrapResponse,
++  makeProjectWithThreadsResponse,
++} from "@/test/fixtures/projects";
++import type {
++  ChangedMessage,
++  SidebarBootstrapResponse,
++} from "@bb/server-contract";
++import { sidebarNavigationQueryKey } from "../queries/query-keys";
++import { holdPendingThreadPatches } from "./pending-thread-patches";
++import { P6rSidebarOwner, type P6rSidebarReads } from "./p6r-sidebar-owner";
++
++function deferred<T>() {
++  let resolve!: (value: T) => void;
++  let reject!: (error: Error) => void;
++  const promise = new Promise<T>((yes, no) => {
++    resolve = yes;
++    reject = no;
++  });
++  return { promise, resolve, reject };
++}
++
++function fixture() {
++  return makeSidebarBootstrapResponse({
++    projects: [
++      makeProjectWithThreadsResponse({
++        threads: [
++          makeThreadListEntry({
++            id: "thr_one",
++            projectId: "proj_test",
++            title: "Before",
++          }),
++        ],
++      }),
++    ],
++  });
++}
++
++const change = (id = "thr_one"): ChangedMessage => ({
++  type: "changed",
++  entity: "thread",
++  id,
++  changes: ["title-changed"],
++});
++const key = sidebarNavigationQueryKey();
++
++describe("compact sidebar request ownership", () => {
++  const releases: Array<() => void> = [];
++  beforeEach(() => vi.useFakeTimers());
++  afterEach(() => {
++    for (const release of releases.splice(0)) release();
++    vi.useRealTimers();
++  });
++
++  function setup(reads: P6rSidebarReads, visible?: () => boolean) {
++    const client = new QueryClient({
++      defaultOptions: { queries: { gcTime: Infinity, retry: false } },
++    });
++    const observer = new QueryObserver(client, {
++      queryKey: key,
++      enabled: false,
++      queryFn: async () => fixture(),
++    });
++    releases.push(observer.subscribe(() => {}));
++    const owner = new P6rSidebarOwner(client, reads, visible);
++    releases.push(owner.acquire());
++    return {
++      client,
++      owner,
++      data: () => client.getQueryData<SidebarBootstrapResponse>(key)!,
++    };
++  }
++
++  it("finishes one physical snapshot under cancellation and coalesces row changes", async () => {
++    const read = deferred<SidebarBootstrapResponse>();
++    const full = vi.fn(() => read.promise);
++    const rows = vi.fn(async () => ({
++      threads: [{ ...fixture().projects[0]!.threads[0]!, title: "After" }],
++      missingIds: [],
++    }));
++    const { owner, client, data } = setup({ full, rows, persist: vi.fn() });
++    await vi.advanceTimersByTimeAsync(50);
++    for (let i = 0; i < 100; i++) {
++      owner.changed(change());
++      await client.cancelQueries({ queryKey: key });
++      await client.invalidateQueries({ queryKey: key });
++    }
++    await vi.advanceTimersByTimeAsync(10000);
++    expect(full).toHaveBeenCalledTimes(1);
++    expect(rows).not.toHaveBeenCalled();
++    read.resolve(fixture());
++    await vi.advanceTimersByTimeAsync(50);
++    expect(full).toHaveBeenCalledTimes(1);
++    expect(rows).toHaveBeenCalledTimes(1);
++    expect(rows).toHaveBeenCalledWith(["thr_one"]);
++    expect(data().projects[0]!.threads[0]!.title).toBe("After");
++  });
++
++  it("coalesces broad invalidations into one follow-up and retains optimistic edits", async () => {
++    const first = deferred<SidebarBootstrapResponse>();
++    const full = vi
++      .fn()
++      .mockReturnValueOnce(first.promise)
++      .mockResolvedValue(fixture());
++    const { owner, client, data } = setup({
++      full,
++      rows: vi.fn(async () => ({ threads: [], missingIds: [] })),
++      persist: vi.fn(),
++    });
++    await vi.advanceTimersByTimeAsync(50);
++    for (let i = 0; i < 100; i++) owner.resume();
++    owner.changed(change());
++    releases.push(
++      holdPendingThreadPatches(
++        client,
++        new Map([["thr_one", { title: "Optimistic" }]]),
++      ),
++    );
++    first.resolve(fixture());
++    await vi.advanceTimersByTimeAsync(50);
++    expect(full).toHaveBeenCalledTimes(2);
++    await vi.advanceTimersByTimeAsync(100);
++    expect(full).toHaveBeenCalledTimes(2);
++    expect(data().projects[0]!.threads[0]!.title).toBe("Optimistic");
++  });
++
++  it("applies moves, creations and explicit tombstones without a bootstrap", async () => {
++    const start = fixture();
++    const moved = {
++      ...start.projects[0]!.threads[0]!,
++      projectId: start.personalProject.id,
++      pinnedAt: 20,
++    };
++    const created = makeThreadListEntry({
++      id: "thr_new",
++      projectId: start.personalProject.id,
++    });
++    const rows = vi
++      .fn()
++      .mockResolvedValueOnce({ threads: [moved, created], missingIds: [] })
++      .mockResolvedValueOnce({ threads: [], missingIds: [moved.id] });
++    const full = vi.fn(async () => start);
++    const { owner, data } = setup({ full, rows, persist: vi.fn() });
++    await vi.advanceTimersByTimeAsync(50);
++    owner.changed(change());
++    owner.changed(change(created.id));
++    await vi.advanceTimersByTimeAsync(50);
++    expect(data().projects[0]!.threads).toEqual([]);
++    expect(data().personalProject.threads.map((row) => row.id)).toEqual([
++      moved.id,
++      created.id,
++    ]);
++    owner.changed(change());
++    await vi.advanceTimersByTimeAsync(50);
++    expect(data().personalProject.threads.map((row) => row.id)).toEqual([
++      created.id,
++    ]);
++    expect(full).toHaveBeenCalledTimes(1);
++  });
++
++  it("does not overwrite a concurrent row patch and retries the affected row", async () => {
++    const delta = deferred<Awaited<ReturnType<P6rSidebarReads["rows"]>>>();
++    const rows = vi
++      .fn()
++      .mockReturnValueOnce(delta.promise)
++      .mockResolvedValue({ threads: [], missingIds: [] });
++    const { owner, client, data } = setup({
++      full: async () => fixture(),
++      rows,
++      persist: vi.fn(),
++    });
++    await vi.advanceTimersByTimeAsync(50);
++    owner.changed(change());
++    await vi.advanceTimersByTimeAsync(50);
++    const patched = fixture();
++    patched.projects[0]!.threads[0]!.title = "Concurrent";
++    client.setQueryData(key, patched);
++    delta.resolve({ threads: fixture().projects[0]!.threads, missingIds: [] });
++    await vi.advanceTimersByTimeAsync(0);
++    expect(data().projects[0]!.threads[0]!.title).toBe("Concurrent");
++    await vi.advanceTimersByTimeAsync(50);
++    expect(rows).toHaveBeenCalledTimes(2);
++  });
++
++  it("handles project notifications accompanying creation without rereading the thread catalogue", async () => {
++    const full = vi.fn(async () => fixture());
++    const projects = vi.fn(async () => ({
++      ...fixture(),
++      sections: [
++        { id: "section_one", name: "Section", createdAt: 1, updatedAt: 1 },
++      ],
++    }));
++    const rows = vi.fn(async () => ({
++      threads: [makeThreadListEntry({ id: "thr_new", projectId: "proj_test" })],
++      missingIds: [],
++    }));
++    const { owner, data } = setup({ full, projects, rows, persist: vi.fn() });
++    await vi.advanceTimersByTimeAsync(50);
++    owner.changed(change("thr_new"));
++    owner.changed({
++      type: "changed",
++      entity: "project",
++      id: "proj_test",
++      changes: ["threads-changed"],
++    });
++    await vi.advanceTimersByTimeAsync(100);
++    expect(full).toHaveBeenCalledTimes(1);
++    expect(projects).toHaveBeenCalledTimes(1);
++    expect(rows).toHaveBeenCalledWith(["thr_new"]);
++    expect(data().sections[0]?.name).toBe("Section");
++    expect(
++      data()
++        .projects[0]!.threads.map((row) => row.id)
++        .sort(),
++    ).toEqual(["thr_new", "thr_one"]);
++  });
++
++  it("bounds every row read to 200 IDs and keeps only one request in flight", async () => {
++    const read = deferred<Awaited<ReturnType<P6rSidebarReads["rows"]>>>();
++    const rows = vi
++      .fn()
++      .mockReturnValueOnce(read.promise)
++      .mockResolvedValue({ threads: [], missingIds: [] });
++    const full = vi.fn(async () => fixture());
++    const { owner } = setup({ full, rows, persist: vi.fn() });
++    await vi.advanceTimersByTimeAsync(50);
++    for (let i = 0; i < 251; i++) owner.changed(change(`thr_${i}`));
++    await vi.advanceTimersByTimeAsync(5000);
++    expect(rows).toHaveBeenCalledTimes(1);
++    expect(rows.mock.calls[0]![0]).toHaveLength(200);
++    read.resolve({ threads: [], missingIds: [] });
++    await vi.advanceTimersByTimeAsync(50);
++    expect(rows).toHaveBeenCalledTimes(2);
++    expect(rows.mock.calls[1]![0]).toHaveLength(51);
++    expect(full).toHaveBeenCalledTimes(1);
++  });
++
++  it("backs off failures, pauses while hidden and retires without publishing", async () => {
++    let visible = true;
++    const read = deferred<SidebarBootstrapResponse>();
++    const full = vi
++      .fn()
++      .mockRejectedValueOnce(new Error("offline"))
++      .mockReturnValueOnce(read.promise);
++    const { owner, client } = setup(
++      { full, rows: vi.fn(), persist: vi.fn() },
++      () => visible,
++    );
++    await vi.advanceTimersByTimeAsync(50);
++    expect(client.getQueryState(key)?.status).toBe("error");
++    visible = false;
++    await vi.advanceTimersByTimeAsync(1000);
++    expect(full).toHaveBeenCalledTimes(1);
++    visible = true;
++    owner.resume();
++    await vi.advanceTimersByTimeAsync(50);
++    expect(full).toHaveBeenCalledTimes(2);
++    for (const release of releases.splice(0)) release();
++    read.resolve(fixture());
++    await vi.advanceTimersByTimeAsync(50);
++    expect(client.getQueryData(key)).toBeUndefined();
++  });
++
++  it("publishes completed rows during a continuous change stream and merges independent cache edits", async () => {
++    const first = deferred<Awaited<ReturnType<P6rSidebarReads["rows"]>>>();
++    const second = deferred<Awaited<ReturnType<P6rSidebarReads["rows"]>>>();
++    const rows = vi
++      .fn()
++      .mockReturnValueOnce(first.promise)
++      .mockReturnValueOnce(second.promise);
++    const { owner, client, data } = setup({
++      full: async () => fixture(),
++      rows,
++      persist: vi.fn(),
++    });
++    await vi.advanceTimersByTimeAsync(50);
++    owner.changed(change());
++    await vi.advanceTimersByTimeAsync(50);
++    for (let i = 0; i < 100; i++) owner.changed(change());
++    const patched = fixture();
++    patched.projects[0]!.threads[0]!.pinnedAt = 123;
++    client.setQueryData(key, patched);
++    first.resolve({
++      threads: [{ ...fixture().projects[0]!.threads[0]!, title: "Progress" }],
++      missingIds: [],
++    });
++    await vi.advanceTimersByTimeAsync(50);
++    expect(rows).toHaveBeenCalledTimes(2);
++    expect(data().projects[0]!.threads[0]!.title).toBe("Progress");
++    expect(data().projects[0]!.threads[0]!.pinnedAt).toBe(123);
++    owner.changed(change());
++    second.resolve({
++      threads: [
++        {
++          ...fixture().projects[0]!.threads[0]!,
++          title: "Further progress",
++          pinnedAt: 123,
++        },
++      ],
++      missingIds: [],
++    });
++    await vi.advanceTimersByTimeAsync(0);
++    expect(data().projects[0]!.threads[0]!.title).toBe("Further progress");
++  });
++
++  it("keeps a concurrent project move visible while a stale baseline finishes", async () => {
++    const read = deferred<SidebarBootstrapResponse>();
++    const full = vi
++      .fn()
++      .mockResolvedValueOnce(fixture())
++      .mockReturnValueOnce(read.promise);
++    const { owner, client, data } = setup({
++      full,
++      rows: vi.fn(),
++      persist: vi.fn(),
++    });
++    await vi.advanceTimersByTimeAsync(50);
++    owner.resume();
++    await vi.advanceTimersByTimeAsync(50);
++    const patched = fixture();
++    patched.personalProject.threads = patched.projects[0]!.threads.map(
++      (row) => ({ ...row, projectId: patched.personalProject.id }),
++    );
++    patched.projects[0]!.threads = [];
++    client.setQueryData(key, patched);
++    read.resolve(fixture());
++    await vi.advanceTimersByTimeAsync(0);
++    expect(data().projects[0]!.threads).toEqual([]);
++    expect(data().personalProject.threads.map((row) => row.id)).toEqual([
++      "thr_one",
++    ]);
++  });
++});
+diff --git a/apps/app/src/hooks/cache-owners/p6r-sidebar-owner.ts b/apps/app/src/hooks/cache-owners/p6r-sidebar-owner.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..415eec4b00b89473f9cce5c4b51c85ae26e3126f
+--- /dev/null
++++ b/apps/app/src/hooks/cache-owners/p6r-sidebar-owner.ts
+@@ -0,0 +1,329 @@
++import type { QueryClient } from "@tanstack/react-query";
++import type { ThreadListEntry } from "@bb/domain";
++import type {
++  ChangedMessage,
++  SidebarBootstrapResponse,
++} from "@bb/server-contract";
++import { sidebarNavigationQueryKey } from "../queries/query-keys";
++
++export interface P6rSidebarReads {
++  full(): Promise<SidebarBootstrapResponse>;
++  projects?(): Promise<SidebarBootstrapResponse>;
++  rows(
++    ids: string[],
++  ): Promise<{ threads: ThreadListEntry[]; missingIds: string[] }>;
++  persist(value: SidebarBootstrapResponse): void;
++}
++
++function entries(value: SidebarBootstrapResponse | undefined) {
++  return new Map(
++    [value?.personalProject, ...(value?.projects ?? [])]
++      .flatMap((project) => project?.threads ?? [])
++      .map((row) => [row.id, row]),
++  );
++}
++
++function compareRows(left: ThreadListEntry, right: ThreadListEntry) {
++  const leftPinned = left.pinnedAt !== null;
++  const rightPinned = right.pinnedAt !== null;
++  if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
++  const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
++  if (leftPinned) {
++    if (left.pinSortKey !== right.pinSortKey) {
++      if (left.pinSortKey === null) return -1;
++      if (right.pinSortKey === null) return 1;
++      return compare(left.pinSortKey, right.pinSortKey);
++    }
++    return compare(left.id, right.id);
++  }
++  return right.createdAt - left.createdAt || compare(right.id, left.id);
++}
++
++export class P6rSidebarOwner {
++  private leases = 0;
++  private generation = 0;
++  private running = false;
++  private fullPending = false;
++  private projectsPending = false;
++  private ids = new Set<string>();
++  private timer: ReturnType<typeof setTimeout> | undefined;
++  private failures = 0;
++  private waiters: Array<{ resolve(): void; reject(error: Error): void }> = [];
++
++  constructor(
++    private client: QueryClient,
++    private reads: P6rSidebarReads,
++    private visible: () => boolean = () => true,
++  ) {}
++
++  acquire(): () => void {
++    if (this.leases++ === 0) {
++      this.generation++;
++      this.fullPending = true;
++      this.schedule();
++    }
++    let released = false;
++    return () => {
++      if (released) return;
++      released = true;
++      if (--this.leases !== 0) return;
++      this.generation++;
++      if (this.timer !== undefined) clearTimeout(this.timer);
++      this.timer = undefined;
++      this.ids.clear();
++      for (const waiter of this.waiters.splice(0))
++        waiter.reject(new Error("Sidebar reader retired"));
++    };
++  }
++
++  refresh(): Promise<void> {
++    this.fullPending = true;
++    this.schedule();
++    return new Promise((resolve, reject) =>
++      this.waiters.push({ resolve, reject }),
++    );
++  }
++
++  resume(): void {
++    this.fullPending = true;
++    this.schedule();
++  }
++
++  changed(message: ChangedMessage): void {
++    if (!this.leases) return;
++    if (message.entity === "thread") {
++      if (!message.id) {
++        this.resume();
++        return;
++      }
++      if (
++        message.changes.every((kind) => kind === "events-appended") &&
++        message.metadata?.backgroundActivityChanged !== true &&
++        !message.metadata?.eventTypes?.some(
++          (type) =>
++            type === "turn/completed" || type === "client/turn/requested",
++        )
++      )
++        return;
++      this.ids.add(message.id);
++      if (
++        message.changes.some(
++          (kind) =>
++            kind === "thread-deleted" ||
++            kind === "archived-changed" ||
++            kind === "parent-changed",
++        )
++      ) {
++        let count = -1;
++        const rows = entries(this.data());
++        while (count !== this.ids.size) {
++          count = this.ids.size;
++          for (const row of rows.values()) {
++            if (row.parentThreadId && this.ids.has(row.parentThreadId))
++              this.ids.add(row.id);
++          }
++        }
++      }
++    } else if (message.entity === "environment" || message.entity === "host") {
++      if (
++        message.entity === "environment" &&
++        !message.changes.some(
++          (kind) =>
++            kind === "metadata-changed" || kind === "environment-deleted",
++        )
++      )
++        return;
++      if (
++        message.entity === "host" &&
++        message.changes.every(
++          (kind) => kind === "provider-model-catalog-changed",
++        )
++      )
++        return;
++      if (!message.id) {
++        this.resume();
++        return;
++      }
++      for (const row of entries(this.data()).values()) {
++        if (
++          message.entity === "environment"
++            ? row.environmentId === message.id
++            : row.environmentHostId === message.id
++        )
++          this.ids.add(row.id);
++      }
++    } else if (message.entity === "project") {
++      if (this.reads.projects) this.projectsPending = true;
++      else this.fullPending = true;
++    } else {
++      return;
++    }
++    this.schedule();
++  }
++
++  private data() {
++    return this.client.getQueryData<SidebarBootstrapResponse>(
++      sidebarNavigationQueryKey(),
++    );
++  }
++
++  private query() {
++    return this.client
++      .getQueryCache()
++      .build<SidebarBootstrapResponse>(this.client, {
++        queryKey: sidebarNavigationQueryKey(),
++      });
++  }
++
++  private schedule(delay = 50) {
++    if (
++      !this.leases ||
++      this.running ||
++      this.timer !== undefined ||
++      !this.visible() ||
++      (!this.fullPending && !this.projectsPending && !this.ids.size)
++    )
++      return;
++    this.timer = setTimeout(() => {
++      this.timer = undefined;
++      void this.run();
++    }, delay);
++  }
++
++  private publish(value: SidebarBootstrapResponse) {
++    this.query().setData(value);
++    const patched = this.data();
++    if (patched) this.reads.persist(patched);
++  }
++
++  private async run() {
++    if (!this.leases || this.running || !this.visible()) return;
++    this.running = true;
++    const generation = this.generation;
++    const full = this.fullPending || this.data() === undefined;
++    const metadata =
++      !full && this.projectsPending && this.reads.projects !== undefined;
++    const ids = full
++      ? [...this.ids]
++      : metadata
++        ? []
++        : [...this.ids].slice(0, 200);
++    if (full) this.fullPending = false;
++    if (full || metadata) this.projectsPending = false;
++    for (const id of ids) this.ids.delete(id);
++    const waiters = full ? this.waiters.splice(0) : [];
++    const before = this.data();
++    const beforeRows = entries(before);
++    this.query().setState({ fetchStatus: "fetching" });
++    try {
++      const response = full
++        ? await this.reads.full()
++        : metadata
++          ? await this.reads.projects!()
++          : await this.reads.rows(ids);
++      if (!this.leases || generation !== this.generation) {
++        for (const waiter of waiters)
++          waiter.reject(new Error("Sidebar reader retired"));
++        return;
++      }
++      const current = this.data();
++      const currentRows = entries(current);
++      const changed = (id: string) =>
++        beforeRows.get(id) !== currentRows.get(id);
++      const merge = (
++        incoming: ThreadListEntry,
++      ): ThreadListEntry | undefined => {
++        if (!changed(incoming.id)) return incoming;
++        this.ids.add(incoming.id);
++        const previous = beforeRows.get(incoming.id);
++        const latest = currentRows.get(incoming.id);
++        if (!latest || !previous) return latest;
++        const patches: Partial<ThreadListEntry> = {};
++        for (const field of Object.keys(latest)) {
++          if (Reflect.get(previous, field) !== Reflect.get(latest, field))
++            Reflect.set(patches, field, Reflect.get(latest, field));
++        }
++        return { ...incoming, ...patches };
++      };
++      const publishRows = (
++        base: SidebarBootstrapResponse,
++        rows: Map<string, ThreadListEntry>,
++      ) => {
++        const project = (p: SidebarBootstrapResponse["personalProject"]) => ({
++          ...p,
++          threads: [...rows.values()]
++            .filter((row) => row.projectId === p.id)
++            .sort(compareRows),
++        });
++        this.publish({
++          ...base,
++          personalProject: project(base.personalProject),
++          projects: base.projects.map(project),
++        });
++      };
++      if ("personalProject" in response) {
++        if (metadata) publishRows(response, currentRows);
++        else {
++          const incoming = entries(response);
++          const rows = new Map<string, ThreadListEntry>();
++          for (const row of incoming.values()) {
++            const merged = merge(row);
++            if (merged) rows.set(row.id, merged);
++          }
++          for (const row of currentRows.values()) {
++            if (!incoming.has(row.id) && changed(row.id)) {
++              rows.set(row.id, row);
++              this.ids.add(row.id);
++            }
++          }
++          publishRows(response, rows);
++        }
++      } else if (current) {
++        const rows = new Map(currentRows);
++        const missing = new Set(response.missingIds);
++        for (const id of ids) {
++          if (!missing.has(id)) continue;
++          if (changed(id)) this.ids.add(id);
++          else rows.delete(id);
++        }
++        const knownProjects = new Set([
++          current.personalProject.id,
++          ...current.projects.map((p) => p.id),
++        ]);
++        for (const row of response.threads) {
++          const merged = merge(row);
++          if (merged) rows.set(row.id, merged);
++          else rows.delete(row.id);
++          if (merged && !knownProjects.has(merged.projectId))
++            this.fullPending = true;
++        }
++        publishRows(current, rows);
++      }
++      this.failures = 0;
++      for (const waiter of waiters) waiter.resolve();
++    } catch (failure) {
++      const error =
++        failure instanceof Error ? failure : new Error(String(failure));
++      if (this.leases && generation === this.generation) {
++        this.query().setState({
++          status: "error",
++          error,
++          errorUpdatedAt: Date.now(),
++        });
++        if (full) this.fullPending = true;
++        else if (metadata) this.projectsPending = true;
++        else for (const id of ids) this.ids.add(id);
++        this.failures++;
++      }
++      for (const waiter of waiters) waiter.reject(error);
++    } finally {
++      this.running = false;
++      this.query().setState({ fetchStatus: "idle" });
++      this.schedule(
++        this.failures
++          ? Math.min(30000, 1000 * 2 ** Math.min(this.failures - 1, 5))
++          : 50,
++      );
++    }
++  }
++}
+diff --git a/apps/app/src/hooks/queries/p6r-sidebar-navigation-query.p6r.test.tsx b/apps/app/src/hooks/queries/p6r-sidebar-navigation-query.p6r.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..42c30b5a694e4ae8eba24e77df5ec266e7007663
+--- /dev/null
++++ b/apps/app/src/hooks/queries/p6r-sidebar-navigation-query.p6r.test.tsx
+@@ -0,0 +1,166 @@
++// @vitest-environment jsdom
++
++import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import {
++  encodeP6rSidebarBootstrap,
++  encodeP6rSidebarThreads,
++  type ChangedMessage,
++} from "@bb/server-contract";
++import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
++import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
++import {
++  makeSidebarBootstrapResponse,
++  makeProjectWithThreadsResponse,
++} from "@/test/fixtures/projects";
++import { sidebarNavigationQueryKey } from "./query-keys";
++import { resetSidebarBootstrapCacheForTest } from "@/lib/sidebar-bootstrap-cache";
++import {
++  useP6rSidebarNavigation as useSidebarNavigation,
++  useP6rProjectDisplayName as useProjectDisplayName,
++} from "./p6r-sidebar-navigation-query";
++
++const mocks = vi.hoisted(() => ({
++  legacy: vi.fn(),
++  compact: vi.fn(),
++  rows: vi.fn(),
++  projects: vi.fn(),
++  changed: undefined as ((message: ChangedMessage) => void) | undefined,
++}));
++
++vi.mock("@/lib/api-server", () => ({
++  apiClient: {
++    "sidebar-bootstrap": { $get: mocks.legacy },
++    p6r: {
++      "sidebar-bootstrap": { $get: mocks.compact },
++      "sidebar-threads": { $get: mocks.rows },
++      "sidebar-projects": { $get: mocks.projects },
++    },
++  },
++}));
++vi.mock("@/lib/ws", () => ({
++  wsManager: {
++    subscribe: vi.fn(),
++    unsubscribe: vi.fn(),
++    onChanged: (callback: (message: ChangedMessage) => void) => {
++      mocks.changed = callback;
++      return () => {
++        mocks.changed = undefined;
++      };
++    },
++    onConnected: () => () => {},
++    onResumed: () => () => {},
++  },
++}));
++
++const response = (value: unknown) =>
++  Promise.resolve(new Response(JSON.stringify(value)));
++const fixture = () =>
++  makeSidebarBootstrapResponse({
++    projects: [
++      makeProjectWithThreadsResponse({
++        threads: [
++          makeThreadListEntry({ id: "thr_one", projectId: "proj_test" }),
++        ],
++      }),
++    ],
++  });
++
++beforeEach(() => {
++  localStorage.clear();
++  vi.clearAllMocks();
++  resetSidebarBootstrapCacheForTest();
++  mocks.legacy.mockImplementation(() => response(fixture()));
++  mocks.compact.mockImplementation(() =>
++    response(encodeP6rSidebarBootstrap(fixture())),
++  );
++  mocks.rows.mockImplementation(() =>
++    response(
++      encodeP6rSidebarThreads(
++        [{ ...fixture().projects[0]!.threads[0]!, title: "Changed" }],
++        [],
++      ),
++    ),
++  );
++  mocks.projects.mockImplementation(() =>
++    response(encodeP6rSidebarBootstrap(fixture())),
++  );
++});
++afterEach(() => cleanup());
++
++describe("sidebar rollout and rollback", () => {
++  it("allows an explicit refresh from an otherwise disabled observer", async () => {
++    localStorage.setItem("bb.p6r.compact-sidebar", "1");
++    const { wrapper } = createQueryClientTestHarness();
++    const { result } = renderHook(
++      () => useSidebarNavigation({ enabled: false }),
++      { wrapper },
++    );
++    expect(mocks.compact).not.toHaveBeenCalled();
++    await act(() => result.current.refetch());
++    await waitFor(() => expect(result.current.data).toEqual(fixture()));
++    expect(mocks.compact).toHaveBeenCalledTimes(1);
++    expect(mocks.legacy).not.toHaveBeenCalled();
++  });
++  it("uses the unchanged legacy path when the switch is absent", async () => {
++    const { wrapper } = createQueryClientTestHarness();
++    const { result } = renderHook(() => useSidebarNavigation(), { wrapper });
++    await waitFor(() => expect(result.current.data).toEqual(fixture()));
++    expect(mocks.legacy).toHaveBeenCalledTimes(1);
++    expect(mocks.compact).not.toHaveBeenCalled();
++  });
++
++  it("shares one compact owner, ignores legacy invalidations and updates the complete SDK cache", async () => {
++    localStorage.setItem("bb.p6r.compact-sidebar", "1");
++    const { wrapper, queryClient } = createQueryClientTestHarness();
++    const { result } = renderHook(
++      () => ({
++        first: useSidebarNavigation(),
++        second: useSidebarNavigation(),
++        name: useProjectDisplayName("proj_test"),
++      }),
++      { wrapper },
++    );
++    await waitFor(() => expect(result.current.first.data).toEqual(fixture()));
++    expect(result.current.name).toBe("Test project");
++    expect(mocks.compact).toHaveBeenCalledTimes(1);
++    await act(() =>
++      queryClient.invalidateQueries({ queryKey: sidebarNavigationQueryKey() }),
++    );
++    act(() => {
++      mocks.changed?.({
++        type: "changed",
++        entity: "thread",
++        id: "thr_one",
++        changes: ["title-changed"],
++      });
++    });
++    await waitFor(() =>
++      expect(result.current.second.data?.projects[0]?.threads[0]?.title).toBe(
++        "Changed",
++      ),
++    );
++    expect(mocks.rows).toHaveBeenCalledTimes(1);
++    expect(mocks.compact).toHaveBeenCalledTimes(1);
++    expect(mocks.legacy).not.toHaveBeenCalled();
++    await act(() => result.current.first.refetch());
++    expect(mocks.compact).toHaveBeenCalledTimes(2);
++    expect(mocks.legacy).not.toHaveBeenCalled();
++  });
++
++  it("returns to the legacy path when a new page removes the switch", async () => {
++    localStorage.setItem("bb.p6r.compact-sidebar", "1");
++    const first = renderHook(() => useSidebarNavigation(), {
++      wrapper: createQueryClientTestHarness().wrapper,
++    });
++    await waitFor(() => expect(mocks.compact).toHaveBeenCalledTimes(1));
++    first.unmount();
++    localStorage.removeItem("bb.p6r.compact-sidebar");
++    const second = renderHook(() => useSidebarNavigation(), {
++      wrapper: createQueryClientTestHarness().wrapper,
++    });
++    await waitFor(() => expect(second.result.current.data).toBeDefined());
++    expect(mocks.legacy).toHaveBeenCalledTimes(1);
++    expect(mocks.compact).toHaveBeenCalledTimes(1);
++  });
++});
+diff --git a/apps/app/src/hooks/queries/p6r-sidebar-navigation-query.ts b/apps/app/src/hooks/queries/p6r-sidebar-navigation-query.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..1ef362a6fe69620b8c019082e0382abe4af3b874
+--- /dev/null
++++ b/apps/app/src/hooks/queries/p6r-sidebar-navigation-query.ts
+@@ -0,0 +1,161 @@
++import { useEffect, useState } from "react";
++import {
++  QueryObserver,
++  useQuery,
++  useQueryClient,
++  type QueryClient,
++  type RefetchOptions,
++} from "@tanstack/react-query";
++import {
++  decodeP6rSidebarBootstrap,
++  decodeP6rSidebarThreads,
++  type RealtimeSubscriptionTarget,
++  type SidebarBootstrapResponse,
++} from "@bb/server-contract";
++import { apiClient } from "@/lib/api-server";
++import { request } from "@/lib/api";
++import { isP6rSidebarEnabled } from "@/lib/p6r-sidebar-switch";
++import { writeCachedSidebarBootstrap } from "@/lib/sidebar-bootstrap-cache";
++import {
++  isDocumentVisible,
++  subscribeToDocumentVisibility,
++} from "@/lib/document-visibility";
++import { wsManager } from "@/lib/ws";
++import { P6rSidebarOwner } from "../cache-owners/p6r-sidebar-owner";
++import { sidebarNavigationQueryKey } from "./query-keys";
++import type { QueryOptions } from "./query-helpers";
++import {
++  useSidebarNavigation as useLegacySidebarNavigation,
++  useProjectDisplayName as useLegacyProjectDisplayName,
++} from "./sidebar-navigation-query";
++
++export {
++  useSidebarNavigationThreadSelection,
++  sidebarNavigationThreadSelectionQueryOptions,
++  toSidebarNavigationThreadSelection,
++  type SidebarNavigationThreadSelection,
++} from "./sidebar-navigation-query";
++
++const owners = new WeakMap<
++  QueryClient,
++  { owner: P6rSidebarOwner; count: number; detach?: () => void }
++>();
++const targets: RealtimeSubscriptionTarget[] = [
++  { kind: "thread-list" },
++  { kind: "project-list" },
++  { kind: "environment-list" },
++  { kind: "host-list" },
++];
++
++function resource(client: QueryClient) {
++  let value = owners.get(client);
++  if (!value) {
++    value = {
++      count: 0,
++      owner: new P6rSidebarOwner(
++        client,
++        {
++          full: async () =>
++            decodeP6rSidebarBootstrap(
++              await request(apiClient.p6r["sidebar-bootstrap"].$get()),
++            ),
++          projects: async () =>
++            decodeP6rSidebarBootstrap(
++              await request(apiClient.p6r["sidebar-projects"].$get()),
++            ),
++          rows: async (ids) =>
++            decodeP6rSidebarThreads(
++              await request(
++                apiClient.p6r["sidebar-threads"].$get({
++                  query: { ids: ids.join(",") },
++                }),
++              ),
++            ),
++          persist: writeCachedSidebarBootstrap,
++        },
++        isDocumentVisible,
++      ),
++    };
++    owners.set(client, value);
++  }
++  return value;
++}
++
++function acquire(client: QueryClient) {
++  const value = resource(client);
++  if (value.count++ === 0) {
++    for (const target of targets) wsManager.subscribe(target);
++    const stops = [
++      wsManager.onChanged((message) => value.owner.changed(message)),
++      wsManager.onConnected((event) => {
++        if (event.reconnected) value.owner.resume();
++      }),
++      wsManager.onResumed(() => value.owner.resume()),
++      subscribeToDocumentVisibility(() => {
++        if (isDocumentVisible()) value.owner.resume();
++      }),
++    ];
++    value.detach = () => {
++      for (const stop of stops) stop();
++      for (const target of targets) wsManager.unsubscribe(target);
++    };
++  }
++  const release = value.owner.acquire();
++  return () => {
++    release();
++    if (--value.count === 0) value.detach?.();
++  };
++}
++
++export function useP6rSidebarNavigation(options?: QueryOptions) {
++  const [compact] = useState(isP6rSidebarEnabled);
++  const enabled = options?.enabled ?? true;
++  const client = useQueryClient();
++  const result = useLegacySidebarNavigation({
++    ...options,
++    enabled: !compact && enabled,
++  });
++  useEffect(
++    () => (compact && enabled ? acquire(client) : undefined),
++    [client, compact, enabled],
++  );
++  return compact
++    ? {
++        ...result,
++        refetch: async (options?: RefetchOptions) => {
++          const release =
++            resource(client).count === 0 ? acquire(client) : undefined;
++          try {
++            await resource(client).owner.refresh();
++          } catch (error) {
++            if (options?.throwOnError) throw error;
++          } finally {
++            release?.();
++          }
++          const observer = new QueryObserver<SidebarBootstrapResponse>(client, {
++            queryKey: sidebarNavigationQueryKey(),
++            enabled: false,
++          });
++          const current = observer.getCurrentResult();
++          observer.destroy();
++          return current;
++        },
++      }
++    : result;
++}
++
++export function useP6rProjectDisplayName(
++  projectId: string | undefined,
++): string | undefined {
++  const [compact] = useState(isP6rSidebarEnabled);
++  const legacy = useLegacyProjectDisplayName(compact ? undefined : projectId);
++  const { data } = useQuery<SidebarBootstrapResponse>({
++    queryKey: sidebarNavigationQueryKey(),
++    enabled: false,
++  });
++  if (!compact) return legacy;
++  if (!projectId || !data) return undefined;
++  return [data.personalProject, ...data.projects].find(
++    (p) => p.id === projectId,
++  )?.name;
++}
+diff --git a/apps/app/src/hooks/queries/thread-queries.ts b/apps/app/src/hooks/queries/thread-queries.ts
+index 289f07827427eb552d9b0e875979f7cdadd94dd7..644501e018ffd54cdc8e7c36df5e37838c234783 100644
+--- a/apps/app/src/hooks/queries/thread-queries.ts
++++ b/apps/app/src/hooks/queries/thread-queries.ts
+@@ -50,7 +50,7 @@ import {
+ import {
+   useSidebarNavigationThreadSelection,
+   type SidebarNavigationThreadSelection,
+-} from "./sidebar-navigation-query";
++} from "./p6r-sidebar-navigation-query";
+ import {
+   getCachedThreadLists,
+   iterateThreadListCacheEntries,
+diff --git a/apps/app/src/hooks/usePromptMentions.thread-context.test.tsx b/apps/app/src/hooks/usePromptMentions.thread-context.test.tsx
+index f4028cd10d18f5db3ffc471bb7b4a6285afc0558..15cfe843be0089f311c91276c435d273ae5693bb 100644
+--- a/apps/app/src/hooks/usePromptMentions.thread-context.test.tsx
++++ b/apps/app/src/hooks/usePromptMentions.thread-context.test.tsx
+@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
+   usePathSuggestions: vi.fn(),
+   usePluginContributions: vi.fn(),
+   usePluginMentionSearch: vi.fn(),
+-  useSidebarNavigation: vi.fn(),
++  useP6rSidebarNavigation: vi.fn(),
+   useThreadMentionCandidates: vi.fn(),
+ }));
+ 
+@@ -23,8 +23,8 @@ vi.mock("./queries/plugin-contribution-queries", () => ({
+   usePluginMentionSearch: mocks.usePluginMentionSearch,
+ }));
+ 
+-vi.mock("./queries/sidebar-navigation-query", () => ({
+-  useSidebarNavigation: mocks.useSidebarNavigation,
++vi.mock("./queries/p6r-sidebar-navigation-query", () => ({
++  useP6rSidebarNavigation: mocks.useP6rSidebarNavigation,
+ }));
+ 
+ vi.mock("./queries/thread-queries", () => ({
+@@ -46,7 +46,7 @@ beforeEach(() => {
+     isLoading: false,
+     isError: false,
+   });
+-  mocks.useSidebarNavigation.mockReturnValue({ data: undefined });
++  mocks.useP6rSidebarNavigation.mockReturnValue({ data: undefined });
+   mocks.useThreadMentionCandidates.mockReturnValue({
+     data: [
+       makeThread({
+diff --git a/apps/app/src/hooks/usePromptMentions.ts b/apps/app/src/hooks/usePromptMentions.ts
+index 3a85a4edd970266112fd658baccb88b6a8483377..74c0d5eb0072580312ba54f7b65aaadce9a20a45 100644
+--- a/apps/app/src/hooks/usePromptMentions.ts
++++ b/apps/app/src/hooks/usePromptMentions.ts
+@@ -11,7 +11,7 @@ import {
+   usePluginContributions,
+   usePluginMentionSearch,
+ } from "./queries/plugin-contribution-queries";
+-import { useSidebarNavigation } from "./queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "./queries/p6r-sidebar-navigation-query";
+ import { useThreadMentionCandidates } from "./queries/thread-queries";
+ import { buildThreadMentionSuggestions } from "./threadMentionSuggestions";
+ import { useResolveThreadTitle } from "@/components/thread/ThreadTitleMentions";
+diff --git a/apps/app/src/lib/p6r-sidebar-switch.ts b/apps/app/src/lib/p6r-sidebar-switch.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..a31766254223a8388cc81fc29df75332328245e8
+--- /dev/null
++++ b/apps/app/src/lib/p6r-sidebar-switch.ts
+@@ -0,0 +1,12 @@
++export const P6R_SIDEBAR_SWITCH = "bb.p6r.compact-sidebar";
++
++export function isP6rSidebarEnabled(): boolean {
++  try {
++    return (
++      typeof window !== "undefined" &&
++      window.localStorage.getItem(P6R_SIDEBAR_SWITCH) === "1"
++    );
++  } catch {
++    return false;
++  }
++}
+diff --git a/apps/app/src/lib/p6r-thread-tabs.p6r.test.ts b/apps/app/src/lib/p6r-thread-tabs.p6r.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f961c6b849dbb1c8f900a4da96c5c5f0cf36bcc3
+--- /dev/null
++++ b/apps/app/src/lib/p6r-thread-tabs.p6r.test.ts
+@@ -0,0 +1,33 @@
++import { QueryClient } from "@tanstack/react-query";
++import { describe, expect, it, vi } from "vitest";
++import { threadTabsQueryKey } from "@/hooks/queries/query-keys";
++import { readP6rThreadTabs } from "./p6r-thread-tabs";
++
++const get = vi.hoisted(() => vi.fn());
++vi.mock("./sdk", () => ({ sdk: { threads: { tabs: { get } } } }));
++
++describe("thread tabs shared read", () => {
++  it("joins an in-flight observer read and reuses its revision", async () => {
++    const client = new QueryClient({
++      defaultOptions: { queries: { gcTime: Infinity } },
++    });
++    let resolve!: (value: { tabs: []; revision: number }) => void;
++    const response = new Promise<{ tabs: []; revision: number }>((yes) => {
++      resolve = yes;
++    });
++    const firstGet = vi.fn(() => response);
++    const existing = client.fetchQuery({
++      queryKey: threadTabsQueryKey("thr_one"),
++      queryFn: firstGet,
++    });
++    const joined = readP6rThreadTabs(client, "thr_one");
++    resolve({ tabs: [], revision: 7 });
++    expect(await joined).toEqual(await existing);
++    expect(await readP6rThreadTabs(client, "thr_one")).toEqual({
++      tabs: [],
++      revision: 7,
++    });
++    expect(firstGet).toHaveBeenCalledTimes(1);
++    expect(get).not.toHaveBeenCalled();
++  });
++});
+diff --git a/apps/app/src/lib/p6r-thread-tabs.ts b/apps/app/src/lib/p6r-thread-tabs.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e3876a6cbd04a402f8665c50d8793ae023d6132d
+--- /dev/null
++++ b/apps/app/src/lib/p6r-thread-tabs.ts
+@@ -0,0 +1,11 @@
++import type { QueryClient } from "@tanstack/react-query";
++import { threadTabsQueryKey } from "@/hooks/queries/query-keys";
++import { sdk } from "./sdk";
++
++export function readP6rThreadTabs(client: QueryClient, threadId: string) {
++  return client.fetchQuery({
++    queryKey: threadTabsQueryKey(threadId),
++    queryFn: ({ signal }) => sdk.threads.tabs.get({ threadId, signal }),
++    staleTime: Infinity,
++  });
++}
+diff --git a/apps/app/src/lib/plugin-sidebar-hooks.test.tsx b/apps/app/src/lib/plugin-sidebar-hooks.test.tsx
+index 6c250289477cce3fcf19f7780e719ab0cd9fa58a..01892ac6332e073b0e86d16e6d583c2ca8024e07 100644
+--- a/apps/app/src/lib/plugin-sidebar-hooks.test.tsx
++++ b/apps/app/src/lib/plugin-sidebar-hooks.test.tsx
+@@ -82,8 +82,8 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
+   },
+ }));
+ 
+-vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+-  useSidebarNavigation: () => ({ data: state.data, isError: false }),
++vi.mock("@/hooks/queries/p6r-sidebar-navigation-query", () => ({
++  useP6rSidebarNavigation: () => ({ data: state.data, isError: false }),
+ }));
+ 
+ vi.mock("@/hooks/queries/host-queries", () => {
+diff --git a/apps/app/src/lib/plugin-sidebar-hooks.ts b/apps/app/src/lib/plugin-sidebar-hooks.ts
+index b5135bb0e21f9c2f7701f9da7e377db3f25aaa08..60c2347b5f0fe1317c629072947380ebb5f271ac 100644
+--- a/apps/app/src/lib/plugin-sidebar-hooks.ts
++++ b/apps/app/src/lib/plugin-sidebar-hooks.ts
+@@ -42,7 +42,7 @@ import {
+ } from "@/hooks/queries/environment-queries";
+ import { useHosts } from "@/hooks/queries/host-queries";
+ import { useArchivedThreads } from "@/hooks/queries/thread-queries";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import {
+   archivedThreadsListQueryKey,
+   sidebarNavigationQueryKey,
+diff --git a/apps/app/src/lib/thread-tabs-sync.ts b/apps/app/src/lib/thread-tabs-sync.ts
+index 081194b47da799e460baf8f6d04beaaa57c3239f..457ef7d1bb9d962e642739e17692623d64cef802 100644
+--- a/apps/app/src/lib/thread-tabs-sync.ts
++++ b/apps/app/src/lib/thread-tabs-sync.ts
+@@ -12,6 +12,8 @@ import {
+   setCachedThreadTabs,
+ } from "@/hooks/cache-owners/thread-tabs-cache-owner";
+ import { BbHttpError, sdk } from "./sdk";
++import { isP6rSidebarEnabled } from "./p6r-sidebar-switch";
++import { readP6rThreadTabs } from "./p6r-thread-tabs";
+ import {
+   areFixedPanelTabsEquivalent,
+   ensureOpenFixedPanelHasActiveTab,
+@@ -161,6 +163,7 @@ async function readCurrentThreadTabs({
+   if (cached !== undefined) {
+     return cached;
+   }
++  if (isP6rSidebarEnabled()) return readP6rThreadTabs(queryClient, threadId);
+   const response = await sdk.threads.tabs.get({ threadId });
+   setCachedThreadTabs(queryClient, threadId, response);
+   return response;
+diff --git a/apps/app/src/test/sidebarThreadEntriesTestProvider.tsx b/apps/app/src/test/sidebarThreadEntriesTestProvider.tsx
+index 68d1965de77ef8a3312e4e18d8c085f71e120ca0..426239ad5ba9225d2e20ce2920bce236d5cde4ca 100644
+--- a/apps/app/src/test/sidebarThreadEntriesTestProvider.tsx
++++ b/apps/app/src/test/sidebarThreadEntriesTestProvider.tsx
+@@ -1,5 +1,5 @@
+ import type { ReactNode } from "react";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import { SidebarThreadEntriesProvider } from "@/lib/sidebar-thread-entries";
+ 
+ export function SidebarThreadEntriesTestProvider({
+diff --git a/apps/app/src/test/thread-detail-prompt-area-harness.tsx b/apps/app/src/test/thread-detail-prompt-area-harness.tsx
+index 3ce28649973e370ec01e01b02eefbb93a8278e3c..e95d7fc4b34d9aeaa60add6050beb8ce6554147e 100644
+--- a/apps/app/src/test/thread-detail-prompt-area-harness.tsx
++++ b/apps/app/src/test/thread-detail-prompt-area-harness.tsx
+@@ -722,8 +722,8 @@ vi.mock("@/hooks/mutations/thread-state-mutations", () => ({
+   }),
+ }));
+ 
+-vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
+-  useProjectDisplayName: () => null,
++vi.mock("@/hooks/queries/p6r-sidebar-navigation-query", () => ({
++  useP6rProjectDisplayName: () => null,
+ }));
+ 
+ vi.mock("@/hooks/queries/thread-default-execution-options-query", () => ({
+diff --git a/apps/app/src/views/MachineSettingsView.tsx b/apps/app/src/views/MachineSettingsView.tsx
+index 783b40b0efaae4f2c5e5f3d1d28bd45efb25dfbf..bf243416e9c44cc9faf63cd4b1a0f5939808db91 100644
+--- a/apps/app/src/views/MachineSettingsView.tsx
++++ b/apps/app/src/views/MachineSettingsView.tsx
+@@ -50,7 +50,7 @@ import {
+ import { useHosts } from "@/hooks/queries/host-queries";
+ import { useSystemMachineProviders } from "@/hooks/queries/machine-provider-queries";
+ import { useServerMoveStatus } from "@/hooks/queries/server-move-queries";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import {
+   useSystemConfig,
+   useSystemProviders,
+diff --git a/apps/app/src/views/ProjectDetailSettingsView.tsx b/apps/app/src/views/ProjectDetailSettingsView.tsx
+index c33d0fbf08e68177516f1ca6814d8185aed4cbc1..a2ad94fe2f4f9afc3da0fae3e235063274fef952 100644
+--- a/apps/app/src/views/ProjectDetailSettingsView.tsx
++++ b/apps/app/src/views/ProjectDetailSettingsView.tsx
+@@ -55,7 +55,7 @@ import {
+ } from "@/hooks/queries/host-path-queries";
+ import { selectHosts, useHosts } from "@/hooks/queries/host-queries";
+ import { useProjectDefaultExecutionOptions } from "@/hooks/queries/project-default-execution-options-query";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import { useSystemConfig } from "@/hooks/queries/system-queries";
+ import {
+   useLocalPathPicker,
+diff --git a/apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx b/apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx
+index 1a98948a839ccc6e961f073a30d8e0d7badab6e8..8eb93b4c9d5e7db6f8a31c858c46b95eb17a43ea 100644
+--- a/apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx
++++ b/apps/app/src/views/thread-detail/ThreadDetailPromptArea.tsx
+@@ -105,7 +105,7 @@ import type { WorkspaceCheckoutDisplay } from "@/lib/workspace-checkout-display"
+ import { useComposerTextEffects } from "@/lib/composer-text-effects";
+ import { useLatestRef } from "@/hooks/useLatestRef";
+ import { useThreadCreationOptions } from "@/hooks/useThreadCreationOptions";
+-import { useProjectDisplayName } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rProjectDisplayName as useProjectDisplayName } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import {
+   useActiveComposerDraft,
+   useComposerAttachmentUploads,
+diff --git a/apps/app/src/views/useMobileRecentsThreadReveal.ts b/apps/app/src/views/useMobileRecentsThreadReveal.ts
+index eee634c9dd88e385bc5936cfbf6ee8d3a94bc395..ab3bf1693a1ec0df707d4760ce6bb3fe1899a076 100644
+--- a/apps/app/src/views/useMobileRecentsThreadReveal.ts
++++ b/apps/app/src/views/useMobileRecentsThreadReveal.ts
+@@ -3,7 +3,7 @@ import { useSetAtom } from "jotai";
+ import type { ThreadListEntry } from "@bb/domain";
+ import { isThreadRead } from "@bb/client-core";
+ import { useRouteState } from "@/hooks/useRouteState";
+-import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
++import { useP6rSidebarNavigation as useSidebarNavigation } from "@/hooks/queries/p6r-sidebar-navigation-query";
+ import { listSidebarNavigationThreads } from "@/hooks/cache-owners/query-cache";
+ import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
+ 
+diff --git a/apps/server/src/routes/p6r-sidebar.ts b/apps/server/src/routes/p6r-sidebar.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e2c1a9f8f72368f0f4a10610b8e0676d838ec9f4
+--- /dev/null
++++ b/apps/server/src/routes/p6r-sidebar.ts
+@@ -0,0 +1,119 @@
++import type { Hono } from "hono";
++import {
++  getPersonalProject,
++  listPublicProjects,
++  listProjectSourcesByProjectIds,
++  listProjectExecutionDefaultsByProjectIds,
++  listThreadSections,
++  listThreadsWithPendingInteractionStateForProjects,
++  listThreadsWithPendingInteractionState,
++} from "@bb/db";
++import {
++  encodeP6rSidebarBootstrap,
++  encodeP6rSidebarThreads,
++  publicApiRoutes,
++  typedRoutes,
++  p6rSidebarThreadQuerySchema,
++  type PublicApiSchema,
++  type SidebarBootstrapResponse,
++} from "@bb/server-contract";
++import type { AppDeps } from "../types.js";
++import { ApiError } from "../errors.js";
++import { toThreadListEntryResponses } from "../services/threads/thread-runtime-display.js";
++
++function projects(deps: AppDeps) {
++  const personal = getPersonalProject(deps.db);
++  if (!personal)
++    throw new ApiError(
++      500,
++      "internal_error",
++      "Personal project is not initialized",
++    );
++  return { personal, publicProjects: listPublicProjects(deps.db) };
++}
++
++export function readP6rSidebarBootstrap(
++  deps: AppDeps,
++  includeThreads = true,
++): SidebarBootstrapResponse {
++  const { personal, publicProjects } = projects(deps);
++  const allProjects = [personal, ...publicProjects];
++  const projectIds = allProjects.map((p) => p.id);
++  const sources = listProjectSourcesByProjectIds(deps.db, projectIds);
++  const defaults = listProjectExecutionDefaultsByProjectIds(deps.db, {
++    projectIds,
++  });
++  const rows = includeThreads
++    ? toThreadListEntryResponses(deps, {
++        threads: listThreadsWithPendingInteractionStateForProjects(deps.db, {
++          projectIds,
++          archived: false,
++        }),
++      })
++    : [];
++  const rowsByProject = new Map<string, typeof rows>();
++  for (const row of rows) {
++    const bucket = rowsByProject.get(row.projectId);
++    if (bucket) bucket.push(row);
++    else rowsByProject.set(row.projectId, [row]);
++  }
++  const build = (p: typeof personal) => ({
++    id: p.id,
++    kind: p.kind,
++    name: p.name,
++    gitRemoteUrl: p.gitRemoteUrl,
++    createdAt: p.createdAt,
++    updatedAt: p.updatedAt,
++    sources: sources.filter((source) => source.projectId === p.id),
++    defaultExecutionOptions: defaults.get(p.id) ?? null,
++    threads: rowsByProject.get(p.id) ?? [],
++  });
++  return {
++    sections: listThreadSections(deps.db),
++    projects: publicProjects.map(build),
++    personalProject: build(personal),
++  };
++}
++
++export function registerP6rSidebarRoutes(app: Hono, deps: AppDeps): void {
++  const { get } = typedRoutes<PublicApiSchema>(app, {
++    onValidationError: (message) =>
++      new ApiError(400, "invalid_request", message),
++  });
++  get(publicApiRoutes.p6rSidebar.bootstrap, (context) =>
++    context.json(encodeP6rSidebarBootstrap(readP6rSidebarBootstrap(deps))),
++  );
++  get(publicApiRoutes.p6rSidebar.projects, (context) =>
++    context.json(
++      encodeP6rSidebarBootstrap(readP6rSidebarBootstrap(deps, false)),
++    ),
++  );
++  get(publicApiRoutes.p6rSidebar.threads, (context, query) => {
++    const parsed = p6rSidebarThreadQuerySchema.safeParse(query);
++    if (!parsed.success)
++      throw new ApiError(
++        400,
++        "invalid_request",
++        "Expected 1 to 200 thread IDs",
++      );
++    const ids = [...new Set(parsed.data.ids.split(","))];
++    const { personal, publicProjects } = projects(deps);
++    const eligibleProjects = new Set([
++      personal.id,
++      ...publicProjects.map((p) => p.id),
++    ]);
++    const rows = listThreadsWithPendingInteractionState(deps.db, {
++      threadIds: ids,
++      archived: false,
++      limit: 200,
++    }).filter((row) => eligibleProjects.has(row.projectId));
++    const threads = toThreadListEntryResponses(deps, { threads: rows });
++    const found = new Set(threads.map((row) => row.id));
++    return context.json(
++      encodeP6rSidebarThreads(
++        threads,
++        ids.filter((id) => !found.has(id)),
++      ),
++    );
++  });
++}
+diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
+index 1a3666598b18de9f155815d54a9ab5f43c3c4e4e..bb4a9c2b982dc4e3e3b17fc386a64ec412fe88ff 100644
+--- a/apps/server/src/server.ts
++++ b/apps/server/src/server.ts
+@@ -35,6 +35,7 @@ import { registerEnvironmentRoutes } from "./routes/environments.js";
+ import { registerFileRoutes } from "./routes/files.js";
+ import { registerHostRoutes } from "./routes/hosts.js";
+ import { registerProjectRoutes } from "./routes/projects.js";
++import { registerP6rSidebarRoutes } from "./routes/p6r-sidebar.js";
+ import { registerThreadSectionRoutes } from "./routes/thread-sections.js";
+ import { registerSystemRoutes } from "./routes/system.js";
+ import { registerUiPreferenceRoutes } from "./routes/ui-preferences.js";
+@@ -552,7 +553,7 @@ export function createApp(
+   });
+   app.use("*", (context, next) =>
+     context.req.method === "OPTIONS" &&
+-      PLUGIN_WIRE_HTTP_PATH.test(context.req.path)
++    PLUGIN_WIRE_HTTP_PATH.test(context.req.path)
+       ? next()
+       : browserCors(context, next),
+   );
+@@ -1003,6 +1004,7 @@ export function createApp(
+     deps.config.p6rIdentityBoundary?.configuration.pluginId ?? null,
+   );
+   registerProjectRoutes(publicApi, deps);
++  registerP6rSidebarRoutes(publicApi, deps);
+   registerPromptHistoryRoutes(publicApi, deps);
+   registerThreadSectionRoutes(publicApi, deps);
+   registerFileRoutes(publicApi, deps);
+diff --git a/apps/server/test/public/p6r-sidebar.p6r.test.ts b/apps/server/test/public/p6r-sidebar.p6r.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..010ca964019feb75160c26560ee26c7b669b22f7
+--- /dev/null
++++ b/apps/server/test/public/p6r-sidebar.p6r.test.ts
+@@ -0,0 +1,103 @@
++import { describe, expect, it } from "vitest";
++import { eq } from "drizzle-orm";
++import { threads as threadsTable } from "@bb/db";
++import {
++  decodeP6rSidebarBootstrap,
++  decodeP6rSidebarThreads,
++  sidebarBootstrapResponseSchema,
++} from "@bb/server-contract";
++import { withTestHarness } from "../helpers/test-app.js";
++import { seedThread, seedThreadFixture } from "../helpers/seed.js";
++
++describe("additive sidebar reads", () => {
++  it("returns exactly the legacy collection including children, with complete metadata", async () => {
++    await withTestHarness(async (harness) => {
++      const { project, environment, thread } = seedThreadFixture(harness);
++      seedThread(harness.deps, {
++        projectId: project.id,
++        environmentId: environment.id,
++        parentThreadId: thread.id,
++      });
++      seedThread(harness.deps, {
++        projectId: "proj_personal",
++        title: "Personal",
++      });
++      seedThread(harness.deps, { projectId: project.id, visibility: "hidden" });
++      const archived = seedThread(harness.deps, { projectId: project.id });
++      harness.db
++        .update(threadsTable)
++        .set({ archivedAt: 100 })
++        .where(eq(threadsTable.id, archived.id))
++        .run();
++      const legacy = sidebarBootstrapResponseSchema.parse(
++        await (await harness.app.request("/api/v1/sidebar-bootstrap")).json(),
++      );
++      const response = await harness.app.request(
++        "/api/v1/p6r/sidebar-bootstrap",
++      );
++      expect(response.status).toBe(200);
++      expect(decodeP6rSidebarBootstrap(await response.json())).toEqual(legacy);
++      const metadata = decodeP6rSidebarBootstrap(
++        await (
++          await harness.app.request("/api/v1/p6r/sidebar-projects")
++        ).json(),
++      );
++      expect(metadata.sections).toEqual(legacy.sections);
++      expect(metadata.projects).toEqual(
++        legacy.projects.map((project) => ({ ...project, threads: [] })),
++      );
++      expect(metadata.personalProject).toEqual({
++        ...legacy.personalProject,
++        threads: [],
++      });
++      const again = await harness.app.request("/api/v1/sidebar-bootstrap");
++      expect(await again.json()).toEqual(legacy);
++    });
++  });
++
++  it("reads only requested eligible rows and explicitly reports removals", async () => {
++    await withTestHarness(async (harness) => {
++      const { project, thread } = seedThreadFixture(harness);
++      const hidden = seedThread(harness.deps, {
++        projectId: project.id,
++        visibility: "hidden",
++      });
++      const archived = seedThread(harness.deps, { projectId: project.id });
++      harness.db
++        .update(threadsTable)
++        .set({ archivedAt: 100 })
++        .where(eq(threadsTable.id, archived.id))
++        .run();
++      for (let i = 0; i < 20; i++)
++        seedThread(harness.deps, { projectId: project.id });
++      const ids = [thread.id, hidden.id, archived.id, "thr_missing"];
++      const response = await harness.app.request(
++        `/api/v1/p6r/sidebar-threads?ids=${ids.join(",")}`,
++      );
++      expect(response.status).toBe(200);
++      const data = decodeP6rSidebarThreads(await response.json());
++      expect(data.threads.map((row) => row.id)).toEqual([thread.id]);
++      expect(data.missingIds).toEqual(ids.slice(1));
++      const full = decodeP6rSidebarBootstrap(
++        await (
++          await harness.app.request("/api/v1/p6r/sidebar-bootstrap")
++        ).json(),
++      );
++      expect(data.threads[0]).toEqual(
++        full.projects
++          .find((p) => p.id === project.id)!
++          .threads.find((t) => t.id === thread.id),
++      );
++      for (const query of [
++        "",
++        "ids=bad",
++        `ids=${Array(201).fill(thread.id).join(",")}`,
++      ]) {
++        expect(
++          (await harness.app.request(`/api/v1/p6r/sidebar-threads?${query}`))
++            .status,
++        ).toBe(400);
++      }
++    });
++  });
++});
+diff --git a/docs/configuration.md b/docs/configuration.md
+index 1cdf87587bd5f81b92ed717106b4fcc9765be70c..e2dd7e0c3fd7cf031b243522fe2c733ff5a84e38 100644
+--- a/docs/configuration.md
++++ b/docs/configuration.md
+@@ -1192,3 +1192,9 @@ metadata is preserved. This is a desktop-local preference, with no server
+ settings CLI/SDK endpoint. Builds with tolerant readers ignore the field and
+ may drop it on save; older strict readers can reject the whole file, so keep a
+ backup before rolling back to a build predating the tolerant-reader fix #5286.
++
++## Downstream compact sidebar trial
++
++The default-off browser setting `bb.p6r.compact-sidebar=1` selects the additive
++compact sidebar routes and coalescing request owner. Set/remove it in localStorage
++and reload to enable/roll back. See [trial behavior](p6r-sidebar-performance.md).
+diff --git a/docs/p6r-sidebar-performance.md b/docs/p6r-sidebar-performance.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..7e061d1607b067e8ca61184cba2be5e5925b174a
+--- /dev/null
++++ b/docs/p6r-sidebar-performance.md
+@@ -0,0 +1,54 @@
++# Compact sidebar trial
++
++This downstream trial is off by default. In the browser console run
++`localStorage.setItem('bb.p6r.compact-sidebar', '1'); location.reload()`.
++To roll back run `localStorage.removeItem('bb.p6r.compact-sidebar'); location.reload()`.
++The switch is per browser origin. It does not require a deployment or server restart.
++A reload is required so every observer chooses the same request owner.
++
++The existing `/api/v1/sidebar-bootstrap` serializer and client hook remain unchanged.
++The trial uses `/api/v1/p6r/sidebar-bootstrap`, `/api/v1/p6r/sidebar-threads?ids=thr_...`
++(up to 200 IDs), and `/api/v1/p6r/sidebar-projects` (project metadata and sections,
++without thread rows). These are additive internal read routes, not new plugin APIs.
++No thread is excluded beyond the existing non-archived, visible, non-deleted scope.
++
++The wire protocol interns complete participant and environment projections. It
++omits only exact default values and project IDs already supplied by their enclosing
++project. The decoder restores the complete existing domain row before publishing
++to the existing TanStack cache and plugin SDK selectors. Non-default values,
++participant order, differing records for the same identity, exact fallback titles,
++paths, attention/read timestamps, activity counters and children are retained.
++The protocol has an explicit version and validates dictionary references.
++
++A single owner per QueryClient shares reads among observers. Observers remain
++passive on the trial path, so legacy invalidations cannot start or cancel HTTP.
++Known thread changes queue bounded row reads; explicit missing IDs remove rows.
++Project/section notifications refresh only metadata. Environment metadata updates
++refresh affected rows. Event appends without relevant background/turn changes do
++not reload navigation. Reconnect, resume, initial acquisition and explicit refresh
++request a baseline. Hidden pages defer work. Failed reads retain data and retry
++with bounded backoff. One physical read runs at a time; subsequent changes merge
++into one pending operation (large ID sets require bounded batches). Releasing the
++last observer retires publication but allows the physical read to finish.
++Optimistic cache edits made during a read and held metadata patches survive its
++late response. Reconnect remains the recovery boundary for missed notifications.
++
++The same switch lets thread-tab persistence join an existing tabs query when no
++cached revision is available. The legacy synchronization read stays in place
++when the switch is off.
++
++## Behavior and verification limits
++
++Sections, project metadata, pin order, parent relationships and all raw row fields
++remain in the common cache. Core search/filter selectors and plugins such as
++thread-list and inbox-sidebar-nerd receive the existing full shape. Inbox mode,
++unread/attention, grouping and collapse decisions remain with their existing
++consumers. No visibility-scoped fetching or thread archive migration is included.
++
++Codec, SQLite route parity, rollback, multiple observers, cancellation storms,
++row moves/creation/removal, concurrent optimistic edits and hidden-page recovery
++have regression coverage. Browser replay measurements use a saved data snapshot
++and fixed notifications, separately from live measurements. They do not establish
++real-user latency, live event rates or production plugin behavior after deployment.
++Plugin consumer acceptance with a verified person's identity remains a deployment
++check. The trial deliberately has no automatic fallback that would conceal errors.
+diff --git a/packages/server-contract/src/index.ts b/packages/server-contract/src/index.ts
+index c3b8a39551f60ef25c1a244a0e8622942cfec504..ccdcdbf62b0821a032d6d58a9c4ace7367954116 100644
+--- a/packages/server-contract/src/index.ts
++++ b/packages/server-contract/src/index.ts
+@@ -22,3 +22,4 @@ export type {
+ } from "@bb/domain";
+ 
+ export * from "./api/machine-environment.js";
++export * from "./p6r-sidebar.js";
+diff --git a/packages/server-contract/src/p6r-sidebar.ts b/packages/server-contract/src/p6r-sidebar.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdc35b0ff75b0b0e438eff02714f987a7ac41d42
+--- /dev/null
++++ b/packages/server-contract/src/p6r-sidebar.ts
+@@ -0,0 +1,300 @@
++import { z } from "zod";
++import { threadListEntrySchema, type ThreadListEntry } from "@bb/domain";
++import {
++  projectWithThreadsResponseSchema,
++  sidebarBootstrapResponseSchema,
++  type SidebarBootstrapResponse,
++} from "./api/projects.js";
++
++const environmentFields = {
++  environmentId: true,
++  environmentBranchName: true,
++  environmentHostId: true,
++  environmentName: true,
++  environmentPath: true,
++  environmentProviderId: true,
++  environmentIsWorktree: true,
++  environmentWorkspaceDisplayKind: true,
++} as const;
++
++const environmentSchema = threadListEntrySchema.pick(environmentFields);
++const participantSchema =
++  threadListEntrySchema.shape.p6rParticipants.unwrap().element;
++const referenceSchema = z.number().int().nonnegative();
++
++const rowSchema = threadListEntrySchema
++  .omit({
++    ...environmentFields,
++    p6rParticipants: true,
++    projectId: true,
++  })
++  .partial()
++  .required({
++    id: true,
++    providerId: true,
++    latestAttentionAt: true,
++    createdAt: true,
++    updatedAt: true,
++  })
++  .extend({
++    projectId: z.string().optional(),
++    environmentRef: referenceSchema,
++    p6rParticipants: z.array(referenceSchema).optional(),
++  });
++
++const projectSchema = projectWithThreadsResponseSchema
++  .omit({ threads: true })
++  .extend({
++    threads: z.array(rowSchema),
++  });
++
++const dictionariesSchema = z.object({
++  wireVersion: z.literal(1),
++  participants: z.array(participantSchema),
++  environments: z.array(environmentSchema),
++});
++
++type Row = z.infer<typeof rowSchema>;
++type Dictionaries = z.infer<typeof dictionariesSchema>;
++
++function checkReferences(
++  rows: readonly Row[],
++  dictionaries: Dictionaries,
++  context: z.RefinementCtx,
++) {
++  for (const row of rows) {
++    if (
++      row.environmentRef >= dictionaries.environments.length ||
++      row.p6rParticipants?.some(
++        (ref) => ref >= dictionaries.participants.length,
++      )
++    ) {
++      context.addIssue({
++        code: "custom",
++        message: "Invalid sidebar dictionary reference",
++      });
++    }
++  }
++}
++
++export const p6rSidebarBootstrapSchema = dictionariesSchema
++  .extend({
++    sections: sidebarBootstrapResponseSchema.shape.sections,
++    projects: z.array(projectSchema),
++    personalProject: projectSchema,
++  })
++  .superRefine((value, context) => {
++    checkReferences(
++      [value.personalProject, ...value.projects].flatMap((p) => p.threads),
++      value,
++      context,
++    );
++  });
++export type P6rSidebarBootstrap = z.infer<typeof p6rSidebarBootstrapSchema>;
++
++export const p6rSidebarThreadsSchema = dictionariesSchema
++  .extend({
++    threads: z.array(rowSchema.extend({ projectId: z.string() })),
++    missingIds: z.array(z.string()),
++  })
++  .superRefine((value, context) =>
++    checkReferences(value.threads, value, context),
++  );
++export type P6rSidebarThreads = z.infer<typeof p6rSidebarThreadsSchema>;
++
++export const p6rSidebarThreadQuerySchema = z.object({
++  ids: z
++    .string()
++    .max(12000)
++    .regex(/^thr_[a-z0-9]+(?:,thr_[a-z0-9]+){0,199}$/),
++});
++
++const defaults = {
++  title: null,
++  titleFallback: null,
++  sectionId: null,
++  status: "idle",
++  parentThreadId: null,
++  lifecycleOwnerThreadId: null,
++  sourceThreadId: null,
++  originKind: null,
++  originPluginId: null,
++  visibility: "visible",
++  parentNotifications: "auto",
++  archivedAt: null,
++  pinnedAt: null,
++  deletedAt: null,
++  lastReadAt: null,
++  pinSortKey: null,
++  queuedWork: "none",
++  hasPendingInteraction: false,
++  activity: {
++    activeBackgroundAgentCount: 0,
++    activeBackgroundCommandCount: 0,
++    activeGoalCount: 0,
++    activePlanModeCount: 0,
++    activeWorkflowCount: 0,
++  },
++  runtime: { displayStatus: "idle" },
++} satisfies Partial<ThreadListEntry>;
++
++function omitDefaults<T extends object>(
++  value: T,
++  baseline: Partial<T>,
++): Partial<T> {
++  const result: Partial<T> = { ...value };
++  for (const key in baseline) {
++    const left = result[key];
++    const right = baseline[key];
++    const same = left === right || (
++      typeof left === "object" && left !== null &&
++      typeof right === "object" && right !== null &&
++      Object.keys(left).length === Object.keys(right).length &&
++      Object.keys(right).every(field => Reflect.get(left, field) === Reflect.get(right, field))
++    );
++    if (same) delete result[key];
++  }
++  return result;
++}
++
++function createEncoder() {
++  const dictionaries: Dictionaries = {
++    wireVersion: 1,
++    participants: [],
++    environments: [],
++  };
++  const participants = new Map<string | null, number[]>();
++  const environments = new Map<string | null, number[]>();
++  function intern<T extends object>(values: T[], index: Map<string | null, number[]>, key: string | null, value: T) {
++    const candidates = index.get(key) ?? [];
++    const fields = Object.keys(value);
++    for (const candidate of candidates) {
++      const existing = values[candidate]!;
++      if (fields.length === Object.keys(existing).length && fields.every(field => Reflect.get(value, field) === Reflect.get(existing, field))) return candidate;
++    }
++    const ref = values.length;
++    values.push(value);
++    candidates.push(ref);
++    index.set(key, candidates);
++    return ref;
++  }
++  function row(thread: ThreadListEntry, projectId?: string): Row {
++    const {
++      environmentId,
++      environmentBranchName,
++      environmentHostId,
++      environmentName,
++      environmentPath,
++      environmentProviderId,
++      environmentIsWorktree,
++      environmentWorkspaceDisplayKind,
++      p6rParticipants,
++      projectId: actualProjectId,
++      ...rest
++    } = thread;
++    return {
++      ...omitDefaults(rest, defaults),
++      id: thread.id,
++      providerId: thread.providerId,
++      latestAttentionAt: thread.latestAttentionAt,
++      createdAt: thread.createdAt,
++      updatedAt: thread.updatedAt,
++      ...(actualProjectId === projectId ? {} : { projectId: actualProjectId }),
++      environmentRef: intern(dictionaries.environments, environments, environmentId, {
++        environmentId,
++        environmentBranchName,
++        environmentHostId,
++        environmentName,
++        environmentPath,
++        environmentProviderId,
++        environmentIsWorktree,
++        environmentWorkspaceDisplayKind,
++      }),
++      ...(p6rParticipants === undefined
++        ? {}
++        : {
++            p6rParticipants: p6rParticipants.map((p) =>
++                intern(dictionaries.participants, participants, p.p6rPrincipalKey, p),
++            ),
++          }),
++    };
++  }
++  return { dictionaries, row };
++}
++
++function decodeRow(
++  row: Row,
++  dictionaries: Dictionaries,
++  projectId: string,
++): ThreadListEntry {
++  const { environmentRef, p6rParticipants, ...rest } = row;
++  return threadListEntrySchema.parse({
++    ...defaults,
++    ...rest,
++    projectId: row.projectId ?? projectId,
++    ...dictionaries.environments[environmentRef],
++    ...(p6rParticipants === undefined
++      ? {}
++      : {
++          p6rParticipants: p6rParticipants.map(
++            (ref) => dictionaries.participants[ref],
++          ),
++        }),
++  });
++}
++
++export function encodeP6rSidebarBootstrap(
++  value: SidebarBootstrapResponse,
++): P6rSidebarBootstrap {
++  const encoder = createEncoder();
++  const project = (p: SidebarBootstrapResponse["personalProject"]) => ({
++    ...p,
++    threads: p.threads.map((t) => encoder.row(t, p.id)),
++  });
++  const personalProject = project(value.personalProject);
++  const projects = value.projects.map(project);
++  return {
++    ...encoder.dictionaries,
++    sections: value.sections,
++    projects,
++    personalProject,
++  };
++}
++
++export function decodeP6rSidebarBootstrap(
++  input: unknown,
++): SidebarBootstrapResponse {
++  const value = p6rSidebarBootstrapSchema.parse(input);
++  const project = (p: P6rSidebarBootstrap["personalProject"]) => ({
++    ...p,
++    threads: p.threads.map((t) => decodeRow(t, value, p.id)),
++  });
++  return {
++    sections: value.sections,
++    projects: value.projects.map(project),
++    personalProject: project(value.personalProject),
++  };
++}
++
++export function encodeP6rSidebarThreads(
++  threads: ThreadListEntry[],
++  missingIds: string[],
++): P6rSidebarThreads {
++  const encoder = createEncoder();
++  const rows = threads.map((thread) => ({
++    ...encoder.row(thread),
++    projectId: thread.projectId,
++  }));
++  return { ...encoder.dictionaries, threads: rows, missingIds };
++}
++
++export function decodeP6rSidebarThreads(input: unknown): {
++  threads: ThreadListEntry[];
++  missingIds: string[];
++} {
++  const value = p6rSidebarThreadsSchema.parse(input);
++  return {
++    threads: value.threads.map((row) => decodeRow(row, value, row.projectId)),
++    missingIds: value.missingIds,
++  };
++}
+diff --git a/packages/server-contract/src/public-api.ts b/packages/server-contract/src/public-api.ts
+index 7df7f571315240337f7f7b57c56f849e8a8bc991..8ba5ee93903b1180d19525b31f14582dd553f375 100644
+--- a/packages/server-contract/src/public-api.ts
++++ b/packages/server-contract/src/public-api.ts
+@@ -56,6 +56,11 @@ import {
+   type ExperimentalDesktopBrowserImportOutcome,
+ } from "./api/desktop-browsers.js";
+ import type { P6rIdentityResponse } from "./api/system.js";
++import {
++  p6rSidebarThreadQuerySchema,
++  type P6rSidebarBootstrap,
++  type P6rSidebarThreads,
++} from "./p6r-sidebar.js";
+ import type { Hono } from "hono";
+ import type {
+   AppTheme,
+@@ -457,6 +462,28 @@ type PathThreadInteractionId = {
+ };
+ 
+ export const publicApiRoutes = {
++  p6rSidebar: {
++    projects: defineRoute({
++      path: "/p6r/sidebar-projects",
++      method: "get",
++      request: noRequest(),
++      response: jsonResponse<P6rSidebarBootstrap>(),
++    }),
++    bootstrap: defineRoute({
++      path: "/p6r/sidebar-bootstrap",
++      method: "get",
++      request: noRequest(),
++      response: jsonResponse<P6rSidebarBootstrap>(),
++    }),
++    threads: defineRoute({
++      path: "/p6r/sidebar-threads",
++      method: "get",
++      request: queryRequest<EmptyInput, { ids: string }>(
++        p6rSidebarThreadQuerySchema,
++      ),
++      response: jsonResponse<P6rSidebarThreads>(),
++    }),
++  },
+   promptHistory: {
+     list: defineRoute({
+       path: "/prompt-history",
+diff --git a/packages/server-contract/test/p6r-sidebar.p6r.test.ts b/packages/server-contract/test/p6r-sidebar.p6r.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..fc071c626bb779fd22bb0cb1fa422a80d9782376
+--- /dev/null
++++ b/packages/server-contract/test/p6r-sidebar.p6r.test.ts
+@@ -0,0 +1,142 @@
++import { describe, expect, it } from "vitest";
++import { threadListEntrySchema } from "@bb/domain";
++import { sidebarBootstrapResponseSchema } from "../src/api/projects.js";
++import {
++  decodeP6rSidebarBootstrap,
++  encodeP6rSidebarBootstrap,
++  p6rSidebarBootstrapSchema,
++} from "../src/p6r-sidebar.js";
++
++function fixture() {
++  const thread = threadListEntrySchema.parse({
++    id: "thr_one",
++    projectId: "personal",
++    environmentId: "env_one",
++    providerId: "codex",
++    title: null,
++    titleFallback: "Exact fallback",
++    sectionId: null,
++    status: "idle",
++    parentThreadId: null,
++    sourceThreadId: null,
++    lifecycleOwnerThreadId: null,
++    originKind: null,
++    originPluginId: null,
++    visibility: "visible",
++    parentNotifications: "auto",
++    archivedAt: null,
++    pinnedAt: null,
++    deletedAt: null,
++    lastReadAt: null,
++    latestAttentionAt: 2,
++    createdAt: 1,
++    updatedAt: 3,
++    activity: {
++      activeWorkflowCount: 0,
++      activeBackgroundAgentCount: 0,
++      activeBackgroundCommandCount: 0,
++      activePlanModeCount: 0,
++      activeGoalCount: 0,
++    },
++    runtime: { displayStatus: "idle" },
++    queuedWork: "none",
++    pinSortKey: null,
++    hasPendingInteraction: false,
++    environmentBranchName: "main",
++    environmentHostId: "host_one",
++    environmentName: null,
++    environmentPath: "/workspace/exact",
++    environmentProviderId: "local-path",
++    environmentIsWorktree: false,
++    environmentWorkspaceDisplayKind: "other",
++    p6rParticipants: [
++      {
++        p6rPrincipalKey: "person:one",
++        p6rDisplayName: "One",
++        p6rImageUrl: "https://example.test/avatar/" + "a".repeat(300),
++      },
++    ],
++  });
++  return sidebarBootstrapResponseSchema.parse({
++    sections: [],
++    projects: [],
++    personalProject: {
++      id: "personal",
++      kind: "personal",
++      name: "Personal",
++      gitRemoteUrl: null,
++      createdAt: 1,
++      updatedAt: 2,
++      sources: [],
++      defaultExecutionOptions: null,
++      threads: [
++        thread,
++        {
++          ...thread,
++          id: "thr_two",
++          title: "Two",
++          sectionId: "section",
++          parentThreadId: "thr_one",
++          pinnedAt: 10,
++          pinSortKey: "a",
++          status: "error",
++          lastReadAt: 1,
++          parentNotifications: "stuck",
++          hasPendingInteraction: true,
++          queuedWork: "failed",
++          activity: { ...thread.activity, activeGoalCount: 1 },
++        },
++      ],
++    },
++  });
++}
++
++describe("p6r sidebar wire", () => {
++  it("restores the complete row contract and non-default behavior", () => {
++    const input = fixture();
++    const wire = encodeP6rSidebarBootstrap(input);
++    expect(wire.environments).toHaveLength(1);
++    expect(wire.participants).toHaveLength(1);
++    expect(wire.personalProject.threads[0]).not.toHaveProperty("activity");
++    expect(decodeP6rSidebarBootstrap(JSON.parse(JSON.stringify(wire)))).toEqual(
++      input,
++    );
++    expect(JSON.stringify(wire).length).toBeLessThan(
++      JSON.stringify(input).length,
++    );
++  });
++
++  it("does not merge distinct snapshots sharing the same identity", () => {
++    const input = fixture();
++    input.personalProject.threads[1]!.environmentPath = "/another/exact/path";
++    input.personalProject.threads[1]!.p6rParticipants![0] = {
++      ...input.personalProject.threads[0]!.p6rParticipants![0]!,
++      p6rDisplayName: "Updated",
++    };
++    const wire = encodeP6rSidebarBootstrap(input);
++    expect(wire.environments).toHaveLength(2);
++    expect(wire.participants).toHaveLength(2);
++    expect(decodeP6rSidebarBootstrap(wire)).toEqual(input);
++  });
++
++  it("preserves optional participants, duplicates, order and an explicit project", () => {
++    const input = fixture();
++    delete input.personalProject.threads[0]!.p6rParticipants;
++    const second = input.personalProject.threads[1]!;
++    second.projectId = "another-project";
++    second.p6rParticipants = [
++      ...second.p6rParticipants!,
++      ...second.p6rParticipants!,
++    ];
++    expect(decodeP6rSidebarBootstrap(encodeP6rSidebarBootstrap(input))).toEqual(
++      input,
++    );
++  });
++
++  it("rejects dangling dictionary references instead of inventing defaults", () => {
++    const wire = encodeP6rSidebarBootstrap(fixture());
++    wire.personalProject.threads[0]!.environmentRef = 99;
++    expect(() => decodeP6rSidebarBootstrap(wire)).toThrow();
++    expect(p6rSidebarBootstrapSchema.safeParse(wire).success).toBe(false);
++  });
++});
+diff --git a/packages/templates/src/templates/bb-guide-browser.md b/packages/templates/src/templates/bb-guide-browser.md
+index c47e22acf3877fa57e6e85930876bb3000ca6f8a..7ce53a10c27d0ab30f2da40dcb392a48ca089637 100644
+--- a/packages/templates/src/templates/bb-guide-browser.md
++++ b/packages/templates/src/templates/bb-guide-browser.md
+@@ -24,3 +24,10 @@ Discovery finds known browsers plus other Chromium and Firefox cookie stores in
+ All commands support JSON output. In plugin code use `bb.sdk.experimental_desktopBrowsers`; the Plugin Guide documents the typed surface. Stop/Take over revokes native control; stopping the owning thread also releases its server control leases. Old connection generations cannot control replacement windows.
+ 
+ Cloud browsers are not supported. Headless Chrome on an enrolled host belongs to the Browser Automation plugin.
++
++## Compact sidebar trial
++
++The downstream browser trial is off by default. In the browser console, set
++`localStorage.setItem("bb.p6r.compact-sidebar", "1")` and reload. Remove that key
++and reload to roll back without deployment. It preserves the complete sidebar
++thread set and plugin data shape while using compact reads and incremental rows.
+-- 
+2.53.0
+

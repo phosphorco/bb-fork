@@ -583,3 +583,19 @@ Patch79 preserves Codex app-server rejection explanations instead of replacing e
 Patch 80 replays the retained Claude recordings through the selected bridge and records its response-identity diagnostic events. Provider input recordings, transcript row counts, unhandled counts and grammar-drop counts stay unchanged. The existing parity assertions remain enabled.
 
 Patch 81 gives the ACP-next test workspace its own project marker, matching patch17 for ACP. Ambient ancestor markers such as `/tmp/.git` cannot change the expected user-versus-project classification. Production discovery behavior is unchanged; all82 ACP-next tests pass with the ambient marker retained.
+
+Patch85 adds a default-off compact sidebar trial: additive p6r bootstrap, bounded
+row and metadata-only routes, full-shape decoding into the existing cache, and a
+single noncancelling client request owner. Legacy bootstrap and query hook are
+unchanged. The browser-local `bb.p6r.compact-sidebar` switch plus reload selects
+or rolls back the trial without deployment. The same switch coalesces a missing
+thread-tab revision read with an existing query. The missing public plugin
+capability is control of native response serialization and TanStack ownership;
+replacement sidebars, RPCs and overlays still leave the native overfetch running.
+Cole's approval was relayed by Gus through the Outcome Owner on 2026-11-13; the
+verbatim relay is retained in the draft PR for his confirmation. Upstream cost
+is one contract module, server registration, the new client owner/facade and its
+import cohort; there is no DB migration or daemon protocol change. Retire when
+upstream provides compact lossless sidebar reads and incremental, coalesced
+request ownership. See the materialized docs/p6r-sidebar-performance.md for
+scope, rollout and behavior parity limits. Source review does not deploy it.
