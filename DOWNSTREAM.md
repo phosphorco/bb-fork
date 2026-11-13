@@ -583,3 +583,18 @@ Patch79 preserves Codex app-server rejection explanations instead of replacing e
 Patch 80 replays the retained Claude recordings through the selected bridge and records its response-identity diagnostic events. Provider input recordings, transcript row counts, unhandled counts and grammar-drop counts stay unchanged. The existing parity assertions remain enabled.
 
 Patch 81 gives the ACP-next test workspace its own project marker, matching patch17 for ACP. Ambient ancestor markers such as `/tmp/.git` cannot change the expected user-versus-project classification. Production discovery behavior is unchanged; all82 ACP-next tests pass with the ambient marker retained.
+
+Patch86 adds a default-off v2 mutable app-artifact freshness probe beside the
+unchanged legacy probe. `BB_P6R_PLUGIN_ARTIFACT_FRESHNESS=1` selects validation of
+the declared generation plus source mtimes; unset it and restart to roll back
+without a source revert. A separate restart authorization is required. V1 and
+disabled operation retain the legacy path; SDK checks still precede selection.
+A plugin cannot override the native loader's preactivation freshness/build
+policy. Cole's approval was relayed by Gus through the Outcome Owner on
+2026-11-13; the draft PR retains the exact relay for confirmation. This is
+independent of patch85. Upstream-sync cost is one selection call in plugin-runtime,
+one helper and filesystem tests; no storage or daemon protocol change. Retire
+when upstream freshness recognizes the v2 artifact layout. The probe performs
+one extra existing-loader validation/hash pass, explicitly retaining downstream
+validation after freshness. See docs/p6r-plugin-artifact-freshness.md in the
+materialization. No runtime or deployment is changed by the source receipt.
