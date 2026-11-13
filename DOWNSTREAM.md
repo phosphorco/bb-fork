@@ -599,3 +599,24 @@ Patch85 coalesces the native shared sidebar catalogue dirty-read path through it
 Patch83 recovers queued rows left on a `host-offline` wait after their host is connected. It compensates for a recovery gap in the native-admission overlay (patch73), not for upstream: upstream books a retry on every non-timeout automatic failure, while the overlay's exact group-claim path cannot record a failure for a lost claim, and a `host-offline` wait is otherwise cleared only by the host's reconnect event. Observed 2026-11-12 as `queued_message_claim_lost` during a daemon reconnect, leaving four rows parked with their host connected. The existing periodic idle recovery now rechecks `host-offline` rows for connected hosts that are not waiting for execution, through the same shared dispatch and claim path as the reconnect wake, with requeue pacing. A failed automatic attempt also logs the row's resulting state, wait, retry booking and host connection. Restoring upstream's row-level failure booking was reviewed and rejected: it double-books ordinary failures and does not recover rows already parked or a wake that raised no error. No schema, query, public protocol or daemon wire change; production edits are confined to `queued-message-dispatch.ts`. Retire when the composed implementation guarantees a later attempt for these rows by any means, whether retry booking or wait reconciliation. Verified by tests that seed the parked state; the reconnect race itself was not reproduced.
 
 Patch84 adds a Copy details action to mutation error toasts. It copies the title, message, lifecycle operation, HTTP status, server code and body, page URL and caller context as JSON; queued-message sends include thread, queued message, mode, state and wait as observed by the client after the failure. Toast lifetime is unchanged. App-only; no server or protocol change. Cole requested a copy control on the error on 2026-11-12. A plugin alternative exists and was not taken: a content script could decorate the toast DOM and wrap `fetch` to retain failed responses, at the cost of depending on toast markup and intercepting every request. This patch is independent of patch83 and can be dropped alone; retire it if that plugin is built or upstream offers error details on its toasts.
+
+
+Context Magnet observation allocation repair (2026-11-13), folded into patch26:
+upstream release `desktop-v0.49.0` (`7b26cae79ec978fafd0a5db0e8517e94f12eb8f4`)
+and fresh main `05199007ecad513b714b244e46b0ab2a9a06279f` contain no downstream
+trace/admission tables or allocator, so there is no upstream repair to adopt.
+The public plugin API cannot select stored observation numbers or replace this
+private native DB append owner; a separate plugin store would leave native
+history broken. Cole explicitly requested this bounded repair.
+
+The original per-thread allocator collided with the table-wide integer primary
+key. The same IMMEDIATE transaction now allocates above the greater of the
+retained primary-key maximum and the thread's durable watermark. The existing
+primary key supports the maximum lookup; no new index, schema migration, global
+counter, public API or history rewrite is needed. Retained keys stay unique and
+thread sequences stay monotonic through pruning and restart; values are not
+globally never-reused historical IDs. Three native DB regressions fail before
+and pass after, covering interleaved threads/batches, removal of all retained
+observations, fresh Node processes with startup migration, and frozen cursor
+continuation. All716 DB tests and DB typecheck pass. These are isolated source
+checks, not evidence of production activation or simultaneous-writer rehearsal.

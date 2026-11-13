@@ -5,7 +5,7 @@
 This is the selected source delta: **12 capabilities / 75 patches**. It is not a deployment or live-test receipt.
 
 - Reviewed upstream: `01affc197dc621cddc7343e09b1c5c10a5b9efcb`
-- Reviewed result tree: `e7f4c174a6f3456c54dc2f523c638e7a8169e417`
+- Reviewed result tree: `e6865fedf4a873319df52ca27039799feb1b54d8`
 
 The checker enforces explicit source coverage and review freshness. Each capability digest binds its primary patches and all selected patches touching the same source files, requiring shared-source dependency review. Human review establishes whether explanations and state/API identities are semantically complete. Historical notes remain in [DOWNSTREAM.md](DOWNSTREAM.md).
 
@@ -306,7 +306,7 @@ Retire only when upstream/native public plugin contracts preserve the same best-
 - [0060-test-upstream-align-downstream-fixtures-with-migrated-templates.patch](patches/0060-test-upstream-align-downstream-fixtures-with-migrated-templates.patch)
 - [0063-feat-p6r-retain-external-person-authorship.patch](patches/0063-feat-p6r-retain-external-person-authorship.patch)
 
-Reviewed source digest: `c2fd2e4705f9ac8c46e7063f5251bf69603cb113066670b920243927ea790d16`
+Reviewed source digest: `fc18117e96974cd01a6125a54c6541268e36c6cc31776dce6567e549e2152b03`
 
 </details>
 
@@ -474,7 +474,7 @@ Retire the downstream implementation when upstream exposes equivalent server-own
 - [0018-feat-sidebar-add-native-layout-provider-seam.patch](patches/0018-feat-sidebar-add-native-layout-provider-seam.patch)
 - [0049-perf-p6r-skip-participant-projection-rebuilds-for-un.patch](patches/0049-perf-p6r-skip-participant-projection-rebuilds-for-un.patch)
 
-Reviewed source digest: `2163a09c633379f4a4df369065f45097cb5070cd810ab25a387b2ea457bce3f9`
+Reviewed source digest: `b005654ba382720818858d5dfc346537ba41ff5c2bd0f74fdb7564adbef72a8f`
 
 </details>
 
@@ -724,7 +724,7 @@ Retire only after upstream has one equivalent durable native admission/delivery 
 - [0078-fix-honor-explicit-queued-delivery-mode.patch](patches/0078-fix-honor-explicit-queued-delivery-mode.patch)
 - [0083-fix-recover-host-offline-waits-on-connected-hosts.patch](patches/0083-fix-recover-host-offline-waits-on-connected-hosts.patch)
 
-Reviewed source digest: `deb99f734bff7ecd03b6cc77b49c2ce0b349e8590da9b351311bc8c66842c00d`
+Reviewed source digest: `ea5931a5247dc9dc119f6e1d8f8480d8eec9f26987ccd88ea53e14064984790d`
 
 </details>
 
@@ -739,6 +739,7 @@ Context assembly should be inspectable and customizable at named producer bounda
 - Host-created attempt IDs and append-only constructed/accepted/failed-settlement observations preserve provider admission without claiming model consumption. Nonempty validated provider IDs establish acceptance; later bookkeeping cannot contradict it.
 - Synchronous plugin prompt middleware and observers share the same renderer as adapted server-owned instruction, message/template, tool-description and schema-description producers. Structured request context stays separate from rendered text.
 - Contribution lookup selects metadata first and decodes only matched physical rows, preserving replacement semantics and row ordering. It still performs global metadata work; it is not an indexed all-purpose history engine.
+- Admission observation numbers are unique among retained rows and strictly increase within each surviving thread. The existing IMMEDIATE transaction allocates above both the retained global primary-key maximum and the durable per-thread watermark, preserving frozen snapshot bounds after pruning and restart without rewriting history.
 
 ### Responsibility
 
@@ -753,8 +754,8 @@ Context assembly should be inspectable and customizable at named producer bounda
   - Why: Avoid decoding unrelated retained payloads for exact-reference reads; global metadata work remains and is not an indexed history lookup.
   - State/API identities: `listP6rContributions`, `p6r_contributions.id`, `p6r_contributions.thread_id`, `p6r_contributions.replaces_contribution_id`
   - Source: `apps/server/src/services/p6r/sidecar-store.ts`
-- **Owns seven Context Magnet evidence tables, stable snapshot high-watermark reads capped at 100 rows with 15-minute cursors, and newest-16 admission attempts per contribution with explicit prune counts.**
-  - Why: Explain constructed/accepted/settled evidence without equating transport acceptance with model consumption; retain pagination/retention gaps. The separately stated multi-thread observation-sequence constraint defect remains unresolved.
+- **Owns seven Context Magnet evidence tables, stable snapshot high-watermark reads capped at 100 rows with 15-minute cursors, and newest-16 admission attempts per contribution with explicit prune counts. Observation allocation uses the existing integer primary-key maximum and the durable thread watermark under one IMMEDIATE transaction; sequences may contain gaps.**
+  - Why: Explain constructed/accepted/settled evidence without equating transport acceptance with model consumption; retain pagination/retention gaps. A different thread must not collide with retained observation keys, and pruning must not let late observations re-enter an earlier thread snapshot. The existing schema, migrated rows and API shapes stay unchanged.
   - State/API identities: `context_magnet_contribution_trace_receipts`, `context_magnet_contribution_trace_snapshots`, `context_magnet_contribution_traces`, `context_magnet_provider_admission_attempts`, `context_magnet_provider_admission_observations`, `context_magnet_provider_admission_retention`, `context_magnet_provider_admission_sequences`, `appendContextMagnetContributionTrace`, `recordContextMagnetContributionReceipt`, `createContextMagnetProviderAdmission`, `appendContextMagnetProviderAdmissionObservations`, `listContextMagnetContributionTracePage`, `pruneContextMagnetContributionTraces`, `PAGE_SIZE_MAX`, `SNAPSHOT_MAX_AGE_MS`
   - Source: `packages/db/src/data/context-magnet-contribution-traces.ts`
 - **Reexports the capability-owned database operations or ID constructors: appendContextMagnetContributionTrace, appendContextMagnetProviderAdmissionObservations, createContextMagnetProviderAdmission, listContextMagnetContributionTracePage, pruneContextMagnetContributionTraces, recordContextMagnetContributionReceipt. This support boundary adds no independent table or migration.**
@@ -866,7 +867,7 @@ Context assembly should be inspectable and customizable at named producer bounda
 
 - **Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.**
   - Why: Protect the accepted behavior and its failure cases across source refreshes. DB Context Magnet trace/history functions own retained evidence and bounded reads.
-  - Source: `apps/host-daemon/src/command-dispatch.test.ts`, `apps/server/src/services/prompts/render-prompt.test.ts`, `apps/server/test/helpers/commands.ts`, `apps/server/test/prompts/render-tool-prompts.test.ts`, `apps/server/test/public/public-thread-data.test.ts`, `apps/server/test/services/p6r/contribution-lookup.test.ts`, `apps/server/test/services/plugins/plugin-agent-tools.test.ts`, `apps/server/test/services/plugins/plugin-authoring-docs.test.ts`, `apps/server/test/services/plugins/plugin-sdk.test.ts`, `apps/server/test/services/plugins/plugin-service.test.ts`, `apps/server/test/services/prompts/producer-adapters.test.ts`, `apps/server/test/threads/prompt-message-rendering.test.ts`, `apps/server/test/threads/thread-lifecycle-admission.test.ts`, `apps/server/test/threads/thread-ownership-debounce.test.ts`, `apps/server/test/threads/thread-runtime-config.test.ts`, `apps/server/test/threads/thread-send-dispatch.test.ts`, `packages/db/test/data/context-magnet-contribution-traces.test.ts`, `packages/domain/test/context-magnet-contribution-trace.test.ts`, `packages/host-daemon-contract/test/contract.test.ts`, `packages/plugin-sdk/src/__tests__/context-magnet-host-policy.test.ts`, `packages/plugin-sdk/src/__tests__/package-exports.test.ts`, `packages/plugin-sdk/src/__tests__/public-types.test.ts`, `packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts`, `packages/plugin-sdk/src/testing/fake-plugin-host.ts`, `packages/sdk/test/node-entry.test.ts`, `packages/sdk/test/public-types.test.ts`, `packages/templates/test/templates.test.ts`, `plugins/provider-codex/src/bridge/app-server-connection.test.ts`, `plugins/provider-codex/src/bridge/bridge.admission.test.ts`, `plugins/provider-codex/src/bridge/bridge.archive-idempotency.test.ts`, `plugins/provider-codex/src/bridge/bridge.recovery.test.ts`, `plugins/provider-codex/src/bridge/bridge.writer-lock.test.ts`, `plugins/provider-codex/src/bridge/bridge.zero-work-turn.test.ts`
+  - Source: `apps/host-daemon/src/command-dispatch.test.ts`, `apps/server/src/services/prompts/render-prompt.test.ts`, `apps/server/test/helpers/commands.ts`, `apps/server/test/prompts/render-tool-prompts.test.ts`, `apps/server/test/public/public-thread-data.test.ts`, `apps/server/test/services/p6r/contribution-lookup.test.ts`, `apps/server/test/services/plugins/plugin-agent-tools.test.ts`, `apps/server/test/services/plugins/plugin-authoring-docs.test.ts`, `apps/server/test/services/plugins/plugin-sdk.test.ts`, `apps/server/test/services/plugins/plugin-service.test.ts`, `apps/server/test/services/prompts/producer-adapters.test.ts`, `apps/server/test/threads/prompt-message-rendering.test.ts`, `apps/server/test/threads/thread-lifecycle-admission.test.ts`, `apps/server/test/threads/thread-ownership-debounce.test.ts`, `apps/server/test/threads/thread-runtime-config.test.ts`, `apps/server/test/threads/thread-send-dispatch.test.ts`, `packages/db/test/data/context-magnet-admission-sequences.test.ts`, `packages/db/test/data/context-magnet-contribution-traces.test.ts`, `packages/domain/test/context-magnet-contribution-trace.test.ts`, `packages/host-daemon-contract/test/contract.test.ts`, `packages/plugin-sdk/src/__tests__/context-magnet-host-policy.test.ts`, `packages/plugin-sdk/src/__tests__/package-exports.test.ts`, `packages/plugin-sdk/src/__tests__/public-types.test.ts`, `packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts`, `packages/plugin-sdk/src/testing/fake-plugin-host.ts`, `packages/sdk/test/node-entry.test.ts`, `packages/sdk/test/public-types.test.ts`, `packages/templates/test/templates.test.ts`, `plugins/provider-codex/src/bridge/app-server-connection.test.ts`, `plugins/provider-codex/src/bridge/bridge.admission.test.ts`, `plugins/provider-codex/src/bridge/bridge.archive-idempotency.test.ts`, `plugins/provider-codex/src/bridge/bridge.recovery.test.ts`, `plugins/provider-codex/src/bridge/bridge.writer-lock.test.ts`, `plugins/provider-codex/src/bridge/bridge.zero-work-turn.test.ts`
 - **Host execution and server/daemon transport. Context Magnet retains explicit bounded host-supplied contribution declarations, trace records, immutable pagination bounds and model receipt-tool consumption evidence.**
   - Why: DB Context Magnet trace/history functions own retained evidence and bounded reads. Agent runtime/provider bridge owns construction/admission observations; server combines these without promoting evidence strength. Prompt renderer/plugin generation registry owns synchronous rendering, disposal, middleware order and observations. P6R sidecar-store owns exact contribution lookup and payload decoding.
   - Source: `apps/host-daemon/src/command-handlers/thread.ts`
@@ -901,12 +902,13 @@ These identify relevant checks; listing them does not assert that they passed fo
 - producer-adapters.test.ts
 - prompt-message-rendering.test.ts
 - contribution-lookup.test.ts
+- packages/db/test/data/context-magnet-admission-sequences.test.ts: interleaved threads/batches, pruning, fresh processes, startup migrate and frozen cursor continuation; all three fail with the original allocator.
 
 ### Known limitations
 
 - The fork does not claim capture of every possible prompt or proof that a model read every supplied token. Only selected named producers and explicit evidence are covered.
 - 0068 removes duplicate/unrelated payload decoding but retains metadata scans and selected payload work. Do not describe it as removing all projection cost.
-- Known defect: the selected migration declares admission_observation_sequence as a global primary key while the allocator numbers observations per thread. An isolated SQLite test of two threads' first observation reproduces a uniqueness collision. This is a constraint/allocator characterization, not a live or full-handler reproduction; the catalog task does not change that behavior.
+- Observation sequence values are not globally never-reused historical identifiers after deletion. Retained rows remain globally unique and each surviving thread remains monotonic; page watermarks are thread-scoped. The current positive-integer API does not promise contiguous numbers.
 
 ### Retirement condition
 
@@ -920,7 +922,7 @@ Retire when upstream/public plugin surfaces cover the same producer and evidence
 - [0047-feat-p6r-adapt-owned-runtime-and-message-prompt-prod.patch](patches/0047-feat-p6r-adapt-owned-runtime-and-message-prompt-prod.patch)
 - [0068-fix-p6r-bound-contribution-payload-decoding.patch](patches/0068-fix-p6r-bound-contribution-payload-decoding.patch)
 
-Reviewed source digest: `d1326133bc67e631de49bf0764086c2993a86c863676f42a32be39133f3a9c72`
+Reviewed source digest: `d6eb0e658da012d7f68a6d33789a3e09e8d9249606fd3c58fc181ccd358536b6`
 
 </details>
 
@@ -1073,7 +1075,7 @@ For 0058 specifically: move the adapter into Account Pooler when provider SDK ad
 - [0079-fix-preserve-codex-rejection-diagnostics.patch](patches/0079-fix-preserve-codex-rejection-diagnostics.patch)
 - [0080-test-retain-provider-identity-replay-expectations.patch](patches/0080-test-retain-provider-identity-replay-expectations.patch)
 
-Reviewed source digest: `0b528b589c8b2f64370cfa60d3c86f6e3df836177f509c47c18cce5e6e3cf513`
+Reviewed source digest: `d09d1ae9b98b48affb4335bfbfea002961de8e62292e16f92694335eb1c3ef8f`
 
 </details>
 
@@ -1231,7 +1233,7 @@ Retire only when upstream carries equivalent explicit role/provenance classifica
 
 - [0065-fix-env-preserve-explicit-credential-provenance.patch](patches/0065-fix-env-preserve-explicit-credential-provenance.patch)
 
-Reviewed source digest: `d712aa8e7ac0a29f264259d743c9c698c2b18b91d1f8004c2f45415195cf5e74`
+Reviewed source digest: `374cf45fd2dd35048ae8d013cf59ef69827d3784a1ee05974e0fe63a7435e5b5`
 
 </details>
 
@@ -1438,7 +1440,7 @@ Retire when upstream plugin artifact/asset serving and route middleware provide 
 - [0037-test-cli-allow-scaffold-without-optional-chunks.patch](patches/0037-test-cli-allow-scaffold-without-optional-chunks.patch)
 - [0039-test-cli-read-packaged-app-from-versioned-artifact.patch](patches/0039-test-cli-read-packaged-app-from-versioned-artifact.patch)
 
-Reviewed source digest: `22d809f88eab60e1b24ef9aee354fe3b9018e116c34c4287df5f6ae2cc8d3a2b`
+Reviewed source digest: `cc00a809de3e9c79459c49ce5443eeb08bf29ef4e9476fef98c8ba2589d8e5ec`
 
 </details>
 
@@ -1679,6 +1681,6 @@ Drop maintenance-only ports when their corresponding upstream fixture/CI behavio
 - [0081-test-isolate-acp-next-native-roots-fixture.patch](patches/0081-test-isolate-acp-next-native-roots-fixture.patch)
 - [0082-test-follow-native-fixture-lint-policy.patch](patches/0082-test-follow-native-fixture-lint-policy.patch)
 
-Reviewed source digest: `37f6330b5063a9cbc23fc3275d24046db69c88cef10644e46bee83fd331f75f8`
+Reviewed source digest: `2b278a2e7d214be9048a98be10166383317468387b95d7ac57bf594e0c6c4ce0`
 
 </details>
