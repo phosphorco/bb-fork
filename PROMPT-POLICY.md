@@ -14,14 +14,28 @@ including future changes to `bb guide` and CLI help.
   explicit message is required. Explain when parent notifications are off or
   stuck; do not promise automatic delivery.
 - **Keep coordination useful.** Prefer substantive messages. Avoid acknowledgements,
-  duplicate summaries and waiting when no response is needed. Wait for real
-  dependencies when permitted.
+  duplicate summaries and blocking. BB agents continue independent work and
+  receive results through messages or configured notifications.
 - **Keep guidance consistent.** Provider instructions, `bb guide`, chapters and
   command help should agree on behavior and use correct command syntax. Put
   guidance where it is useful rather than repeating the introduction everywhere.
 
 The [current wording patch](patches/0008-prompt-wording.patch) changes the stock
 introduction’s delegation and return-route advice to follow these principles.
+
+## Match the audience
+
+- **BB agents:** supply only guidance needed to act in a BB thread. Do not teach
+  blocking commands such as `bb thread wait`; use messages and notifications.
+- **Humans and other harnesses:** preserve the full CLI reference, including
+  blocking commands. Codex or Claude running inside a BB thread counts as a BB
+  agent; the harness name alone does not determine the audience.
+
+Keep optional mechanics in reference material, not repeated in agent instructions.
+Do not patch reference text merely because it describes capabilities an agent
+should not normally use. Hide nothing by rewriting assembled output; make the
+instruction/skill source appropriate for its audience. Full reference commands
+remain explicitly discoverable; this is context design, not access control.
 
 ## Where changes belong
 
