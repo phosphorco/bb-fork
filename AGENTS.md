@@ -32,3 +32,7 @@ existing materialization. A clean mechanical check proves coverage, source
 freshness and generated-view consistency; the reviewer must still establish that
 the explanations and listed contracts are accurate. It is not runtime acceptance
 or authorization for a deployment or data migration.
+
+For prompt or CLI guide wording changes, cite the relevant section of
+[PROMPT-POLICY.md](PROMPT-POLICY.md). It records intent and verification criteria;
+it does not replace core-change approval or authorize runtime rewriting.

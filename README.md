@@ -51,6 +51,10 @@ The deployable source is the upstream submodule and `upstream.lock`, the ordered
 
 The complete preceding queue and rationale are in [`__archived/01aff-overlay/`](__archived/01aff-overlay/). Runtime prompt interception patches and their design notes are in [`__archived/patch-prompt-rewriting/`](__archived/patch-prompt-rewriting/). These folders are tracked history, outside every selected patch/build path. Do not load or port them automatically.
 
+The [prompt policy](PROMPT-POLICY.md) records the intended behavior, rationale,
+producer ownership and verification requirements for future prompt and CLI guide
+changes. Cite its relevant section when reviewing wording patches.
+
 Prompt wording is now the focused `0008-prompt-wording.patch`, applied to authored BB Guide template source before interpolation. The retired Prompt Rules plugin lives in the organization plugin repository's tracked `__archive/plugins/prompt-rules/`.
 
 ## Updating upstream
