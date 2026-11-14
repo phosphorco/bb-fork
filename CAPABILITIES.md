@@ -5,7 +5,7 @@
 This is the selected source delta: **8 capabilities / 8 patches**. It is not a deployment or live-test receipt.
 
 - Reviewed upstream: `05199007ecad513b714b244e46b0ab2a9a06279f`
-- Reviewed result tree: `be9de791bb80e58f0f83edecc394697a587d9c34`
+- Reviewed result tree: `0a48067e944b48caf193d96f736553b96d7ad504`
 
 The checker enforces explicit source coverage and review freshness. Each capability digest binds its primary patches and all selected patches touching the same source files, requiring shared-source dependency review. Human review establishes whether explanations and state/API identities are semantically complete. Historical notes remain in [DOWNSTREAM.md](DOWNSTREAM.md).
 
@@ -1533,7 +1533,7 @@ Reevaluate every integration adjustment on the next upstream upgrade rather than
 
 - [0007-integration-and-verification.patch](patches/0007-integration-and-verification.patch)
 
-Reviewed source digest: `f2d064ffd8e06f7cb8f939d104d10610b80b25eabc59cbdd44185557078945ea`
+Reviewed source digest: `4588a55afc193885325cc36a711205d7deb1c115975cbb63fb0aabd249647e3a`
 
 </details>
 
@@ -1544,23 +1544,24 @@ Company guide wording belongs in a focused source patch before interpolation; ru
 
 ### What this delivers
 
-- Company guide wording belongs in a focused source patch before interpolation; runtime rewriting must not touch user message bodies.
+- Maintain source-level delegation and return-route wording without rewriting interpolated user content.
+- Omit blocking guidance from BB agent introductions and the bundled CLI skill while preserving the complete CLI guide and command help.
 
 ### Responsibility
 
-- The BB Guide introduction template owns wording; ordinary native interpolation and plugin enablement remain upstream-owned.
+- BB Guide owns its introduction and bundled skill; Phosphor Guide owns its separately enabled native instruction contribution. The CLI reference and execution semantics remain unchanged.
 
 ### Other affected areas
 
-- **Maintain reviewed BB Guide wording in source: bb-guide/introduction.ts**
-  - Why: Company guide wording belongs in a focused source patch before interpolation; runtime rewriting must not touch user message bodies.
-  - Source: `plugins/bb-guide/introduction.ts`
+- **BB agent introduction and CLI skill guidance**
+  - Why: BB agents coordinate asynchronously; full blocking-command reference belongs to deliberate CLI discovery rather than supplied agent guidance.
+  - Source: `plugins/bb-guide/introduction.ts`, `plugins/bb-guide/skills/bb-cli/SKILL.md`, `plugins/bb-guide/skills/bb-cli/references/command-index.md`
 
 ### Verification references
 
 These identify relevant checks; listing them does not assert that they passed for a deployment.
 
-- Focused wording review checks the guide template; live verification must inspect effective provider instructions.
+- Production instruction assembler fixture checks effective contributions, selected skill files, reload and preserved unrelated instructions. CLI guide templates and commands are unchanged.
 
 ### Known limitations
 
@@ -1574,6 +1575,6 @@ Retire this wording patch when native guide configuration supports the same text
 
 - [0008-prompt-wording.patch](patches/0008-prompt-wording.patch)
 
-Reviewed source digest: `cc2f38403e02e6da2d0f23fb6edc7d966f086b3c88427775996598540bbb2ea4`
+Reviewed source digest: `4588a55afc193885325cc36a711205d7deb1c115975cbb63fb0aabd249647e3a`
 
 </details>
