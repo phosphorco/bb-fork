@@ -4,8 +4,8 @@
 
 This is the selected source delta: **8 capabilities / 8 patches**. It is not a deployment or live-test receipt.
 
-- Reviewed upstream: `05199007ecad513b714b244e46b0ab2a9a06279f`
-- Reviewed result tree: `0a48067e944b48caf193d96f736553b96d7ad504`
+- Reviewed upstream: `da3e60b81d560e114a2bec724bb59c997aaaae7f`
+- Reviewed result tree: `abe937875daed105f18a4e411ff3d1a385cd4900`
 
 The checker enforces explicit source coverage and review freshness. Each capability digest binds its primary patches and all selected patches touching the same source files, requiring shared-source dependency review. Human review establishes whether explanations and state/API identities are semantically complete. Historical notes remain in [DOWNSTREAM.md](DOWNSTREAM.md).
 
@@ -200,7 +200,7 @@ Remove bridge logic only when no supported retained database has its exact histo
 
 - [0001-retained-state-and-migrations.patch](patches/0001-retained-state-and-migrations.patch)
 
-Reviewed source digest: `92e939e01cf8cb5d0ae3872d87ffa49d5973bf0d50e3a2882dbe96029f598e30`
+Reviewed source digest: `b2c9f0639c206e8a1a533b3e5783a67a0b9df5228e306041c82ebc00b33315ab`
 
 </details>
 
@@ -212,6 +212,7 @@ Native send, queue and restart paths must preserve accepted authors and executio
 ### What this delivers
 
 - Native send, queue and restart paths must preserve accepted authors and execution intent while upstream owns scheduling.
+- Native messageSequence send responses remain authoritative while trusted authorship and transactional provision requests preserve downstream attribution.
 
 ### Responsibility
 
@@ -402,7 +403,7 @@ Retire custom authorship plumbing when upstream exposes equivalent provenance an
 
 - [0002-trusted-authorship-and-dispatch.patch](patches/0002-trusted-authorship-and-dispatch.patch)
 
-Reviewed source digest: `cb44ada47bea0c109e8ea39b6e71f8977a7dcb5d015ddcf648fe05d794419f16`
+Reviewed source digest: `08c72bd341b1c0b9960a3690770735370a7320f3e8e71e1673191e12c8b393bf`
 
 </details>
 
@@ -414,6 +415,7 @@ Team plugins need explicit identity, facets and execution contracts without revi
 ### What this delivers
 
 - Team plugins need explicit identity, facets and execution contracts without reviving retired prompt rendering or admission APIs.
+- The cohort uses native SDK 0.6.144 with the native package version; native send response sequence fields remain available to consumers.
 
 ### Responsibility
 
@@ -631,7 +633,7 @@ Retire individual seams as equivalent native SDK contracts become available.
 
 - [0003-shared-plugin-contracts.patch](patches/0003-shared-plugin-contracts.patch)
 
-Reviewed source digest: `724eb46e6a74852306398929439f701cd3cfa9183f0653a6cdc89ebf723258f8`
+Reviewed source digest: `0abfeae82e1b07917cc599b2ac38dfd2bc15f7a391f36038d8c12b883e30367c`
 
 </details>
 
@@ -946,7 +948,7 @@ Retire relay patches only when native provider configuration enforces the same d
 
 - [0004-inference-relay-and-provider-evidence.patch](patches/0004-inference-relay-and-provider-evidence.patch)
 
-Reviewed source digest: `140f89b143a4d25a082a3addf315e4bd300c81cf78e82874faf9bd61a9f89e2a`
+Reviewed source digest: `38208aa50586b4cc37bc4b2bd41c0a15acd24e39dfaf21d77f94c0b02f5c3284`
 
 </details>
 
@@ -1089,7 +1091,7 @@ Retire individual UI seams when native SDK surfaces supply the same information.
 
 - [0005-team-navigation-and-diagnostics.patch](patches/0005-team-navigation-and-diagnostics.patch)
 
-Reviewed source digest: `1b5c94fd15343e421ab1cddb1af2fdf5dac9ea8bd05a317331b63708a4a5cfbf`
+Reviewed source digest: `3cf07c9fcdf45af7a39cd8408a3f023198aaf081cfeb790e263695b83a57f073`
 
 </details>
 
@@ -1258,7 +1260,7 @@ Retire residual failure isolation and launcher adjustments when upstream supplie
 
 - [0006-service-lifecycle-and-transport.patch](patches/0006-service-lifecycle-and-transport.patch)
 
-Reviewed source digest: `e15cad5a2c775e058fa44e667bb8122c2de672c19757f939728f7a5dac857f56`
+Reviewed source digest: `681b64e6687e84f4d5147cf4520145c042b391ee7bf7e649e5b3df1675935c49`
 
 </details>
 
@@ -1270,6 +1272,7 @@ The selected native server, CLI, daemon and SDK must build as one cohort and ret
 ### What this delivers
 
 - The selected native server, CLI, daemon and SDK must build as one cohort and retain native sandbox and dependency policy.
+- Upstream owns generated SDK API indexes and declaration-derived documentation checks; downstream tests use the testing-only event reader.
 
 ### Responsibility
 
@@ -1375,9 +1378,6 @@ The selected native server, CLI, daemon and SDK must build as one cohort and ret
   - Source: `apps/server/test/services/plugins/plugin-agent-contributions.test.ts`
 - **Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.**
   - Why: Protect the accepted behavior and its failure cases across source refreshes. Server P6R provider-admission/provider-registry resolve actors; invocation-registry owns request/generation lifetimes.
-  - Source: `apps/server/test/services/plugins/plugin-authoring-docs.test.ts`
-- **Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.**
-  - Why: Protect the accepted behavior and its failure cases across source refreshes. Server P6R provider-admission/provider-registry resolve actors; invocation-registry owns request/generation lifetimes.
   - Source: `apps/server/test/services/plugins/plugin-mention-providers.test.ts`
 - **Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.**
   - Why: Protect the accepted behavior and its failure cases across source refreshes. Server P6R provider-admission/provider-registry resolve actors; invocation-registry owns request/generation lifetimes.
@@ -1447,12 +1447,6 @@ The selected native server, CLI, daemon and SDK must build as one cohort and ret
   - Source: `plugins/bb-guide/skills/bb-plugin-authoring/SKILL.md`
 - **Guides and references describe the capability and its consumer/maintenance obligations.**
   - Why: Make the owning contract and recovery/retirement requirements discoverable without treating historical receipts as current runtime proof.
-  - Source: `plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md`
-- **Guides and references describe the capability and its consumer/maintenance obligations.**
-  - Why: Make the owning contract and recovery/retirement requirements discoverable without treating historical receipts as current runtime proof.
-  - Source: `plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-api-index.md`
-- **Guides and references describe the capability and its consumer/maintenance obligations.**
-  - Why: Make the owning contract and recovery/retirement requirements discoverable without treating historical receipts as current runtime proof.
   - Source: `plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-core-slots.md`
 - **Guides and references describe the capability and its consumer/maintenance obligations.**
   - Why: Make the owning contract and recovery/retirement requirements discoverable without treating historical receipts as current runtime proof.
@@ -1514,6 +1508,12 @@ The selected native server, CLI, daemon and SDK must build as one cohort and ret
 - **Integrate and verify the selected upstream cohort: plugins/plugin-rpc-caller.ts**
   - Why: The selected native server, CLI, daemon and SDK must build as one cohort and retain native sandbox and dependency policy.
   - Source: `apps/server/src/services/plugins/plugin-rpc-caller.ts`
+- **Adapt downstream attribution, acceptance, contribution and fault-barrier tests to the upstream testing-only listEvents export.**
+  - Why: Unbounded event-history reads remain test instruments; production query ownership stays with upstream bounded readers.
+  - Source: `apps/server/test/services/p6r/external-contribution.test.ts`, `apps/server/test/services/p6r/mention-target-service-paths.test.ts`, `apps/server/test/services/p6r/native-acceptance.test.ts`, `apps/server/test/services/p6r/native-message-authorship.test.ts`, `apps/server/test/services/threads/test-fault-barriers.test.ts`
+- **Register downstream facet, participant, execution and latest-request operations in upstream query-cost coverage.**
+  - Why: Exercise bounded requests against growing persisted populations and history using upstream CPU-cost and growth gates; preserve savepoint rollback between measurements.
+  - Source: `packages/db/scripts/query-costs/cases.ts`, `packages/db/scripts/query-costs/phosphor-cases.ts`
 
 ### Verification references
 
@@ -1533,7 +1533,7 @@ Reevaluate every integration adjustment on the next upstream upgrade rather than
 
 - [0007-integration-and-verification.patch](patches/0007-integration-and-verification.patch)
 
-Reviewed source digest: `4588a55afc193885325cc36a711205d7deb1c115975cbb63fb0aabd249647e3a`
+Reviewed source digest: `c8b67430e171589d1246c897aa2e0abf782648df8cafde827ab9ee5426e9e214`
 
 </details>
 
@@ -1575,6 +1575,6 @@ Retire this wording patch when native guide configuration supports the same text
 
 - [0008-prompt-wording.patch](patches/0008-prompt-wording.patch)
 
-Reviewed source digest: `4588a55afc193885325cc36a711205d7deb1c115975cbb63fb0aabd249647e3a`
+Reviewed source digest: `0f0cdc65372e0b5dfbe739f5c5e2cfb34f11f3df9b1af53f494786687e163f37`
 
 </details>
