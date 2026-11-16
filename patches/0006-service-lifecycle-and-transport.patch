@@ -3958,6 +3958,268 @@ index d637d7d996876c2532ae3812932516c3d06fd65d..ae427e381fc11f4a7c834c6997459be2
  Resolve the explicit instance with `bb browser instances --host <host-id> --json`
  first. Never silently choose a different host or mode.
  Adding `--tab <tab-id>` takes control of an existing tab; do so only when the
+diff --git a/apps/server/src/services/threads/queued-message-dispatch.ts b/apps/server/src/services/threads/queued-message-dispatch.ts
+index a63bc69110..9838a0b176 100644
+--- a/apps/server/src/services/threads/queued-message-dispatch.ts
++++ b/apps/server/src/services/threads/queued-message-dispatch.ts
+@@ -3,6 +3,7 @@ import { isMachineWaitingForExecution } from "../machines/lifecycle.js";
+ import { isServerMoveFrozen } from "../server-move/freeze-state.js";
+ import { waitForMachineMaintenance } from "../machines/provider-orchestration.js";
+ import {
++  getEnvironment,
+   getQueuedThreadMessage,
+   getThread,
+   listDueScheduledQueuedThreadMessages,
+@@ -25,7 +26,10 @@ import {
+   isCommandTimeoutError,
+   runtimeErrorLogFields,
+ } from "../lib/error-log-fields.js";
+-import { dispatchEnvironmentAndHost, isDispatchRequeuedRecently } from "./dispatch-hooks.js";
++import {
++  dispatchEnvironmentAndHost,
++  isDispatchRequeuedRecently,
++} from "./dispatch-hooks.js";
+ import { recordQueuedMessageDrainFailure } from "./queue-drain-failure.js";
+ import { clearQueuedMessageWait } from "./queue-waits.js";
+ import { defineItemSweep, type ItemSweep } from "../system/item-sweep.js";
+@@ -635,6 +639,34 @@ export function failedQueueRetrySweep(
+   });
+ }
+ 
++async function recoverIdleThreadQueue(
++  deps: QueueDispatchDeps,
++  threadId: string,
++): Promise<void> {
++  const thread = getThread(deps.db, threadId);
++  if (
++    thread === null ||
++    thread.deletedAt !== null ||
++    thread.archivedAt !== null ||
++    (thread.status !== "idle" && thread.status !== "pending")
++  )
++    return;
++
++  if (
++    !deps.pendingInteractions.hasTurnBoundPendingThreadInteraction(threadId)
++  ) {
++    clearThreadQueueWaitsOfKind(deps, { threadId, kind: "interaction" });
++  }
++  const environment =
++    thread.environmentId === null
++      ? null
++      : getEnvironment(deps.db, thread.environmentId);
++  if (thread.startupContext === null && environment?.status === "ready") {
++    clearThreadQueueWaitsOfKind(deps, { threadId, kind: "provisioning" });
++  }
++  await runThreadReadyDispatch(deps, threadId);
++}
++
+ type IdleQueueRecoveryItem =
+   | { kind: "idle-thread"; threadId: string }
+   | { kind: "busy-thread-notice"; row: QueuedMessageDispatchRef };
+@@ -660,7 +692,7 @@ export function idleThreadQueueSweep(deps: QueueDispatchDeps): ItemSweep {
+         : `notice:${item.row.id}`,
+     process: (item) =>
+       item.kind === "idle-thread"
+-        ? runThreadReadyDispatch(deps, item.threadId)
++        ? recoverIdleThreadQueue(deps, item.threadId)
+         : attemptAutomaticQueuedMessage(deps, item.row, {
+             now: Date.now(),
+             respectRequeuePacing: true,
+diff --git a/apps/server/test/threads/queue-missed-wake.test.ts b/apps/server/test/threads/queue-missed-wake.test.ts
+new file mode 100644
+index 0000000000..ab328b2950
+--- /dev/null
++++ b/apps/server/test/threads/queue-missed-wake.test.ts
+@@ -0,0 +1,165 @@
++import { writeFileSync } from "node:fs";
++import { join } from "node:path";
++import { describe, expect, it } from "vitest";
++import {
++  createConnection,
++  getQueuedThreadMessage,
++  getLatestThreadSequence,
++  isThreadQueueAutoSendPaused,
++  environments,
++} from "@bb/db";
++import { PendingInteractionLifecycle } from "../../src/services/interactions/pending-interactions.js";
++import { eq } from "drizzle-orm";
++import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
++import { listQueuedThreadCommands } from "../helpers/commands.js";
++import { textInput } from "../helpers/prompt-input.js";
++import {
++  seedEnvironment,
++  seedHostSession,
++  seedProjectWithSource,
++  seedQueuedMessage,
++  seedEvent,
++  seedThread,
++  seedThreadRuntimeState,
++  seedTurnStarted,
++} from "../helpers/seed.js";
++import { createUserQuestionPayload } from "../helpers/pending-interactions.js";
++import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
++
++function fixture(h: TestAppHarness, kind: "interaction" | "provisioning") {
++  const { host } = seedHostSession(h.deps);
++  const { project } = seedProjectWithSource(h.deps, { hostId: host.id });
++  const env = seedEnvironment(h.deps, {
++    hostId: host.id,
++    projectId: project.id,
++    status: "ready",
++  });
++  const thread = seedThread(h.deps, {
++    environmentId: env.id,
++    projectId: project.id,
++    status: "idle",
++  });
++  seedThreadRuntimeState(h.deps, {
++    threadId: thread.id,
++    environmentId: env.id,
++    providerThreadId: "missed-wake-provider",
++  });
++  const row = seedQueuedMessage(h.deps, {
++    threadId: thread.id,
++    content: textInput("Continue the accepted work"),
++    waitingOn: { kind },
++  });
++  return { host, env, thread, row };
++}
++async function sweep(h: TestAppHarness) {
++  await runQueuedMessageDispatch(h.deps, {
++    kind: "idle-recovery",
++    now: Date.now(),
++  });
++}
++
++describe("missed native queue wakes", () => {
++  it.each(["interaction", "provisioning"] as const)(
++    "recovers %s exactly once after reopening retained state",
++    async (kind) => {
++      await withTestHarness(async (h) => {
++        const { thread, row } = fixture(h, kind);
++        const path = join(h.config.dataDir, "retained-wait.sqlite");
++        writeFileSync(path, h.db.$client.serialize());
++        const db = createConnection(path);
++        const deps = { ...h.deps, db };
++        deps.pendingInteractions = new PendingInteractionLifecycle(deps);
++        const restarted = { ...h, db, deps };
++        try {
++          await sweep(restarted);
++          expect(getQueuedThreadMessage(db, row.id)).toBeNull();
++          expect(
++            listQueuedThreadCommands(restarted, "turn.submit", thread.id),
++          ).toHaveLength(1);
++          await runQueuedMessageDispatch(deps, {
++            kind:
++              kind === "interaction"
++                ? "interaction-settled"
++                : "workspace-ready",
++            threadId: thread.id,
++          });
++          await sweep(restarted);
++          expect(
++            listQueuedThreadCommands(restarted, "turn.submit", thread.id),
++          ).toHaveLength(1);
++        } finally {
++          db.$client.close();
++        }
++      });
++    },
++  );
++
++  it.each(["interaction", "provisioning"] as const)(
++    "does not turn a stale %s wait into permission to undo a manual stop",
++    async (kind) => {
++      await withTestHarness(async (h) => {
++        const { thread, row } = fixture(h, kind);
++        seedEvent(h.deps, {
++          threadId: thread.id,
++          sequence: getLatestThreadSequence(h.db, { threadId: thread.id }) + 1,
++          type: "system/thread/interrupted",
++          scope: { kind: "thread" },
++          data: { reason: "manual-stop" },
++        });
++        expect(isThreadQueueAutoSendPaused(h.db, thread.id)).toBe(true);
++        await sweep(h);
++        expect(getQueuedThreadMessage(h.db, row.id)).not.toBeNull();
++        expect(
++          listQueuedThreadCommands(h, "turn.submit", thread.id),
++        ).toHaveLength(0);
++      });
++    },
++  );
++
++  it("retains a wait while its turn-bound question is still pending", async () => {
++    await withTestHarness(async (h) => {
++      const { thread, env, row } = fixture(h, "interaction");
++      seedTurnStarted(h.deps, {
++        threadId: thread.id,
++        environmentId: env.id,
++        turnId: "pending-question-turn",
++        providerThreadId: "missed-wake-provider",
++      });
++      h.deps.pendingInteractions.registerPendingInteraction({
++        interaction: {
++          threadId: thread.id,
++          turnId: "pending-question-turn",
++          providerId: "codex",
++          providerThreadId: "missed-wake-provider",
++          providerRequestId: "still-pending-question",
++          payload: createUserQuestionPayload(),
++        },
++      });
++      await sweep(h);
++      expect(getQueuedThreadMessage(h.db, row.id)?.waitingOn).toContain(
++        "interaction",
++      );
++      expect(
++        listQueuedThreadCommands(h, "turn.submit", thread.id),
++      ).toHaveLength(0);
++    });
++  });
++
++  it("retains provisioning waits when the environment is not ready", async () => {
++    await withTestHarness(async (h) => {
++      const { env, thread, row } = fixture(h, "provisioning");
++      h.db
++        .update(environments)
++        .set({ status: "creating" })
++        .where(eq(environments.id, env.id))
++        .run();
++      await sweep(h);
++      expect(getQueuedThreadMessage(h.db, row.id)?.waitingOn).toContain(
++        "provisioning",
++      );
++      expect(
++        listQueuedThreadCommands(h, "turn.submit", thread.id),
++      ).toHaveLength(0);
++    });
++  });
++});
+diff --git a/packages/db/src/data/queued-thread-messages.ts b/packages/db/src/data/queued-thread-messages.ts
+index c720334f07..c1c199125d 100644
+--- a/packages/db/src/data/queued-thread-messages.ts
++++ b/packages/db/src/data/queued-thread-messages.ts
+@@ -1474,7 +1474,16 @@ export function listIdleThreadsWithQueuedMessages(
+         // queued row is waiting on a clock or a plugin is not a drain
+         // candidate, and listing it would re-run the whole send pipeline
+         // every sweep tick for a row that cannot move.
+-        drainableQueuedThreadMessage(),
++        or(
++          drainableQueuedThreadMessage(),
++          and(
++            automaticallyDrainableQueuedThreadMessage(),
++            inArray(
++              sql<string>`json_extract(${queuedThreadMessages.waitingOn}, '$.kind')`,
++              ["interaction", "provisioning"],
++            ),
++          ),
++        ),
+       ),
+     )
+     .groupBy(threads.id)
+
 -- 
 2.53.0
 
