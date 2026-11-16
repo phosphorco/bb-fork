@@ -5,7 +5,7 @@
 This is the selected source delta: **8 capabilities / 8 patches**. It is not a deployment or live-test receipt.
 
 - Reviewed upstream: `05199007ecad513b714b244e46b0ab2a9a06279f`
-- Reviewed result tree: `42f5cef1958310b12707711248216f4df55e751a`
+- Reviewed result tree: `9a69433654a5ad36e367807505eeb587e4e0acdd`
 
 The checker enforces explicit source coverage and review freshness. Each capability digest binds its primary patches and all selected patches touching the same source files, requiring shared-source dependency review. Human review establishes whether explanations and state/API identities are semantically complete. Historical notes remain in [DOWNSTREAM.md](DOWNSTREAM.md).
 
@@ -1246,6 +1246,9 @@ Company startup policy must preserve valid native realtime traffic while avoidin
 - **Real negotiated WebSocket peers preserve exact ordered mixed JSON frames under bounded CPU contention; only frames at least 1024 bytes invoke the native compressor.**
   - Why: Protect small-update bypass and large-frame compression through the actual ws implementation rather than asserting option values alone. Existing 12,000-message above 1 MiB delivery and failed-peer isolation tests remain unchanged.
   - Source: `apps/server/test/app/realtime-compression-threshold-native.test.ts`
+- **The existing ambient ws declaration includes the native optional serverNoContextTakeover boolean.**
+  - Why: Integration tests compile server source with host-daemon declarations instead of the complete native ws types. Keep that existing compile-time boundary faithful to the real native option without casts, runtime shims or new protocol fields.
+  - Source: `apps/host-daemon/src/ws.d.ts`
 
 ### Verification references
 
@@ -1253,6 +1256,7 @@ These identify relevant checks; listing them does not assert that they passed fo
 
 - Real negotiated-compression bursts deliver 12000 notifications above 1 MiB pending; failed-socket and launcher tests exercise isolation and startup.
 - Native negotiation/threshold regression fails before the correction and passes afterward; seven focused compression/backpressure tests and full server typecheck pass. Native loopback mixed-frame comparison under identical CPU contention preserves every message and reduces p95 latency; live post-deployment acceptance remains separate.
+- Full integration and server typechecks pass after completing the existing ambient native ws option declaration; native compression/backpressure tests and targeted lint/formatting still pass.
 
 ### Known limitations
 
@@ -1267,7 +1271,7 @@ Retire the compression option correction when upstream supplies equivalent small
 
 - [0006-service-lifecycle-and-transport.patch](patches/0006-service-lifecycle-and-transport.patch)
 
-Reviewed source digest: `bb186f242faab8b857695beaec24beffff9f6965dd0b471ed9c1bbd4388443b7`
+Reviewed source digest: `b0444d1d2ab0746fb0bfae31d1cf4c8fa7f8007c9397fcbb8ba179a13759e3bf`
 
 </details>
 
