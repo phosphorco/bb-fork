@@ -19,3 +19,7 @@ The new real-socket regression fails against the original configuration on missi
 A separate private loopback comparison used the live Node 22.22.0/ws 8.22.1 cohort, six clients with 480 messages each (87-byte updates and 21,904-byte snapshots), two reversed-order rounds and identical 119 CPU contention slices per trial. All 17,280 messages retained exact bytes/order and TCP queues stayed empty. Current p95 latency was 571/350 ms; native no-context negotiation 171/101 ms; explicit small-message bypass 126/122 ms. These bounded synthetic results demonstrate the mechanism, not a production latency SLO. Raw receipts stay in the private host bb-stalls-nov15 evidence folder.
 
 This commit prepares source and exact replay only. Full runtime build, restart, fresh-handshake proof and correlated live BB reply acceptance are separate deployment work. No database or credential transition is required.
+
+## Compile-time boundary follow-up
+
+PR 30 CI found a real missing native option in the existing host-daemon ambient ws declaration, which integration tests include while compiling server source. Add its optional boolean field rather than cast the runtime options or introduce another type path. The full integration and server typechecks now pass, along with the seven native tests and targeted lint/formatting. The initial broad CI failures remain recorded separately; this closes the identified new type regression without claiming unrelated suites pass.
