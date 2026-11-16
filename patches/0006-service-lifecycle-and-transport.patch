@@ -1,4 +1,4 @@
-From 4519c5536911b4606bb9d4e43c449ffacf8fd389 Mon Sep 17 00:00:00 2001
+From 07539500f0f2f381b01a8375f92beb75ea718d4b Mon Sep 17 00:00:00 2001
 From: Cole Lawrence <cole@colelawrence.com>
 Date: Fri, 13 Nov 2026 20:23:59 -0300
 Subject: [PATCH] Service lifecycle and transport
@@ -36,7 +36,9 @@ Subject: [PATCH] Service lifecycle and transport
  .../server/src/testing/test-fault-barriers.ts | 142 +++++++++
  apps/server/src/types.ts                      |   2 +
  apps/server/src/ws/client-protocol.ts         |   2 +-
+ apps/server/src/ws/compression.ts             |   1 +
  apps/server/src/ws/hub.ts                     |  30 +-
+ ...ltime-compression-threshold-native.test.ts |  82 +++++
  packages/bb-app/src/launcher.ts               |  33 +-
  packages/bb-app/test/index.test.ts            | 150 +++++++--
  .../test/server-health-identity.test.ts       |  51 ++-
@@ -44,12 +46,13 @@ Subject: [PATCH] Service lifecycle and transport
  plugins/browser-automation/runtime.test.ts    |  43 ++-
  plugins/browser-automation/runtime.ts         |   1 -
  .../skills/browser-automation/SKILL.md        |   4 +-
- 40 files changed, 2075 insertions(+), 271 deletions(-)
+ 42 files changed, 2158 insertions(+), 271 deletions(-)
  create mode 100644 apps/server/src/services/plugins/plugin-p6r-dispatch.ts
  create mode 100644 apps/server/src/services/plugins/plugin-p6r-http.ts
  create mode 100644 apps/server/src/services/providers/required-external-model-catalog.ts
  create mode 100644 apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/identity-and-native-projections.md
  create mode 100644 apps/server/src/testing/test-fault-barriers.ts
+ create mode 100644 apps/server/test/app/realtime-compression-threshold-native.test.ts
 
 diff --git a/apps/desktop/package.json b/apps/desktop/package.json
 index 94dabb35058b5b5a68aaaf7883eaeecb631d73c7..377391425b59d4cea72af56dd845c0f249578018 100644
@@ -3271,6 +3274,14 @@ index 19ccb2265d195b37aa3628738d1e21911541f747..76393dd343135299b89425abfaafb6fb
        break;
      case "visibility":
        hub.setClientVisible(socket, parsed.visible);
+diff --git a/apps/server/src/ws/compression.ts b/apps/server/src/ws/compression.ts
+index 2c70fd2c754df71d94831a8fa99caf7e176c7a17..6c2f7471858b4502f00ce5bfc841447156db4fd3 100644
+--- a/apps/server/src/ws/compression.ts
++++ b/apps/server/src/ws/compression.ts
+@@ -6,2 +6,3 @@ import type { PerMessageDeflateOptions } from "ws";
+ export const WEB_SOCKET_COMPRESSION: PerMessageDeflateOptions = {
++  serverNoContextTakeover: true,
+   threshold: 1024,
 diff --git a/apps/server/src/ws/hub.ts b/apps/server/src/ws/hub.ts
 index 5f93bdd2a4999ffa87af1bcfbd1fbbc85bdb6d5e..bebf0721b3a7fbc2e96b6c19db30528785e3d16f 100644
 --- a/apps/server/src/ws/hub.ts
@@ -3351,6 +3362,94 @@ index 5f93bdd2a4999ffa87af1bcfbd1fbbc85bdb6d5e..bebf0721b3a7fbc2e96b6c19db305287
    private notifyChangedMessageListeners(message: ServerChangedMessage): void {
      for (const listener of this.changedMessageListeners) {
        listener(message);
+diff --git a/apps/server/test/app/realtime-compression-threshold-native.test.ts b/apps/server/test/app/realtime-compression-threshold-native.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..8c29516533622347344c5fd691b1aecab75f8d5d
+--- /dev/null
++++ b/apps/server/test/app/realtime-compression-threshold-native.test.ts
+@@ -0,0 +1,82 @@
++import { once } from "node:events";
++import { setTimeout as delay } from "node:timers/promises";
++import { performance } from "node:perf_hooks";
++import { expect, it, vi } from "vitest";
++import WebSocket, { WebSocketServer } from "ws";
++import {
++  COMPRESSED_SEND,
++  WEB_SOCKET_COMPRESSION,
++} from "../../src/ws/compression.js";
++
++interface DeflateProbe {
++  compress: (...args: unknown[]) => void;
++}
++
++it("negotiates the native threshold and preserves mixed realtime frames under contention", async () => {
++  const wss = new WebSocketServer({
++    host: "127.0.0.1",
++    port: 0,
++    perMessageDeflate: WEB_SOCKET_COMPRESSION,
++  });
++  let client: WebSocket | undefined;
++  let raw: WebSocket | undefined;
++  let contention: ReturnType<typeof setInterval> | undefined;
++  try {
++    await once(wss, "listening");
++    const address = wss.address();
++    if (!address || typeof address === "string")
++      throw Error("Expected private TCP listener");
++    const connected = once(wss, "connection");
++    client = new WebSocket(`ws://127.0.0.1:${address.port}`);
++    let negotiated: string | string[] | undefined;
++    client.once("upgrade", (response) => {
++      negotiated = response.headers["sec-websocket-extensions"];
++    });
++    await once(client, "open");
++    const [peer] = await connected;
++    if (!(peer instanceof WebSocket)) throw Error("Expected native peer");
++    raw = peer;
++    expect(negotiated).toContain("server_no_context_takeover");
++    const extension = (
++      raw as WebSocket & {
++        _extensions: Record<string, DeflateProbe>;
++      }
++    )._extensions["permessage-deflate"];
++    if (!extension) throw Error("Compression must remain negotiated");
++    const compress = vi.spyOn(extension, "compress");
++    const messages = Array.from({ length: 160 }, (_, sequence) =>
++      JSON.stringify({
++        sequence,
++        kind: "thread-timeline",
++        text: "x".repeat(sequence % 40 === 39 ? 16_384 : 32),
++      }),
++    );
++    const received: string[] = [];
++    client.on("message", (data) => received.push(data.toString()));
++    let contentionIterations = 0;
++    contention = setInterval(() => {
++      const start = performance.now();
++      while (performance.now() - start < 20) {
++        contentionIterations += 1;
++      }
++    }, 25);
++    await delay(30);
++    for (const message of messages) raw.send(message, COMPRESSED_SEND);
++    await expect
++      .poll(() => received.length, { timeout: 5000 })
++      .toBe(messages.length);
++    expect(received).toEqual(messages);
++    expect(contentionIterations).toBeGreaterThan(0);
++    expect(compress).toHaveBeenCalledTimes(
++      messages.filter((message) => Buffer.byteLength(message) >= 1024).length,
++    );
++    await expect.poll(() => raw?.bufferedAmount, { timeout: 5000 }).toBe(0);
++    expect(client.readyState).toBe(WebSocket.OPEN);
++    compress.mockRestore();
++  } finally {
++    clearInterval(contention);
++    client?.terminate();
++    raw?.terminate();
++    await new Promise<void>((resolve) => wss.close(() => resolve()));
++  }
++});
 diff --git a/packages/bb-app/src/launcher.ts b/packages/bb-app/src/launcher.ts
 index aa8c247f096c335f81629a6e868a23da6865e440..2fd4a79b97aa6f20cf8004c24ac52cf9ff64f409 100644
 --- a/packages/bb-app/src/launcher.ts
@@ -3851,5 +3950,5 @@ index d637d7d996876c2532ae3812932516c3d06fd65d..ae427e381fc11f4a7c834c6997459be2
  first. Never silently choose a different host or mode.
  Adding `--tab <tab-id>` takes control of an existing tab; do so only when the
 -- 
-2.50.1 (Apple Git-155)
+2.53.0
 

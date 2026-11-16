@@ -5,7 +5,7 @@
 This is the selected source delta: **8 capabilities / 8 patches**. It is not a deployment or live-test receipt.
 
 - Reviewed upstream: `05199007ecad513b714b244e46b0ab2a9a06279f`
-- Reviewed result tree: `0a48067e944b48caf193d96f736553b96d7ad504`
+- Reviewed result tree: `42f5cef1958310b12707711248216f4df55e751a`
 
 The checker enforces explicit source coverage and review freshness. Each capability digest binds its primary patches and all selected patches touching the same source files, requiring shared-source dependency review. Human review establishes whether explanations and state/API identities are semantically complete. Historical notes remain in [DOWNSTREAM.md](DOWNSTREAM.md).
 
@@ -1101,10 +1101,11 @@ Company startup policy must preserve valid native realtime traffic while avoidin
 ### What this delivers
 
 - Company startup policy must preserve valid native realtime traffic while avoiding premature restart loops.
+- Ordinary realtime negotiates server_no_context_takeover so the existing native 1024-byte threshold bypasses asynchronous compression for small updates while retaining compression for larger frames.
 
 ### Responsibility
 
-- Native WebSocket delivery owns compression and buffering; the launcher owns readiness deadlines. Downstream isolates failed sockets and guards heartbeat replies.
+- Native WebSocket delivery owns compression and buffering; its options disable server context takeover to activate the existing size threshold. The launcher owns readiness deadlines. Downstream isolates failed sockets and guards heartbeat replies.
 
 ### Core SDK and APIs
 
@@ -1239,26 +1240,34 @@ Company startup policy must preserve valid native realtime traffic while avoidin
 - **Guides and references describe the capability and its consumer/maintenance obligations.**
   - Why: Make the owning contract and recovery/retirement requirements discoverable without treating historical receipts as current runtime proof.
   - Source: `plugins/browser-automation/skills/browser-automation/SKILL.md`
+- **Negotiate server_no_context_takeover through the existing native compression options; retain the 1024-byte threshold and best-speed compression level.**
+  - Why: With context takeover enabled, ws bypasses its size threshold and queues even tiny realtime updates behind asynchronous compression. Native negotiation activates the intended threshold without a downstream queue, payload-sizing branch, eviction limit or API/routing change.
+  - Source: `apps/server/src/ws/compression.ts`
+- **Real negotiated WebSocket peers preserve exact ordered mixed JSON frames under bounded CPU contention; only frames at least 1024 bytes invoke the native compressor.**
+  - Why: Protect small-update bypass and large-frame compression through the actual ws implementation rather than asserting option values alone. Existing 12,000-message above 1 MiB delivery and failed-peer isolation tests remain unchanged.
+  - Source: `apps/server/test/app/realtime-compression-threshold-native.test.ts`
 
 ### Verification references
 
 These identify relevant checks; listing them does not assert that they passed for a deployment.
 
 - Real negotiated-compression bursts deliver 12000 notifications above 1 MiB pending; failed-socket and launcher tests exercise isolation and startup.
+- Native negotiation/threshold regression fails before the correction and passes afterward; seven focused compression/backpressure tests and full server typecheck pass. Native loopback mixed-frame comparison under identical CPU contention preserves every message and reduces p95 latency; live post-deployment acceptance remains separate.
 
 ### Known limitations
 
 - Ordinary realtime buffering follows native upstream. No downstream message-count or 1 MiB eviction threshold remains; terminal-specific native limits are unchanged.
+- Disabling server compression context takeover may reduce compression reuse across large snapshots. Only fresh WebSocket handshakes receive the corrected negotiation; no live options mutation or backlog eviction is introduced.
 
 ### Retirement condition
 
-Retire residual failure isolation and launcher adjustments when upstream supplies the same required behavior.
+Retire the compression option correction when upstream supplies equivalent small-frame bypass with exact ordered delivery; retire residual failure isolation and launcher adjustments when upstream supplies the same required behavior.
 
 <details><summary>Selected patches (1) and source binding</summary>
 
 - [0006-service-lifecycle-and-transport.patch](patches/0006-service-lifecycle-and-transport.patch)
 
-Reviewed source digest: `e15cad5a2c775e058fa44e667bb8122c2de672c19757f939728f7a5dac857f56`
+Reviewed source digest: `bb186f242faab8b857695beaec24beffff9f6965dd0b471ed9c1bbd4388443b7`
 
 </details>
 
