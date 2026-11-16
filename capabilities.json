@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "reviewedUpstream": "05199007ecad513b714b244e46b0ab2a9a06279f",
-  "reviewedResultTree": "9a69433654a5ad36e367807505eeb587e4e0acdd",
+  "reviewedResultTree": "10e9a5226e5d9976645e99442fbdadd2129bdfde",
   "capabilities": [
     {
       "id": "retained-state-and-migrations",
@@ -16,7 +16,7 @@
       "patches": [
         "0001-retained-state-and-migrations.patch"
       ],
-      "sourceDigest": "92e939e01cf8cb5d0ae3872d87ffa49d5973bf0d50e3a2882dbe96029f598e30",
+      "sourceDigest": "b3128bf8472155e4d3b841b4c2e4ac845aa44795b9b1c8f8ad2e7377cca5ea0c",
       "surfaces": [
         {
           "kind": "database",
@@ -562,7 +562,7 @@
       "patches": [
         "0002-trusted-authorship-and-dispatch.patch"
       ],
-      "sourceDigest": "cb44ada47bea0c109e8ea39b6e71f8977a7dcb5d015ddcf648fe05d794419f16",
+      "sourceDigest": "9d63012ff9e4445db0547a571d0b15a905289b6305be496ef349722f1ed399b4",
       "surfaces": [
         {
           "kind": "runtime",
@@ -2638,7 +2638,8 @@
       "motivation": "Company startup policy must preserve valid native realtime traffic while avoiding premature restart loops.",
       "behavior": [
         "Company startup policy must preserve valid native realtime traffic while avoiding premature restart loops.",
-        "Ordinary realtime negotiates server_no_context_takeover so the existing native 1024-byte threshold bypasses asynchronous compression for small updates while retaining compression for larger frames."
+        "Ordinary realtime negotiates server_no_context_takeover so the existing native 1024-byte threshold bypasses asynchronous compression for small updates while retaining compression for larger frames.",
+        "For idle/pending live threads, the existing idle queue sweep reconciles persisted interaction/provisioning waits against current native state before ordinary automatic dispatch; stale wake evidence cannot strand accepted work. Manual-stop and dispatch guards remain authoritative."
       ],
       "owners": [
         "Native WebSocket delivery owns compression and buffering; its options disable server context takeover to activate the existing size threshold. The launcher owns readiness deadlines. Downstream isolates failed sockets and guards heartbeat replies."
@@ -2646,7 +2647,7 @@
       "patches": [
         "0006-service-lifecycle-and-transport.patch"
       ],
-      "sourceDigest": "b0444d1d2ab0746fb0bfae31d1cf4c8fa7f8007c9397fcbb8ba179a13759e3bf",
+      "sourceDigest": "6dfd4708ab92606f05d07ca760d680faf1a565c92f3c05b5be0f0a2c91c26b23",
       "surfaces": [
         {
           "kind": "dependency",
@@ -3007,6 +3008,35 @@
           ],
           "summary": "The existing ambient ws declaration includes the native optional serverNoContextTakeover boolean.",
           "why": "Integration tests compile server source with host-daemon declarations instead of the complete native ws types. Keep that existing compile-time boundary faithful to the real native option without casts, runtime shims or new protocol fields."
+        },
+        {
+          "kind": "runtime",
+          "paths": [
+            "apps/server/src/services/threads/queued-message-dispatch.ts"
+          ],
+          "summary": "Reconcile missed interaction/workspace wakes within the existing idle queue recovery owner. Clear only resolved interaction waits or completed startup with a ready environment, then use unchanged automatic dispatch.",
+          "why": "A durable wait can outlive its one-shot event. Native queue transitions restore ordinary manual-stop semantics; plugins cannot safely replace this with Send now. No new timer, SDK/API, routing or retry policy."
+        },
+        {
+          "kind": "database",
+          "paths": [
+            "packages/db/src/data/queued-thread-messages.ts"
+          ],
+          "summary": "Include live idle/pending interaction/provisioning waits among recovery inspection candidates, preserving failed/claimed/deleted/archived exclusions. Selection does not grant dispatch.",
+          "why": "Existing native queue query and lifecycle owner jointly own reconciliation. No schema, migration, retained receipt or public response changes.",
+          "symbols": [
+            "queued_thread_messages",
+            "threads",
+            "listIdleThreadsWithQueuedMessages"
+          ]
+        },
+        {
+          "kind": "verification",
+          "paths": [
+            "apps/server/test/threads/queue-missed-wake.test.ts"
+          ],
+          "summary": "Disk-reopen missed-wake recovery and late-event exactly-once checks, with unresolved interaction, unfinished environment and manual-stop controls.",
+          "why": "A passing in-memory wake handler cannot establish recovery when the event was lost before restart."
         }
       ],
       "verification": [

@@ -5,7 +5,7 @@
 This is the selected source delta: **8 capabilities / 8 patches**. It is not a deployment or live-test receipt.
 
 - Reviewed upstream: `05199007ecad513b714b244e46b0ab2a9a06279f`
-- Reviewed result tree: `9a69433654a5ad36e367807505eeb587e4e0acdd`
+- Reviewed result tree: `10e9a5226e5d9976645e99442fbdadd2129bdfde`
 
 The checker enforces explicit source coverage and review freshness. Each capability digest binds its primary patches and all selected patches touching the same source files, requiring shared-source dependency review. Human review establishes whether explanations and state/API identities are semantically complete. Historical notes remain in [DOWNSTREAM.md](DOWNSTREAM.md).
 
@@ -200,7 +200,7 @@ Remove bridge logic only when no supported retained database has its exact histo
 
 - [0001-retained-state-and-migrations.patch](patches/0001-retained-state-and-migrations.patch)
 
-Reviewed source digest: `92e939e01cf8cb5d0ae3872d87ffa49d5973bf0d50e3a2882dbe96029f598e30`
+Reviewed source digest: `b3128bf8472155e4d3b841b4c2e4ac845aa44795b9b1c8f8ad2e7377cca5ea0c`
 
 </details>
 
@@ -402,7 +402,7 @@ Retire custom authorship plumbing when upstream exposes equivalent provenance an
 
 - [0002-trusted-authorship-and-dispatch.patch](patches/0002-trusted-authorship-and-dispatch.patch)
 
-Reviewed source digest: `cb44ada47bea0c109e8ea39b6e71f8977a7dcb5d015ddcf648fe05d794419f16`
+Reviewed source digest: `9d63012ff9e4445db0547a571d0b15a905289b6305be496ef349722f1ed399b4`
 
 </details>
 
@@ -1102,10 +1102,18 @@ Company startup policy must preserve valid native realtime traffic while avoidin
 
 - Company startup policy must preserve valid native realtime traffic while avoiding premature restart loops.
 - Ordinary realtime negotiates server_no_context_takeover so the existing native 1024-byte threshold bypasses asynchronous compression for small updates while retaining compression for larger frames.
+- For idle/pending live threads, the existing idle queue sweep reconciles persisted interaction/provisioning waits against current native state before ordinary automatic dispatch; stale wake evidence cannot strand accepted work. Manual-stop and dispatch guards remain authoritative.
 
 ### Responsibility
 
 - Native WebSocket delivery owns compression and buffering; its options disable server context takeover to activate the existing size threshold. The launcher owns readiness deadlines. Downstream isolates failed sockets and guards heartbeat replies.
+
+### Database model
+
+- **Include live idle/pending interaction/provisioning waits among recovery inspection candidates, preserving failed/claimed/deleted/archived exclusions. Selection does not grant dispatch.**
+  - Why: Existing native queue query and lifecycle owner jointly own reconciliation. No schema, migration, retained receipt or public response changes.
+  - State/API identities: `queued_thread_messages`, `threads`, `listIdleThreadsWithQueuedMessages`
+  - Source: `packages/db/src/data/queued-thread-messages.ts`
 
 ### Core SDK and APIs
 
@@ -1249,6 +1257,12 @@ Company startup policy must preserve valid native realtime traffic while avoidin
 - **The existing ambient ws declaration includes the native optional serverNoContextTakeover boolean.**
   - Why: Integration tests compile server source with host-daemon declarations instead of the complete native ws types. Keep that existing compile-time boundary faithful to the real native option without casts, runtime shims or new protocol fields.
   - Source: `apps/host-daemon/src/ws.d.ts`
+- **Reconcile missed interaction/workspace wakes within the existing idle queue recovery owner. Clear only resolved interaction waits or completed startup with a ready environment, then use unchanged automatic dispatch.**
+  - Why: A durable wait can outlive its one-shot event. Native queue transitions restore ordinary manual-stop semantics; plugins cannot safely replace this with Send now. No new timer, SDK/API, routing or retry policy.
+  - Source: `apps/server/src/services/threads/queued-message-dispatch.ts`
+- **Disk-reopen missed-wake recovery and late-event exactly-once checks, with unresolved interaction, unfinished environment and manual-stop controls.**
+  - Why: A passing in-memory wake handler cannot establish recovery when the event was lost before restart.
+  - Source: `apps/server/test/threads/queue-missed-wake.test.ts`
 
 ### Verification references
 
@@ -1271,7 +1285,7 @@ Retire the compression option correction when upstream supplies equivalent small
 
 - [0006-service-lifecycle-and-transport.patch](patches/0006-service-lifecycle-and-transport.patch)
 
-Reviewed source digest: `b0444d1d2ab0746fb0bfae31d1cf4c8fa7f8007c9397fcbb8ba179a13759e3bf`
+Reviewed source digest: `6dfd4708ab92606f05d07ca760d680faf1a565c92f3c05b5be0f0a2c91c26b23`
 
 </details>
 
