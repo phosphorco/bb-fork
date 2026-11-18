@@ -2,17 +2,17 @@
 
 <!-- Generated from capabilities.json by scripts/check-capability-catalog.mjs. Do not edit by hand. -->
 
-This is the selected source delta: **8 capabilities / 8 patches**. It is not a deployment or live-test receipt.
+This is the selected source delta: **8 capabilities / 9 patches**. It is not a deployment or live-test receipt.
 
 - Reviewed upstream: `05199007ecad513b714b244e46b0ab2a9a06279f`
-- Reviewed result tree: `10e9a5226e5d9976645e99442fbdadd2129bdfde`
+- Reviewed result tree: `1224ea41d82bf4264316f9db060d171463bc7e70`
 
 The checker enforces explicit source coverage and review freshness. Each capability digest binds its primary patches and all selected patches touching the same source files, requiring shared-source dependency review. Human review establishes whether explanations and state/API identities are semantically complete. Historical notes remain in [DOWNSTREAM.md](DOWNSTREAM.md).
 
 | Capability | Motivation | Patches |
 | --- | --- | --- |
 | [Retain existing state through native upstream migrations](#retained-state-and-migrations) | Existing team history must survive an upstream upgrade without discarding applied receipts or silently skipping newer native schema changes. | 1 |
-| [Preserve trusted authorship through native dispatch](#trusted-authorship-and-dispatch) | Native send, queue and restart paths must preserve accepted authors and execution intent while upstream owns scheduling. | 1 |
+| [Preserve trusted authorship through native dispatch](#trusted-authorship-and-dispatch) | Native send, queue and restart paths must preserve accepted authors and execution intent while upstream owns scheduling. | 2 |
 | [Expose bounded team plugin contracts](#shared-plugin-contracts) | Team plugins need explicit identity, facets and execution contracts without reviving retired prompt rendering or admission APIs. | 1 |
 | [Preserve the external inference relay and provider evidence](#inference-relay-and-provider-evidence) | Company inference must continue through the configured relay and retain exact provider response identities for attribution. | 1 |
 | [Keep team navigation and useful diagnostics](#team-navigation-and-diagnostics) | Shared-team navigation, mentions and copyable errors must survive native upstream UI changes without retaining obsolete cache implementations. | 1 |
@@ -212,10 +212,12 @@ Native send, queue and restart paths must preserve accepted authors and executio
 ### What this delivers
 
 - Native send, queue and restart paths must preserve accepted authors and execution intent while upstream owns scheduling.
+- Fresh browser sends display a connection-scoped current-actor snapshot immediately; authoritative timeline updates replace it. The display snapshot is never sent as authorship or authorization.
 
 ### Responsibility
 
 - P6R captures verified actors and native dispatch owns execution and cancellation.
+- The native browser cache owner loads identity once per WebSocket connection, preloads its avatar, and clears/cancels the optional display cache on disconnect or teardown; native request admission remains authoritative.
 
 ### Core SDK and APIs
 
@@ -383,26 +385,35 @@ Native send, queue and restart paths must preserve accepted authors and executio
 - **Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.**
   - Why: Protect the accepted behavior and its failure cases across source refreshes. Server P6R provider-admission/provider-registry resolve actors; invocation-registry owns request/generation lifetimes.
   - Source: `apps/server/test/services/threads/thread-runtime-display.test.ts`
+- **Shows current-connection actor metadata on fresh optimistic timeline rows without changing send requests.**
+  - Why: Prevent delayed name/avatar insertion while preserving server authority and captured send-time identity across async cache work. Existing queued messages without original-author DTOs remain unattributed until server confirmation.
+  - Source: `apps/app/src/hooks/cache-owners/current-message-author-owner.ts`, `apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts`, `apps/app/src/hooks/useWebSocket.ts`
+- **Exercises actor-read coalescing, cancellation, connection changes, optimistic send capture, request-body isolation, server correction, queued authorship and rollback.**
+  - Why: A client display assumption must not override durable server authorship, cross connection lifetimes, or relabel someone else's queued message.
+  - Source: `apps/app/src/hooks/cache-owners/current-message-author-owner.test.ts`, `apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.test.ts`, `apps/app/src/hooks/mutations/thread-runtime-mutations.test.ts`
 
 ### Verification references
 
 These identify relevant checks; listing them does not assert that they passed for a deployment.
 
 - Native authorship and delayed sender rejection tests exercise cold start and queued dispatch.
+- Focused app regressions and native server authorship tests include rejecting client-supplied author overrides; app typecheck/build and exact patch replay must pass.
 
 ### Known limitations
 
 - Message Rules uses native static sender accept/reject; paid evaluation and delivery changes refuse explicitly. Native hook bypass and edited-resend boundaries remain upstream behavior.
+- Cold or failed identity reads omit optimistic attribution until confirmation; existing queued-message DTOs do not expose original-author snapshots. This changes presentation only, with no new access or impersonation capability.
 
 ### Retirement condition
 
 Retire custom authorship plumbing when upstream exposes equivalent provenance and lifetime semantics.
 
-<details><summary>Selected patches (1) and source binding</summary>
+<details><summary>Selected patches (2) and source binding</summary>
 
 - [0002-trusted-authorship-and-dispatch.patch](patches/0002-trusted-authorship-and-dispatch.patch)
+- [0009-optimistic-message-authorship.patch](patches/0009-optimistic-message-authorship.patch)
 
-Reviewed source digest: `9d63012ff9e4445db0547a571d0b15a905289b6305be496ef349722f1ed399b4`
+Reviewed source digest: `4863f792ccb8ea5cef76d49bd207d81c4ab317a6e4fb153f83690ae408d4dab0`
 
 </details>
 
@@ -958,6 +969,7 @@ Shared-team navigation, mentions and copyable errors must survive native upstrea
 ### What this delivers
 
 - Shared-team navigation, mentions and copyable errors must survive native upstream UI changes without retaining obsolete cache implementations.
+- The shared runtime cache file additionally renders fresh optimistic sender metadata under trusted-authorship-and-dispatch; existing navigation and diagnostic policy remains unchanged.
 
 ### Responsibility
 
@@ -1089,7 +1101,7 @@ Retire individual UI seams when native SDK surfaces supply the same information.
 
 - [0005-team-navigation-and-diagnostics.patch](patches/0005-team-navigation-and-diagnostics.patch)
 
-Reviewed source digest: `1b5c94fd15343e421ab1cddb1af2fdf5dac9ea8bd05a317331b63708a4a5cfbf`
+Reviewed source digest: `5bb24b6f5371ab976d0c5e9b0dd171819320fe52df294b18788c55abb9358a90`
 
 </details>
 

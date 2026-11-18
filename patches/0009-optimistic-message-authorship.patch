@@ -1,0 +1,684 @@
+From 26db451a3c70d72fe332b519d59af2d5aec9fe10 Mon Sep 17 00:00:00 2001
+From: bb-machine <ubuntu@bb-machine>
+Date: Tue, 17 Nov 2026 08:24:10 +0100
+Subject: [PATCH] fix: show the current actor on optimistic messages
+
+---
+ .../current-message-author-owner.test.ts      | 119 +++++++++++++++
+ .../current-message-author-owner.ts           |  55 +++++++
+ .../thread-runtime-cache-owner.test.ts        | 142 ++++++++++++++++--
+ .../thread-runtime-cache-owner.ts             |  13 ++
+ .../thread-runtime-mutations.test.ts          | 134 ++++++++++++++++-
+ apps/app/src/hooks/useWebSocket.ts            |  14 ++
+ 6 files changed, 463 insertions(+), 14 deletions(-)
+ create mode 100644 apps/app/src/hooks/cache-owners/current-message-author-owner.test.ts
+ create mode 100644 apps/app/src/hooks/cache-owners/current-message-author-owner.ts
+
+diff --git a/apps/app/src/hooks/cache-owners/current-message-author-owner.test.ts b/apps/app/src/hooks/cache-owners/current-message-author-owner.test.ts
+new file mode 100644
+index 0000000000..d99f71641f
+--- /dev/null
++++ b/apps/app/src/hooks/cache-owners/current-message-author-owner.test.ts
+@@ -0,0 +1,119 @@
++import { QueryClient } from "@tanstack/react-query";
++import type { P6rIdentityResponse } from "@bb/server-contract";
++import { createDeferredPromise } from "@bb/test-helpers";
++import { afterEach, expect, it, vi } from "vitest";
++import {
++  createCurrentMessageAuthorOwner,
++  getCurrentMessageAuthor,
++} from "./current-message-author-owner";
++
++const clients: QueryClient[] = [];
++function client() {
++  const result = new QueryClient();
++  clients.push(result);
++  return result;
++}
++function identity(name: string): P6rIdentityResponse {
++  return {
++    status: "ready",
++    providerId: "test",
++    actor: {
++      evidence: "provider-verified",
++      identity: { kind: "person", key: name, issuer: "test", subject: name },
++      presentation: { displayName: name, handle: name, avatarUrl: null },
++    },
++  };
++}
++afterEach(() => clients.splice(0).forEach((value) => value.clear()));
++
++it("shares one read for a connection and does not fetch for each message", async () => {
++  const queryClient = client();
++  const response = createDeferredPromise<P6rIdentityResponse>();
++  const read = vi.fn(() => response.promise);
++  const owner = createCurrentMessageAuthorOwner(queryClient, read);
++  const first = owner.load(),
++    second = owner.load();
++  expect(getCurrentMessageAuthor(queryClient)).toBeNull();
++  response.resolve(identity("gus"));
++  await Promise.all([first, second]);
++  await owner.load();
++  expect(read).toHaveBeenCalledTimes(1);
++  expect(getCurrentMessageAuthor(queryClient)?.presentation.displayName).toBe(
++    "gus",
++  );
++});
++
++it("clears on disconnect and ignores an old response after another actor connects", async () => {
++  const queryClient = client();
++  const old = createDeferredPromise<P6rIdentityResponse>();
++  let oldSignal: AbortSignal | undefined;
++  const read = vi.fn(async (signal: AbortSignal) => {
++    if (!oldSignal) {
++      oldSignal = signal;
++      return old.promise;
++    }
++    return identity("cole");
++  });
++  const owner = createCurrentMessageAuthorOwner(queryClient, read);
++  const first = owner.load();
++  owner.reset();
++  expect(oldSignal?.aborted).toBe(true);
++  expect(getCurrentMessageAuthor(queryClient)).toBeNull();
++  await owner.load();
++  old.resolve(identity("gus"));
++  await first;
++  expect(getCurrentMessageAuthor(queryClient)?.presentation.displayName).toBe(
++    "cole",
++  );
++  expect(read).toHaveBeenCalledTimes(2);
++});
++
++it.each(["unconfigured", "unauthenticated", "unavailable"] as const)(
++  "does not keep a previous person when the next connection is %s",
++  async (status) => {
++    const queryClient = client();
++    const read = vi.fn(async (): Promise<P6rIdentityResponse> =>
++      identity("gus"),
++    );
++    const owner = createCurrentMessageAuthorOwner(queryClient, read);
++    await owner.load();
++    owner.reset();
++    read.mockResolvedValue(
++      status === "unconfigured" ? { status } : { status, message: "unknown" },
++    );
++    await owner.load();
++    expect(getCurrentMessageAuthor(queryClient)).toBeNull();
++  },
++);
++
++it("keeps identity failures optional and never publishes after teardown", async () => {
++  const queryClient = client();
++  const response = createDeferredPromise<P6rIdentityResponse>();
++  const owner = createCurrentMessageAuthorOwner(
++    queryClient,
++    () => response.promise,
++  );
++  const pending = owner.load();
++  owner.reset();
++  response.resolve(identity("gus"));
++  await pending;
++  expect(getCurrentMessageAuthor(queryClient)).toBeNull();
++  const failed = createCurrentMessageAuthorOwner(queryClient, async () => {
++    throw Error("offline");
++  });
++  await expect(failed.load()).resolves.toBeUndefined();
++  expect(getCurrentMessageAuthor(queryClient)).toBeNull();
++});
++
++it("does not share actors between application clients", async () => {
++  const left = client(),
++    right = client();
++  await createCurrentMessageAuthorOwner(left, async () =>
++    identity("gus"),
++  ).load();
++  await createCurrentMessageAuthorOwner(right, async () =>
++    identity("cole"),
++  ).load();
++  expect(getCurrentMessageAuthor(left)?.presentation.displayName).toBe("gus");
++  expect(getCurrentMessageAuthor(right)?.presentation.displayName).toBe("cole");
++});
+diff --git a/apps/app/src/hooks/cache-owners/current-message-author-owner.ts b/apps/app/src/hooks/cache-owners/current-message-author-owner.ts
+new file mode 100644
+index 0000000000..40af129e01
+--- /dev/null
++++ b/apps/app/src/hooks/cache-owners/current-message-author-owner.ts
+@@ -0,0 +1,55 @@
++import type { P6rMessageAuthor } from "@bb/domain";
++import type { P6rIdentityResponse } from "@bb/server-contract";
++import type { QueryClient } from "@tanstack/react-query";
++import { sdk } from "@/lib/sdk";
++
++export const currentMessageAuthorQueryKey = [
++  "system",
++  "optimistic-message-author",
++] as const;
++
++export function getCurrentMessageAuthor(
++  queryClient: QueryClient,
++): P6rMessageAuthor | null {
++  return (
++    queryClient.getQueryData<P6rMessageAuthor | null>(
++      currentMessageAuthorQueryKey,
++    ) ?? null
++  );
++}
++
++export function createCurrentMessageAuthorOwner(
++  queryClient: QueryClient,
++  read: (signal: AbortSignal) => Promise<P6rIdentityResponse> = (signal) =>
++    sdk.system.p6rIdentity({ signal }),
++) {
++  return {
++    load: () =>
++      queryClient
++        .fetchQuery({
++          queryKey: currentMessageAuthorQueryKey,
++          gcTime: Infinity,
++          staleTime: Infinity,
++          retry: false,
++          queryFn: async ({ signal }) => {
++            const result = await read(signal);
++            if (signal.aborted || result.status !== "ready") return null;
++            if (
++              result.actor.presentation.avatarUrl &&
++              typeof Image !== "undefined"
++            ) {
++              const avatar = new Image();
++              avatar.referrerPolicy = "no-referrer";
++              avatar.src = result.actor.presentation.avatarUrl;
++            }
++            return result.actor;
++          },
++        })
++        .catch(() => undefined),
++    reset: () =>
++      queryClient.removeQueries({
++        queryKey: currentMessageAuthorQueryKey,
++        exact: true,
++      }),
++  };
++}
+diff --git a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.test.ts b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.test.ts
+index 67ed1e5d7b..ced1c172f5 100644
+--- a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.test.ts
++++ b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.test.ts
+@@ -1,4 +1,9 @@
+-import type { ThreadListEntry, ThreadQueuedMessage } from "@bb/domain";
++import type {
++  P6rMessageAuthor,
++  ThreadListEntry,
++  ThreadQueuedMessage,
++} from "@bb/domain";
++import { currentMessageAuthorQueryKey } from "./current-message-author-owner";
+ import type {
+   SidebarBootstrapResponse,
+   ThreadSearchResponse,
+@@ -106,6 +111,123 @@ function makeQueuedMessage(
+ }
+ 
+ describe("thread runtime cache owner", () => {
++  it("captures the actor before asynchronous cache cancellation", async () => {
++    const queryClient = createAppQueryClient({
++      showMutationErrorToasts: false,
++    });
++    const actor: P6rMessageAuthor = {
++      evidence: "provider-verified",
++      identity: { kind: "person", key: "gus", issuer: "test", subject: "gus" },
++      presentation: { displayName: "Gus", handle: "gus", avatarUrl: null },
++    };
++    queryClient.setQueryData(currentMessageAuthorQueryKey, actor);
++    queryClient.setQueryData(
++      threadTimelineQueryKey("thread-1"),
++      makeTimelineResponse(),
++    );
++    const pending = beginSendThreadMessageTransaction({
++      queryClient,
++      request: {
++        id: "thread-1",
++        mode: "auto",
++        input: [{ type: "text", text: "Hello", mentions: [] }],
++      },
++    });
++    queryClient.removeQueries({
++      queryKey: currentMessageAuthorQueryKey,
++      exact: true,
++    });
++    await pending;
++    expect(
++      queryClient.getQueryData<ThreadTimelineResponse>(
++        threadTimelineQueryKey("thread-1"),
++      )?.rows[0],
++    ).toMatchObject({ p6rAuthor: actor });
++    queryClient.clear();
++  });
++
++  it("keeps a fresh queued send's captured author when the server starts it immediately", async () => {
++    const queryClient = createAppQueryClient({
++      showMutationErrorToasts: false,
++    });
++    const actor: P6rMessageAuthor = {
++      evidence: "provider-verified",
++      identity: { kind: "person", key: "gus", issuer: "test", subject: "gus" },
++      presentation: { displayName: "Gus", handle: "gus", avatarUrl: null },
++    };
++    queryClient.setQueryData(currentMessageAuthorQueryKey, actor);
++    queryClient.setQueryData(threadQueryKey("thread-1"), makeThreadListEntry());
++    queryClient.setQueryData(
++      threadTimelineQueryKey("thread-1"),
++      makeTimelineResponse(),
++    );
++    queryClient.setQueryData(threadQueuedMessagesQueryKey("thread-1"), []);
++    const request = {
++      id: "thread-1",
++      mode: "queue-if-active" as const,
++      input: [{ type: "text" as const, text: "Hello", mentions: [] }],
++    };
++    const transaction = await beginSendThreadMessageTransaction({
++      queryClient,
++      request,
++    });
++    expect(transaction.kind).toBe("queued-message");
++    queryClient.removeQueries({
++      queryKey: currentMessageAuthorQueryKey,
++      exact: true,
++    });
++    applySendThreadMessageSuccess({
++      queryClient,
++      request,
++      transaction,
++      realtimeConnected: true,
++      result: { ok: true, delivery: "sent" },
++    });
++    expect(
++      queryClient.getQueryData<ThreadTimelineResponse>(
++        threadTimelineQueryKey("thread-1"),
++      )?.rows[0],
++    ).toMatchObject({ p6rAuthor: actor });
++    queryClient.clear();
++  });
++
++  it("does not relabel an existing queued message as the person pressing Send", async () => {
++    const queryClient = createAppQueryClient({
++      showMutationErrorToasts: false,
++    });
++    queryClient.setQueryData(currentMessageAuthorQueryKey, {
++      evidence: "machine",
++      identity: {
++        kind: "machine",
++        key: "machine",
++        instanceId: "instance",
++        hostId: null,
++      },
++      presentation: {
++        displayName: "Current actor",
++        handle: null,
++        avatarUrl: null,
++      },
++    } satisfies P6rMessageAuthor);
++    queryClient.setQueryData(
++      threadTimelineQueryKey("thread-1"),
++      makeTimelineResponse(),
++    );
++    queryClient.setQueryData(threadQueuedMessagesQueryKey("thread-1"), [
++      makeQueuedMessage(),
++    ]);
++    await beginSendQueuedMessageTransaction({
++      queryClient,
++      request: { id: "thread-1", queuedMessageId: "qmsg-1", mode: "auto" },
++    });
++    const row = queryClient.getQueryData<ThreadTimelineResponse>(
++      threadTimelineQueryKey("thread-1"),
++    )?.rows[0];
++    expect(row).toBeDefined();
++    expect(row).not.toHaveProperty("p6rAuthor");
++    queryClient.clear();
++  });
++
+   it("reconciles authoritative Plan cancellation across banner caches while preserving independent state", () => {
+     const queryClient = createAppQueryClient({
+       defaultOptions: { queries: { gcTime: Infinity, retry: false } },
+@@ -238,9 +360,9 @@ describe("thread runtime cache owner", () => {
+     });
+     expect(
+       queryClient
+-        .getQueryData<
+-          ThreadQueuedMessage[]
+-        >(threadQueuedMessagesQueryKey("thread-1"))
++        .getQueryData<ThreadQueuedMessage[]>(
++          threadQueuedMessagesQueryKey("thread-1"),
++        )
+         ?.map((queuedMessage) => ({
+           content: queuedMessage.content,
+           groupWithNext: queuedMessage.groupWithNext,
+@@ -268,9 +390,9 @@ describe("thread runtime cache owner", () => {
+     });
+     expect(
+       queryClient
+-        .getQueryData<
+-          ThreadQueuedMessage[]
+-        >(threadQueuedMessagesQueryKey("thread-1"))
++        .getQueryData<ThreadQueuedMessage[]>(
++          threadQueuedMessagesQueryKey("thread-1"),
++        )
+         ?.map((queuedMessage) => queuedMessage.id),
+     ).toEqual(["qmsg-first", "qmsg-edit", "qmsg-last"]);
+ 
+@@ -885,9 +1007,9 @@ describe("thread runtime cache owner", () => {
+ 
+     expect(
+       queryClient
+-        .getQueryData<
+-          ThreadQueuedMessage[]
+-        >(threadQueuedMessagesQueryKey("thread-1"))
++        .getQueryData<ThreadQueuedMessage[]>(
++          threadQueuedMessagesQueryKey("thread-1"),
++        )
+         ?.map((queuedMessage) => queuedMessage.id),
+     ).toEqual(["qmsg-3"]);
+     const timeline = queryClient.getQueryData<ThreadTimelineResponse>(
+diff --git a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
+index b030d52e47..ea733a4ac2 100644
+--- a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
++++ b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
+@@ -1,3 +1,4 @@
++import { getCurrentMessageAuthor } from "./current-message-author-owner";
+ import { cancelOptimisticQueries } from "./optimistic-query-cancellation";
+ import {
+   beginThreadEntityPrediction,
+@@ -10,6 +11,7 @@ import { nanoid } from "nanoid";
+ import type {
+   Environment,
+   PromptHistoryEntry,
++  P6rMessageAuthor,
+   ResolvedThreadExecutionOptions,
+   ThreadQueuedMessage,
+   ThreadWithRuntime,
+@@ -211,6 +213,7 @@ interface BuildAcceptedPromptHistoryEntryArgs {
+ }
+ 
+ interface BuildOptimisticUserMessageRowParams {
++  author: P6rMessageAuthor | null;
+   createdAt: number;
+   input: SendThreadMessageMutationRequest["input"];
+   mode: SendThreadMessageMutationRequest["mode"];
+@@ -232,6 +235,7 @@ interface OptimisticTurnRequestKindArgs {
+ }
+ 
+ interface SendThreadMessageAcceptedTurnTransaction {
++  optimisticAuthor: P6rMessageAuthor | null;
+   kind: "accepted-turn";
+   optimisticCreatedAt: number;
+   optimisticRowId: string;
+@@ -239,6 +243,7 @@ interface SendThreadMessageAcceptedTurnTransaction {
+ }
+ 
+ interface SendThreadMessageQueuedTransaction {
++  optimisticAuthor: P6rMessageAuthor | null;
+   kind: "queued-message";
+   optimisticCreatedAt: number;
+   optimisticQueuedMessageId: string;
+@@ -609,6 +614,7 @@ function requestWillOptimisticallyQueue(
+ }
+ 
+ function buildOptimisticUserMessageRow({
++  author,
+   createdAt,
+   input,
+   mode,
+@@ -654,6 +660,7 @@ function buildOptimisticUserMessageRow({
+     senderThreadId: null,
+     systemMessageKind: "unlabeled",
+     systemMessageSubject: null,
++    ...(author ? { p6rAuthor: author } : {}),
+     turnRequest: {
+       isGrouped: false,
+       kind: optimisticTurnRequestKind({ mode, threadStatus }),
+@@ -830,6 +837,7 @@ export async function beginSendThreadMessageTransaction({
+   queryClient,
+   request,
+ }: SendThreadMessageTransactionArgs): Promise<SendThreadMessageTransaction> {
++  const optimisticAuthor = getCurrentMessageAuthor(queryClient);
+   await Promise.all([
+     cancelOptimisticQueries(queryClient, {
+       queryKey: threadQueryKey(request.id),
+@@ -855,6 +863,7 @@ export async function beginSendThreadMessageTransaction({
+     });
+     return {
+       kind: "queued-message",
++      optimisticAuthor,
+       previousThreadStatus: previousThread?.status ?? null,
+       ...transaction,
+     };
+@@ -869,6 +878,7 @@ export async function beginSendThreadMessageTransaction({
+   });
+ 
+   const optimisticRow = buildOptimisticUserMessageRow({
++    author: optimisticAuthor,
+     createdAt: optimisticCreatedAt,
+     input: request.input,
+     mode: request.mode,
+@@ -879,6 +889,7 @@ export async function beginSendThreadMessageTransaction({
+ 
+   return {
+     kind: "accepted-turn",
++    optimisticAuthor,
+     optimisticCreatedAt,
+     optimisticRowId: optimisticRow.id,
+     prediction,
+@@ -966,6 +977,7 @@ export function applySendThreadMessageSuccess({
+         queryClient,
+         request.id,
+         buildOptimisticUserMessageRow({
++          author: transaction.optimisticAuthor,
+           createdAt: optimisticCreatedAt,
+           input: request.input,
+           mode: request.mode,
+@@ -1166,6 +1178,7 @@ export async function beginSendQueuedMessageTransaction({
+     };
+   }
+   const optimisticRow = buildOptimisticUserMessageRow({
++    author: null,
+     createdAt: optimisticCreatedAt,
+     input: queuedMessage.content,
+     mode: request.mode,
+diff --git a/apps/app/src/hooks/mutations/thread-runtime-mutations.test.ts b/apps/app/src/hooks/mutations/thread-runtime-mutations.test.ts
+index 2562567ba1..3feef3f438 100644
+--- a/apps/app/src/hooks/mutations/thread-runtime-mutations.test.ts
++++ b/apps/app/src/hooks/mutations/thread-runtime-mutations.test.ts
+@@ -1,7 +1,10 @@
+ import { MutationObserver, type QueryClient } from "@tanstack/react-query";
+-import type { ThreadQueuedMessage } from "@bb/domain";
++import type { P6rMessageAuthor, ThreadQueuedMessage } from "@bb/domain";
++import { currentMessageAuthorQueryKey } from "../cache-owners/current-message-author-owner";
++import { applyThreadTimelineSignal } from "../cache-owners/thread-timeline-push-owner";
+ import type {
+   ExistingThreadExecutionInputSources,
++  SendMessageResponse,
+   ThreadResponse,
+   ThreadTimelineResponse,
+ } from "@bb/server-contract";
+@@ -158,6 +161,129 @@ afterEach(() => {
+ });
+ 
+ describe("thread runtime mutations", () => {
++  it("shows the captured actor immediately without sending client authorship", async () => {
++    const queryClient = createTestQueryClient();
++    const actor: P6rMessageAuthor = {
++      evidence: "provider-verified",
++      identity: { kind: "person", key: "gus", issuer: "test", subject: "gus" },
++      presentation: { displayName: "Gus", handle: "gus", avatarUrl: null },
++    };
++    queryClient.setQueryData(currentMessageAuthorQueryKey, actor);
++    queryClient.setQueryData(
++      threadTimelineQueryKey("thread-1"),
++      makeThreadTimelineResponse(),
++    );
++    const response = createDeferredPromise<SendMessageResponse>();
++    vi.mocked(sdk.threads.send).mockReturnValueOnce(response.promise);
++    const mutation = new MutationObserver(
++      queryClient,
++      sendThreadMessageMutationOptions(queryClient),
++    );
++    const pending = mutation.mutate({
++      id: "thread-1",
++      mode: "auto",
++      input: [{ type: "text", text: "Hello", mentions: [] }],
++    });
++    await vi.waitFor(() => expect(sdk.threads.send).toHaveBeenCalledTimes(1));
++    const rows = () =>
++      queryClient.getQueryData<ThreadTimelineResponse>(
++        threadTimelineQueryKey("thread-1"),
++      )?.rows;
++    expect(rows()?.at(-1)).toMatchObject({ text: "Hello", p6rAuthor: actor });
++    expect(sdk.threads.send).toHaveBeenCalledWith({
++      threadId: "thread-1",
++      mode: "auto",
++      input: [{ type: "text", text: "Hello", mentions: [] }],
++    });
++    queryClient.removeQueries({
++      queryKey: currentMessageAuthorQueryKey,
++      exact: true,
++    });
++    expect(rows()?.at(-1)).toMatchObject({ p6rAuthor: actor });
++    response.resolve({ ok: true, delivery: "sent" });
++    await pending;
++    expect(rows()?.at(-1)).toMatchObject({ p6rAuthor: actor });
++    const optimistic = rows()?.at(-1);
++    if (
++      !optimistic ||
++      optimistic.kind !== "conversation" ||
++      optimistic.role !== "user"
++    )
++      throw Error("missing optimistic row");
++    const confirmedActor: P6rMessageAuthor = {
++      evidence: "machine",
++      identity: {
++        kind: "machine",
++        key: "server",
++        instanceId: "instance",
++        hostId: null,
++      },
++      presentation: {
++        displayName: "Server confirmed actor",
++        handle: null,
++        avatarUrl: null,
++      },
++    };
++    applyThreadTimelineSignal(queryClient, {
++      type: "thread-timeline",
++      target: {
++        kind: "thread-timeline",
++        threadId: "thread-1",
++        segmentLimit: null,
++        deferContent: true,
++      },
++      timeline: makeThreadTimelineResponse({
++        maxSeq: 1,
++        tag: "confirmed",
++        rows: [
++          { ...optimistic, id: "confirmed-row", p6rAuthor: confirmedActor },
++        ],
++      }),
++    });
++    expect(rows()).toHaveLength(1);
++    expect(rows()?.[0]).toMatchObject({
++      id: "confirmed-row",
++      p6rAuthor: confirmedActor,
++    });
++    queryClient.clear();
++  });
++
++  it("removes assumed authorship with a rejected send", async () => {
++    const queryClient = createTestQueryClient();
++    queryClient.setQueryData(currentMessageAuthorQueryKey, {
++      evidence: "machine",
++      identity: {
++        kind: "machine",
++        key: "machine",
++        instanceId: "instance",
++        hostId: null,
++      },
++      presentation: { displayName: "Machine", handle: null, avatarUrl: null },
++    } satisfies P6rMessageAuthor);
++    queryClient.setQueryData(
++      threadTimelineQueryKey("thread-1"),
++      makeThreadTimelineResponse(),
++    );
++    vi.mocked(sdk.threads.send).mockRejectedValueOnce(Error("denied"));
++    const mutation = new MutationObserver(
++      queryClient,
++      sendThreadMessageMutationOptions(queryClient),
++    );
++    await expect(
++      mutation.mutate({
++        id: "thread-1",
++        mode: "auto",
++        input: [{ type: "text", text: "Denied", mentions: [] }],
++      }),
++    ).rejects.toThrow("denied");
++    expect(
++      queryClient.getQueryData<ThreadTimelineResponse>(
++        threadTimelineQueryKey("thread-1"),
++      )?.rows,
++    ).toEqual([]);
++    queryClient.clear();
++  });
++
+   it("prefetches queued message detail as soon as a queued thread is created", async () => {
+     const queryClient = createTestQueryClient();
+     const mutation = new MutationObserver(
+@@ -437,9 +563,9 @@ describe("thread runtime mutations", () => {
+ 
+     expect(
+       queryClient
+-        .getQueryData<
+-          ThreadQueuedMessage[]
+-        >(threadQueuedMessagesQueryKey("thread-1"))
++        .getQueryData<ThreadQueuedMessage[]>(
++          threadQueuedMessagesQueryKey("thread-1"),
++        )
+         ?.map((queuedMessage) => queuedMessage.id),
+     ).toEqual(["qmsg-2"]);
+   });
+diff --git a/apps/app/src/hooks/useWebSocket.ts b/apps/app/src/hooks/useWebSocket.ts
+index 3027d86bbc..cceb362f26 100644
+--- a/apps/app/src/hooks/useWebSocket.ts
++++ b/apps/app/src/hooks/useWebSocket.ts
+@@ -1,4 +1,5 @@
+ import { useEffect, useRef } from "react";
++import { createCurrentMessageAuthorOwner } from "./cache-owners/current-message-author-owner";
+ import { useQueryClient } from "@tanstack/react-query";
+ import { createRealtimeCacheEffects } from "./realtime-cache-effects";
+ import { useDeletedResourceRouteOwner } from "./cache-owners/resource-route-owner";
+@@ -20,6 +21,17 @@ export function useWebSocket(): void {
+   deletedResourceRouteChangeRef.current = handleDeletedResourceRouteChange;
+ 
+   useEffect(() => {
++    const messageAuthor = createCurrentMessageAuthorOwner(queryClient);
++    const syncMessageAuthor = () => {
++      if (wsManager.getConnectionState() === "connected") {
++        void messageAuthor.load();
++      } else {
++        messageAuthor.reset();
++      }
++    };
++    const unsubscribeMessageAuthor =
++      wsManager.onConnectionStateChange(syncMessageAuthor);
++    syncMessageAuthor();
+     const cacheEffects = createRealtimeCacheEffects({
+       queryClient,
+       refreshSidebarWhileHidden:
+@@ -51,6 +63,8 @@ export function useWebSocket(): void {
+     wsManager.connect();
+ 
+     return () => {
++      unsubscribeMessageAuthor();
++      messageAuthor.reset();
+       cacheEffects.dispose();
+       unsubscribeConnected();
+       unsubscribeArchivedThreadBrowsers();
+-- 
+2.53.0
+
