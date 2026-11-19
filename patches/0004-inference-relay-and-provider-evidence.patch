@@ -1,4 +1,4 @@
-From 6004c8e92177f15eb9df6f88269d1b0255660e7e Mon Sep 17 00:00:00 2001
+From 6a8c38ae75f260d2f738234b11c7b76e4f76c16e Mon Sep 17 00:00:00 2001
 From: Cole Lawrence <cole@colelawrence.com>
 Date: Fri, 13 Nov 2026 20:23:59 -0300
 Subject: [PATCH] Inference relay and provider evidence
@@ -6,12 +6,13 @@ Subject: [PATCH] Inference relay and provider evidence
 ---
  apps/host-daemon/src/app.test.ts              |   1 +
  apps/host-daemon/src/app.ts                   |   4 +-
- apps/host-daemon/src/command-dispatch.test.ts |  16 +
+ apps/host-daemon/src/command-dispatch.test.ts |  18 +
  apps/host-daemon/src/command-dispatch.ts      |  19 +-
  .../src/machine-environment.test.ts           |  79 +++-
  apps/host-daemon/src/machine-environment.ts   |  22 +-
  .../src/operation-environment.test.ts         |   2 +
  .../src/plugin-host-manager.test.ts           |   5 +
+ .../src/provider-installation-gate.test.ts    |   1 +
  apps/host-daemon/src/runtime-manager.test.ts  |  61 +++
  apps/host-daemon/src/runtime-manager.ts       |  24 +-
  .../src/terminals/terminal-manager.test.ts    |   1 +
@@ -19,8 +20,11 @@ Subject: [PATCH] Inference relay and provider evidence
  .../test/command/environment-hook.test.ts     |   4 +
  .../command/project-clone-private-env.test.ts |   8 +-
  .../test/command/thread-dispatch.test.ts      |   2 +-
+ .../test/system/host-derived-state.test.ts    |   7 +-
+ .../test/system/provider-states.test.ts       |   1 +
  .../src/bridge-protocol-adapter.ts            |   1 +
  .../src/integration.env-isolation.test.ts     |   1 +
+ .../integration.record-scenario-cells.test.ts |   1 +
  .../agent-runtime/src/provider-adapter.ts     |   1 +
  .../src/runtime.codex-topology.test.ts        |  83 +++-
  .../src/runtime.command-contract.test.ts      |   2 +
@@ -80,15 +84,15 @@ Subject: [PATCH] Inference relay and provider evidence
  .../src/delta-translation.ts                  |  21 +-
  .../src/response-identity.test.ts             | 374 ++++++++++++++++++
  .../src/response-identity.ts                  | 285 +++++++++++++
- .../src/bridge/app-server-launch.test.ts      |  37 +-
- plugins/provider-codex/src/bridge/bridge.ts   |  49 ++-
+ .../src/bridge/app-server-launch.test.ts      |  49 ++-
+ plugins/provider-codex/src/bridge/bridge.ts   |  35 +-
  .../src/bridge/fake-codex-app-server.mjs      |   8 +
  .../src/bridge/provider-maintenance.test.ts   |   9 +
  .../src/bridge/provider-maintenance.ts        |   3 +
  .../src/delta-translation.test.ts             | 113 ++++++
  .../provider-codex/src/delta-translation.ts   |   8 +-
  plugins/provider-codex/src/schemas.ts         |   7 +
- 84 files changed, 3491 insertions(+), 309 deletions(-)
+ 88 files changed, 3505 insertions(+), 305 deletions(-)
  create mode 100644 packages/agent-runtime/src/thread-shell-environment.test.ts
  create mode 100644 packages/config/src/tailnet-default.ts
  create mode 100644 packages/config/test/tailnet-default.test.ts
@@ -100,10 +104,10 @@ Subject: [PATCH] Inference relay and provider evidence
  create mode 100644 plugins/provider-claude-code/src/response-identity.ts
 
 diff --git a/apps/host-daemon/src/app.test.ts b/apps/host-daemon/src/app.test.ts
-index 0edf22e57da1338921bc880d4c0fb1256dee15e3..30390731024ee32304d692a3241f4b0a9e063e4f 100644
+index 944c6169a13dff8e4cf7d9acfa5335f98f9fda10..031cfd9c55b7a9ea6361dcd8bd2711a23d488854 100644
 --- a/apps/host-daemon/src/app.test.ts
 +++ b/apps/host-daemon/src/app.test.ts
-@@ -455,6 +455,7 @@ describe("createHostDaemonApp", () => {
+@@ -463,6 +463,7 @@ describe("createHostDaemonApp", () => {
            {
              name: "MACHINE_DAEMON_TEST",
              value: "configured",
@@ -112,10 +116,10 @@ index 0edf22e57da1338921bc880d4c0fb1256dee15e3..30390731024ee32304d692a3241f4b0a
              reason: "test",
            },
 diff --git a/apps/host-daemon/src/app.ts b/apps/host-daemon/src/app.ts
-index c0f2c129d624d8d414e23caebae116a83ba99f84..80584275cc53bfa13b39860d847b93fdb371d229 100644
+index 10a0ee578cead93424c7154127564d0dc1e1b843..776a92e65f570859aa05d07789077c4d46e9e36e 100644
 --- a/apps/host-daemon/src/app.ts
 +++ b/apps/host-daemon/src/app.ts
-@@ -599,8 +599,8 @@ export async function createHostDaemonApp(
+@@ -620,8 +620,8 @@ export async function createHostDaemonApp(
      hostWatcher: options.hostWatcher,
      logger: options.logger,
      shellEnv: options.runtimeShellEnv,
@@ -127,10 +131,26 @@ index c0f2c129d624d8d414e23caebae116a83ba99f84..80584275cc53bfa13b39860d847b93fd
        try {
          eventSink.emit({
 diff --git a/apps/host-daemon/src/command-dispatch.test.ts b/apps/host-daemon/src/command-dispatch.test.ts
-index 748845efacdc7d4ba3bca3c5be8d3f1ccf5afffd..7552590cb91ee031745446879988aa9bc1d06573 100644
+index 9811e13e4d3edb97f57321e331f3cbde519db999..fc253e012b5e3eb7810ff49cf1e8974a06a7de8d 100644
 --- a/apps/host-daemon/src/command-dispatch.test.ts
 +++ b/apps/host-daemon/src/command-dispatch.test.ts
-@@ -2465,3 +2465,19 @@ describe("dispatchCommand", () => {
+@@ -2455,6 +2455,7 @@ describe("dispatchCommand", () => {
+             {
+               name: "BB_PI_BRIDGE_COMMAND",
+               value: "/opt/pi/bin/pi",
++              secret: false,
+               source: { plugin: "managed-pi" },
+               reason: "plugin ships Pi",
+             },
+@@ -2484,6 +2485,7 @@ describe("dispatchCommand", () => {
+         {
+           name: "BB_PI_BRIDGE_COMMAND",
+           value: "/opt/pi/bin/pi",
++          secret: false,
+           source: { plugin: "managed-pi" },
+           reason: "plugin ships Pi",
+         },
+@@ -2495,3 +2497,19 @@ describe("dispatchCommand", () => {
      });
    });
  });
@@ -151,10 +171,10 @@ index 748845efacdc7d4ba3bca3c5be8d3f1ccf5afffd..7552590cb91ee031745446879988aa9b
 +  } finally { vi.unstubAllEnvs(); }
 +});
 diff --git a/apps/host-daemon/src/command-dispatch.ts b/apps/host-daemon/src/command-dispatch.ts
-index 43cf8ad82044ccf427815dbb9e9ba7bc42ee45c5..5a762b6a32aff036140d69eff9babd020b8368af 100644
+index 44fe4279795b6956de11baee809bbd9cdf6d377f..9dcfc663f453a5ba29472d5ca77f76bf580170c0 100644
 --- a/apps/host-daemon/src/command-dispatch.ts
 +++ b/apps/host-daemon/src/command-dispatch.ts
-@@ -614,8 +614,20 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
+@@ -644,8 +644,20 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
    "host.read_file": readHostFile,
    "host.read_file_chunk": readHostFileChunk,
    "host.write_file": writeHostFile,
@@ -177,7 +197,7 @@ index 43cf8ad82044ccf427815dbb9e9ba7bc42ee45c5..5a762b6a32aff036140d69eff9babd02
        options.listModels({
          ...args,
          contributedEnv: command.contributedEnv,
-@@ -623,7 +635,8 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
+@@ -653,7 +665,8 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
            ? {}
            : { selectedModel: command.selectedModel }),
        }),
@@ -188,7 +208,7 @@ index 43cf8ad82044ccf427815dbb9e9ba7bc42ee45c5..5a762b6a32aff036140d69eff9babd02
      const cwd =
        command.cwd ?? path.join(options.dataDir, "provider-command-catalog");
 diff --git a/apps/host-daemon/src/machine-environment.test.ts b/apps/host-daemon/src/machine-environment.test.ts
-index 64ef12f740a3d73e039bc090998d998a4beaee07..73e18ecafc5bff4b869b90d29e3cd2910d143bae 100644
+index ddffe36bd07a3fd9b471397a280458cd1560c3c5..fbd2f04a645dae9b01c0e4817ac485c2ff99dbb8 100644
 --- a/apps/host-daemon/src/machine-environment.test.ts
 +++ b/apps/host-daemon/src/machine-environment.test.ts
 @@ -11,12 +11,14 @@ it("makes machine settings available to arbitrary child commands and removes sta
@@ -206,7 +226,7 @@ index 64ef12f740a3d73e039bc090998d998a4beaee07..73e18ecafc5bff4b869b90d29e3cd291
        source: { core: "machine-environment" },
        reason: "test",
      },
-@@ -31,7 +33,10 @@ it("makes machine settings available to arbitrary child commands and removes sta
+@@ -33,7 +35,10 @@ it("makes machine settings available to arbitrary child commands and removes sta
        { env: target, encoding: "utf8" },
      );
    expect(JSON.parse(readChild())).toEqual(["configured", "first"]);
@@ -218,16 +238,16 @@ index 64ef12f740a3d73e039bc090998d998a4beaee07..73e18ecafc5bff4b869b90d29e3cd291
      MACHINE_EXISTING: "configured",
      MACHINE_NEW: "first",
    });
-@@ -39,6 +44,7 @@ it("makes machine settings available to arbitrary child commands and removes sta
-     {
-       name: "MACHINE_NEW",
-       value: "second",
-+      secret: false,
-       source: { core: "machine-environment" },
-       reason: "test",
-     },
-@@ -47,10 +53,10 @@ it("makes machine settings available to arbitrary child commands and removes sta
-   environment.replace([]);
+@@ -42,6 +47,7 @@ it("makes machine settings available to arbitrary child commands and removes sta
+       {
+         name: "MACHINE_NEW",
+         value: "second",
++        secret: false,
+         source: { core: "machine-environment" },
+         reason: "test",
+       },
+@@ -52,10 +58,10 @@ it("makes machine settings available to arbitrary child commands and removes sta
+   expect(environment.replace([])).toBe(false);
    expect(JSON.parse(readChild())).toEqual(["original", null]);
    expect(
 -    environment.shellEnvironment({
@@ -239,7 +259,7 @@ index 64ef12f740a3d73e039bc090998d998a4beaee07..73e18ecafc5bff4b869b90d29e3cd291
    ).toEqual({ MACHINE_EXISTING: "shell-original" });
  });
  
-@@ -64,18 +70,83 @@ it("resolves server-relative entries and preserves explicitly empty values", ()
+@@ -69,18 +75,83 @@ it("resolves server-relative entries and preserves explicitly empty values", ()
      {
        name: "MACHINE_VALUE",
        value: "",
@@ -325,7 +345,7 @@ index 64ef12f740a3d73e039bc090998d998a4beaee07..73e18ecafc5bff4b869b90d29e3cd291
 +  expect(captured.shellEnv.AUTH).toBe("https://server.example/credential");
 +});
 diff --git a/apps/host-daemon/src/machine-environment.ts b/apps/host-daemon/src/machine-environment.ts
-index 778bf174f4fb2a1a5463100bf303c4b88c6ba8c7..35c435e61261794edf9abb97a80a800cb749881f 100644
+index f8df2eb5866fdde9e4f28174693d20b0c4feeecc..b0b3693b70f4fd7a5039355d173279c3c30ebd35 100644
 --- a/apps/host-daemon/src/machine-environment.ts
 +++ b/apps/host-daemon/src/machine-environment.ts
 @@ -6,6 +6,7 @@ export class MachineEnvironment {
@@ -336,13 +356,14 @@ index 778bf174f4fb2a1a5463100bf303c4b88c6ba8c7..35c435e61261794edf9abb97a80a800c
  
    constructor(
      private readonly target: NodeJS.ProcessEnv,
-@@ -16,12 +17,22 @@ export class MachineEnvironment {
+@@ -16,13 +17,23 @@ export class MachineEnvironment {
    }
  
-   replace(entries: readonly HostDaemonContributedEnvEntry[]): void {
+   replace(entries: readonly HostDaemonContributedEnvEntry[]): boolean {
 -    const resolved = operationEnvironment(entries, this.original);
 +    const capturedEntries = structuredClone([...entries]);
 +    const resolved = operationEnvironment(capturedEntries, this.original);
+     const previous = this.values;
      this.values = {};
 -    for (const entry of entries) {
 +    for (const entry of capturedEntries) {
@@ -361,8 +382,8 @@ index 778bf174f4fb2a1a5463100bf303c4b88c6ba8c7..35c435e61261794edf9abb97a80a800c
      for (const name of this.managed) {
        const value = this.values[name] ?? this.original[name];
        if (value === undefined) delete this.target[name];
-@@ -29,13 +40,16 @@ export class MachineEnvironment {
-     }
+@@ -33,13 +44,16 @@ export class MachineEnvironment {
+     );
    }
  
 -  shellEnvironment(shell: Record<string, string>): Record<string, string> {
@@ -400,10 +421,10 @@ index a5985e0d2c4ed687e67f7d7c4ab9415425d9ae6b..94b0a04b8f02ae96036927331bac1b61
              reason: "Proxy",
            },
 diff --git a/apps/host-daemon/src/plugin-host-manager.test.ts b/apps/host-daemon/src/plugin-host-manager.test.ts
-index 09918087b264ccf126ae2baa70a8e7dd6227ebfa..a91038b4f5265f80dfcce83df509aaa4f0618027 100644
+index 3dc2a1acac435c50cbd173d5fb5d96fe7b60102b..ae39e90d392705507c81cfde97a182b84631326b 100644
 --- a/apps/host-daemon/src/plugin-host-manager.test.ts
 +++ b/apps/host-daemon/src/plugin-host-manager.test.ts
-@@ -231,12 +231,14 @@ describe("PluginHostManager", () => {
+@@ -233,12 +233,14 @@ describe("PluginHostManager", () => {
        {
          name: "GATE_VALUE",
          value,
@@ -418,7 +439,7 @@ index 09918087b264ccf126ae2baa70a8e7dd6227ebfa..a91038b4f5265f80dfcce83df509aaa4
          reason: "Git",
          source: { core: "machine-git" as const },
        },
-@@ -319,6 +321,7 @@ describe("PluginHostManager", () => {
+@@ -321,6 +323,7 @@ describe("PluginHostManager", () => {
              {
                name: "GATE_VALUE",
                value,
@@ -426,7 +447,7 @@ index 09918087b264ccf126ae2baa70a8e7dd6227ebfa..a91038b4f5265f80dfcce83df509aaa4
                reason: "test",
                source: { core: "machine-environment" },
              },
-@@ -559,6 +562,7 @@ describe("PluginHostManager", () => {
+@@ -561,6 +564,7 @@ describe("PluginHostManager", () => {
            {
              name: "TEST_SECRET",
              value: secret,
@@ -434,7 +455,7 @@ index 09918087b264ccf126ae2baa70a8e7dd6227ebfa..a91038b4f5265f80dfcce83df509aaa4
              reason: "Probe",
              source: { core: "machine-environment" },
            },
-@@ -599,6 +603,7 @@ describe("PluginHostManager", () => {
+@@ -601,6 +605,7 @@ describe("PluginHostManager", () => {
          {
            name: "TEST_SECRET",
            value: secret,
@@ -442,8 +463,20 @@ index 09918087b264ccf126ae2baa70a8e7dd6227ebfa..a91038b4f5265f80dfcce83df509aaa4
            reason: "Probe",
            source: { core: "machine-environment" },
          },
+diff --git a/apps/host-daemon/src/provider-installation-gate.test.ts b/apps/host-daemon/src/provider-installation-gate.test.ts
+index cf296f661aa80a5df2723b1ee2594f2505d9dec4..6fb2563ca54799e115f44cd20965fae72000a375 100644
+--- a/apps/host-daemon/src/provider-installation-gate.test.ts
++++ b/apps/host-daemon/src/provider-installation-gate.test.ts
+@@ -346,6 +346,7 @@ describe("providerInstallationGateKey", () => {
+           {
+             name: "BB_CODEX_BRIDGE_APP_SERVER_COMMAND",
+             value: "/opt/codex/bin/codex",
++            secret: false,
+             source: { plugin: "managed-codex" },
+             reason: "plugin ships Codex",
+           },
 diff --git a/apps/host-daemon/src/runtime-manager.test.ts b/apps/host-daemon/src/runtime-manager.test.ts
-index 673bf96ea45390031f85d995737d04bc34e584d9..81f50d5263a42a1f55f9bbcaa2bef5b060a176d9 100644
+index 4520f32e3e9905eaf60690801858a6f6de56d362..cf5fd04b49083c68b61eb4a933006b96ae0962ed 100644
 --- a/apps/host-daemon/src/runtime-manager.test.ts
 +++ b/apps/host-daemon/src/runtime-manager.test.ts
 @@ -19,6 +19,7 @@ import {
@@ -454,7 +487,7 @@ index 673bf96ea45390031f85d995737d04bc34e584d9..81f50d5263a42a1f55f9bbcaa2bef5b0
  
  type GetCurrentBranchArgs = Parameters<HostWorkspace["getCurrentBranch"]>;
  type GetLocalStateFingerprintResult = Awaited<
-@@ -413,6 +414,66 @@ describe("RuntimeManager", () => {
+@@ -402,6 +403,66 @@ describe("RuntimeManager", () => {
      finishCommand();
    });
  
@@ -522,10 +555,10 @@ index 673bf96ea45390031f85d995737d04bc34e584d9..81f50d5263a42a1f55f9bbcaa2bef5b0
      const dataDir = await makeTempDir("bb-runtime-manager-skills-");
      const source = await writeInjectedSkillSource({
 diff --git a/apps/host-daemon/src/runtime-manager.ts b/apps/host-daemon/src/runtime-manager.ts
-index 4ff596ce1d9bf1e13b4c4f4687adc2ffa36a15f4..b6fb99fdf8c79506455320e26fc997442c1e68c9 100644
+index 8d38d8e98b33dd286d2738fe96995c52d36e4721..b0186a572e84b7cfeb0936dd51c3cdf2b5642902 100644
 --- a/apps/host-daemon/src/runtime-manager.ts
 +++ b/apps/host-daemon/src/runtime-manager.ts
-@@ -179,9 +179,12 @@ export interface RuntimeManagerOptions {
+@@ -173,9 +173,12 @@ export interface RuntimeManagerOptions {
    ) => Promise<HostWorkspace>;
    providerMaintenanceIdleTimeoutMs?: number;
    shellEnv?: AgentRuntimeOptions["shellEnv"];
@@ -540,7 +573,7 @@ index 4ff596ce1d9bf1e13b4c4f4687adc2ffa36a15f4..b6fb99fdf8c79506455320e26fc99744
    onEvent?: (args: { environmentId: string; event: ThreadEvent }) => void;
    threadStorageRootPath?: string | null;
    onInjectedSkillsChanged?: (args: InjectedSkillsChangedNotification) => void;
-@@ -575,9 +578,14 @@ export class RuntimeManager {
+@@ -567,9 +570,14 @@ export class RuntimeManager {
    }
  
    getShellEnv(): NonNullable<AgentRuntimeOptions["shellEnv"]> {
@@ -557,7 +590,7 @@ index 4ff596ce1d9bf1e13b4c4f4687adc2ffa36a15f4..b6fb99fdf8c79506455320e26fc99744
        }
      );
    }
-@@ -1186,13 +1194,15 @@ export class RuntimeManager {
+@@ -1178,13 +1186,15 @@ export class RuntimeManager {
      await mkdir(workspacePath, { recursive: true });
  
      let runtime: AgentRuntime | null = null;
@@ -574,7 +607,7 @@ index 4ff596ce1d9bf1e13b4c4f4687adc2ffa36a15f4..b6fb99fdf8c79506455320e26fc99744
        threadStorageRootPath: this.options.threadStorageRootPath ?? undefined,
        bridgeBundleDir: this.options.bridgeBundleDir,
        onEvent: (event) => {
-@@ -1256,7 +1266,8 @@ export class RuntimeManager {
+@@ -1248,7 +1258,8 @@ export class RuntimeManager {
        workspaceRoots: workspaceWriteRoots,
      });
      let runtime: AgentRuntime | null = null;
@@ -584,7 +617,7 @@ index 4ff596ce1d9bf1e13b4c4f4687adc2ffa36a15f4..b6fb99fdf8c79506455320e26fc99744
      const shellEnvGeneration = this.shellEnvGeneration;
      const providerProcessEnv = providerProcessEnvFromShellEnv(shellEnv);
      runtime = this.createRuntime({
-@@ -1265,6 +1276,7 @@ export class RuntimeManager {
+@@ -1257,6 +1268,7 @@ export class RuntimeManager {
        ...(args.skillConfig ? { skillRoots: args.skillConfig.skillRoots } : {}),
        ...(providerProcessEnv ? { env: providerProcessEnv } : {}),
        shellEnv,
@@ -593,10 +626,10 @@ index 4ff596ce1d9bf1e13b4c4f4687adc2ffa36a15f4..b6fb99fdf8c79506455320e26fc99744
        bridgeBundleDir: this.options.bridgeBundleDir,
        onEvent: (event) => {
 diff --git a/apps/host-daemon/src/terminals/terminal-manager.test.ts b/apps/host-daemon/src/terminals/terminal-manager.test.ts
-index d0a7c38a51d1f139163516ef5457370af9b3ffb9..8d74886043b44b5f7a6e3b20ad4a30ad679e0754 100644
+index e07e6428332859c3db6f592d9c35bc3f6cc09d34..78010cf4308e682511da077969769ccfbe5aab8e 100644
 --- a/apps/host-daemon/src/terminals/terminal-manager.test.ts
 +++ b/apps/host-daemon/src/terminals/terminal-manager.test.ts
-@@ -495,6 +495,7 @@ describe("TerminalManager", () => {
+@@ -496,6 +496,7 @@ describe("TerminalManager", () => {
        {
          name: "GH_TOKEN",
          value: "terminal-private-token",
@@ -680,10 +713,10 @@ index b7b78c0e4a4d3d4af434976b6be18f2faf7c3b4d..6460d0e1949b170c779d5fbd676bc60c
      reason: "test",
    }));
 diff --git a/apps/host-daemon/test/command/thread-dispatch.test.ts b/apps/host-daemon/test/command/thread-dispatch.test.ts
-index 55242f07dab40f3d2294bc5ac045fb88cbeb40cb..24a6eea456cedd82a0410336925c55a8b10eb17d 100644
+index 2d1d9fc4819023e2f38a28f2f22b38a59530082f..2d2ada01479b65a751e4ecc2650a888e043c2b38 100644
 --- a/apps/host-daemon/test/command/thread-dispatch.test.ts
 +++ b/apps/host-daemon/test/command/thread-dispatch.test.ts
-@@ -1438,7 +1438,7 @@ describe("thread command dispatch", () => {
+@@ -1439,7 +1439,7 @@ describe("thread command dispatch", () => {
        harness.dispatchOptions(),
      );
  
@@ -692,11 +725,48 @@ index 55242f07dab40f3d2294bc5ac045fb88cbeb40cb..24a6eea456cedd82a0410336925c55a8
      expect(harness.runtimeState.startedEnvironmentId).toBe("env-1");
      expect(renameResult).toEqual({});
      expect(archiveResult).toEqual({});
+diff --git a/apps/server/test/system/host-derived-state.test.ts b/apps/server/test/system/host-derived-state.test.ts
+index 38362586f104d4f20c43e6fa13326982143e1a5e..6aba59673a1d410b2393f4893370e2bc1e35c41f 100644
+--- a/apps/server/test/system/host-derived-state.test.ts
++++ b/apps/server/test/system/host-derived-state.test.ts
+@@ -112,7 +112,11 @@ describe("host-derived state owner", () => {
+             headers: { "content-type": "application/json" },
+             body: JSON.stringify(
+               method === "POST"
+-                ? { name: "PATH", value: `${CODEX_DIRECTORY}:/usr/bin` }
++                ? {
++                    name: "PATH",
++                    value: `${CODEX_DIRECTORY}:/usr/bin`,
++                    secret: false,
++                  }
+                 : { name: "PATH" },
+             ),
+           },
+@@ -155,6 +159,7 @@ describe("host-derived state owner", () => {
+                   {
+                     name: "BB_CLAUDE_CODE_EXECUTABLE",
+                     value: executable,
++                    secret: false,
+                     source: { plugin: "claude-pack" },
+                     reason: "bundled",
+                   },
+diff --git a/apps/server/test/system/provider-states.test.ts b/apps/server/test/system/provider-states.test.ts
+index e88a6df3ed54bdaf55452e7aba47fc4daad79fc1..095a9e5648ee42531163b6ffe78516900eb5f209 100644
+--- a/apps/server/test/system/provider-states.test.ts
++++ b/apps/server/test/system/provider-states.test.ts
+@@ -170,6 +170,7 @@ describe("getProviderStates", () => {
+                     {
+                       name: "BB_CLAUDE_CODE_EXECUTABLE",
+                       value: "/opt/plugin/claude",
++                      secret: false,
+                       source: { plugin: "claude-bundle" },
+                       reason: "plugin ships Claude Code",
+                     },
 diff --git a/packages/agent-runtime/src/bridge-protocol-adapter.ts b/packages/agent-runtime/src/bridge-protocol-adapter.ts
-index 3178548c2e7fde8680ac92e47a568b4a683d9173..25df8e0187bcdeaee61ad74dcef67c50c2fcfbd2 100644
+index 9b9d83383d7abed63b06babebc14ca1cec8ef400..45c4b864452b53e064676ff8865228940a961007 100644
 --- a/packages/agent-runtime/src/bridge-protocol-adapter.ts
 +++ b/packages/agent-runtime/src/bridge-protocol-adapter.ts
-@@ -298,6 +298,7 @@ export function createBridgeProtocolAdapter(
+@@ -304,6 +304,7 @@ export function createBridgeProtocolAdapter(
                threadId: command.threadId,
                cwd: command.cwd,
                providerThreadId: command.providerThreadId,
@@ -716,11 +786,23 @@ index 5311832eeb68b4e40bcf1bb39ed95d5feb8ce49b..82c175fcc75eebc5c7e56cf48c41c5b9
      },
    ];
    try {
+diff --git a/packages/agent-runtime/src/integration.record-scenario-cells.test.ts b/packages/agent-runtime/src/integration.record-scenario-cells.test.ts
+index 0980c0493136820f2b04d20689ca18f1071bf22f..7cc2eb13285f2d2b58dcd0ac5d41293fc4adee5a 100644
+--- a/packages/agent-runtime/src/integration.record-scenario-cells.test.ts
++++ b/packages/agent-runtime/src/integration.record-scenario-cells.test.ts
+@@ -152,6 +152,7 @@ function contributed(value: string): AgentRuntimeContributedEnvEntry[] {
+     {
+       name: PROBE_ENV,
+       value,
++      secret: false,
+       reason: "Conformance settings probe",
+       source: { core: "machine-environment" },
+     },
 diff --git a/packages/agent-runtime/src/provider-adapter.ts b/packages/agent-runtime/src/provider-adapter.ts
-index 3bb8c395952945e54d1b63e4a449776e728c9c2c..2e597b3b97d3d97594c1e980b58f63e5ab98c5d4 100644
+index d1915e7c8b45895221e1f33f2f02ecae208e4cef..375372429c792c39dec47660c6a881ea874851e2 100644
 --- a/packages/agent-runtime/src/provider-adapter.ts
 +++ b/packages/agent-runtime/src/provider-adapter.ts
-@@ -72,6 +72,7 @@ export type AdapterCommand =
+@@ -78,6 +78,7 @@ export type AdapterCommand =
        threadId: string;
        cwd: string;
        providerThreadId: string;
@@ -729,7 +811,7 @@ index 3bb8c395952945e54d1b63e4a449776e728c9c2c..2e597b3b97d3d97594c1e980b58f63e5
        dynamicTools?: DynamicTool[];
        instructionMode: InstructionMode;
 diff --git a/packages/agent-runtime/src/runtime.codex-topology.test.ts b/packages/agent-runtime/src/runtime.codex-topology.test.ts
-index d6e6db8723a27c9537ec4396ddbf1016bdf063c4..fb3acbf51c67c7a3f6d730dce48f978d46ac1369 100644
+index 596e8865e570a5ef80d2a089ff41421b7905a4ba..c680bdd32a9c0fb13cbef43d4bbdf7bf3aa5c3f3 100644
 --- a/packages/agent-runtime/src/runtime.codex-topology.test.ts
 +++ b/packages/agent-runtime/src/runtime.codex-topology.test.ts
 @@ -1,4 +1,4 @@
@@ -738,7 +820,7 @@ index d6e6db8723a27c9537ec4396ddbf1016bdf063c4..fb3acbf51c67c7a3f6d730dce48f978d
  import { rm } from "node:fs/promises";
  import { tmpdir } from "node:os";
  import { join } from "node:path";
-@@ -381,6 +381,87 @@ describe("codex process topology", () => {
+@@ -401,6 +401,87 @@ describe("codex process topology", () => {
      expect(topology.bridgeExits).toEqual([{ expected: true }]);
    }, 30_000);
  
@@ -827,7 +909,7 @@ index d6e6db8723a27c9537ec4396ddbf1016bdf063c4..fb3acbf51c67c7a3f6d730dce48f978d
      const topology = createCodexTopologyRuntime();
      const { runtime } = topology;
 diff --git a/packages/agent-runtime/src/runtime.command-contract.test.ts b/packages/agent-runtime/src/runtime.command-contract.test.ts
-index 27a2d873e47dc657f2e0729777c2bfeaca7b8bef..7b4ed5ab49cc1f329f63953ff6730e4fc9a6fb1d 100644
+index 08c61e51fe263597afd86d215c92b0db955bf341..91b7f603f9b6fc1cb4230a0b955f2628edcbcfac 100644
 --- a/packages/agent-runtime/src/runtime.command-contract.test.ts
 +++ b/packages/agent-runtime/src/runtime.command-contract.test.ts
 @@ -122,12 +122,14 @@ describe("createAgentRuntime command contracts", () => {
@@ -846,7 +928,7 @@ index 27a2d873e47dc657f2e0729777c2bfeaca7b8bef..7b4ed5ab49cc1f329f63953ff6730e4f
              source: { plugin: "account-pool" },
              reason: "pooled",
 diff --git a/packages/agent-runtime/src/runtime.lifecycle.test.ts b/packages/agent-runtime/src/runtime.lifecycle.test.ts
-index fd094632e9cf79f2ad91005594e03d18849b1eb9..0738da76336248d8bb48f4fbb281cefd60e5dc6f 100644
+index c69b270b7d03e54169ecc65671f8b4a2c7bbabe6..999f4e9462a941c88bb70e01c42af3fee8110348 100644
 --- a/packages/agent-runtime/src/runtime.lifecycle.test.ts
 +++ b/packages/agent-runtime/src/runtime.lifecycle.test.ts
 @@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
@@ -1165,7 +1247,7 @@ index fd094632e9cf79f2ad91005594e03d18849b1eb9..0738da76336248d8bb48f4fbb281cefd
  
      it("does not configure provider skills unless skill roots are supplied", async () => {
 diff --git a/packages/agent-runtime/src/runtime.recovery.test.ts b/packages/agent-runtime/src/runtime.recovery.test.ts
-index 3e202cfaea2ac65b40826079818c65745589c099..87135080768b96e0b8d1ababcabee9169608bddd 100644
+index 07b5471bc9a6500c7340c15b73466396d3ff6493..73fab270feeebc3365a53af4b6ebadf9ea4ee94a 100644
 --- a/packages/agent-runtime/src/runtime.recovery.test.ts
 +++ b/packages/agent-runtime/src/runtime.recovery.test.ts
 @@ -934,6 +934,71 @@ describe("runtime recovery hints", () => {
@@ -1241,7 +1323,7 @@ index 3e202cfaea2ac65b40826079818c65745589c099..87135080768b96e0b8d1ababcabee916
      const { events, processLog, record, runtime } = createRecoveryRuntime({
        startDelayMs: 300,
 diff --git a/packages/agent-runtime/src/runtime.ts b/packages/agent-runtime/src/runtime.ts
-index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a971f9213e 100644
+index 82e1b36e75d1903727481676fd9293f770d8adcb..cccbeb2c980d77099174ef340c515d00567c416a 100644
 --- a/packages/agent-runtime/src/runtime.ts
 +++ b/packages/agent-runtime/src/runtime.ts
 @@ -1,5 +1,6 @@
@@ -1271,7 +1353,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
    const additionalWorkspaceWriteRoots =
      options.additionalWorkspaceWriteRoots ?? [];
    const skillRoots = options.skillRoots ?? [];
-@@ -1196,7 +1201,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1204,7 +1209,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
    }
  
    function emitResolvedProviderEnvironment(args: {
@@ -1279,7 +1361,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
      entries: ResolvedThreadEnvironmentEntry[];
      providerThreadId: string;
      threadId: string;
-@@ -1208,18 +1212,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1216,18 +1220,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
        entries: args.entries,
        scope: { kind: "thread" },
      });
@@ -1298,7 +1380,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
    }
  
    function resolveRuntimeThreadEnvironment(args: {
-@@ -1228,12 +1220,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1236,12 +1228,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
      projectId?: string;
      threadId: string;
    }): {
@@ -1313,7 +1395,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
        contributedEnv: args.contributedEnv,
        environmentId: args.environmentId,
        projectId: args.projectId,
-@@ -1245,6 +1237,22 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1253,6 +1245,22 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
      });
    }
  
@@ -1336,7 +1418,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
    function emitTranslatedEvents(args: EmitTranslatedEventsArgs): void {
      for (const event of args.events) {
        const scope = {
-@@ -1558,6 +1566,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1568,6 +1576,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
        return runThreadOperation({
          threadId,
          work: async () => {
@@ -1349,7 +1431,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
            const processKey = resolveProviderProcessKey({
              bridgeLaunch,
              providerId,
-@@ -1578,12 +1592,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1588,12 +1602,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
              options: execOpts,
              providerId,
            });
@@ -1362,7 +1444,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
            threadIdentityRegistry.registerThreadProvider({
              providerId,
              providerState: proc.identity,
-@@ -1664,7 +1672,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1674,7 +1682,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
              );
              resolved = result.providerThreadId;
              emitResolvedProviderEnvironment({
@@ -1370,7 +1452,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
                entries: resolvedEnvironment.entries,
                providerThreadId: resolved,
                threadId,
-@@ -1722,6 +1729,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1732,6 +1739,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
        const preparation = runThreadOperation({
          threadId,
          work: async () => {
@@ -1383,7 +1465,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
            const processKey = resolveProviderProcessKey({
              bridgeLaunch,
              providerId,
-@@ -1757,12 +1770,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1767,12 +1780,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
            let retainedForDiscard = false;
            let providerThreadIdForCleanup: string | undefined;
            try {
@@ -1396,7 +1478,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
              const adapterCommand: AdapterCommand = {
                type: "thread/fork",
                threadId: stagingThreadId,
-@@ -1885,6 +1892,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1895,6 +1902,12 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
        return runThreadOperation({
          threadId,
          work: async () => {
@@ -1409,7 +1491,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
            const processKey = resolveProviderProcessKey({
              bridgeLaunch,
              providerId,
-@@ -1915,12 +1928,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1925,12 +1938,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
                `Cannot resume thread "${threadId}" on "${providerId}": provider thread "${providerThreadId}" is already hosted by thread "${ownerThreadId}"`,
              );
            }
@@ -1422,7 +1504,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
            threadIdentityRegistry.registerThreadProvider({
              providerId,
              providerState: proc.identity,
-@@ -1944,11 +1951,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1954,11 +1961,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
  
            recordProviderThreadIdentity(proc, threadId, providerThreadId);
  
@@ -1436,7 +1518,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
              options: toProviderExecutionContext({
                envVars: resolvedEnvironment.envVars,
                execOpts,
-@@ -1960,7 +1969,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1970,7 +1979,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
            const plan = proc.adapter.buildCommandPlan(adapterCommand);
            if (plan.kind === "noop") {
              emitResolvedProviderEnvironment({
@@ -1444,7 +1526,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
                entries: resolvedEnvironment.entries,
                providerThreadId: adapterCommand.providerThreadId,
                threadId,
-@@ -1974,7 +1982,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1984,7 +1992,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
                proc,
                message: plan,
                resultSchema: threadIdentityResultSchema,
@@ -1453,7 +1535,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
                recovery: {
                  providerId,
                  providerThreadId: adapterCommand.providerThreadId,
-@@ -1989,7 +1997,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -1999,7 +2007,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
              updateSessionRestoreCapability(threadId, result.sessionRestorable);
              resolved = result.providerThreadId;
              emitResolvedProviderEnvironment({
@@ -1461,7 +1543,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
                entries: resolvedEnvironment.entries,
                providerThreadId: resolved,
                threadId,
-@@ -2018,29 +2025,32 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -2028,29 +2035,32 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
            const pid = threadIdentityRegistry.resolveProviderForThread(threadId);
            requireProviderProcessForThread(threadId);
            assertThreadCanStartTurn(threadId);
@@ -1506,7 +1588,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
            const environmentChanged = !environmentRecordsEqual(
              currentConfig.envVars,
              resolvedEnvironment.envVars,
-@@ -2104,6 +2114,26 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -2115,6 +2125,26 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
                  threadId,
                },
              });
@@ -1533,7 +1615,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
            } catch (error) {
              if (!(error instanceof JsonRpcRequestTimeoutError)) {
                pendingTurnStarts.delete(threadId);
-@@ -2124,7 +2154,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -2135,7 +2165,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
            });
            if (environmentChanged) {
              emitResolvedProviderEnvironment({
@@ -1541,7 +1623,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
                entries: resolvedEnvironment.entries,
                providerThreadId,
                threadId,
-@@ -2166,24 +2195,27 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -2177,24 +2206,27 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
              };
            }
  
@@ -1580,7 +1662,7 @@ index 7956f5569fc7a0c273a1abca37cbfc202d0984a7..f595a7aac62defbaed0b2b4b6557c6a9
            const environmentChanged = !environmentRecordsEqual(
              currentConfig.envVars,
              resolvedEnvironment.envVars,
-@@ -2229,9 +2261,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
+@@ -2243,9 +2275,15 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
                envVars: resolvedEnvironment.envVars,
                options: execOpts,
              });
@@ -1965,7 +2047,7 @@ index 73e74081912834f0a7e8f8bfef27955159ab8bbd..5fe89761e9469c162e8d62050c86a50a
 +  return { envVars, entries };
  }
 diff --git a/packages/agent-runtime/src/types.ts b/packages/agent-runtime/src/types.ts
-index a8095fce6d28276122d590c01f5fb817fd870a70..900876f54f68b82ba3eb066bf349c6b111c6dd0e 100644
+index 6ff6ccecc8cb1019ac958c2ba09abc28eab2abf4..aa97f3b4203e0d91d462b7378798bc7993679b35 100644
 --- a/packages/agent-runtime/src/types.ts
 +++ b/packages/agent-runtime/src/types.ts
 @@ -30,6 +30,7 @@ export type AgentRuntimeShellEnvironment = Record<string, string>;
@@ -1985,10 +2067,10 @@ index a8095fce6d28276122d590c01f5fb817fd870a70..900876f54f68b82ba3eb066bf349c6b1
    threadStorageRootPath?: string;
  
 diff --git a/packages/config/src/env-vars.ts b/packages/config/src/env-vars.ts
-index 067b5a544604e1939fc6a9e30418a423b55421d9..66225f95ba4b06f7ac1e21ce3cc7043e35ca08d4 100644
+index 39ebf38d152d9f1d0268cac8358244bddb8a6c2d..156f6eb8fc085d1571058ae7a923a363bb013528 100644
 --- a/packages/config/src/env-vars.ts
 +++ b/packages/config/src/env-vars.ts
-@@ -183,6 +183,147 @@ function parseLogLevelValue(args: EnvVarParseArgs): string {
+@@ -168,6 +168,147 @@ function parseLogLevelValue(args: EnvVarParseArgs): string {
    return validateLogLevel(args.value);
  }
  
@@ -2136,7 +2218,7 @@ index 067b5a544604e1939fc6a9e30418a423b55421d9..66225f95ba4b06f7ac1e21ce3cc7043e
  export const BB_LOG_LEVEL_ENV = defineEnvVar<string>({
    description: "Log level: trace, debug, info, warn, error, fatal",
    name: "BB_LOG_LEVEL",
-@@ -262,6 +403,13 @@ export const BB_APP_SOURCE_COMMIT_ENV = defineEnvVar<string>({
+@@ -247,6 +388,13 @@ export const BB_APP_SOURCE_COMMIT_ENV = defineEnvVar<string>({
    parse: parseNonEmptyStringEnvValue,
  });
  
@@ -2151,10 +2233,10 @@ index 067b5a544604e1939fc6a9e30418a423b55421d9..66225f95ba4b06f7ac1e21ce3cc7043e
    description:
      "Internal launcher marker for telemetry attribution. Set by bb-app and desktop launchers.",
 diff --git a/packages/config/src/server.ts b/packages/config/src/server.ts
-index b8acc86a8aff492ca6539222f7132a96a21c8298..d8822dc8e25acbd947b6e48477cbe3ce96f8f51f 100644
+index 2aca1a30edfa112808bf909c71b78daa0ce38d42..1dc708c33ff50dc0f4d8472b1a4913703f14f59d 100644
 --- a/packages/config/src/server.ts
 +++ b/packages/config/src/server.ts
-@@ -25,6 +25,7 @@ import {
+@@ -24,6 +24,7 @@ import {
    BB_EXTERNAL_URL_ENV,
    BB_INHERITED_SKILLS_ROOTS_ENV,
    BB_MARKETPLACE_URL_ENV,
@@ -2162,7 +2244,7 @@ index b8acc86a8aff492ca6539222f7132a96a21c8298..d8822dc8e25acbd947b6e48477cbe3ce
    BB_POSTHOG_API_KEY_ENV,
    BB_SERVER_BIND_HOST_ENV,
    BB_SERVER_LAUNCH_ID_ENV,
-@@ -52,6 +53,7 @@ import { loadFeatureFlags } from "./feature-flags.js";
+@@ -48,6 +49,7 @@ import { loadFeatureFlags } from "./feature-flags.js";
  import { assignIfDefined } from "./objects.js";
  import { loadHostDaemonPortValue } from "./ports.js";
  import { loadServerPortConfig, type ServerPortConfig } from "./server-port.js";
@@ -2170,7 +2252,7 @@ index b8acc86a8aff492ca6539222f7132a96a21c8298..d8822dc8e25acbd947b6e48477cbe3ce
  
  export interface ServerConfig
    extends CommonConfig, DatabaseConfig, ServerPortConfig {
-@@ -68,6 +70,7 @@ export interface ServerConfig
+@@ -63,6 +65,7 @@ export interface ServerConfig
    BB_INHERITED_SKILLS_ROOTS: string[];
    BB_POSTHOG_API_KEY: string;
    BB_MARKETPLACE_URL: string;
@@ -2178,7 +2260,7 @@ index b8acc86a8aff492ca6539222f7132a96a21c8298..d8822dc8e25acbd947b6e48477cbe3ce
    BB_SERVER_BIND_HOST: ServerBindHost;
    BB_SERVER_LAUNCH_ID?: string;
    BB_APP_UPDATE_MODE?: AppUpdateMode;
-@@ -80,6 +83,29 @@ export interface ServerConfig
+@@ -74,6 +77,29 @@ export interface ServerConfig
    featureFlags: FeatureFlags;
  }
  
@@ -2208,7 +2290,7 @@ index b8acc86a8aff492ca6539222f7132a96a21c8298..d8822dc8e25acbd947b6e48477cbe3ce
  type LoadServerConfigArgs = LoadCommonConfigArgs;
  
  export { parseServerBindHost };
-@@ -165,6 +191,12 @@ export function loadServerConfig(
+@@ -153,6 +179,12 @@ export function loadServerConfig(
        definition: BB_MARKETPLACE_URL_ENV,
        env: loader.env,
      }),
@@ -2255,10 +2337,10 @@ index 0000000000000000000000000000000000000000..a936199426984c963c32f5f4ce0d3580
 +  };
 +}
 diff --git a/packages/config/test/config.test.ts b/packages/config/test/config.test.ts
-index ba3e72dba2e08083e875646c2394de3bec1bd359..59cc67871e3898f478107b29246430d882cfabb7 100644
+index 9f6aa7625b9e2e4226b78a3551bf77151e6a07f5..9303dad22c3b0308d7994dae6df0853e403389a6 100644
 --- a/packages/config/test/config.test.ts
 +++ b/packages/config/test/config.test.ts
-@@ -817,3 +817,23 @@ describe("consumer-specific config", () => {
+@@ -782,3 +782,23 @@ describe("consumer-specific config", () => {
      expect(hostDaemonEntrypointConfig).toEqual({});
    });
  });
@@ -2979,7 +3061,7 @@ index ba3f38263777f321d8f54372ca0d68aa4f6f313e..8a01765d62c2e279d78892b71b5016ff
            ),
            open.item.presentation,
 diff --git a/packages/provider-bridge-protocol/src/contract-tests/provider-bridge-grammar.v2.snapshot.json b/packages/provider-bridge-protocol/src/contract-tests/provider-bridge-grammar.v2.snapshot.json
-index 243caae58bc696eb3678f1bb49315b3abc8216f5..ba9f49e19b1569909d9b344584ebbdae473b0418 100644
+index 92461827a24c1abad5c90c5ab71360c469b0ba28..7285977a902471e181d4f089aad500b72d5bcefa 100644
 --- a/packages/provider-bridge-protocol/src/contract-tests/provider-bridge-grammar.v2.snapshot.json
 +++ b/packages/provider-bridge-protocol/src/contract-tests/provider-bridge-grammar.v2.snapshot.json
 @@ -185,7 +185,8 @@
@@ -2993,7 +3075,7 @@ index 243caae58bc696eb3678f1bb49315b3abc8216f5..ba9f49e19b1569909d9b344584ebbdae
      "backgroundTask": {
        "type": "required",
 diff --git a/packages/provider-bridge-protocol/src/requests.ts b/packages/provider-bridge-protocol/src/requests.ts
-index 6174b7c63a90b4afb7285c5675f53f0bebb4adea..23f1f2292763cf9014bd3facdc1fe14a8f1be1af 100644
+index 8b82f0982667896f6ff7890cf85e32564f791dd9..c006c62735e52b3a49fbf783e94e212d3318f1d2 100644
 --- a/packages/provider-bridge-protocol/src/requests.ts
 +++ b/packages/provider-bridge-protocol/src/requests.ts
 @@ -33,6 +33,7 @@ export const BRIDGE_REQUEST_METHODS = {
@@ -3005,10 +3087,10 @@ index 6174b7c63a90b4afb7285c5675f53f0bebb4adea..23f1f2292763cf9014bd3facdc1fe14a
    dynamicTools: z.array(dynamicToolSchema).optional(),
    disallowedTools: z.array(z.string().min(1)).optional(),
 diff --git a/packages/provider-bridge-protocol/src/testing/first-party-replay.ts b/packages/provider-bridge-protocol/src/testing/first-party-replay.ts
-index b2c419856fe1f0060d0868324128f13e05c50114..4a5577601852e7b9c74503717ac9c0953e179ac2 100644
+index 6f17dca1b48a8a227f740c51cd431cbd397dd88d..0e0424e7f20e27192876125f04f4785fa9851f0c 100644
 --- a/packages/provider-bridge-protocol/src/testing/first-party-replay.ts
 +++ b/packages/provider-bridge-protocol/src/testing/first-party-replay.ts
-@@ -318,6 +318,7 @@ export async function runFirstPartyRecordedConformance(
+@@ -321,6 +321,7 @@ export async function runFirstPartyRecordedConformance(
          assembleMessage: (message) => collector.assembleMessage(message),
        };
      },
@@ -3017,24 +3099,23 @@ index b2c419856fe1f0060d0868324128f13e05c50114..4a5577601852e7b9c74503717ac9c095
      onStderr: (text) => process.stderr.write(`[bridge] ${text}`),
      recordingsRoot: COMMITTED_RECORDINGS_ROOT,
 diff --git a/packages/provider-bridge-protocol/src/testing/parity.test.ts b/packages/provider-bridge-protocol/src/testing/parity.test.ts
-index 933547cbf8ce7ba2a87b075c055592ecc783fc9b..aa0b651b23a0fcac616f7a100ee08318dccf3037 100644
+index 4c19b9aa5867fc3c903030e2d36b057a13dc4dba..8635f8408b394b3a07a9ee949f69f19d2a11403b 100644
 --- a/packages/provider-bridge-protocol/src/testing/parity.test.ts
 +++ b/packages/provider-bridge-protocol/src/testing/parity.test.ts
-@@ -1,11 +1,11 @@
- import { ChildProcess } from "node:child_process";
- import { channel } from "node:diagnostics_channel";
+@@ -1,10 +1,10 @@
 -import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 +import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
  import { tmpdir } from "node:os";
  import { join } from "node:path";
  import { expect, it } from "vitest";
  import { threadEventSchema, type ThreadEvent } from "@bb/domain";
+ import { trackChildProcesses } from "@bb/test-helpers/child-processes";
 -import { replayRecording } from "./parity.js";
 +import { replayRecordedCells, replayRecording } from "./parity.js";
  
  function writeLane(
    dir: string,
-@@ -31,6 +31,204 @@ function writeLane(
+@@ -30,6 +30,204 @@ function writeLane(
    );
  }
  
@@ -4196,10 +4277,10 @@ index 16a30b869f43e95ccc91fe0cdf27fb77e39a14a3..a1f0b3589852f226f3ea9c153f5439f4
      kind: "approval",
      reason: "Automatic review requires user escalation",
 diff --git a/plugins/provider-claude-code/src/bridge/__tests__/bridge.test.ts b/plugins/provider-claude-code/src/bridge/__tests__/bridge.test.ts
-index af894fa62f59a28b9e93e7e2e6cd258d1bc394c0..53d0d716dcb4fc4c7dd655a5fdb49646006b1072 100644
+index 736e9ce7db7a92b19b63ece36d03afdfb01bfa1c..cdf1fa16175fcd216c570d50f095e29f25b42cd9 100644
 --- a/plugins/provider-claude-code/src/bridge/__tests__/bridge.test.ts
 +++ b/plugins/provider-claude-code/src/bridge/__tests__/bridge.test.ts
-@@ -727,6 +727,158 @@ describe("bridge", () => {
+@@ -748,6 +748,158 @@ describe("bridge", () => {
      }
    });
  
@@ -4358,7 +4439,7 @@ index af894fa62f59a28b9e93e7e2e6cd258d1bc394c0..53d0d716dcb4fc4c7dd655a5fdb49646
    it.each([
      [200_000, false],
      [1_000_000, false],
-@@ -3794,6 +3946,38 @@ describe("bridge", () => {
+@@ -3932,6 +4084,38 @@ describe("bridge", () => {
      expect(close).toHaveBeenCalledOnce();
    });
  
@@ -4541,22 +4622,22 @@ index be58d7f771401923d6b904ea5f45ae013e627073..964d74ace35d88f119623110e13abc4a
      return await probeClaudeCodeModels(env);
    } catch (error) {
 diff --git a/plugins/provider-claude-code/src/bridge/provider-maintenance.ts b/plugins/provider-claude-code/src/bridge/provider-maintenance.ts
-index 053f4374fbd035a3c190916688376eb773559173..4ac1bf84e866a355fb2de026b07a732246f235ef 100644
+index b68306ae78d556d40a6039e64e914b1e0c7f87ac..c8feeac48fc6c53be375298cec7871b828cf5fbd 100644
 --- a/plugins/provider-claude-code/src/bridge/provider-maintenance.ts
 +++ b/plugins/provider-claude-code/src/bridge/provider-maintenance.ts
-@@ -443,6 +443,9 @@ function normalizeUsage(raw: unknown, account: AccountInfo): ProviderUsage {
- }
- 
- export async function getClaudeProviderUsage(): Promise<ProviderUsageResult> {
-+  if (process.env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED === "1") {
+@@ -473,6 +473,9 @@ function normalizeUsage(raw: unknown, account: AccountInfo): ProviderUsage {
+ export async function getClaudeProviderUsage(
+   env: NodeJS.ProcessEnv,
+ ): Promise<ProviderUsageResult> {
++  if (env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED === "1") {
 +    return { supported: true, usage: { status: "error", message: "Usage is managed by the required external BB inference pool.", planLabel: null, accountEmail: null } };
 +  }
-   const command = await claudeExecutable();
-   if ((await resolveExecutablePath(command)) === null) {
+   const command = await claudeExecutable(env);
+   if ((await resolveExecutablePath(command, env)) === null) {
      return { supported: true, usage: { status: "not_installed" } };
 diff --git a/plugins/provider-claude-code/src/bridge/required-external-maintenance.test.ts b/plugins/provider-claude-code/src/bridge/required-external-maintenance.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..dca1d4a7eff4598da865c2712e011e2086680590
+index 0000000000000000000000000000000000000000..34387b25b3d41dd0b6492fdd48ca879e4b069f7f
 --- /dev/null
 +++ b/plugins/provider-claude-code/src/bridge/required-external-maintenance.test.ts
 @@ -0,0 +1,19 @@
@@ -4573,14 +4654,14 @@ index 0000000000000000000000000000000000000000..dca1d4a7eff4598da865c2712e011e20
 +    throw new Error("provider must not be contacted");
 +  });
 +  vi.stubGlobal("fetch", fetch);
-+  expect((await getClaudeProviderUsage()).supported).toBe(true);
++  expect((await getClaudeProviderUsage(process.env)).supported).toBe(true);
 +  await expect(listClaudeCodeBridgeModels(process.env)).rejects.toThrow(
 +    /Unrouted Claude model probes/,
 +  );
 +  expect(fetch).not.toHaveBeenCalled();
 +});
 diff --git a/plugins/provider-claude-code/src/bridge/sdk-session.ts b/plugins/provider-claude-code/src/bridge/sdk-session.ts
-index d11d5513e97b2e3bd5d68300342074430d41921f..3aba1ad79de1fa5eb8262a2d69b6a3d00c7bbfd5 100644
+index a670cc91c115a0d35b6881d78b62121c89ff7352..7a55a91363141ebea597ecceeed4ad3348a382e6 100644
 --- a/plugins/provider-claude-code/src/bridge/sdk-session.ts
 +++ b/plugins/provider-claude-code/src/bridge/sdk-session.ts
 @@ -23,6 +23,15 @@ import {
@@ -4599,7 +4680,7 @@ index d11d5513e97b2e3bd5d68300342074430d41921f..3aba1ad79de1fa5eb8262a2d69b6a3d0
  export interface SdkSessionOptions {
    cwd: string;
    systemPrompt: Exclude<Options["systemPrompt"], undefined>;
-@@ -228,6 +237,24 @@ export class SdkSession {
+@@ -227,6 +236,24 @@ export class SdkSession {
    }
  
    start(resumeSessionId?: string): void {
@@ -4624,7 +4705,7 @@ index d11d5513e97b2e3bd5d68300342074430d41921f..3aba1ad79de1fa5eb8262a2d69b6a3d0
      if (resumeSessionId) {
        this.sessionId = resumeSessionId;
      } else if (this.options.sessionId) {
-@@ -264,7 +291,7 @@ export class SdkSession {
+@@ -263,7 +290,7 @@ export class SdkSession {
        includePartialMessages: true,
        settingSources: ["user", "project", "local"],
        persistSession: true,
@@ -4633,7 +4714,7 @@ index d11d5513e97b2e3bd5d68300342074430d41921f..3aba1ad79de1fa5eb8262a2d69b6a3d0
        stderr: onStderr,
        ...(this.options.mcpServers
          ? { mcpServers: this.options.mcpServers }
-@@ -296,7 +323,7 @@ export class SdkSession {
+@@ -295,7 +322,7 @@ export class SdkSession {
          : {}),
        ...(this.options.plugins ? { plugins: this.options.plugins } : {}),
        ...(this.options.thinking ? { thinking: this.options.thinking } : {}),
@@ -5438,17 +5519,23 @@ index 0000000000000000000000000000000000000000..003fd2623a8b002b10d96f3915c830cf
 +  }
 +}
 diff --git a/plugins/provider-codex/src/bridge/app-server-launch.test.ts b/plugins/provider-codex/src/bridge/app-server-launch.test.ts
-index 19c36321b0d192beb44c4086ca6fff543aebeed4..36a199b9a705296793f2100d6cbb8c7f82047798 100644
+index 371fc903e07ac355d23ef6b00b21fde1429a1fbc..1e8af4e867460caf03b02ddfe8df2eed6446d9be 100644
 --- a/plugins/provider-codex/src/bridge/app-server-launch.test.ts
 +++ b/plugins/provider-codex/src/bridge/app-server-launch.test.ts
-@@ -1,5 +1,5 @@
- import { afterEach, describe, expect, it, vi } from "vitest";
--import { resolveAppServerLaunch } from "./bridge.js";
-+import { buildAppServerEnv, resolveAppServerLaunch } from "./bridge.js";
+@@ -1,6 +1,11 @@
+-import { describe, expect, it } from "vitest";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { experimental_buildProviderCliEnv as buildProviderCliEnv } from "@get-bb/plugin-sdk/provider-bridge";
+ import { resolveAppServerLaunch } from "./bridge.js";
  
- afterEach(() => vi.unstubAllEnvs());
- 
-@@ -61,3 +61,38 @@ describe("Codex Account Pool isolation", () => {
++afterEach(() => {
++  vi.unstubAllEnvs();
++});
++
+ describe("Codex Account Pool launch", () => {
+   it("scopes the pool URL and environment-backed hub header to the pooled provider", () => {
+     const launch = resolveAppServerLaunch({
+@@ -63,3 +68,45 @@ describe("Codex Account Pool isolation", () => {
      },
    );
  });
@@ -5475,31 +5562,30 @@ index 19c36321b0d192beb44c4086ca6fff543aebeed4..36a199b9a705296793f2100d6cbb8c7f
 +  });
 +});
 +
-+ it("preserves only required launch scope after generic child sanitization", () => {
-+  vi.stubEnv("BB_ACCOUNT_POOL_EXTERNAL_REQUIRED", "1");
++it("keeps the central pool credential out of the app-server env built from the required contribution", () => {
 +  vi.stubEnv("BB_ACCOUNT_POOL_EXTERNAL_URL", "https://central.invalid");
 +  vi.stubEnv("BB_ACCOUNT_POOL_EXTERNAL_TOKEN", "central-secret");
-+  const env = buildAppServerEnv({ CODEX_OPENAI_BASE_URL: "https://relay.invalid/v1", CODEX_POOL_AUTH_TOKEN: "hop-secret" });
++  const env = buildProviderCliEnv({
++    BB_ACCOUNT_POOL_EXTERNAL_REQUIRED: "1",
++    BB_ACCOUNT_POOL_EXTERNAL_TOKEN: "",
++    BB_ACCOUNT_POOL_EXTERNAL_URL: "",
++    CODEX_OPENAI_BASE_URL: "https://relay.invalid/v1",
++    CODEX_POOL_AUTH_TOKEN: "hop-secret",
++  });
 +  expect(env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED).toBe("1");
 +  expect(env.CODEX_OPENAI_BASE_URL).toBe("https://relay.invalid/v1");
 +  expect(env.CODEX_POOL_AUTH_TOKEN).toBe("hop-secret");
-+  expect(env.BB_ACCOUNT_POOL_EXTERNAL_URL).toBeUndefined();
-+  expect(env.BB_ACCOUNT_POOL_EXTERNAL_TOKEN).toBeUndefined();
-+  expect(buildAppServerEnv({ BB_ACCOUNT_POOL_EXTERNAL_REQUIRED: "0" }).BB_ACCOUNT_POOL_EXTERNAL_REQUIRED).toBeUndefined();
-+ });
++  expect(env.BB_ACCOUNT_POOL_EXTERNAL_URL).toBe("");
++  expect(env.BB_ACCOUNT_POOL_EXTERNAL_TOKEN).toBe("");
++  expect(resolveAppServerLaunch(env).args).toContain(
++    'model_providers.bb-account-pool.env_key="CODEX_POOL_AUTH_TOKEN"',
++  );
++});
 diff --git a/plugins/provider-codex/src/bridge/bridge.ts b/plugins/provider-codex/src/bridge/bridge.ts
-index 602ffd7acb87ed20a436b5a862acb6d0dba67256..09037605717895537da78ed80b58a2ef77a0d486 100644
+index 8755f4b6cdf1a03c189dc10948b5bc7c3476af7a..2905995c1f48f4e1d02c85145f0c77998699ddce 100644
 --- a/plugins/provider-codex/src/bridge/bridge.ts
 +++ b/plugins/provider-codex/src/bridge/bridge.ts
-@@ -291,6 +291,7 @@ const CODEX_POOL_BASE_URL_ENV = "CODEX_OPENAI_BASE_URL";
- const CODEX_POOL_AUTH_TOKEN_ENV = "CODEX_POOL_AUTH_TOKEN";
- const CODEX_HOME_ENV = "CODEX_HOME";
- const APP_SERVER_LAUNCH_ENV_NAMES = [
-+  "BB_ACCOUNT_POOL_EXTERNAL_REQUIRED",
-   CODEX_POOL_BASE_URL_ENV,
-   CODEX_POOL_AUTH_TOKEN_ENV,
-   CODEX_HOME_ENV,
-@@ -303,6 +304,8 @@ const CODEX_INITIALIZE_PARAMS = {
+@@ -315,6 +315,8 @@ const CODEX_INITIALIZE_PARAMS = {
  
  const CHILD_REQUEST_TIMEOUT_MS = 60_000;
  const RATE_LIMIT_RECOVERY_TIMEOUT_MS = 5_000;
@@ -5508,7 +5594,7 @@ index 602ffd7acb87ed20a436b5a862acb6d0dba67256..09037605717895537da78ed80b58a2ef
  const INTERRUPT_SETTLEMENT_TIMEOUT_MS = 5_000;
  const CODEX_ARCHIVED_SESSION_ERROR_PATTERN =
    /\b(?:session|thread)\s+\S+\s+is archived\b/i;
-@@ -372,6 +375,10 @@ export function resolveAppServerLaunch(env: NodeJS.ProcessEnv = process.env): {
+@@ -384,6 +386,10 @@ export function resolveAppServerLaunch(env: NodeJS.ProcessEnv): {
      : ["app-server"];
    const poolBaseUrl = env[CODEX_POOL_BASE_URL_ENV];
    const poolToken = env[CODEX_POOL_AUTH_TOKEN_ENV];
@@ -5519,7 +5605,7 @@ index 602ffd7acb87ed20a436b5a862acb6d0dba67256..09037605717895537da78ed80b58a2ef
    if (!poolBaseUrl || !poolToken) return { command: command ?? "codex", args };
    return {
      command: command ?? "codex",
-@@ -388,7 +395,13 @@ export function resolveAppServerLaunch(env: NodeJS.ProcessEnv = process.env): {
+@@ -398,7 +404,13 @@ export function resolveAppServerLaunch(env: NodeJS.ProcessEnv): {
        "-c",
        'model_providers.bb-account-pool.wire_api="responses"',
        "-c",
@@ -5534,39 +5620,7 @@ index 602ffd7acb87ed20a436b5a862acb6d0dba67256..09037605717895537da78ed80b58a2ef
        "-c",
        "model_providers.bb-account-pool.supports_websockets=false",
        "-c",
-@@ -401,6 +414,8 @@ function appServerLaunchEnv(
-   envVars: Readonly<Record<string, string>> | undefined,
- ): NodeJS.ProcessEnv {
-   const env: NodeJS.ProcessEnv = { ...process.env };
-+  delete env.BB_ACCOUNT_POOL_EXTERNAL_TOKEN;
-+  delete env.BB_ACCOUNT_POOL_EXTERNAL_URL;
-   for (const name of APP_SERVER_LAUNCH_ENV_NAMES) {
-     const value = envVars?.[name];
-     if (value !== undefined) env[name] = value;
-@@ -408,14 +423,17 @@ function appServerLaunchEnv(
-   return env;
- }
- 
--function buildAppServerEnv(
-+export function buildAppServerEnv(
-   envVars: Readonly<Record<string, string>> | undefined,
- ): NodeJS.ProcessEnv {
--  return withoutBridgeRuntimeEnv(
--    sanitizeInheritedChildProcessEnv({
--      env: appServerLaunchEnv(envVars),
--    }),
-+  const launchEnv = appServerLaunchEnv(envVars);
-+  const childEnv = withoutBridgeRuntimeEnv(
-+    sanitizeInheritedChildProcessEnv({ env: launchEnv }),
-   );
-+  if (launchEnv.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED === "1") {
-+    childEnv.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED = "1";
-+  }
-+  return childEnv;
- }
- 
- function isCodexSpawnFailure(error: unknown): boolean {
-@@ -1163,16 +1181,26 @@ async function requestThreadConstructionWithWriterRetry(
+@@ -1279,16 +1291,26 @@ async function requestThreadConstructionWithWriterRetry(
    connection: CodexAppServerConnection,
    method: string,
    params: BbThreadStartParams | BbThreadResumeParams | BbThreadForkParams,
@@ -5596,7 +5650,7 @@ index 602ffd7acb87ed20a436b5a862acb6d0dba67256..09037605717895537da78ed80b58a2ef
    for (const [
      retryIndex,
      retryDelayMs,
-@@ -1205,6 +1233,7 @@ type CodexSessionConstructionRequest =
+@@ -1321,6 +1343,7 @@ type CodexSessionConstructionRequest =
  interface ConstructThreadSessionArgs {
    threadId: string;
    cwd: string;
@@ -5604,15 +5658,17 @@ index 602ffd7acb87ed20a436b5a862acb6d0dba67256..09037605717895537da78ed80b58a2ef
    options: BridgeExecutionOptions;
    instructionMode: "append" | "replace";
    dynamicTools?: DynamicTool[];
-@@ -1402,6 +1431,7 @@ async function constructThreadSession(
-       connection,
-       method,
-       params,
-+      args.request.kind === "resume" ? args.constructionDeadlineAtMs : undefined,
-     );
+@@ -1538,6 +1561,9 @@ async function constructThreadSession(
+           connection,
+           nextMethod,
+           nextParams,
++          args.request.kind === "resume"
++            ? args.constructionDeadlineAtMs
++            : undefined,
+         ),
+     });
      const codexThreadId = result.thread.id;
-     session.codexThreadId = codexThreadId;
-@@ -1660,6 +1690,7 @@ async function handleThreadConstruction(
+@@ -1813,6 +1839,7 @@ async function handleThreadConstruction(
      const constructed = await constructThreadSession({
        threadId: params.threadId,
        cwd: params.cwd,
@@ -5621,10 +5677,10 @@ index 602ffd7acb87ed20a436b5a862acb6d0dba67256..09037605717895537da78ed80b58a2ef
        instructionMode: params.instructionMode,
        ...(params.dynamicTools !== undefined
 diff --git a/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs b/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
-index bee3ede2b162f28c9d3504bef307ae87c295574f..b77d9f730e8f24b0c80ec82cc8307432a100bdf7 100644
+index 5622a3cf13a9c4ba867c75767e4e55dc30c9f208..7039b70b4e1e0ba3e8086d6aa955beca8b888a7e 100644
 --- a/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
 +++ b/plugins/provider-codex/src/bridge/fake-codex-app-server.mjs
-@@ -229,6 +229,9 @@ const archivedThreadIds = new Set();
+@@ -233,6 +233,9 @@ const archivedThreadIds = new Set();
  
  const processLogPath = script?.processLogPath ?? null;
  const stallThreadStart = script?.stallThreadStart ?? false;
@@ -5634,23 +5690,23 @@ index bee3ede2b162f28c9d3504bef307ae87c295574f..b77d9f730e8f24b0c80ec82cc8307432
  const writerLockPath = script?.writerLockPath ?? null;
  const sigtermDelayMs = script?.sigtermDelayMs ?? 0;
  const stdinCloseDelayMs = script?.stdinCloseDelayMs ?? 0;
-@@ -443,6 +446,7 @@ async function handleRequest(message) {
-       respond(id, {});
+@@ -470,6 +473,7 @@ async function handleRequest(message) {
+       respond(id, script?.initializeResult ?? {});
        return;
      case "account/rateLimits/read":
 +      if (stallRateLimitRead) return;
        if (script?.rateLimitRead) {
          if (script.rateLimitRead.hang) return;
          setTimeout(() => {
-@@ -514,6 +518,7 @@ async function handleRequest(message) {
-     }
-     case "thread/resume": {
+@@ -555,6 +559,7 @@ async function handleRequest(message) {
+         return;
+       }
        servesThread = true;
 +      if (stallThreadResume) return;
        if (!acquireWriterLock()) {
          logProcessStep("writer-conflict");
          respondError(
-@@ -523,6 +528,9 @@ async function handleRequest(message) {
+@@ -564,6 +569,9 @@ async function handleRequest(message) {
          );
          return;
        }
@@ -5661,10 +5717,10 @@ index bee3ede2b162f28c9d3504bef307ae87c295574f..b77d9f730e8f24b0c80ec82cc8307432
        if (
          String(params.threadId).startsWith("archived-") ||
 diff --git a/plugins/provider-codex/src/bridge/provider-maintenance.test.ts b/plugins/provider-codex/src/bridge/provider-maintenance.test.ts
-index 2a6237ca13d7f5a71086d75a18f094549f07cb61..ab75601a73380c0c4ec866b7c7568f456c62793a 100644
+index 528a26944c52e2554bd4fae94a9034d3616750bc..60049bd57a4d21b3f7b42fe8061ed6c490b1fd24 100644
 --- a/plugins/provider-codex/src/bridge/provider-maintenance.test.ts
 +++ b/plugins/provider-codex/src/bridge/provider-maintenance.test.ts
-@@ -399,3 +399,12 @@ describe("Codex credential health and usage", () => {
+@@ -400,3 +400,12 @@ describe("Codex credential health and usage", () => {
      expect(retryHeaders.get("chatgpt-account-id")).toBe("account-123");
    });
  });
@@ -5673,22 +5729,22 @@ index 2a6237ca13d7f5a71086d75a18f094549f07cb61..ab75601a73380c0c4ec866b7c7568f45
 +  vi.stubEnv("BB_ACCOUNT_POOL_EXTERNAL_REQUIRED", "1");
 +  const fetch = vi.fn(() => { throw new Error("provider must not be contacted"); });
 +  vi.stubGlobal("fetch", fetch);
-+  const result = await getCodexProviderUsage();
++  const result = await getCodexProviderUsage(process.env);
 +  expect(result).toMatchObject({ usage: { status: "error", message: expect.stringContaining("external BB inference pool") } });
 +  expect(fetch).not.toHaveBeenCalled();
 +});
 diff --git a/plugins/provider-codex/src/bridge/provider-maintenance.ts b/plugins/provider-codex/src/bridge/provider-maintenance.ts
-index 99d2dcc9439dfcc654e4fd10f03f9012055ce7a8..41a54f0dd5aea11e3b3bf71ae0aef0c9111011b2 100644
+index 02dd10316fc2754e499d33cb792bd2dd246e1010..05ff60d494153223b35c8cae22ed483f80e2bd5e 100644
 --- a/plugins/provider-codex/src/bridge/provider-maintenance.ts
 +++ b/plugins/provider-codex/src/bridge/provider-maintenance.ts
-@@ -325,6 +325,9 @@ function normalizeUsage(raw: unknown, email: string | null): ProviderUsage {
- }
- 
- export async function getCodexProviderUsage(): Promise<ProviderUsageResult> {
-+  if (process.env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED === "1") {
+@@ -333,6 +333,9 @@ function normalizeUsage(raw: unknown, email: string | null): ProviderUsage {
+ export async function getCodexProviderUsage(
+   env: NodeJS.ProcessEnv,
+ ): Promise<ProviderUsageResult> {
++  if (env.BB_ACCOUNT_POOL_EXTERNAL_REQUIRED === "1") {
 +    return { supported: true, usage: { status: "error", message: "Usage is managed by the required external BB inference pool.", planLabel: null, accountEmail: null } };
 +  }
-   if ((await resolveExecutablePath("codex")) === null) {
+   if ((await resolveExecutablePath("codex", env)) === null) {
      return { supported: true, usage: { status: "not_installed" } };
    }
 diff --git a/plugins/provider-codex/src/delta-translation.test.ts b/plugins/provider-codex/src/delta-translation.test.ts
@@ -5867,5 +5923,5 @@ index 1ece94542585c1eb99c618596c3035b9459dbb4a..d9d08be6ea3200fa24d48ef09afba0ab
      .passthrough(),
    z
 -- 
-2.50.1 (Apple Git-155)
+2.43.0
 

@@ -43,7 +43,7 @@ editable current catalog; the Markdown view is generated. Keep it current in the
 same commit as changing the selected queue or its upstream base. See
 [the contributor contract](AGENTS.md) for the checks and review obligation.
 
-The current base is upstream `05199007ecad513b714b244e46b0ab2a9a06279f` (BB 0.49.0). The selected queue contains nine selected capability patches, numbered from 0001. Numbers describe this release's replay order, not permanent patch identities.
+The current base is upstream `df9619d8e8aac4aff00c0c3ff9b8ef4e2823e4f2` (BB 0.50.1 plus 38 main commits). The selected queue contains nine selected capability patches, numbered from 0001. Numbers describe this release's replay order, not permanent patch identities.
 
 The deployable source is the upstream submodule and `upstream.lock`, the ordered `patches/series` with its checksums, and the exact `result-tree.lock`. Run `scripts/verify`, then `scripts/materialize` to create a fresh build checkout. Build and test from that checkout using the pinned native package manager.
 
