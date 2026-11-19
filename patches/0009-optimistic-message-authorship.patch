@@ -1,4 +1,4 @@
-From 26db451a3c70d72fe332b519d59af2d5aec9fe10 Mon Sep 17 00:00:00 2001
+From b2070f912aebf1e1fdc85bf8c6b66ce3ab721e0b Mon Sep 17 00:00:00 2001
 From: bb-machine <ubuntu@bb-machine>
 Date: Tue, 17 Nov 2026 08:24:10 +0100
 Subject: [PATCH] fix: show the current actor on optimistic messages
@@ -16,7 +16,7 @@ Subject: [PATCH] fix: show the current actor on optimistic messages
 
 diff --git a/apps/app/src/hooks/cache-owners/current-message-author-owner.test.ts b/apps/app/src/hooks/cache-owners/current-message-author-owner.test.ts
 new file mode 100644
-index 0000000000..d99f71641f
+index 0000000000000000000000000000000000000000..d99f71641fba574c2f0ebb6c7235de444414c6e9
 --- /dev/null
 +++ b/apps/app/src/hooks/cache-owners/current-message-author-owner.test.ts
 @@ -0,0 +1,119 @@
@@ -141,7 +141,7 @@ index 0000000000..d99f71641f
 +});
 diff --git a/apps/app/src/hooks/cache-owners/current-message-author-owner.ts b/apps/app/src/hooks/cache-owners/current-message-author-owner.ts
 new file mode 100644
-index 0000000000..40af129e01
+index 0000000000000000000000000000000000000000..40af129e01d4933ff51449ee1bf8f866b42aee0a
 --- /dev/null
 +++ b/apps/app/src/hooks/cache-owners/current-message-author-owner.ts
 @@ -0,0 +1,55 @@
@@ -201,7 +201,7 @@ index 0000000000..40af129e01
 +  };
 +}
 diff --git a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.test.ts b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.test.ts
-index 67ed1e5d7b..ced1c172f5 100644
+index e1fb1742c8304f6f2f1181a38636e16fc06765a9..1241de6d53ef26a977d567ce0e96db46f03844ea 100644
 --- a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.test.ts
 +++ b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.test.ts
 @@ -1,4 +1,9 @@
@@ -215,7 +215,7 @@ index 67ed1e5d7b..ced1c172f5 100644
  import type {
    SidebarBootstrapResponse,
    ThreadSearchResponse,
-@@ -106,6 +111,123 @@ function makeQueuedMessage(
+@@ -107,6 +112,123 @@ function makeQueuedMessage(
  }
  
  describe("thread runtime cache owner", () => {
@@ -289,7 +289,7 @@ index 67ed1e5d7b..ced1c172f5 100644
 +      request,
 +      transaction,
 +      realtimeConnected: true,
-+      result: { ok: true, delivery: "sent" },
++      result: { ok: true, delivery: "sent", messageSequence: null },
 +    });
 +    expect(
 +      queryClient.getQueryData<ThreadTimelineResponse>(
@@ -339,7 +339,7 @@ index 67ed1e5d7b..ced1c172f5 100644
    it("reconciles authoritative Plan cancellation across banner caches while preserving independent state", () => {
      const queryClient = createAppQueryClient({
        defaultOptions: { queries: { gcTime: Infinity, retry: false } },
-@@ -238,9 +360,9 @@ describe("thread runtime cache owner", () => {
+@@ -239,9 +361,9 @@ describe("thread runtime cache owner", () => {
      });
      expect(
        queryClient
@@ -352,7 +352,7 @@ index 67ed1e5d7b..ced1c172f5 100644
          ?.map((queuedMessage) => ({
            content: queuedMessage.content,
            groupWithNext: queuedMessage.groupWithNext,
-@@ -268,9 +390,9 @@ describe("thread runtime cache owner", () => {
+@@ -269,9 +391,9 @@ describe("thread runtime cache owner", () => {
      });
      expect(
        queryClient
@@ -365,7 +365,7 @@ index 67ed1e5d7b..ced1c172f5 100644
          ?.map((queuedMessage) => queuedMessage.id),
      ).toEqual(["qmsg-first", "qmsg-edit", "qmsg-last"]);
  
-@@ -885,9 +1007,9 @@ describe("thread runtime cache owner", () => {
+@@ -886,9 +1008,9 @@ describe("thread runtime cache owner", () => {
  
      expect(
        queryClient
@@ -379,7 +379,7 @@ index 67ed1e5d7b..ced1c172f5 100644
      ).toEqual(["qmsg-3"]);
      const timeline = queryClient.getQueryData<ThreadTimelineResponse>(
 diff --git a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
-index b030d52e47..ea733a4ac2 100644
+index b17691cf9fdf195cb855a1625cf147a096caf22d..193647a720dc0092dc6c586170a0a604833dca58 100644
 --- a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
 +++ b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
 @@ -1,3 +1,4 @@
@@ -395,7 +395,7 @@ index b030d52e47..ea733a4ac2 100644
    ResolvedThreadExecutionOptions,
    ThreadQueuedMessage,
    ThreadWithRuntime,
-@@ -211,6 +213,7 @@ interface BuildAcceptedPromptHistoryEntryArgs {
+@@ -212,6 +214,7 @@ interface BuildAcceptedPromptHistoryEntryArgs {
  }
  
  interface BuildOptimisticUserMessageRowParams {
@@ -403,7 +403,7 @@ index b030d52e47..ea733a4ac2 100644
    createdAt: number;
    input: SendThreadMessageMutationRequest["input"];
    mode: SendThreadMessageMutationRequest["mode"];
-@@ -232,6 +235,7 @@ interface OptimisticTurnRequestKindArgs {
+@@ -233,6 +236,7 @@ interface OptimisticTurnRequestKindArgs {
  }
  
  interface SendThreadMessageAcceptedTurnTransaction {
@@ -411,7 +411,7 @@ index b030d52e47..ea733a4ac2 100644
    kind: "accepted-turn";
    optimisticCreatedAt: number;
    optimisticRowId: string;
-@@ -239,6 +243,7 @@ interface SendThreadMessageAcceptedTurnTransaction {
+@@ -240,6 +244,7 @@ interface SendThreadMessageAcceptedTurnTransaction {
  }
  
  interface SendThreadMessageQueuedTransaction {
@@ -419,7 +419,7 @@ index b030d52e47..ea733a4ac2 100644
    kind: "queued-message";
    optimisticCreatedAt: number;
    optimisticQueuedMessageId: string;
-@@ -609,6 +614,7 @@ function requestWillOptimisticallyQueue(
+@@ -610,6 +615,7 @@ function requestWillOptimisticallyQueue(
  }
  
  function buildOptimisticUserMessageRow({
@@ -427,7 +427,7 @@ index b030d52e47..ea733a4ac2 100644
    createdAt,
    input,
    mode,
-@@ -654,6 +660,7 @@ function buildOptimisticUserMessageRow({
+@@ -655,6 +661,7 @@ function buildOptimisticUserMessageRow({
      senderThreadId: null,
      systemMessageKind: "unlabeled",
      systemMessageSubject: null,
@@ -435,7 +435,7 @@ index b030d52e47..ea733a4ac2 100644
      turnRequest: {
        isGrouped: false,
        kind: optimisticTurnRequestKind({ mode, threadStatus }),
-@@ -830,6 +837,7 @@ export async function beginSendThreadMessageTransaction({
+@@ -831,6 +838,7 @@ export async function beginSendThreadMessageTransaction({
    queryClient,
    request,
  }: SendThreadMessageTransactionArgs): Promise<SendThreadMessageTransaction> {
@@ -443,7 +443,7 @@ index b030d52e47..ea733a4ac2 100644
    await Promise.all([
      cancelOptimisticQueries(queryClient, {
        queryKey: threadQueryKey(request.id),
-@@ -855,6 +863,7 @@ export async function beginSendThreadMessageTransaction({
+@@ -856,6 +864,7 @@ export async function beginSendThreadMessageTransaction({
      });
      return {
        kind: "queued-message",
@@ -451,7 +451,7 @@ index b030d52e47..ea733a4ac2 100644
        previousThreadStatus: previousThread?.status ?? null,
        ...transaction,
      };
-@@ -869,6 +878,7 @@ export async function beginSendThreadMessageTransaction({
+@@ -870,6 +879,7 @@ export async function beginSendThreadMessageTransaction({
    });
  
    const optimisticRow = buildOptimisticUserMessageRow({
@@ -459,7 +459,7 @@ index b030d52e47..ea733a4ac2 100644
      createdAt: optimisticCreatedAt,
      input: request.input,
      mode: request.mode,
-@@ -879,6 +889,7 @@ export async function beginSendThreadMessageTransaction({
+@@ -880,6 +890,7 @@ export async function beginSendThreadMessageTransaction({
  
    return {
      kind: "accepted-turn",
@@ -467,15 +467,15 @@ index b030d52e47..ea733a4ac2 100644
      optimisticCreatedAt,
      optimisticRowId: optimisticRow.id,
      prediction,
-@@ -966,6 +977,7 @@ export function applySendThreadMessageSuccess({
+@@ -967,6 +978,7 @@ export function applySendThreadMessageSuccess({
+         messageSequence: result.messageSequence,
          queryClient,
-         request.id,
-         buildOptimisticUserMessageRow({
+         row: buildOptimisticUserMessageRow({
 +          author: transaction.optimisticAuthor,
            createdAt: optimisticCreatedAt,
            input: request.input,
            mode: request.mode,
-@@ -1166,6 +1178,7 @@ export async function beginSendQueuedMessageTransaction({
+@@ -1168,6 +1180,7 @@ export async function beginSendQueuedMessageTransaction({
      };
    }
    const optimisticRow = buildOptimisticUserMessageRow({
@@ -484,7 +484,7 @@ index b030d52e47..ea733a4ac2 100644
      input: queuedMessage.content,
      mode: request.mode,
 diff --git a/apps/app/src/hooks/mutations/thread-runtime-mutations.test.ts b/apps/app/src/hooks/mutations/thread-runtime-mutations.test.ts
-index 2562567ba1..3feef3f438 100644
+index 2275f3a84ba7001edc19a4f3f1656bf79809315f..925dbd07d3204dbb83c609e6db4a175ea4db2b5a 100644
 --- a/apps/app/src/hooks/mutations/thread-runtime-mutations.test.ts
 +++ b/apps/app/src/hooks/mutations/thread-runtime-mutations.test.ts
 @@ -1,7 +1,10 @@
@@ -499,7 +499,7 @@ index 2562567ba1..3feef3f438 100644
    ThreadResponse,
    ThreadTimelineResponse,
  } from "@bb/server-contract";
-@@ -158,6 +161,129 @@ afterEach(() => {
+@@ -165,6 +168,129 @@ afterEach(() => {
  });
  
  describe("thread runtime mutations", () => {
@@ -542,7 +542,7 @@ index 2562567ba1..3feef3f438 100644
 +      exact: true,
 +    });
 +    expect(rows()?.at(-1)).toMatchObject({ p6rAuthor: actor });
-+    response.resolve({ ok: true, delivery: "sent" });
++    response.resolve({ ok: true, delivery: "sent", messageSequence: null });
 +    await pending;
 +    expect(rows()?.at(-1)).toMatchObject({ p6rAuthor: actor });
 +    const optimistic = rows()?.at(-1);
@@ -629,7 +629,7 @@ index 2562567ba1..3feef3f438 100644
    it("prefetches queued message detail as soon as a queued thread is created", async () => {
      const queryClient = createTestQueryClient();
      const mutation = new MutationObserver(
-@@ -437,9 +563,9 @@ describe("thread runtime mutations", () => {
+@@ -447,9 +573,9 @@ describe("thread runtime mutations", () => {
  
      expect(
        queryClient
@@ -643,17 +643,17 @@ index 2562567ba1..3feef3f438 100644
      ).toEqual(["qmsg-2"]);
    });
 diff --git a/apps/app/src/hooks/useWebSocket.ts b/apps/app/src/hooks/useWebSocket.ts
-index 3027d86bbc..cceb362f26 100644
+index d905bb96b095bb87c5b2476f4c67cceffa60a1dd..628a87fbfd2ff88589a6f32450fc4a64443ebfcc 100644
 --- a/apps/app/src/hooks/useWebSocket.ts
 +++ b/apps/app/src/hooks/useWebSocket.ts
 @@ -1,4 +1,5 @@
- import { useEffect, useRef } from "react";
+ import { useEffect, useEffectEvent } from "react";
 +import { createCurrentMessageAuthorOwner } from "./cache-owners/current-message-author-owner";
  import { useQueryClient } from "@tanstack/react-query";
  import { createRealtimeCacheEffects } from "./realtime-cache-effects";
  import { useDeletedResourceRouteOwner } from "./cache-owners/resource-route-owner";
-@@ -20,6 +21,17 @@ export function useWebSocket(): void {
-   deletedResourceRouteChangeRef.current = handleDeletedResourceRouteChange;
+@@ -19,6 +20,17 @@ export function useWebSocket(): void {
+   );
  
    useEffect(() => {
 +    const messageAuthor = createCurrentMessageAuthorOwner(queryClient);
@@ -670,7 +670,7 @@ index 3027d86bbc..cceb362f26 100644
      const cacheEffects = createRealtimeCacheEffects({
        queryClient,
        refreshSidebarWhileHidden:
-@@ -51,6 +63,8 @@ export function useWebSocket(): void {
+@@ -50,6 +62,8 @@ export function useWebSocket(): void {
      wsManager.connect();
  
      return () => {
@@ -680,5 +680,5 @@ index 3027d86bbc..cceb362f26 100644
        unsubscribeConnected();
        unsubscribeArchivedThreadBrowsers();
 -- 
-2.53.0
+2.43.0
 

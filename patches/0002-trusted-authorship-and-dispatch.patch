@@ -1,4 +1,4 @@
-From df51ce340fca2c1d6207fe57a7a45ef33ec4661f Mon Sep 17 00:00:00 2001
+From b41b146d4004e065bbb7ceface2913239bfcf434 Mon Sep 17 00:00:00 2001
 From: Cole Lawrence <cole@colelawrence.com>
 Date: Fri, 13 Nov 2026 20:23:59 -0300
 Subject: [PATCH] Trusted authorship and dispatch
@@ -20,9 +20,9 @@ Subject: [PATCH] Trusted authorship and dispatch
  .../src/services/p6r/receipt-outcome.ts       |   45 +
  .../services/p6r/tool-correlation-registry.ts |  132 ++
  .../threads/child-thread-notifications.ts     |   10 +
- .../src/services/threads/dispatch-attempt.ts  |  174 ++-
+ .../src/services/threads/dispatch-attempt.ts  |  172 ++-
  .../src/services/threads/queue-waits.ts       |    6 +
- .../threads/queued-message-dispatch.ts        |   73 +-
+ .../threads/queued-message-dispatch.ts        |   72 +-
  .../src/services/threads/queued-messages.ts   |  181 ++-
  .../src/services/threads/thread-create.ts     |   32 +-
  .../services/threads/thread-edit-message.ts   |    7 +
@@ -41,7 +41,7 @@ Subject: [PATCH] Trusted authorship and dispatch
  .../p6r/external-contribution.test.ts         |  595 ++++++++
  .../services/p6r/identity-protocol.test.ts    |  961 ++++++++++++
  .../services/p6r/invocation-registry.test.ts  |  157 ++
- .../p6r/mention-target-service-paths.test.ts  |  298 ++++
+ .../p6r/mention-target-service-paths.test.ts  |  299 ++++
  .../test/services/p6r/mention-targets.test.ts |  193 +++
  .../services/p6r/native-acceptance.test.ts    |  993 ++++++++++++
  .../p6r/native-message-authorship.test.ts     | 1343 +++++++++++++++++
@@ -53,7 +53,7 @@ Subject: [PATCH] Trusted authorship and dispatch
  .../threads/thread-execution-override.test.ts |   24 +
  .../threads/thread-queued-messages.test.ts    |  174 +++
  .../threads/thread-runtime-display.test.ts    |   45 +
- 49 files changed, 10852 insertions(+), 135 deletions(-)
+ 49 files changed, 10852 insertions(+), 133 deletions(-)
  create mode 100644 apps/server/src/services/p6r/external-contribution.ts
  create mode 100644 apps/server/src/services/p6r/identity-protocol.ts
  create mode 100644 apps/server/src/services/p6r/invocation-registry.ts
@@ -104,17 +104,19 @@ index 53e98c0d9d3011b6a350a55f600e446594b08c14..5b4413d8dd17435054b8c223d151d842
    } catch (error) {
      db.$client.close();
 diff --git a/apps/server/src/routes/threads/actions.ts b/apps/server/src/routes/threads/actions.ts
-index c8d15e523ab416544e6a73928460820223c2b642..61efe6784a5d3ba9885bc507b6806281a9766072 100644
+index 61c20d881ce5b762e4176f47266415c21058583b..963a083dcbc9bd97f69e0a180ea7a7ec74503e82 100644
 --- a/apps/server/src/routes/threads/actions.ts
 +++ b/apps/server/src/routes/threads/actions.ts
-@@ -1,4 +1,6 @@
+@@ -3,6 +3,8 @@ import {
+   operationInProgress,
+ } from "../../services/lib/operation-response.js";
  import { refreshProviderRetirement } from "../../services/environments/environment-engine.js";
 +import { captureP6rNativeAuthors } from "../../services/p6r/native-authorship.js";
 +import { getP6rNativeAuthorship } from "../../services/p6r/native-request.js";
  import {
    deleteQueuedThreadMessage,
    getEnvironment,
-@@ -64,6 +66,10 @@ import {
+@@ -68,6 +70,10 @@ import {
  import { acceptThreadSendRequest } from "../../services/threads/thread-send-request.js";
  import { editThreadMessage } from "../../services/threads/thread-edit-message.js";
  import { clearThreadContext } from "../../services/threads/thread-context-clear.js";
@@ -125,7 +127,7 @@ index c8d15e523ab416544e6a73928460820223c2b642..61efe6784a5d3ba9885bc507b6806281
  import {
    buildExecutionOptions,
    dispatchThreadUnarchiveCommand,
-@@ -224,7 +230,11 @@ export function registerThreadActionRoutes(
+@@ -228,7 +234,11 @@ export function registerThreadActionRoutes(
    post(routes.send, async (context, payload) => {
      const thread = requirePublicThread(deps.db, context.req.param("id"));
      return context.json(
@@ -138,7 +140,7 @@ index c8d15e523ab416544e6a73928460820223c2b642..61efe6784a5d3ba9885bc507b6806281
      );
    });
  
-@@ -234,6 +244,7 @@ export function registerThreadActionRoutes(
+@@ -238,6 +248,7 @@ export function registerThreadActionRoutes(
        thread,
      });
      const result = await editThreadMessage(deps, {
@@ -146,7 +148,7 @@ index c8d15e523ab416544e6a73928460820223c2b642..61efe6784a5d3ba9885bc507b6806281
        environment,
        payload,
        thread,
-@@ -244,13 +255,17 @@ export function registerThreadActionRoutes(
+@@ -248,13 +259,17 @@ export function registerThreadActionRoutes(
    post(routes.retry, async (context, payload) => {
      const thread = requirePublicThread(deps.db, context.req.param("id"));
      ensureThreadIsWritable(thread);
@@ -165,7 +167,7 @@ index c8d15e523ab416544e6a73928460820223c2b642..61efe6784a5d3ba9885bc507b6806281
        payload,
        thread,
      });
-@@ -349,11 +364,26 @@ export function registerThreadActionRoutes(
+@@ -353,11 +368,26 @@ export function registerThreadActionRoutes(
        request: payload,
        thread,
      });
@@ -192,7 +194,7 @@ index c8d15e523ab416544e6a73928460820223c2b642..61efe6784a5d3ba9885bc507b6806281
        expectedUpdatedAt: payload.expectedUpdatedAt,
        id: context.req.param("queuedMessageId"),
        threadId: thread.id,
-@@ -432,6 +462,11 @@ export function registerThreadActionRoutes(
+@@ -436,6 +466,11 @@ export function registerThreadActionRoutes(
        deps.db,
        deps.hub,
        context.req.param("queuedMessageId"),
@@ -204,7 +206,7 @@ index c8d15e523ab416544e6a73928460820223c2b642..61efe6784a5d3ba9885bc507b6806281
      );
      if (!deleted) {
        throw new ApiError(404, "invalid_request", "Queued message not found");
-@@ -452,7 +487,11 @@ export function registerThreadActionRoutes(
+@@ -472,7 +507,11 @@ export function registerThreadActionRoutes(
  
    post(routes.compact, async (context) => {
      const thread = requirePublicThread(deps.db, context.req.param("id"));
@@ -214,14 +216,14 @@ index c8d15e523ab416544e6a73928460820223c2b642..61efe6784a5d3ba9885bc507b6806281
 +      thread,
 +      captureP6rNativeAuthors(await getP6rNativeAuthorship(context), 1),
 +    );
-     return context.json({ ok: true });
+     return context.json(operationInProgress());
    });
  
 diff --git a/apps/server/src/routes/threads/base.ts b/apps/server/src/routes/threads/base.ts
-index 6a4eee95319ba4ef50017cbf2038ba91d818429b..45ba76e8d286a54a12a9049818e8549f06c34e59 100644
+index 1b4102d5300d33a042ff08c5c555a3ec035cc889..e53ddd98704244d5f3652b75d548cbcb821a3ba9 100644
 --- a/apps/server/src/routes/threads/base.ts
 +++ b/apps/server/src/routes/threads/base.ts
-@@ -1,6 +1,7 @@
+@@ -2,6 +2,7 @@ import { operationComplete } from "../../services/lib/operation-response.js";
  import { countUnarchivedThreadDescendants } from "../../services/threads/thread-archive.js";
  import { listThreadCascades } from "../../services/threads/thread-cascade.js";
  import { cancelAbandonedProviderCreations } from "../../services/threads/thread-environment-providers.js";
@@ -229,7 +231,7 @@ index 6a4eee95319ba4ef50017cbf2038ba91d818429b..45ba76e8d286a54a12a9049818e8549f
  import {
    THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT,
    THREAD_SEARCH_LIMIT_PER_GROUP_MAX,
-@@ -49,6 +50,7 @@ import type { AppDeps } from "../../types.js";
+@@ -50,6 +51,7 @@ import type { AppDeps } from "../../types.js";
  import { ApiError } from "../../errors.js";
  import {
    parseInteger,
@@ -237,7 +239,7 @@ index 6a4eee95319ba4ef50017cbf2038ba91d818429b..45ba76e8d286a54a12a9049818e8549f
    parsePaginationQuery,
  } from "../../services/lib/validation.js";
  import {
-@@ -70,7 +72,15 @@ import { assertValidParentThread } from "../../services/threads/thread-parent.js
+@@ -71,7 +73,15 @@ import { assertValidParentThread } from "../../services/threads/thread-parent.js
  import { handleThreadOwnershipChange } from "../../services/threads/thread-ownership.js";
  import { applyThreadExecutionOverride } from "../../services/threads/thread-execution-override.js";
  import { applyThreadSessionOptionPatch } from "../../services/threads/thread-session-options.js";
@@ -253,7 +255,7 @@ index 6a4eee95319ba4ef50017cbf2038ba91d818429b..45ba76e8d286a54a12a9049818e8549f
  
  function parseThreadIncludes(query: ThreadGetQuery): Set<ThreadIncludeOption> {
    const includes = new Set<ThreadIncludeOption>();
-@@ -348,6 +358,38 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
+@@ -349,6 +359,38 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
      );
    });
  
@@ -292,7 +294,7 @@ index 6a4eee95319ba4ef50017cbf2038ba91d818429b..45ba76e8d286a54a12a9049818e8549f
    get(routes.search, (context, query) => {
      const searchQuery = query.query.trim();
      if (countNonWhitespaceChars(searchQuery) < 2) {
-@@ -396,15 +438,23 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
+@@ -397,15 +439,23 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
      if (payload.sectionId) {
        requireThreadSection(deps, payload.sectionId);
      }
@@ -2821,7 +2823,7 @@ index 0000000000000000000000000000000000000000..27054cfe96a64936dae912ccf5baa966
 +  return serverToolCorrelationRegistry;
 +}
 diff --git a/apps/server/src/services/threads/child-thread-notifications.ts b/apps/server/src/services/threads/child-thread-notifications.ts
-index f3b79e2670b7883c39f585c00533a56f38101e1e..5d1ab0cdaf96dca457180ab3c3e2f76ee84e8870 100644
+index e83db67f43b451e60297dbba783a0cfdc3efbec7..15f7011022b59507e0850ab72ec2072275bd8010 100644
 --- a/apps/server/src/services/threads/child-thread-notifications.ts
 +++ b/apps/server/src/services/threads/child-thread-notifications.ts
 @@ -13,6 +13,10 @@ import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
@@ -2835,7 +2837,7 @@ index f3b79e2670b7883c39f585c00533a56f38101e1e..5d1ab0cdaf96dca457180ab3c3e2f76e
  import {
    buildParentSystemInputFromTemplateSlot,
    buildParentSystemThreadMention,
-@@ -484,6 +488,12 @@ export async function queueChildThreadTurnNotificationBestEffort(
+@@ -485,6 +489,12 @@ export async function queueChildThreadTurnNotificationBestEffort(
    args: QueueChildThreadTurnNotificationArgs,
  ): Promise<void> {
    try {
@@ -2849,7 +2851,7 @@ index f3b79e2670b7883c39f585c00533a56f38101e1e..5d1ab0cdaf96dca457180ab3c3e2f76e
    } catch (error) {
      deps.logger.error(
 diff --git a/apps/server/src/services/threads/dispatch-attempt.ts b/apps/server/src/services/threads/dispatch-attempt.ts
-index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..dd20759bf2ad500c11b538e2844e0695f48648e2 100644
+index 2baab15e7c19eaaf2cd63e094763328218fedace..7ba1fa963a65acc5659bc6308d7870bb423b28b7 100644
 --- a/apps/server/src/services/threads/dispatch-attempt.ts
 +++ b/apps/server/src/services/threads/dispatch-attempt.ts
 @@ -6,6 +6,11 @@ import {
@@ -2929,7 +2931,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..dd20759bf2ad500c11b538e2844e0695
  }
  
 @@ -345,6 +370,8 @@ async function runOperationDispatch(
-   await sendThreadMessage(deps, {
+   const messageSequence = await sendThreadMessage(deps, {
      environment: source.environment,
      originPluginId: args.originPluginId,
 +    p6rAuthors: args.p6rAuthors,
@@ -3052,16 +3054,16 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..dd20759bf2ad500c11b538e2844e0695
      if (admission === null) {
        // The thread left `pending` underneath this attempt — a concurrent
        // attempt admitted it, or it was archived. Nothing was consumed and
-@@ -750,6 +824,8 @@ async function runDispatchAttempt(
-   const environment = await requireThreadCommandEnvironment(deps, { thread });
+@@ -751,6 +825,8 @@ async function runDispatchAttempt(
+   let messageSequence: number | null;
    try {
-     await sendThreadMessage(deps, {
+     messageSequence = await sendThreadMessage(deps, {
 +      p6rAuthors: args.p6rAuthors,
 +      p6rEditors: args.p6rEditors,
        environment,
        originPluginId: args.originPluginId,
        payload: resolvedPayload,
-@@ -757,10 +833,19 @@ async function runDispatchAttempt(
+@@ -758,10 +834,19 @@ async function runDispatchAttempt(
        trigger: args.trigger,
        ...(systemNotice !== null ? { systemNotice } : {}),
        ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
@@ -3083,7 +3085,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..dd20759bf2ad500c11b538e2844e0695
          if (claimed !== null) {
            consumeClaimedRows(
              claimed,
-@@ -771,9 +856,7 @@ async function runDispatchAttempt(
+@@ -772,9 +857,7 @@ async function runDispatchAttempt(
        },
      });
    } catch (error) {
@@ -3094,8 +3096,8 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..dd20759bf2ad500c11b538e2844e0695
      return reattemptDispatchForThreadChange(
        deps,
        args,
-@@ -788,8 +871,6 @@ async function runDispatchAttempt(
-   return { kind: "dispatched" };
+@@ -789,8 +872,6 @@ async function runDispatchAttempt(
+   return { kind: "dispatched", messageSequence };
  }
  
 -class DispatchThreadStatusChangedError extends Error {}
@@ -3103,7 +3105,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..dd20759bf2ad500c11b538e2844e0695
  async function reattemptDispatchForThreadChange(
    deps: LoggedPendingInteractionWorkSessionDeps,
    args: DispatchAttemptArgs,
-@@ -853,9 +934,12 @@ function consumeClaimedRows(
+@@ -854,9 +935,12 @@ function consumeClaimedRows(
  
  interface AdmitPendingThreadArgs {
    author: DispatchAuthor;
@@ -3116,10 +3118,10 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..dd20759bf2ad500c11b538e2844e0695
    respectManualStopPause: boolean;
    retryOf: TurnRequestRetryMarker | undefined;
    /** Creation's own record; null on a re-attempt, which reads it back. */
-@@ -865,6 +949,13 @@ interface AdmitPendingThreadArgs {
- 
+@@ -867,6 +951,13 @@ interface AdmitPendingThreadArgs {
  interface PendingThreadAdmission {
    claimedRow: ClaimedQueuedThreadMessageRow | null;
+   messageSequence: number;
 +  execution: Awaited<ReturnType<typeof buildExecutionOptions>>;
 +  input: PromptInput[];
 +  inputGroups?: PromptInput[][];
@@ -3130,7 +3132,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..dd20759bf2ad500c11b538e2844e0695
    startingThread: Thread;
  }
  
-@@ -891,6 +982,13 @@ class PendingThreadAdmissionLost extends Error {
+@@ -893,6 +984,13 @@ class PendingThreadAdmissionLost extends Error {
    }
  }
  
@@ -3144,7 +3146,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..dd20759bf2ad500c11b538e2844e0695
  async function admitPendingThread(
    deps: LoggedPendingInteractionWorkSessionDeps,
    args: AdmitPendingThreadArgs,
-@@ -914,8 +1012,30 @@ async function admitPendingThread(
+@@ -916,7 +1014,29 @@ async function admitPendingThread(
    const execution = await buildExecutionOptions(deps, args.payload, {
      threadId: args.thread.id,
    });
@@ -3170,13 +3172,11 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..dd20759bf2ad500c11b538e2844e0695
 +    titleProvided: startContext.titleProvided,
 +  };
    const claimedRow = args.claimed?.[0] ?? null;
--  let startingThread: Thread;
 +  let preappendedRequest: PreappendedThreadProvisionRequest | null = null;
-+  let startingThread: Thread | null;
+   let admitted: { messageSequence: number; startingThread: Thread };
    try {
-     startingThread = deps.db.transaction(
-       (tx) => {
-@@ -923,6 +1043,8 @@ async function admitPendingThread(
+     admitted = deps.db.transaction(
+@@ -925,6 +1045,8 @@ async function admitPendingThread(
          // flip that loses to a concurrent attempt rolls the consumption back,
          // so the row stays claimed for the caller to hand back rather than
          // being deleted under a message that never dispatched.
@@ -3185,10 +3185,10 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..dd20759bf2ad500c11b538e2844e0695
          if (args.claimed !== null && args.claimed.length > 0) {
            consumeClaimedRows(
              args.claimed,
-@@ -940,19 +1062,9 @@ async function admitPendingThread(
+@@ -943,19 +1065,9 @@ async function admitPendingThread(
          const starting = getThread(tx, args.thread.id);
          if (starting === null) throw new PendingThreadAdmissionLost();
-         requestThreadProvision(deps, {
+         const { messageSequence } = requestThreadProvision(deps, {
 -          author: args.author,
 +          ...provision,
            thread: starting,
@@ -3205,12 +3205,12 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..dd20759bf2ad500c11b538e2844e0695
 -          titleProvided: startContext.titleProvided,
 +          ...(preappendedRequest === null ? {} : { preappendedRequest }),
          });
-         return starting;
+         return { messageSequence, startingThread: starting };
        },
-@@ -977,6 +1089,13 @@ async function admitPendingThread(
-   );
+@@ -982,6 +1094,13 @@ async function admitPendingThread(
    return {
      claimedRow,
+     messageSequence,
 +    execution,
 +    input: args.payload.input,
 +    inputGroups: args.payload.inputGroups,
@@ -3221,7 +3221,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..dd20759bf2ad500c11b538e2844e0695
      startingThread,
    };
  }
-@@ -986,6 +1105,7 @@ async function launchAdmittedThread(
+@@ -991,6 +1110,7 @@ async function launchAdmittedThread(
    admission: PendingThreadAdmission,
  ): Promise<void> {
    const { claimedRow, startingThread } = admission;
@@ -3229,7 +3229,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..dd20759bf2ad500c11b538e2844e0695
    if (claimedRow !== null) {
      settleQueueRowDispatched({ row: claimedRow });
    }
-@@ -1021,6 +1141,7 @@ function resolveExecutionIntoPayload(
+@@ -1026,6 +1146,7 @@ function resolveExecutionIntoPayload(
  export async function compactThreadContext(
    deps: LoggedPendingInteractionWorkSessionDeps,
    thread: Thread,
@@ -3237,7 +3237,7 @@ index 77162ae45ea4352a107deb2c6aa3d0b04f4950e3..dd20759bf2ad500c11b538e2844e0695
  ): Promise<void> {
    ensureThreadIsWritable(thread);
    if (!deps.providerRegistry.supportsManualCompaction(thread.providerId)) {
-@@ -1041,6 +1162,7 @@ export async function compactThreadContext(
+@@ -1046,6 +1167,7 @@ export async function compactThreadContext(
    const environment = await requireThreadCommandEnvironment(deps, { thread });
    await attemptDispatch(deps, {
      thread,
@@ -3277,19 +3277,18 @@ index 888e7733fce141055bfa255b1a3282c44461513f..816fac04652c15442658d19bc80c45ee
            ? moveQueuedThreadMessageToFrontInTransaction(tx, created)
            : created;
 diff --git a/apps/server/src/services/threads/queued-message-dispatch.ts b/apps/server/src/services/threads/queued-message-dispatch.ts
-index 9e4d7aae3f04c891677159d1303ed6aae90bb7ef..a63bc691103c79e78323f132eb9c38ff4e4229db 100644
+index 78ef86201f703aa4833a707af5575454d3a61c3e..28afba6c3c852f93e1150ec46a2d98604471f3ce 100644
 --- a/apps/server/src/services/threads/queued-message-dispatch.ts
 +++ b/apps/server/src/services/threads/queued-message-dispatch.ts
-@@ -25,7 +25,7 @@ import {
-   isCommandTimeoutError,
+@@ -26,6 +26,7 @@ import {
    runtimeErrorLogFields,
  } from "../lib/error-log-fields.js";
--import { isDispatchRequeuedRecently } from "./dispatch-hooks.js";
-+import { dispatchEnvironmentAndHost, isDispatchRequeuedRecently } from "./dispatch-hooks.js";
- import { recordQueuedMessageDrainFailure } from "./queue-drain-failure.js";
- import { clearQueuedMessageWait } from "./queue-waits.js";
- import { defineItemSweep, type ItemSweep } from "../system/item-sweep.js";
-@@ -254,21 +254,10 @@ async function executePreparedQueuedMessageDispatch(
+ import {
++  dispatchEnvironmentAndHost,
+   isDispatchRequeuedRecently,
+   isPluginDispatchRequeuedRecently,
+ } from "./dispatch-hooks.js";
+@@ -257,21 +258,10 @@ async function executePreparedQueuedMessageDispatch(
  ): Promise<void> {
    switch (wake.kind) {
      case "host-connected":
@@ -3315,7 +3314,7 @@ index 9e4d7aae3f04c891677159d1303ed6aae90bb7ef..a63bc691103c79e78323f132eb9c38ff
        return;
      case "app-update-released":
        for (const threadId of listThreadIdsWithAppUpdateQueueWaits(deps.db)) {
-@@ -314,6 +303,7 @@ async function executePreparedQueuedMessageDispatch(
+@@ -317,6 +307,7 @@ async function executePreparedQueuedMessageDispatch(
      case "idle-recovery":
        releaseStaleQueuedMessageDispatchClaims(deps, wake.now);
        await idleThreadQueueSweep(deps).run(deps, wake.now);
@@ -3323,7 +3322,7 @@ index 9e4d7aae3f04c891677159d1303ed6aae90bb7ef..a63bc691103c79e78323f132eb9c38ff
        return;
      case "failed-retry":
        await failedQueueRetrySweep(deps, wake.now).run(deps, wake.now);
-@@ -324,6 +314,56 @@ async function executePreparedQueuedMessageDispatch(
+@@ -327,6 +318,56 @@ async function executePreparedQueuedMessageDispatch(
    }
  }
  
@@ -3380,7 +3379,7 @@ index 9e4d7aae3f04c891677159d1303ed6aae90bb7ef..a63bc691103c79e78323f132eb9c38ff
  async function runThreadReadyDispatch(
    deps: QueueDispatchDeps,
    threadId: string,
-@@ -497,6 +537,7 @@ async function attemptAutomaticQueuedMessage(
+@@ -500,6 +541,7 @@ async function attemptAutomaticQueuedMessage(
          queuedMessageId: row.id,
          threadId: row.threadId,
          ...runtimeErrorLogFields(deps.config, error),
@@ -3389,7 +3388,7 @@ index 9e4d7aae3f04c891677159d1303ed6aae90bb7ef..a63bc691103c79e78323f132eb9c38ff
        "Queued message dispatch failed",
      );
 diff --git a/apps/server/src/services/threads/queued-messages.ts b/apps/server/src/services/threads/queued-messages.ts
-index 60d4ae11a7850b3478b3108721c00199635b04da..a166e5050a00d9708907a6eb6eacd5f60916318b 100644
+index 67cec80d8a2abe79b18c5ce51fe7d34a5904c4ef..3b1dd051bd8afa2eb21cc1fc346a17230d8345c6 100644
 --- a/apps/server/src/services/threads/queued-messages.ts
 +++ b/apps/server/src/services/threads/queued-messages.ts
 @@ -1,3 +1,14 @@
@@ -3755,16 +3754,16 @@ index 1255def9e6ff5acf74e8156d4ab451572c5dc0f5..42991d0ad8dcc4725a00d9f7f18f8f7c
      environmentIntent,
      defaultModel,
 diff --git a/apps/server/src/services/threads/thread-edit-message.ts b/apps/server/src/services/threads/thread-edit-message.ts
-index 6b2a5afdb9fa94769bdfe49ee635f4e4920cf263..5181589296dabbb36417cab071a9469aeaacee1c 100644
+index 3535154bfa4fc0468445ff767b62d215cb1b63ac..52954260b8a3b25eca4ba3e757200c1cb7574072 100644
 --- a/apps/server/src/services/threads/thread-edit-message.ts
 +++ b/apps/server/src/services/threads/thread-edit-message.ts
 @@ -1,3 +1,5 @@
 +import { captureP6rNativeAuthors } from "../p6r/native-authorship.js";
 +import type { P6rNativeAuthorship } from "../p6r/native-request.js";
  import { createHash, randomUUID } from "node:crypto";
- import { and, desc, eq, isNull, lt, sql } from "drizzle-orm";
  import {
-@@ -70,6 +72,7 @@ type ThreadRewindPrepareCommand = Extract<
+   deleteThreadEventSuffixInTransaction,
+@@ -74,6 +76,7 @@ type ThreadRewindPrepareCommand = Extract<
  
  interface EditableTurn {
    leadingAgentOnlyInput: PromptInput[];
@@ -3772,7 +3771,7 @@ index 6b2a5afdb9fa94769bdfe49ee635f4e4920cf263..5181589296dabbb36417cab071a9469a
    currentTurnId: string;
    oldMaxSequence: number;
    precedingProviderCheckpoint: string | null;
-@@ -328,6 +331,7 @@ function resolveEditableTurnCandidate(
+@@ -286,6 +289,7 @@ function resolveEditableTurnCandidate(
    }
    return {
      leadingAgentOnlyInput: getLeadingAgentOnlyInput(request.input),
@@ -3780,7 +3779,7 @@ index 6b2a5afdb9fa94769bdfe49ee635f4e4920cf263..5181589296dabbb36417cab071a9469a
      currentTurnId: accepted.turnId,
      oldMaxSequence,
      precedingProviderCheckpoint,
-@@ -473,6 +477,7 @@ export async function editThreadMessage(
+@@ -417,6 +421,7 @@ export async function editThreadMessage(
    deps: LoggedPendingInteractionWorkSessionDeps,
    args: {
      environment: Parameters<typeof requireReadyThreadEnvironment>[0];
@@ -3788,7 +3787,7 @@ index 6b2a5afdb9fa94769bdfe49ee635f4e4920cf263..5181589296dabbb36417cab071a9469a
      payload: EditMessageRequest;
      thread: Thread;
    },
-@@ -620,6 +625,8 @@ export async function editThreadMessage(
+@@ -564,6 +569,8 @@ export async function editThreadMessage(
    try {
      await attemptDispatch(deps, {
        thread: editableThread,
@@ -3798,7 +3797,7 @@ index 6b2a5afdb9fa94769bdfe49ee635f4e4920cf263..5181589296dabbb36417cab071a9469a
          ...sendPayload,
          input: [...target.leadingAgentOnlyInput, ...sendPayload.input],
 diff --git a/apps/server/src/services/threads/thread-events.ts b/apps/server/src/services/threads/thread-events.ts
-index 5f27eb621d800f337093192d92257abff08e3113..fdb095fc10a2f58838aee7d12c03e8ad968d6f87 100644
+index d78069e8e2b45bbc603b239b577e0ac6f2e7dbae..29cb43cb386660a21fdf475e6dc837a2fd0ff4b0 100644
 --- a/apps/server/src/services/threads/thread-events.ts
 +++ b/apps/server/src/services/threads/thread-events.ts
 @@ -1,3 +1,9 @@
@@ -3833,7 +3832,7 @@ index 5f27eb621d800f337093192d92257abff08e3113..fdb095fc10a2f58838aee7d12c03e8ad
      ...(args.inputGroups !== undefined
        ? { inputGroups: args.inputGroups }
        : {}),
-@@ -342,6 +356,21 @@ function appendThreadEventsInTransactionWithAttention(
+@@ -345,6 +359,21 @@ function appendThreadEventsInTransactionWithAttention(
  ): AppendThreadEventsTransactionResult {
    assertStoredTurnStartedForEvents(db, args);
    const sequences = appendStoredThreadEventsInTransaction(db, args);
@@ -5101,7 +5100,7 @@ index f4bf5c7a0805d8853da0900b681bd6cf8e5fda1e..ea0368d95d6a58d6a1df61e6c8529653
        ...(isSeedOnlyIdleFork ? { providerInput: [] } : {}),
      },
 diff --git a/apps/server/src/services/threads/thread-provisioning.ts b/apps/server/src/services/threads/thread-provisioning.ts
-index a88f8db59c8f5f752ff1893202b25aae01dc4fb7..cc9de80e6f96bbe8042dfbe5dfa88078d0f54396 100644
+index 27822a87c966491ca5ec5396a3a639047476737e..2f938529c036db4bb91b82e8c4693523a19292a8 100644
 --- a/apps/server/src/services/threads/thread-provisioning.ts
 +++ b/apps/server/src/services/threads/thread-provisioning.ts
 @@ -1,3 +1,4 @@
@@ -5109,10 +5108,10 @@ index a88f8db59c8f5f752ff1893202b25aae01dc4fb7..cc9de80e6f96bbe8042dfbe5dfa88078
  import {
    getLatestThreadSequence,
    getNonDestroyedHostByLaunchKey,
-@@ -11,6 +12,12 @@ import {
- } from "../environments/path-admission.js";
- import { getPreparingEnvironment } from "@bb/db";
- import { getThread, type DbTransaction, type EnvironmentRow } from "@bb/db";
+@@ -16,6 +17,12 @@ import {
+   type DbTransaction,
+   type EnvironmentRow,
+ } from "@bb/db";
 +import { withP6rNativeAuthorContext } from "../p6r/native-authorship.js";
 +import type {
 +  P6rMessageAuthors,
@@ -5122,7 +5121,7 @@ index a88f8db59c8f5f752ff1893202b25aae01dc4fb7..cc9de80e6f96bbe8042dfbe5dfa88078
  import {
    type EnvironmentProviderSelection,
    type PromptInput,
-@@ -18,6 +25,8 @@ import {
+@@ -23,6 +30,8 @@ import {
    type SystemMessageKind,
    type SystemMessageSubject,
    type Thread,
@@ -5131,7 +5130,7 @@ index a88f8db59c8f5f752ff1893202b25aae01dc4fb7..cc9de80e6f96bbe8042dfbe5dfa88078
    type ThreadTurnInitiator,
    type TurnRequestTarget,
  } from "@bb/domain";
-@@ -61,12 +70,16 @@ import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
+@@ -63,12 +72,16 @@ import { finishThreadLifecycleInBackground } from "./lifecycle/finish.js";
  import { runtimeErrorLogFields } from "../lib/error-log-fields.js";
  import { recordAcceptedPromptHistoryEntry } from "../prompt-history.js";
  
@@ -5149,7 +5148,7 @@ index a88f8db59c8f5f752ff1893202b25aae01dc4fb7..cc9de80e6f96bbe8042dfbe5dfa88078
    originPluginId: string | null;
    providerInput?: PromptInput[];
    retryOf?: TurnRequestRetryMarker;
-@@ -75,7 +88,18 @@ interface RequestThreadProvisionArgs {
+@@ -77,7 +90,18 @@ interface RequestThreadProvisionArgs {
    titleProvided: boolean;
  }
  
@@ -5168,14 +5167,14 @@ index a88f8db59c8f5f752ff1893202b25aae01dc4fb7..cc9de80e6f96bbe8042dfbe5dfa88078
    beforeRequestAppendInTransaction?: (args: { tx: DbTransaction }) => void;
    environment: EnvironmentRow;
    execution: ResolvedThreadExecutionOptions;
-@@ -298,19 +322,23 @@ async function startThreadIfEnvironmentReady(
-   });
+@@ -302,19 +326,23 @@ export interface RequestedThreadProvision {
+   messageSequence: number;
  }
  
 -export function requestThreadProvision(
 -  deps: Pick<AppDeps, "db" | "hub">,
 -  args: RequestThreadProvisionArgs,
--): ThreadProvisionContext {
+-): RequestedThreadProvision {
 -  return deps.db.transaction(() => {
 -    const { initiator, senderThreadId } = args.author;
 -    const target: TurnRequestTarget = { kind: "thread-start" };
@@ -5200,7 +5199,7 @@ index a88f8db59c8f5f752ff1893202b25aae01dc4fb7..cc9de80e6f96bbe8042dfbe5dfa88078
        execution: args.execution,
        initiator,
        originPluginId: args.originPluginId,
-@@ -318,14 +346,68 @@ export function requestThreadProvision(
+@@ -322,14 +350,68 @@ export function requestThreadProvision(
        requestMethod: "thread/start",
        source: "spawn",
        target,
@@ -5231,11 +5230,11 @@ index a88f8db59c8f5f752ff1893202b25aae01dc4fb7..cc9de80e6f96bbe8042dfbe5dfa88078
 +  args: ThreadProvisionRequestArgs & {
 +    readonly preappendedRequest?: PreappendedThreadProvisionRequest;
 +  },
-+): ThreadProvisionContext {
++): RequestedThreadProvision {
 +  const { initiator, senderThreadId } = args.author;
 +  const target: TurnRequestTarget = { kind: "thread-start" };
 +  const preappended = args.preappendedRequest;
-+  const context = deps.db.transaction(() => {
++  const provisioned = deps.db.transaction(() => {
 +    const request =
 +      preappended === undefined
 +        ? appendClientTurnEvent(deps, {
@@ -5271,7 +5270,7 @@ index a88f8db59c8f5f752ff1893202b25aae01dc4fb7..cc9de80e6f96bbe8042dfbe5dfa88078
      appendClientTurnEvent(deps, {
        threadId: args.thread.id,
        environmentId: args.thread.environmentId,
-@@ -335,12 +417,18 @@ export function requestThreadProvision(
+@@ -339,12 +421,18 @@ export function requestThreadProvision(
        source: "spawn",
      });
  
@@ -5291,9 +5290,9 @@ index a88f8db59c8f5f752ff1893202b25aae01dc4fb7..cc9de80e6f96bbe8042dfbe5dfa88078
        initiator,
        seedWithoutRun: args.startedOnBehalfOf !== null,
        titleProvided: args.titleProvided,
-@@ -353,6 +441,14 @@ export function requestThreadProvision(
+@@ -357,6 +445,14 @@ export function requestThreadProvision(
      });
-     return context;
+     return { context, messageSequence: request.sequence };
    });
 +  if (preappended !== undefined) {
 +    deps.hub.notifyThread(
@@ -5302,12 +5301,12 @@ index a88f8db59c8f5f752ff1893202b25aae01dc4fb7..cc9de80e6f96bbe8042dfbe5dfa88078
 +      preappended.notificationMetadata,
 +    );
 +  }
-+  return context;
++  return provisioned;
  }
  
  export function requestThreadEnvironmentRestore(
-@@ -402,6 +498,12 @@ export function requestThreadTargetReprovision(
- ): ThreadProvisionContext {
+@@ -407,6 +503,12 @@ export function requestThreadTargetReprovision(
+ ): RequestedThreadProvision {
    return deps.db.transaction(() => {
      const request = appendReprovisionTurnRequest(deps, args);
 +    const providerContext = withP6rNativeAuthorContext(
@@ -5319,7 +5318,7 @@ index a88f8db59c8f5f752ff1893202b25aae01dc4fb7..cc9de80e6f96bbe8042dfbe5dfa88078
      const context = createThreadStartup({
        clientRequestId: request.requestId,
        environmentIntent:
-@@ -421,10 +523,7 @@ export function requestThreadTargetReprovision(
+@@ -426,10 +528,7 @@ export function requestThreadTargetReprovision(
              },
        execution: args.execution,
        fork: null,
@@ -5331,7 +5330,7 @@ index a88f8db59c8f5f752ff1893202b25aae01dc4fb7..cc9de80e6f96bbe8042dfbe5dfa88078
        initiator: args.initiator,
        seedWithoutRun: false,
        titleProvided: true,
-@@ -456,6 +555,9 @@ function appendReprovisionTurnRequest(
+@@ -461,6 +560,9 @@ function appendReprovisionTurnRequest(
              type: "client/turn/requested",
              ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
              input: args.input,
@@ -5341,7 +5340,7 @@ index a88f8db59c8f5f752ff1893202b25aae01dc4fb7..cc9de80e6f96bbe8042dfbe5dfa88078
              ...(args.inputGroups !== undefined
                ? { inputGroups: args.inputGroups }
                : {}),
-@@ -481,6 +583,9 @@ function appendReprovisionTurnRequest(
+@@ -486,6 +588,9 @@ function appendReprovisionTurnRequest(
            requestSequence: request.sequence,
          },
        );
@@ -5518,7 +5517,7 @@ index 632bcc7fe3ff401911e28426190e8053b3639896..d2b5e48ea9f5f35f5910f9386b5073c5
        environmentHostId: args.thread.environmentHostId,
        hostConnected: args.hostConnected,
 diff --git a/apps/server/src/services/threads/thread-send-request.ts b/apps/server/src/services/threads/thread-send-request.ts
-index e75e67f161d8a061fe70417bffebe9e99c88e3de..a9a8417444d52d5a571e6c218630813bf813f880 100644
+index 3ac28da01c90ac25ea4f8d764fcbc40c42052586..3077181b63c2f84e29bd23a664fa21f83a9e1805 100644
 --- a/apps/server/src/services/threads/thread-send-request.ts
 +++ b/apps/server/src/services/threads/thread-send-request.ts
 @@ -3,6 +3,8 @@ import {
@@ -5538,7 +5537,7 @@ index e75e67f161d8a061fe70417bffebe9e99c88e3de..a9a8417444d52d5a571e6c218630813b
    payload: SendMessageRequest;
    thread: Thread;
  }
-@@ -70,6 +73,7 @@ export async function acceptThreadSendRequest(
+@@ -75,6 +78,7 @@ export async function acceptThreadSendRequest(
      { threadId: args.thread.id },
      () =>
        attemptDispatch(deps, {
@@ -5547,7 +5546,7 @@ index e75e67f161d8a061fe70417bffebe9e99c88e3de..a9a8417444d52d5a571e6c218630813b
          payload,
          source: { kind: "inline" },
 diff --git a/apps/server/src/services/threads/thread-send.ts b/apps/server/src/services/threads/thread-send.ts
-index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae148e5c615a 100644
+index dcda68107025518ece46eaeb553cba7e42c51527..336351cb2aae87e3315d6b9efd4781aa0756b0d5 100644
 --- a/apps/server/src/services/threads/thread-send.ts
 +++ b/apps/server/src/services/threads/thread-send.ts
 @@ -1,3 +1,13 @@
@@ -5561,10 +5560,10 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
 +} from "../p6r/native-authorship.js";
 +import { readP6rMentionTargetsForRequest } from "../p6r/participant-projection.js";
 +import type { P6rMentionTarget } from "@bb/domain";
- import {
-   getEnvironment,
-   getThread,
-@@ -68,7 +78,7 @@ import {
+ import { getEnvironment, getThread } from "@bb/db";
+ import type { DbConnection, DbTransaction, EnvironmentRow } from "@bb/db";
+ import type {
+@@ -61,7 +71,7 @@ import {
  } from "../lib/lifecycle-api-errors.js";
  import { resolvePromptAttachmentReferences } from "../projects/attachments.js";
  import { threadTargetHostId } from "./dispatch-attempt.js";
@@ -5573,7 +5572,7 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
  import { clearThreadContext } from "./thread-context-clear.js";
  import { withThreadSendGuard } from "./thread-context-mutation-guard.js";
  import {
-@@ -79,8 +89,6 @@ import {
+@@ -74,8 +84,6 @@ import {
    prependDeferredFirstTurnContext,
    requireDeferredFirstTurnContextCurrent,
    resolveDeferredFirstTurnContext,
@@ -5582,7 +5581,7 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
  } from "./deferred-first-turn-context.js";
  import type {
    TelemetryEvent,
-@@ -101,6 +109,9 @@ type SendThreadMessagePayload = SendMessageRequest & {
+@@ -96,6 +104,9 @@ type SendThreadMessagePayload = SendMessageRequest & {
  };
  
  interface SendThreadMessageArgs {
@@ -5592,7 +5591,7 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
    beforeAppendInTransaction?: SendThreadMessageTransactionPreflight;
    /**
     * Present only when this send re-submits a failed turn. Marks the turn event
-@@ -139,6 +150,16 @@ interface SendThreadMessageTransactionPreflightArgs {
+@@ -134,6 +145,16 @@ interface SendThreadMessageTransactionPreflightArgs {
    tx: DbTransaction;
  }
  
@@ -5609,7 +5608,7 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
  interface SendThreadMessageQueueRequestArgs {
    requestEventSequence: number;
    tx: DbTransaction;
-@@ -152,6 +173,10 @@ export interface SendThreadMessageTransactionPreflight {
+@@ -147,6 +168,10 @@ export interface SendThreadMessageTransactionPreflight {
    (args: SendThreadMessageTransactionPreflightArgs): void;
  }
  
@@ -5620,7 +5619,7 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
  interface SendThreadMessageQueueRequest {
    (
      args: SendThreadMessageQueueRequestArgs,
-@@ -159,6 +184,10 @@ interface SendThreadMessageQueueRequest {
+@@ -154,6 +179,10 @@ interface SendThreadMessageQueueRequest {
  }
  
  interface AppendAndQueueSendThreadMessageArgs {
@@ -5631,7 +5630,7 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
    /** Retry provenance; absent for an original dispatch. */
    retryOf?: TurnRequestRetryMarker;
    beforeAppendInTransaction?: SendThreadMessageTransactionPreflight;
-@@ -355,46 +384,24 @@ export function formatAgentThreadInput(
+@@ -358,46 +387,24 @@ export function formatAgentThreadInput(
    });
  }
  
@@ -5691,7 +5690,7 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
  export function captureUserMessageSentTelemetry(
    deps: Pick<LoggedPendingInteractionWorkSessionDeps, "config" | "telemetry">,
    args: {
-@@ -416,6 +423,10 @@ export function captureUserMessageSentTelemetry(
+@@ -419,6 +426,10 @@ export function captureUserMessageSentTelemetry(
  }
  
  function appendAndQueueSendThreadMessageInTransaction({
@@ -5702,7 +5701,7 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
    retryOf,
    beforeAppendInTransaction,
    db,
-@@ -446,6 +457,9 @@ function appendAndQueueSendThreadMessageInTransaction({
+@@ -449,6 +460,9 @@ function appendAndQueueSendThreadMessageInTransaction({
              type: "client/turn/requested",
              ...(retryOf !== undefined ? { retryOf } : {}),
              input,
@@ -5712,7 +5711,7 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
              ...(inputGroups !== undefined ? { inputGroups } : {}),
              execution,
              initiator,
-@@ -463,6 +477,11 @@ function appendAndQueueSendThreadMessageInTransaction({
+@@ -466,6 +480,11 @@ function appendAndQueueSendThreadMessageInTransaction({
              requestId,
            },
          );
@@ -5724,7 +5723,7 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
        recordAcceptedPromptHistoryEntry(
          { db: tx },
          {
-@@ -516,6 +535,14 @@ async function sendThreadMessageWithoutContextClear(
+@@ -548,6 +567,14 @@ async function sendThreadMessageWithoutContextClear(
    if (args.trigger === "user") {
      ensureThreadIsNotAwaitingUserInteraction(deps, thread.id);
    }
@@ -5739,7 +5738,7 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
    const mode = resolveSendMode(thread, payload.mode);
    ensureRuntimeCanAcceptActiveSend(deps, args);
    if (mode === "start") {
-@@ -544,14 +571,31 @@ async function sendThreadMessageWithoutContextClear(
+@@ -576,14 +603,31 @@ async function sendThreadMessageWithoutContextClear(
              senderThreadId,
            })
          : payload.input;
@@ -5779,7 +5778,7 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
    ({ input, inputGroups } = prependDeferredFirstTurnContext(
      { input, ...(inputGroups !== undefined ? { inputGroups } : {}) },
      deferredFirstTurnContext,
-@@ -567,6 +611,17 @@ async function sendThreadMessageWithoutContextClear(
+@@ -599,6 +643,17 @@ async function sendThreadMessageWithoutContextClear(
        });
      }
    };
@@ -5797,19 +5796,19 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
    const resolvedInput = await resolvePromptAttachmentReferences({
      db: deps.db,
      dataDir: deps.config.dataDir,
-@@ -635,7 +690,11 @@ async function sendThreadMessageWithoutContextClear(
+@@ -666,7 +721,11 @@ async function sendThreadMessageWithoutContextClear(
+   });
  
-   if (
-     await dispatchTurnDuringReprovision({
-+      p6rAuthors,
-+      p6rEditors,
-+      p6rMentionedTargets,
-       beforeRequestAppendInTransaction: beforeAppendInTransaction,
-+      afterRequestAppendInTransaction: afterAppendInTransaction,
-       deps,
-       environment,
-       execution,
-@@ -688,8 +747,7 @@ async function sendThreadMessageWithoutContextClear(
+   const reprovisionDispatch = await dispatchTurnDuringReprovision({
++    p6rAuthors,
++    p6rEditors,
++    p6rMentionedTargets,
+     beforeRequestAppendInTransaction: beforeAppendInTransaction,
++    afterRequestAppendInTransaction: afterAppendInTransaction,
+     deps,
+     environment,
+     execution,
+@@ -719,8 +778,7 @@ async function sendThreadMessageWithoutContextClear(
    if (mode === "start") {
      const commandArgs = {
        thread,
@@ -5819,9 +5818,9 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
        requestId,
        execution,
        permissionEscalation,
-@@ -719,6 +777,10 @@ async function sendThreadMessageWithoutContextClear(
-         }
-       : await prepareReadyThreadTurnCommand(deps, commandArgs);
+@@ -756,6 +814,10 @@ async function sendThreadMessageWithoutContextClear(
+             !hasCommandMention(input),
+         });
      const queuedRequest = appendAndQueueSendThreadMessageInTransaction({
 +      p6rAuthors,
 +      p6rEditors,
@@ -5830,7 +5829,7 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
        ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
        beforeAppendInTransaction: ({ tx }) => {
          beforeAppendInTransaction({ tx });
-@@ -805,8 +867,7 @@ async function sendThreadMessageWithoutContextClear(
+@@ -823,8 +885,7 @@ async function sendThreadMessageWithoutContextClear(
    });
    const preparedCommand = await prepareTurnSubmitCommandPayload(deps, {
      thread,
@@ -5840,7 +5839,7 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
      execution,
      permissionEscalation,
      target: {
-@@ -825,6 +886,10 @@ async function sendThreadMessageWithoutContextClear(
+@@ -843,6 +904,10 @@ async function sendThreadMessageWithoutContextClear(
      requestId,
    });
    const queuedRequest = appendAndQueueSendThreadMessageInTransaction({
@@ -5852,7 +5851,7 @@ index 24398a388b2b83e1b8044650f3e51c3fe9eb9d09..e4ec754e852400edee9bf65d1c0fae14
      beforeAppendInTransaction,
      db: deps.db,
 diff --git a/apps/server/src/services/threads/thread-turn-dispatch.ts b/apps/server/src/services/threads/thread-turn-dispatch.ts
-index b5dbb59e723fa99fd7fbb975622cb85c99d9facb..6a55713a957c141d5cc3d2aac6ca37baa0517a15 100644
+index d049e2623f44435935033e83c41a3553b9835a81..412a6fce59a2b97e61df397818c0cac0d57a61cc 100644
 --- a/apps/server/src/services/threads/thread-turn-dispatch.ts
 +++ b/apps/server/src/services/threads/thread-turn-dispatch.ts
 @@ -1,3 +1,9 @@
@@ -5876,7 +5875,7 @@ index b5dbb59e723fa99fd7fbb975622cb85c99d9facb..6a55713a957c141d5cc3d2aac6ca37ba
    beforeRequestAppendInTransaction?: (args: { tx: DbTransaction }) => void;
    deps: LoggedPendingInteractionWorkSessionDeps;
    environment: EnvironmentRow;
-@@ -83,6 +93,10 @@ export async function dispatchTurnDuringReprovision(
+@@ -84,6 +94,10 @@ export async function dispatchTurnDuringReprovision(
            throwEnvironmentNotReady(args.environment);
          }
        },
@@ -6119,7 +6118,7 @@ index 0000000000000000000000000000000000000000..e0a76d5cf13ca58344c159c3f50ce449
 +});
 diff --git a/apps/server/test/services/p6r/external-contribution.test.ts b/apps/server/test/services/p6r/external-contribution.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..b80e14cdefe8814f4b16180c3cb8be656b15888b
+index 0000000000000000000000000000000000000000..20d2f751c74b5e18c5f5e09d3ce58d6b09bc36fa
 --- /dev/null
 +++ b/apps/server/test/services/p6r/external-contribution.test.ts
 @@ -0,0 +1,595 @@
@@ -6130,12 +6129,12 @@ index 0000000000000000000000000000000000000000..b80e14cdefe8814f4b16180c3cb8be65
 +import { createMigratedConnection } from "@bb/db/testing";
 +import {
 +  createConnection,
-+  listEvents,
 +  listQueuedThreadMessages,
 +  listCoreParticipantProfilePage,
 +  setThreadExecutionOverride,
 +  setQueuedThreadMessageGroupBoundary,
 +} from "@bb/db";
++import { listEvents } from "@bb/db/testing";
 +import { turnRequestEventDataSchema } from "@bb/domain";
 +import {
 +  createP6rIdentityService,
@@ -6151,7 +6150,7 @@ index 0000000000000000000000000000000000000000..b80e14cdefe8814f4b16180c3cb8be65
 +  createQueuedMessageForThread,
 +  sendNextQueuedMessageIfPresent,
 +} from "../../../src/services/threads/queued-messages.js";
-+import { applyLoggedThreadLifecycleEvent } from "../../../src/services/threads/lifecycle-outcome.js";
++import { moveThreadStatus } from "../../helpers/thread-status.js";
 +import { clearQueuedMessageWait } from "../../../src/services/threads/queue-waits.js";
 +import {
 +  seedHostSession,
@@ -6392,8 +6391,8 @@ index 0000000000000000000000000000000000000000..b80e14cdefe8814f4b16180c3cb8be65
 +      expect(
 +        await protocol.externalContributions.lookupV1(input.operationId),
 +      ).toEqual({ ok: true, value: { status: "pending" } });
-+      applyLoggedThreadLifecycleEvent(harness.deps, {
-+        event: { type: "run.succeeded" },
++      moveThreadStatus(harness.deps, {
++        move: "run.succeeded",
 +        threadId: thread.id,
 +      });
 +      for (const row of queued)
@@ -7850,14 +7849,15 @@ index 0000000000000000000000000000000000000000..57b92917de6397500bf6187336a1a5d6
 +});
 diff --git a/apps/server/test/services/p6r/mention-target-service-paths.test.ts b/apps/server/test/services/p6r/mention-target-service-paths.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..1f218183d8c9060014a950bd389a554a9775382a
+index 0000000000000000000000000000000000000000..a70aa9aec6496c5cf3196ed0bc0802319ec4c3d2
 --- /dev/null
 +++ b/apps/server/test/services/p6r/mention-target-service-paths.test.ts
-@@ -0,0 +1,298 @@
+@@ -0,0 +1,299 @@
 +import { mkdir, writeFile } from "node:fs/promises";
 +import { join } from "node:path";
 +import { afterEach, expect, it, vi } from "vitest";
-+import { listCoreParticipantProfilePage, listEvents } from "@bb/db";
++import { listCoreParticipantProfilePage } from "@bb/db";
++import { listEvents } from "@bb/db/testing";
 +import { turnRequestEventDataSchema, type PromptInput } from "@bb/domain";
 +import { eq } from "drizzle-orm";
 +import { createAiServiceRegistry } from "../../../src/services/ai/ai-service-registry.js";
@@ -8353,7 +8353,7 @@ index 0000000000000000000000000000000000000000..314c4c95d8e14fcfa89d1138601d84ad
 +});
 diff --git a/apps/server/test/services/p6r/native-acceptance.test.ts b/apps/server/test/services/p6r/native-acceptance.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..3d51ea8ddbd294ee68a04751417af0b84490ad82
+index 0000000000000000000000000000000000000000..77d189053d94b2b4846c82e47d298738d60430b3
 --- /dev/null
 +++ b/apps/server/test/services/p6r/native-acceptance.test.ts
 @@ -0,0 +1,993 @@
@@ -8363,17 +8363,17 @@ index 0000000000000000000000000000000000000000..3d51ea8ddbd294ee68a04751417af0b8
 +  setQueuedThreadMessageGroupBoundary,
 +  createProject,
 +  createThread,
-+  listEvents,
 +  listQueuedThreadMessages,
 +  noopNotifier,
 +  setThreadExecutionOverride,
 +  setThreadStartupContext,
 +  upsertHost,
 +} from "@bb/db";
++import { listEvents } from "@bb/db/testing";
 +import { describe, expect, it } from "vitest";
 +import { createP6rNativeAcceptance } from "../../../src/services/p6r/native-acceptance.js";
 +import { setPluginHookProvider } from "../../../src/services/plugins/plugin-hook-registry.js";
-+import { applyLoggedThreadLifecycleEvent } from "../../../src/services/threads/lifecycle-outcome.js";
++import { moveThreadStatus } from "../../helpers/thread-status.js";
 +import { clearQueuedMessageWait } from "../../../src/services/threads/queue-waits.js";
 +import {
 +  createQueuedMessageForThread,
@@ -8719,8 +8719,8 @@ index 0000000000000000000000000000000000000000..3d51ea8ddbd294ee68a04751417af0b8
 +      });
 +      expect(listQueuedThreadMessages(harness.db, thread.id)).toHaveLength(1);
 +
-+      applyLoggedThreadLifecycleEvent(harness.deps, {
-+        event: { type: "run.succeeded" },
++      moveThreadStatus(harness.deps, {
++        move: "run.succeeded",
 +        threadId: thread.id,
 +      });
 +      clearQueuedMessageWait(harness.deps, {
@@ -8952,8 +8952,8 @@ index 0000000000000000000000000000000000000000..3d51ea8ddbd294ee68a04751417af0b8
 +        ],
 +        groupBoundaryQueuedMessageId: p6rQueued[1]!.id,
 +      });
-+      applyLoggedThreadLifecycleEvent(harness.deps, {
-+        event: { type: "run.succeeded" },
++      moveThreadStatus(harness.deps, {
++        move: "run.succeeded",
 +        threadId: thread.id,
 +      });
 +      for (const queuedMessage of [ordinary, ...p6rQueued]) {
@@ -9073,9 +9073,9 @@ index 0000000000000000000000000000000000000000..3d51ea8ddbd294ee68a04751417af0b8
 +        invokeHook: async (_pluginId, _label, run) => ({ ok: true, value: await run() }),
 +        listHooks: () => [{
 +          handler: () => {
-+            applyLoggedThreadLifecycleEvent(harness.deps, {
++            moveThreadStatus(harness.deps, {
 +              threadId: thread.id,
-+              event: { type: "run.preparing" },
++              move: "run.preparing",
 +            });
 +            return { action: "proceed" };
 +          },
@@ -9352,22 +9352,22 @@ index 0000000000000000000000000000000000000000..3d51ea8ddbd294ee68a04751417af0b8
 +});
 diff --git a/apps/server/test/services/p6r/native-message-authorship.test.ts b/apps/server/test/services/p6r/native-message-authorship.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..15754e900dc12ef74ce08e7811237f8f59b839e2
+index 0000000000000000000000000000000000000000..575c89812ef47a92994b6ca2061b631b848e8fc4
 --- /dev/null
 +++ b/apps/server/test/services/p6r/native-message-authorship.test.ts
 @@ -0,0 +1,1343 @@
 +import { withP6rNativeAuthorContext } from "../../../src/services/p6r/native-authorship.js";
-+import { applyLoggedThreadLifecycleEvent } from "../../../src/services/threads/lifecycle-outcome.js";
++import { moveThreadStatus } from "../../helpers/thread-status.js";
 +import { Hono } from "hono";
 +import { expect, it, vi } from "vitest";
 +import {
 +  createConnection,
 +  getLatestThreadSequence,
-+  listEvents,
 +  listQueuedThreadMessages,
 +  listCoreParticipantProfilePage,
 +  setQueuedThreadMessageGroupBoundary,
 +} from "@bb/db";
++import { listEvents } from "@bb/db/testing";
 +import { hostDaemonCommandSchema } from "@bb/host-daemon-contract";
 +import {
 +  createStandaloneBuiltinCompactCommandInput,
@@ -9777,9 +9777,9 @@ index 0000000000000000000000000000000000000000..15754e900dc12ef74ce08e7811237f8f
 +    const request = f.requestAfter(thread.id, before);
 +    expect(request.p6rAuthors?.map(personSubject)).toEqual(["alice", "bob"]);
 +    expect(request.inputGroups).toEqual([input, input]);
-+    applyLoggedThreadLifecycleEvent(f.harness.deps, {
++    moveThreadStatus(f.harness.deps, {
 +      threadId: thread.id,
-+      event: { type: "run.succeeded" },
++      move: "run.succeeded",
 +    });
 +    const retryBefore = getLatestThreadSequence(f.harness.db, {
 +      threadId: thread.id,
@@ -10464,9 +10464,9 @@ index 0000000000000000000000000000000000000000..15754e900dc12ef74ce08e7811237f8f
 +  f: Awaited<ReturnType<typeof fixture>>,
 +  threadId: string,
 +): Promise<void> {
-+  applyLoggedThreadLifecycleEvent(f.harness.deps, {
++  moveThreadStatus(f.harness.deps, {
 +    threadId,
-+    event: { type: "run.succeeded" },
++    move: "run.succeeded",
 +  });
 +  await runQueuedMessageDispatch(f.harness.deps, {
 +    kind: "thread-ready",
@@ -11547,7 +11547,7 @@ index 0000000000000000000000000000000000000000..972f86fc9c64efeb37f75b5159d69133
 +});
 diff --git a/apps/server/test/services/threads/test-fault-barriers.test.ts b/apps/server/test/services/threads/test-fault-barriers.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..d418e4c5286f22c8923a114eca5d11e5ab871282
+index 0000000000000000000000000000000000000000..7423c5876f32443f0ceafbbd7b3fe8752c2d5650
 --- /dev/null
 +++ b/apps/server/test/services/threads/test-fault-barriers.test.ts
 @@ -0,0 +1,409 @@
@@ -11557,10 +11557,10 @@ index 0000000000000000000000000000000000000000..d418e4c5286f22c8923a114eca5d11e5
 +import { join } from "node:path";
 +import {
 +  getQueuedThreadMessage,
-+  listEvents,
 +  listQueuedThreadMessages,
 +  type DbConnection,
 +} from "@bb/db";
++import { listEvents } from "@bb/db/testing";
 +import { turnScope } from "@bb/domain";
 +import { afterEach, describe, expect, it, vi } from "vitest";
 +import { queueChildThreadTurnNotificationBestEffort } from "../../../src/services/threads/child-thread-notifications.js";
@@ -12377,5 +12377,5 @@ index bfe3e061c6da31e8ae275dc18a81aa6c978125f9..220cf5b2d3daa344bffbc12184fa6be0
      const { db, hostId, hub } = setup();
      const empty = createThreadWithEnvironment({ db, hostId, status: "idle" });
 -- 
-2.50.1 (Apple Git-155)
+2.43.0
 

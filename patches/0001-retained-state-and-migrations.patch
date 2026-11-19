@@ -1,4 +1,4 @@
-From f517265255809792fd68ac47fcc04dd067bd2c5c Mon Sep 17 00:00:00 2001
+From e7c0e086fe522de52458114d955838cf3973bd6d Mon Sep 17 00:00:00 2001
 From: Cole Lawrence <cole@colelawrence.com>
 Date: Fri, 13 Nov 2026 20:23:59 -0300
 Subject: [PATCH] Retained state and migrations
@@ -17,15 +17,16 @@ Subject: [PATCH] Retained state and migrations
  .../src/services/p6r/sidecar-migrate.ts       |   14 +
  .../server/src/services/p6r/sidecar-schema.ts |  126 +
  apps/server/src/services/p6r/sidecar-store.ts |  696 ++
+ ...d-cache-equivalence-thread-columns.test.ts |    1 +
  .../p6r/sidecar-built-artifact.test.ts        |   93 +
  .../p6r/sidecar-startup-migration.test.ts     |   20 +
  .../test/services/p6r/sidecar-store.test.ts   |  296 +
  .../drizzle/0145_identity_context_bridge.sql  |  186 +
  ...0146_environment_secret_classification.sql |    1 +
- packages/db/drizzle/meta/0158_snapshot.json   | 6118 +++++++++++++++++
+ packages/db/drizzle/meta/0161_snapshot.json   | 6299 +++++++++++++++++
  packages/db/drizzle/meta/_journal.json        |   16 +-
  packages/db/src/data/events.ts                |   47 +
- packages/db/src/data/index.ts                 |   38 +
+ packages/db/src/data/index.ts                 |    1 +
  .../db/src/data/project-execution-defaults.ts |    6 +-
  .../db/src/data/queued-thread-messages.ts     |   44 +
  packages/db/src/data/thread-facets.ts         |  469 ++
@@ -41,12 +42,12 @@ Subject: [PATCH] Retained state and migrations
  .../0121_sticky_king_bedlam.sql               |    4 +
  .../0122_living_quasimodo.sql                 |   49 +
  packages/db/test/helpers/rewind.ts            |    8 +
- packages/db/test/migrate.test.ts              | 1021 ++-
+ packages/db/test/migrate.test.ts              | 1255 +++-
  .../pane-focus-bindings-migration.test.ts     |    2 +
  .../queued-message-state-migration.test.ts    |    2 +
  .../sidebar-installation-defaults.test.ts     |    2 +
  .../db/test/thread-drafts-migration.test.ts   |    2 +
- 42 files changed, 12806 insertions(+), 17 deletions(-)
+ 43 files changed, 13069 insertions(+), 133 deletions(-)
  create mode 100644 apps/server/src/services/p6r/drizzle/0000_lying_energizer.sql
  create mode 100644 apps/server/src/services/p6r/drizzle/0001_aromatic_leopardon.sql
  create mode 100644 apps/server/src/services/p6r/drizzle/0002_pending_queued_dispatch.sql
@@ -65,7 +66,7 @@ Subject: [PATCH] Retained state and migrations
  create mode 100644 apps/server/test/services/p6r/sidecar-store.test.ts
  create mode 100644 packages/db/drizzle/0145_identity_context_bridge.sql
  create mode 100644 packages/db/drizzle/0146_environment_secret_classification.sql
- create mode 100644 packages/db/drizzle/meta/0158_snapshot.json
+ create mode 100644 packages/db/drizzle/meta/0161_snapshot.json
  create mode 100644 packages/db/src/data/thread-facets.ts
  create mode 100644 packages/db/test/environment-classification-migration.test.ts
  create mode 100644 packages/db/test/fixtures/legacy-identity-context-magnet/0119_soft_pandemic.sql
@@ -2716,6 +2717,18 @@ index 0000000000000000000000000000000000000000..6bb4d4d3fccd00ce59cfeefff5613a3d
 +    .get();
 +  return row === undefined ? null : receiptFromRow(row, operationNamespace, operationId);
 +}
+diff --git a/apps/server/test/public/thread-derived-cache-equivalence-thread-columns.test.ts b/apps/server/test/public/thread-derived-cache-equivalence-thread-columns.test.ts
+index d3976f4eca99a6b6d88f674674b1870a535159ac..40bd36c59723de57ffda640dbe899f743c379ae0 100644
+--- a/apps/server/test/public/thread-derived-cache-equivalence-thread-columns.test.ts
++++ b/apps/server/test/public/thread-derived-cache-equivalence-thread-columns.test.ts
+@@ -73,6 +73,7 @@ const THREAD_COLUMN_CHANGES: {
+   latestAttentionAt: () => ({ latestAttentionAt: LATER }),
+   createdAt: () => ({ createdAt: LATER }),
+   updatedAt: () => ({ updatedAt: LATER }),
++  executionRevision: () => ({ executionRevision: 7 }),
+ };
+ 
+ const COLUMN_ROWS = Object.keys(THREAD_COLUMN_CHANGES).map((column) => ({
 diff --git a/apps/server/test/services/p6r/sidecar-built-artifact.test.ts b/apps/server/test/services/p6r/sidecar-built-artifact.test.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..8b808bd4721cb35ce465e1d4fe97377cc265d934
@@ -3343,17 +3356,17 @@ index 0000000000000000000000000000000000000000..77c71ee83811faf9421197b9cbe673ee
 @@ -0,0 +1 @@
 +ALTER TABLE `environment_variables` ADD `secret` integer NOT NULL;
 \ No newline at end of file
-diff --git a/packages/db/drizzle/meta/0158_snapshot.json b/packages/db/drizzle/meta/0158_snapshot.json
+diff --git a/packages/db/drizzle/meta/0161_snapshot.json b/packages/db/drizzle/meta/0161_snapshot.json
 new file mode 100644
-index 0000000000000000000000000000000000000000..25db56172d26c8bcf08471a93e98ccd0f86d74e9
+index 0000000000000000000000000000000000000000..5b3a360f344609fbaa89d654598589de48a41ae0
 --- /dev/null
-+++ b/packages/db/drizzle/meta/0158_snapshot.json
-@@ -0,0 +1,6118 @@
++++ b/packages/db/drizzle/meta/0161_snapshot.json
+@@ -0,0 +1,6299 @@
 +{
 +  "version": "6",
 +  "dialect": "sqlite",
 +  "id": "cb213a37-af91-47a6-b88d-8963569b66c3",
-+  "prevId": "5dbdf9dc-b8ed-4174-8b53-552ff92f814d",
++  "prevId": "fade12d9-3aac-41d7-a13b-bfd0d56a40fc",
 +  "tables": {
 +    "app_settings": {
 +      "name": "app_settings",
@@ -4805,13 +4818,6 @@ index 0000000000000000000000000000000000000000..25db56172d26c8bcf08471a93e98ccd0
 +          "notNull": false,
 +          "autoincrement": false
 +        },
-+        "suspend_retry_at": {
-+          "name": "suspend_retry_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
 +        "remove_retry_at": {
 +          "name": "remove_retry_at",
 +          "type": "integer",
@@ -4829,6 +4835,13 @@ index 0000000000000000000000000000000000000000..25db56172d26c8bcf08471a93e98ccd0
 +        },
 +        "teardown_status": {
 +          "name": "teardown_status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "teardown_blocked_by_environment_id": {
++          "name": "teardown_blocked_by_environment_id",
 +          "type": "text",
 +          "primaryKey": false,
 +          "notNull": false,
@@ -7738,6 +7751,1203 @@ index 0000000000000000000000000000000000000000..25db56172d26c8bcf08471a93e98ccd0
 +      "uniqueConstraints": {},
 +      "checkConstraints": {}
 +    },
++    "thread_plugin_metadata": {
++      "name": "thread_plugin_metadata",
++      "columns": {
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "plugin_id": {
++          "name": "plugin_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "metadata_json": {
++          "name": "metadata_json",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "thread_plugin_metadata_thread_id_threads_id_fk": {
++          "name": "thread_plugin_metadata_thread_id_threads_id_fk",
++          "tableFrom": "thread_plugin_metadata",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "thread_plugin_metadata_thread_id_plugin_id_pk": {
++          "columns": [
++            "thread_id",
++            "plugin_id"
++          ],
++          "name": "thread_plugin_metadata_thread_id_plugin_id_pk"
++        }
++      },
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "thread_pruning_cursors": {
++      "name": "thread_pruning_cursors",
++      "columns": {
++        "policy": {
++          "name": "policy",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "scope": {
++          "name": "scope",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "''"
++        },
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "version": {
++          "name": "version",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "last_thread_id": {
++          "name": "last_thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "''"
++        },
++        "current_thread_id": {
++          "name": "current_thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "step": {
++          "name": "step",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 0
++        },
++        "sequence": {
++          "name": "sequence",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 0
++        },
++        "upper_sequence": {
++          "name": "upper_sequence",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 0
++        },
++        "work_revision": {
++          "name": "work_revision",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 0
++        },
++        "cycle": {
++          "name": "cycle",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 0
++        },
++        "latest_root_sequence": {
++          "name": "latest_root_sequence",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 0
++        },
++        "latest_context_sequence": {
++          "name": "latest_context_sequence",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 0
++        },
++        "probe_event_id": {
++          "name": "probe_event_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "probe_phase": {
++          "name": "probe_phase",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 0
++        },
++        "probe_sequence": {
++          "name": "probe_sequence",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 0
++        },
++        "probe_witness_id": {
++          "name": "probe_witness_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "thread_pruning_cursors_thread_idx": {
++          "name": "thread_pruning_cursors_thread_idx",
++          "columns": [
++            "thread_id"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {
++        "thread_pruning_cursors_thread_id_threads_id_fk": {
++          "name": "thread_pruning_cursors_thread_id_threads_id_fk",
++          "tableFrom": "thread_pruning_cursors",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "thread_pruning_cursors_policy_scope_pk": {
++          "columns": [
++            "policy",
++            "scope"
++          ],
++          "name": "thread_pruning_cursors_policy_scope_pk"
++        }
++      },
++      "uniqueConstraints": {},
++      "checkConstraints": {
++        "thread_pruning_cursors_scope_check": {
++          "name": "thread_pruning_cursors_scope_check",
++          "value": "\"thread_pruning_cursors\".\"scope\" = coalesce(\"thread_pruning_cursors\".\"thread_id\", '')"
++        }
++      }
++    },
++    "thread_pruning_work": {
++      "name": "thread_pruning_work",
++      "columns": {
++        "policy": {
++          "name": "policy",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "revision": {
++          "name": "revision",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 1
++        }
++      },
++      "indexes": {
++        "thread_pruning_work_thread_idx": {
++          "name": "thread_pruning_work_thread_idx",
++          "columns": [
++            "thread_id"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {
++        "thread_pruning_work_thread_id_threads_id_fk": {
++          "name": "thread_pruning_work_thread_id_threads_id_fk",
++          "tableFrom": "thread_pruning_work",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {
++        "thread_pruning_work_policy_thread_id_pk": {
++          "columns": [
++            "policy",
++            "thread_id"
++          ],
++          "name": "thread_pruning_work_policy_thread_id_pk"
++        }
++      },
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "thread_purges": {
++      "name": "thread_purges",
++      "columns": {
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "requested_at": {
++          "name": "requested_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "thread_purges_requested_idx": {
++          "name": "thread_purges_requested_idx",
++          "columns": [
++            "requested_at"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {
++        "thread_purges_thread_id_threads_id_fk": {
++          "name": "thread_purges_thread_id_threads_id_fk",
++          "tableFrom": "thread_purges",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "thread_run_states": {
++      "name": "thread_run_states",
++      "columns": {
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "held_turn_id": {
++          "name": "held_turn_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "held_turn_status": {
++          "name": "held_turn_status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "stop_reason": {
++          "name": "stop_reason",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "stop_requested_at": {
++          "name": "stop_requested_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "stop_sent_at": {
++          "name": "stop_sent_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "stop_acked_at": {
++          "name": "stop_acked_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "thread_run_states_stop_idx": {
++          "name": "thread_run_states_stop_idx",
++          "columns": [
++            "stop_requested_at"
++          ],
++          "isUnique": false,
++          "where": "\"thread_run_states\".\"stop_requested_at\" IS NOT NULL"
++        }
++      },
++      "foreignKeys": {
++        "thread_run_states_thread_id_threads_id_fk": {
++          "name": "thread_run_states_thread_id_threads_id_fk",
++          "tableFrom": "thread_run_states",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {
++        "thread_run_states_held_check": {
++          "name": "thread_run_states_held_check",
++          "value": "(\"thread_run_states\".\"held_turn_id\" IS NULL) = (\"thread_run_states\".\"held_turn_status\" IS NULL)"
++        },
++        "thread_run_states_stop_check": {
++          "name": "thread_run_states_stop_check",
++          "value": "(\"thread_run_states\".\"stop_reason\" IS NULL) = (\"thread_run_states\".\"stop_requested_at\" IS NULL) AND (\"thread_run_states\".\"stop_sent_at\" IS NULL OR \"thread_run_states\".\"stop_requested_at\" IS NOT NULL) AND (\"thread_run_states\".\"stop_acked_at\" IS NULL OR \"thread_run_states\".\"stop_requested_at\" IS NOT NULL)"
++        }
++      }
++    },
++    "thread_search_segments": {
++      "name": "thread_search_segments",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "source_kind": {
++          "name": "source_kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "source_key": {
++          "name": "source_key",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "source_seq": {
++          "name": "source_seq",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "text": {
++          "name": "text",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "thread_search_segments_source_idx": {
++          "name": "thread_search_segments_source_idx",
++          "columns": [
++            "thread_id",
++            "source_kind",
++            "source_key"
++          ],
++          "isUnique": true
++        },
++        "thread_search_segments_thread_source_seq_idx": {
++          "name": "thread_search_segments_thread_source_seq_idx",
++          "columns": [
++            "thread_id",
++            "source_seq"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {
++        "thread_search_segments_thread_id_threads_id_fk": {
++          "name": "thread_search_segments_thread_id_threads_id_fk",
++          "tableFrom": "thread_search_segments",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "thread_sections": {
++      "name": "thread_sections",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "thread_sections_name_idx": {
++          "name": "thread_sections_name_idx",
++          "columns": [
++            "name"
++          ],
++          "isUnique": true
++        }
++      },
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "thread_tabs": {
++      "name": "thread_tabs",
++      "columns": {
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "tabs_json": {
++          "name": "tabs_json",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "revision": {
++          "name": "revision",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "thread_tabs_thread_id_threads_id_fk": {
++          "name": "thread_tabs_thread_id_threads_id_fk",
++          "tableFrom": "thread_tabs",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "thread_turn_requests": {
++      "name": "thread_turn_requests",
++      "columns": {
++        "request_id": {
++          "name": "request_id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "thread_id": {
++          "name": "thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "kind": {
++          "name": "kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "phase": {
++          "name": "phase",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "host_id": {
++          "name": "host_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "sync_title": {
++          "name": "sync_title",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": false
++        },
++        "sent_at": {
++          "name": "sent_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "thread_turn_requests_thread_idx": {
++          "name": "thread_turn_requests_thread_idx",
++          "columns": [
++            "thread_id",
++            "sent_at"
++          ],
++          "isUnique": false
++        }
++      },
++      "foreignKeys": {
++        "thread_turn_requests_thread_id_threads_id_fk": {
++          "name": "thread_turn_requests_thread_id_threads_id_fk",
++          "tableFrom": "thread_turn_requests",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "threads": {
++      "name": "threads",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "project_id": {
++          "name": "project_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "environment_id": {
++          "name": "environment_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "provider_id": {
++          "name": "provider_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "model_override": {
++          "name": "model_override",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "reasoning_level_override": {
++          "name": "reasoning_level_override",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "execution_revision": {
++          "name": "execution_revision",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 0
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "title_fallback": {
++          "name": "title_fallback",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "section_id": {
++          "name": "section_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'starting'"
++        },
++        "status_changed_at": {
++          "name": "status_changed_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": 0
++        },
++        "startup_context": {
++          "name": "startup_context",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "parent_thread_id": {
++          "name": "parent_thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "lifecycle_owner_thread_id": {
++          "name": "lifecycle_owner_thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "source_thread_id": {
++          "name": "source_thread_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "origin_kind": {
++          "name": "origin_kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "origin_plugin_id": {
++          "name": "origin_plugin_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "visibility": {
++          "name": "visibility",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'visible'"
++        },
++        "parent_notifications": {
++          "name": "parent_notifications",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false,
++          "default": "'auto'"
++        },
++        "archived_at": {
++          "name": "archived_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "pinned_at": {
++          "name": "pinned_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "pin_sort_key": {
++          "name": "pin_sort_key",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "deleted_at": {
++          "name": "deleted_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "storage_deleted_at": {
++          "name": "storage_deleted_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "last_read_at": {
++          "name": "last_read_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false,
++          "autoincrement": false
++        },
++        "latest_attention_at": {
++          "name": "latest_attention_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {
++        "threads_project_id_idx": {
++          "name": "threads_project_id_idx",
++          "columns": [
++            "project_id",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "threads_project_updated_idx": {
++          "name": "threads_project_updated_idx",
++          "columns": [
++            "project_id",
++            "updated_at"
++          ],
++          "isUnique": false
++        },
++        "threads_project_archived_deleted_idx": {
++          "name": "threads_project_archived_deleted_idx",
++          "columns": [
++            "project_id",
++            "archived_at",
++            "deleted_at",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "threads_pin_sort_idx": {
++          "name": "threads_pin_sort_idx",
++          "columns": [
++            "archived_at",
++            "deleted_at",
++            "pin_sort_key",
++            "id"
++          ],
++          "isUnique": false,
++          "where": "\"threads\".\"pinned_at\" IS NOT NULL"
++        },
++        "threads_environment_idx": {
++          "name": "threads_environment_idx",
++          "columns": [
++            "environment_id"
++          ],
++          "isUnique": false
++        },
++        "threads_lifecycle_owner_idx": {
++          "name": "threads_lifecycle_owner_idx",
++          "columns": [
++            "lifecycle_owner_thread_id"
++          ],
++          "isUnique": false
++        },
++        "threads_parent_idx": {
++          "name": "threads_parent_idx",
++          "columns": [
++            "parent_thread_id"
++          ],
++          "isUnique": false
++        },
++        "threads_source_origin_idx": {
++          "name": "threads_source_origin_idx",
++          "columns": [
++            "source_thread_id",
++            "origin_kind"
++          ],
++          "isUnique": false
++        },
++        "threads_origin_plugin_archived_idx": {
++          "name": "threads_origin_plugin_archived_idx",
++          "columns": [
++            "origin_plugin_id",
++            "archived_at"
++          ],
++          "isUnique": false
++        },
++        "threads_section_archived_deleted_idx": {
++          "name": "threads_section_archived_deleted_idx",
++          "columns": [
++            "section_id",
++            "archived_at",
++            "deleted_at",
++            "id"
++          ],
++          "isUnique": false
++        },
++        "threads_archived_status_idx": {
++          "name": "threads_archived_status_idx",
++          "columns": [
++            "archived_at",
++            "status"
++          ],
++          "isUnique": false
++        },
++        "threads_deleted_cleanup_idx": {
++          "name": "threads_deleted_cleanup_idx",
++          "columns": [
++            "deleted_at"
++          ],
++          "isUnique": false,
++          "where": "\"threads\".\"deleted_at\" IS NOT NULL"
++        },
++        "threads_environment_archived_deleted_idx": {
++          "name": "threads_environment_archived_deleted_idx",
++          "columns": [
++            "environment_id",
++            "archived_at",
++            "deleted_at"
++          ],
++          "isUnique": false
++        },
++        "threads_active_maintenance_idx": {
++          "name": "threads_active_maintenance_idx",
++          "columns": [
++            "status"
++          ],
++          "isUnique": false,
++          "where": "\"threads\".\"deleted_at\" IS NULL"
++        }
++      },
++      "foreignKeys": {
++        "threads_project_id_projects_id_fk": {
++          "name": "threads_project_id_projects_id_fk",
++          "tableFrom": "threads",
++          "tableTo": "projects",
++          "columnsFrom": [
++            "project_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        },
++        "threads_environment_id_environments_id_fk": {
++          "name": "threads_environment_id_environments_id_fk",
++          "tableFrom": "threads",
++          "tableTo": "environments",
++          "columnsFrom": [
++            "environment_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "set null",
++          "onUpdate": "no action"
++        },
++        "threads_section_id_thread_sections_id_fk": {
++          "name": "threads_section_id_thread_sections_id_fk",
++          "tableFrom": "threads",
++          "tableTo": "thread_sections",
++          "columnsFrom": [
++            "section_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "set null",
++          "onUpdate": "no action"
++        },
++        "threads_parent_thread_id_threads_id_fk": {
++          "name": "threads_parent_thread_id_threads_id_fk",
++          "tableFrom": "threads",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "parent_thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "set null",
++          "onUpdate": "no action"
++        },
++        "threads_lifecycle_owner_thread_id_threads_id_fk": {
++          "name": "threads_lifecycle_owner_thread_id_threads_id_fk",
++          "tableFrom": "threads",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "lifecycle_owner_thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "restrict",
++          "onUpdate": "no action"
++        },
++        "threads_source_thread_id_threads_id_fk": {
++          "name": "threads_source_thread_id_threads_id_fk",
++          "tableFrom": "threads",
++          "tableTo": "threads",
++          "columnsFrom": [
++            "source_thread_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "set null",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "ui_preference_defaults": {
++      "name": "ui_preference_defaults",
++      "columns": {
++        "key": {
++          "name": "key",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "value_json": {
++          "name": "value_json",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
++    "ui_preferences": {
++      "name": "ui_preferences",
++      "columns": {
++        "key": {
++          "name": "key",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "value_json": {
++          "name": "value_json",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "revision": {
++          "name": "revision",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "autoincrement": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "checkConstraints": {}
++    },
 +    "thread_facet_cursor_keys": {
 +      "name": "thread_facet_cursor_keys",
 +      "columns": {
@@ -8438,1022 +9648,6 @@ index 0000000000000000000000000000000000000000..25db56172d26c8bcf08471a93e98ccd0
 +      },
 +      "uniqueConstraints": {},
 +      "checkConstraints": {}
-+    },
-+    "thread_plugin_metadata": {
-+      "name": "thread_plugin_metadata",
-+      "columns": {
-+        "thread_id": {
-+          "name": "thread_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "plugin_id": {
-+          "name": "plugin_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "metadata_json": {
-+          "name": "metadata_json",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        }
-+      },
-+      "indexes": {},
-+      "foreignKeys": {
-+        "thread_plugin_metadata_thread_id_threads_id_fk": {
-+          "name": "thread_plugin_metadata_thread_id_threads_id_fk",
-+          "tableFrom": "thread_plugin_metadata",
-+          "tableTo": "threads",
-+          "columnsFrom": [
-+            "thread_id"
-+          ],
-+          "columnsTo": [
-+            "id"
-+          ],
-+          "onDelete": "cascade",
-+          "onUpdate": "no action"
-+        }
-+      },
-+      "compositePrimaryKeys": {
-+        "thread_plugin_metadata_thread_id_plugin_id_pk": {
-+          "columns": [
-+            "thread_id",
-+            "plugin_id"
-+          ],
-+          "name": "thread_plugin_metadata_thread_id_plugin_id_pk"
-+        }
-+      },
-+      "uniqueConstraints": {},
-+      "checkConstraints": {}
-+    },
-+    "thread_pruning_cursors": {
-+      "name": "thread_pruning_cursors",
-+      "columns": {
-+        "policy": {
-+          "name": "policy",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "scope": {
-+          "name": "scope",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": "''"
-+        },
-+        "thread_id": {
-+          "name": "thread_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "version": {
-+          "name": "version",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "last_thread_id": {
-+          "name": "last_thread_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": "''"
-+        },
-+        "current_thread_id": {
-+          "name": "current_thread_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "step": {
-+          "name": "step",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": 0
-+        },
-+        "sequence": {
-+          "name": "sequence",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": 0
-+        },
-+        "upper_sequence": {
-+          "name": "upper_sequence",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": 0
-+        },
-+        "work_revision": {
-+          "name": "work_revision",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": 0
-+        },
-+        "cycle": {
-+          "name": "cycle",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": 0
-+        },
-+        "latest_root_sequence": {
-+          "name": "latest_root_sequence",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": 0
-+        },
-+        "latest_context_sequence": {
-+          "name": "latest_context_sequence",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": 0
-+        },
-+        "probe_event_id": {
-+          "name": "probe_event_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "probe_phase": {
-+          "name": "probe_phase",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": 0
-+        },
-+        "probe_sequence": {
-+          "name": "probe_sequence",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": 0
-+        },
-+        "probe_witness_id": {
-+          "name": "probe_witness_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "updated_at": {
-+          "name": "updated_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        }
-+      },
-+      "indexes": {
-+        "thread_pruning_cursors_thread_idx": {
-+          "name": "thread_pruning_cursors_thread_idx",
-+          "columns": [
-+            "thread_id"
-+          ],
-+          "isUnique": false
-+        }
-+      },
-+      "foreignKeys": {
-+        "thread_pruning_cursors_thread_id_threads_id_fk": {
-+          "name": "thread_pruning_cursors_thread_id_threads_id_fk",
-+          "tableFrom": "thread_pruning_cursors",
-+          "tableTo": "threads",
-+          "columnsFrom": [
-+            "thread_id"
-+          ],
-+          "columnsTo": [
-+            "id"
-+          ],
-+          "onDelete": "cascade",
-+          "onUpdate": "no action"
-+        }
-+      },
-+      "compositePrimaryKeys": {
-+        "thread_pruning_cursors_policy_scope_pk": {
-+          "columns": [
-+            "policy",
-+            "scope"
-+          ],
-+          "name": "thread_pruning_cursors_policy_scope_pk"
-+        }
-+      },
-+      "uniqueConstraints": {},
-+      "checkConstraints": {
-+        "thread_pruning_cursors_scope_check": {
-+          "name": "thread_pruning_cursors_scope_check",
-+          "value": "\"thread_pruning_cursors\".\"scope\" = coalesce(\"thread_pruning_cursors\".\"thread_id\", '')"
-+        }
-+      }
-+    },
-+    "thread_pruning_work": {
-+      "name": "thread_pruning_work",
-+      "columns": {
-+        "policy": {
-+          "name": "policy",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "thread_id": {
-+          "name": "thread_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "revision": {
-+          "name": "revision",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": 1
-+        }
-+      },
-+      "indexes": {
-+        "thread_pruning_work_thread_idx": {
-+          "name": "thread_pruning_work_thread_idx",
-+          "columns": [
-+            "thread_id"
-+          ],
-+          "isUnique": false
-+        }
-+      },
-+      "foreignKeys": {
-+        "thread_pruning_work_thread_id_threads_id_fk": {
-+          "name": "thread_pruning_work_thread_id_threads_id_fk",
-+          "tableFrom": "thread_pruning_work",
-+          "tableTo": "threads",
-+          "columnsFrom": [
-+            "thread_id"
-+          ],
-+          "columnsTo": [
-+            "id"
-+          ],
-+          "onDelete": "cascade",
-+          "onUpdate": "no action"
-+        }
-+      },
-+      "compositePrimaryKeys": {
-+        "thread_pruning_work_policy_thread_id_pk": {
-+          "columns": [
-+            "policy",
-+            "thread_id"
-+          ],
-+          "name": "thread_pruning_work_policy_thread_id_pk"
-+        }
-+      },
-+      "uniqueConstraints": {},
-+      "checkConstraints": {}
-+    },
-+    "thread_purges": {
-+      "name": "thread_purges",
-+      "columns": {
-+        "thread_id": {
-+          "name": "thread_id",
-+          "type": "text",
-+          "primaryKey": true,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "requested_at": {
-+          "name": "requested_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        }
-+      },
-+      "indexes": {
-+        "thread_purges_requested_idx": {
-+          "name": "thread_purges_requested_idx",
-+          "columns": [
-+            "requested_at"
-+          ],
-+          "isUnique": false
-+        }
-+      },
-+      "foreignKeys": {
-+        "thread_purges_thread_id_threads_id_fk": {
-+          "name": "thread_purges_thread_id_threads_id_fk",
-+          "tableFrom": "thread_purges",
-+          "tableTo": "threads",
-+          "columnsFrom": [
-+            "thread_id"
-+          ],
-+          "columnsTo": [
-+            "id"
-+          ],
-+          "onDelete": "cascade",
-+          "onUpdate": "no action"
-+        }
-+      },
-+      "compositePrimaryKeys": {},
-+      "uniqueConstraints": {},
-+      "checkConstraints": {}
-+    },
-+    "thread_search_segments": {
-+      "name": "thread_search_segments",
-+      "columns": {
-+        "id": {
-+          "name": "id",
-+          "type": "text",
-+          "primaryKey": true,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "thread_id": {
-+          "name": "thread_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "source_kind": {
-+          "name": "source_kind",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "source_key": {
-+          "name": "source_key",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "source_seq": {
-+          "name": "source_seq",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "text": {
-+          "name": "text",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "created_at": {
-+          "name": "created_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "updated_at": {
-+          "name": "updated_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        }
-+      },
-+      "indexes": {
-+        "thread_search_segments_source_idx": {
-+          "name": "thread_search_segments_source_idx",
-+          "columns": [
-+            "thread_id",
-+            "source_kind",
-+            "source_key"
-+          ],
-+          "isUnique": true
-+        },
-+        "thread_search_segments_thread_source_seq_idx": {
-+          "name": "thread_search_segments_thread_source_seq_idx",
-+          "columns": [
-+            "thread_id",
-+            "source_seq"
-+          ],
-+          "isUnique": false
-+        }
-+      },
-+      "foreignKeys": {
-+        "thread_search_segments_thread_id_threads_id_fk": {
-+          "name": "thread_search_segments_thread_id_threads_id_fk",
-+          "tableFrom": "thread_search_segments",
-+          "tableTo": "threads",
-+          "columnsFrom": [
-+            "thread_id"
-+          ],
-+          "columnsTo": [
-+            "id"
-+          ],
-+          "onDelete": "cascade",
-+          "onUpdate": "no action"
-+        }
-+      },
-+      "compositePrimaryKeys": {},
-+      "uniqueConstraints": {},
-+      "checkConstraints": {}
-+    },
-+    "thread_sections": {
-+      "name": "thread_sections",
-+      "columns": {
-+        "id": {
-+          "name": "id",
-+          "type": "text",
-+          "primaryKey": true,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "name": {
-+          "name": "name",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "created_at": {
-+          "name": "created_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "updated_at": {
-+          "name": "updated_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        }
-+      },
-+      "indexes": {
-+        "thread_sections_name_idx": {
-+          "name": "thread_sections_name_idx",
-+          "columns": [
-+            "name"
-+          ],
-+          "isUnique": true
-+        }
-+      },
-+      "foreignKeys": {},
-+      "compositePrimaryKeys": {},
-+      "uniqueConstraints": {},
-+      "checkConstraints": {}
-+    },
-+    "thread_tabs": {
-+      "name": "thread_tabs",
-+      "columns": {
-+        "thread_id": {
-+          "name": "thread_id",
-+          "type": "text",
-+          "primaryKey": true,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "tabs_json": {
-+          "name": "tabs_json",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "revision": {
-+          "name": "revision",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "updated_at": {
-+          "name": "updated_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        }
-+      },
-+      "indexes": {},
-+      "foreignKeys": {
-+        "thread_tabs_thread_id_threads_id_fk": {
-+          "name": "thread_tabs_thread_id_threads_id_fk",
-+          "tableFrom": "thread_tabs",
-+          "tableTo": "threads",
-+          "columnsFrom": [
-+            "thread_id"
-+          ],
-+          "columnsTo": [
-+            "id"
-+          ],
-+          "onDelete": "cascade",
-+          "onUpdate": "no action"
-+        }
-+      },
-+      "compositePrimaryKeys": {},
-+      "uniqueConstraints": {},
-+      "checkConstraints": {}
-+    },
-+    "threads": {
-+      "name": "threads",
-+      "columns": {
-+        "id": {
-+          "name": "id",
-+          "type": "text",
-+          "primaryKey": true,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "project_id": {
-+          "name": "project_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "environment_id": {
-+          "name": "environment_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "provider_id": {
-+          "name": "provider_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "model_override": {
-+          "name": "model_override",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "reasoning_level_override": {
-+          "name": "reasoning_level_override",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "execution_revision": {
-+          "name": "execution_revision",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": 0
-+        },
-+        "title": {
-+          "name": "title",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "title_fallback": {
-+          "name": "title_fallback",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "section_id": {
-+          "name": "section_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "status": {
-+          "name": "status",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": "'starting'"
-+        },
-+        "status_changed_at": {
-+          "name": "status_changed_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": 0
-+        },
-+        "startup_context": {
-+          "name": "startup_context",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "parent_thread_id": {
-+          "name": "parent_thread_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "lifecycle_owner_thread_id": {
-+          "name": "lifecycle_owner_thread_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "source_thread_id": {
-+          "name": "source_thread_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "origin_kind": {
-+          "name": "origin_kind",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "origin_plugin_id": {
-+          "name": "origin_plugin_id",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "visibility": {
-+          "name": "visibility",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": "'visible'"
-+        },
-+        "parent_notifications": {
-+          "name": "parent_notifications",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false,
-+          "default": "'auto'"
-+        },
-+        "archived_at": {
-+          "name": "archived_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "pinned_at": {
-+          "name": "pinned_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "pin_sort_key": {
-+          "name": "pin_sort_key",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "deleted_at": {
-+          "name": "deleted_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "storage_deleted_at": {
-+          "name": "storage_deleted_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "last_read_at": {
-+          "name": "last_read_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": false,
-+          "autoincrement": false
-+        },
-+        "latest_attention_at": {
-+          "name": "latest_attention_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "created_at": {
-+          "name": "created_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "updated_at": {
-+          "name": "updated_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        }
-+      },
-+      "indexes": {
-+        "threads_project_id_idx": {
-+          "name": "threads_project_id_idx",
-+          "columns": [
-+            "project_id",
-+            "id"
-+          ],
-+          "isUnique": false
-+        },
-+        "threads_project_updated_idx": {
-+          "name": "threads_project_updated_idx",
-+          "columns": [
-+            "project_id",
-+            "updated_at"
-+          ],
-+          "isUnique": false
-+        },
-+        "threads_project_archived_deleted_idx": {
-+          "name": "threads_project_archived_deleted_idx",
-+          "columns": [
-+            "project_id",
-+            "archived_at",
-+            "deleted_at",
-+            "id"
-+          ],
-+          "isUnique": false
-+        },
-+        "threads_pin_sort_idx": {
-+          "name": "threads_pin_sort_idx",
-+          "columns": [
-+            "archived_at",
-+            "deleted_at",
-+            "pin_sort_key",
-+            "id"
-+          ],
-+          "isUnique": false,
-+          "where": "\"threads\".\"pinned_at\" IS NOT NULL"
-+        },
-+        "threads_environment_idx": {
-+          "name": "threads_environment_idx",
-+          "columns": [
-+            "environment_id"
-+          ],
-+          "isUnique": false
-+        },
-+        "threads_lifecycle_owner_idx": {
-+          "name": "threads_lifecycle_owner_idx",
-+          "columns": [
-+            "lifecycle_owner_thread_id"
-+          ],
-+          "isUnique": false
-+        },
-+        "threads_parent_idx": {
-+          "name": "threads_parent_idx",
-+          "columns": [
-+            "parent_thread_id"
-+          ],
-+          "isUnique": false
-+        },
-+        "threads_source_origin_idx": {
-+          "name": "threads_source_origin_idx",
-+          "columns": [
-+            "source_thread_id",
-+            "origin_kind"
-+          ],
-+          "isUnique": false
-+        },
-+        "threads_origin_plugin_archived_idx": {
-+          "name": "threads_origin_plugin_archived_idx",
-+          "columns": [
-+            "origin_plugin_id",
-+            "archived_at"
-+          ],
-+          "isUnique": false
-+        },
-+        "threads_section_archived_deleted_idx": {
-+          "name": "threads_section_archived_deleted_idx",
-+          "columns": [
-+            "section_id",
-+            "archived_at",
-+            "deleted_at",
-+            "id"
-+          ],
-+          "isUnique": false
-+        },
-+        "threads_archived_status_idx": {
-+          "name": "threads_archived_status_idx",
-+          "columns": [
-+            "archived_at",
-+            "status"
-+          ],
-+          "isUnique": false
-+        },
-+        "threads_deleted_cleanup_idx": {
-+          "name": "threads_deleted_cleanup_idx",
-+          "columns": [
-+            "deleted_at"
-+          ],
-+          "isUnique": false,
-+          "where": "\"threads\".\"deleted_at\" IS NOT NULL"
-+        },
-+        "threads_environment_archived_deleted_idx": {
-+          "name": "threads_environment_archived_deleted_idx",
-+          "columns": [
-+            "environment_id",
-+            "archived_at",
-+            "deleted_at"
-+          ],
-+          "isUnique": false
-+        },
-+        "threads_active_maintenance_idx": {
-+          "name": "threads_active_maintenance_idx",
-+          "columns": [
-+            "status"
-+          ],
-+          "isUnique": false,
-+          "where": "\"threads\".\"deleted_at\" IS NULL"
-+        }
-+      },
-+      "foreignKeys": {
-+        "threads_project_id_projects_id_fk": {
-+          "name": "threads_project_id_projects_id_fk",
-+          "tableFrom": "threads",
-+          "tableTo": "projects",
-+          "columnsFrom": [
-+            "project_id"
-+          ],
-+          "columnsTo": [
-+            "id"
-+          ],
-+          "onDelete": "cascade",
-+          "onUpdate": "no action"
-+        },
-+        "threads_environment_id_environments_id_fk": {
-+          "name": "threads_environment_id_environments_id_fk",
-+          "tableFrom": "threads",
-+          "tableTo": "environments",
-+          "columnsFrom": [
-+            "environment_id"
-+          ],
-+          "columnsTo": [
-+            "id"
-+          ],
-+          "onDelete": "set null",
-+          "onUpdate": "no action"
-+        },
-+        "threads_section_id_thread_sections_id_fk": {
-+          "name": "threads_section_id_thread_sections_id_fk",
-+          "tableFrom": "threads",
-+          "tableTo": "thread_sections",
-+          "columnsFrom": [
-+            "section_id"
-+          ],
-+          "columnsTo": [
-+            "id"
-+          ],
-+          "onDelete": "set null",
-+          "onUpdate": "no action"
-+        },
-+        "threads_parent_thread_id_threads_id_fk": {
-+          "name": "threads_parent_thread_id_threads_id_fk",
-+          "tableFrom": "threads",
-+          "tableTo": "threads",
-+          "columnsFrom": [
-+            "parent_thread_id"
-+          ],
-+          "columnsTo": [
-+            "id"
-+          ],
-+          "onDelete": "set null",
-+          "onUpdate": "no action"
-+        },
-+        "threads_lifecycle_owner_thread_id_threads_id_fk": {
-+          "name": "threads_lifecycle_owner_thread_id_threads_id_fk",
-+          "tableFrom": "threads",
-+          "tableTo": "threads",
-+          "columnsFrom": [
-+            "lifecycle_owner_thread_id"
-+          ],
-+          "columnsTo": [
-+            "id"
-+          ],
-+          "onDelete": "restrict",
-+          "onUpdate": "no action"
-+        },
-+        "threads_source_thread_id_threads_id_fk": {
-+          "name": "threads_source_thread_id_threads_id_fk",
-+          "tableFrom": "threads",
-+          "tableTo": "threads",
-+          "columnsFrom": [
-+            "source_thread_id"
-+          ],
-+          "columnsTo": [
-+            "id"
-+          ],
-+          "onDelete": "set null",
-+          "onUpdate": "no action"
-+        }
-+      },
-+      "compositePrimaryKeys": {},
-+      "uniqueConstraints": {},
-+      "checkConstraints": {}
-+    },
-+    "ui_preference_defaults": {
-+      "name": "ui_preference_defaults",
-+      "columns": {
-+        "key": {
-+          "name": "key",
-+          "type": "text",
-+          "primaryKey": true,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "value_json": {
-+          "name": "value_json",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        }
-+      },
-+      "indexes": {},
-+      "foreignKeys": {},
-+      "compositePrimaryKeys": {},
-+      "uniqueConstraints": {},
-+      "checkConstraints": {}
-+    },
-+    "ui_preferences": {
-+      "name": "ui_preferences",
-+      "columns": {
-+        "key": {
-+          "name": "key",
-+          "type": "text",
-+          "primaryKey": true,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "value_json": {
-+          "name": "value_json",
-+          "type": "text",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "revision": {
-+          "name": "revision",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        },
-+        "updated_at": {
-+          "name": "updated_at",
-+          "type": "integer",
-+          "primaryKey": false,
-+          "notNull": true,
-+          "autoincrement": false
-+        }
-+      },
-+      "indexes": {},
-+      "foreignKeys": {},
-+      "compositePrimaryKeys": {},
-+      "uniqueConstraints": {},
-+      "checkConstraints": {}
 +    }
 +  },
 +  "views": {},
@@ -9469,23 +9663,23 @@ index 0000000000000000000000000000000000000000..25db56172d26c8bcf08471a93e98ccd0
 +}
 \ No newline at end of file
 diff --git a/packages/db/drizzle/meta/_journal.json b/packages/db/drizzle/meta/_journal.json
-index 06555f75d8b6ecba3fd74f12cf17002c9d472b8d..d8bd8bfe0b852083ace57ee9e7fc9baada21efd0 100644
+index 1c4e11e97f6d0ec809004da9b8d28d09bf3db19c..031b967c7bd9dcff6880cfb59f3ae6ffa9a977f5 100644
 --- a/packages/db/drizzle/meta/_journal.json
 +++ b/packages/db/drizzle/meta/_journal.json
-@@ -1100,6 +1100,20 @@
-       "when": 1794340346214,
-       "tag": "0156_plugin_failure_labels",
+@@ -1121,6 +1121,20 @@
+       "when": 1795043705022,
+       "tag": "0159_machine_teardown_recovery",
        "breakpoints": true
 +    },
 +    {
-+      "idx": 157,
++      "idx": 160,
 +      "version": "6",
 +      "when": 1792100000000,
 +      "tag": "0145_identity_context_bridge",
 +      "breakpoints": true
 +    },
 +    {
-+      "idx": 158,
++      "idx": 161,
 +      "version": "6",
 +      "when": 1793892596377,
 +      "tag": "0146_environment_secret_classification",
@@ -9496,10 +9690,10 @@ index 06555f75d8b6ecba3fd74f12cf17002c9d472b8d..d8bd8bfe0b852083ace57ee9e7fc9baa
 \ No newline at end of file
 +}
 diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
-index 003081feae1a38566d42da0f380641a2edd344ba..f06e4a310483b7e7f9751696692cbfccbb0b1478 100644
+index 8a4778f506258d030cc9275b8af52700e20e2a34..e41a870d9bbe010311c83c18db780058fc770d59 100644
 --- a/packages/db/src/data/events.ts
 +++ b/packages/db/src/data/events.ts
-@@ -310,6 +310,10 @@ export interface StoredTurnRequestEventRow {
+@@ -308,6 +308,10 @@ export interface StoredTurnRequestEventRow {
    type: ThreadEventType;
  }
  
@@ -9510,7 +9704,7 @@ index 003081feae1a38566d42da0f380641a2edd344ba..f06e4a310483b7e7f9751696692cbfcc
  export interface DeleteThreadEventSuffixArgs {
    cutoffSequence: number;
    oldMaxSequence: number;
-@@ -852,6 +856,9 @@ export function appendDaemonEventsInTransaction(
+@@ -833,6 +837,9 @@ export function appendDaemonEventsInTransaction(
    db: DbTransaction,
    eventInputs: readonly AppendDaemonEventInput[],
  ): AppendDaemonEventsResult {
@@ -9520,7 +9714,7 @@ index 003081feae1a38566d42da0f380641a2edd344ba..f06e4a310483b7e7f9751696692cbfcc
    if (eventInputs.length === 0) {
      return {
        acceptedEvents: [],
-@@ -5059,6 +5066,46 @@ export function listThreadIdsWithLatestHostDaemonRestartInterruption(
+@@ -5004,6 +5011,46 @@ export function listThreadIdsWithLatestHostDaemonRestartInterruption(
      .map((row) => row.threadId);
  }
  
@@ -9568,94 +9762,17 @@ index 003081feae1a38566d42da0f380641a2edd344ba..f06e4a310483b7e7f9751696692cbfcc
    db: DbQueryConnection,
    threadId: string,
 diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
-index 6fa107544b103bb1420599338fed4e71380ee4e6..9249a0fdaa3cf9e7697b1f3db7efd92b3b963563 100644
+index 6af7cff986bc91836912038b71a5d7d3b9c09170..4d43e01743c02fab71922f32e2e6034176943eb4 100644
 --- a/packages/db/src/data/index.ts
 +++ b/packages/db/src/data/index.ts
-@@ -72,11 +72,14 @@ export {
-   countNonDeletedAssignedChildThreads,
-   getThread,
-   getThreadExecutionOverride,
-+  listThreadExecutionOverridesByThreadIds,
-+  listThreadExecutionProjectionRowsByIds,
-   hasActiveThreadAttention,
-   setThreadExecutionOverride,
-   getThreadStartupContext,
-   setThreadStartupContext,
-   listExistingThreadIds,
-+  setThreadExecutionOverridesBatch,
-   listHostThreadIds,
-   listActiveHostThreads,
-   listActiveVisiblePinnedThreadRootsWithPendingInteractionState,
-@@ -94,6 +97,7 @@ export {
-   listArchivedThreadsPendingTeardown,
-   listRunningThreads,
-   listThreadsWithPendingInteractionState,
-+  listThreadsWithPendingInteractionStateByIds,
-   listThreadsWithPendingInteractionStateForProjects,
-   pinThread,
-   reorderPinnedThread,
-@@ -113,6 +117,35 @@ export {
-   THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT,
-   THREAD_SEARCH_LIMIT_PER_GROUP_MAX,
- } from "./threads.js";
-+
-+export {
-+  activatePluginThreadFacetDeclarations,
-+  getOrCreateThreadFacetCursorSigningKey,
-+  listCoreParticipantProfilePage,
-+  listCoreParticipantProfilesByThreadIds,
-+  listCoreParticipantSummariesByThreadIds,
-+  listThreadIdsMissingCoreParticipantProjection,
-+  listPriorThreadFacetSnapshotTargets,
-+  listThreadFacetOwnerProjections,
-+  markThreadFacetOwnerGenerationReady,
-+  markThreadFacetOwnerGenerationUnavailable,
-+  queryThreadFacetThreadIds,
-+  recordThreadFacetCensusExhausted,
-+  replaceCoreParticipantProfiles,
-+  replaceCoreParticipantProfilesBatch,
-+  replaceCoreParticipantProfilesInTransaction,
-+  replaceThreadFacetRelationsInGeneration,
-+  ThreadFacetInvariantError,
-+} from "./thread-facets.js";
-+export type {
-+  CoreParticipantProfile,
-+  CoreParticipantSummary,
-+  ThreadFacetDeclaration,
-+  ThreadFacetGeneration,
-+  ThreadFacetIdPage,
-+  ThreadFacetInvariantErrorCode,
-+  ThreadFacetQueryPosition,
-+} from "./thread-facets.js";
- export type {
-   ApplyThreadLifecycleEventArgs,
-   ApplyThreadLifecycleEventOutcome,
-@@ -121,6 +154,9 @@ export type {
-   ThreadSearchResultGroup,
-   ThreadWithPendingInteractionState,
-   ThreadExecutionOverride,
-+  SetThreadExecutionOverrideBatchInput,
-+  ThreadExecutionOverrideRow,
-+  ThreadExecutionProjectionRow,
-   UpdateThreadInput,
- } from "./threads.js";
- 
-@@ -343,6 +379,7 @@ export {
-   listStoredTaskTurnRequestEvents,
-   listLatestTurnFinalAgentMessageEventRows,
-   getTurnFinalAgentMessageEventRow,
-+  listLastStoredTurnRequestEventsByThreadIds,
-   getStoredTurnRequestEventForTurn,
-   getLatestStoredConversationOutlineSequence,
-   getLatestCompletedThreadContextClearSequence,
-@@ -437,6 +474,7 @@ export type {
-   StoredThreadEventDataRow,
-   TimelineWindowHint,
-   ThreadClientTurnRequestKey,
-+  ListLastStoredTurnRequestEventsByThreadIdsArgs,
-   StoredTurnRequestEventRow,
- } from "./events.js";
- 
+@@ -33,6 +33,7 @@ export * from "./sweep-item-failures.js";
+ export * from "./sweeps.js";
+ export * from "./terminal-sessions.js";
+ export * from "./thread-conversation-outlines.js";
++export * from "./thread-facets.js";
+ export * from "./thread-plugin-metadata.js";
+ export * from "./thread-pruning.js";
+ export * from "./thread-purges.js";
 diff --git a/packages/db/src/data/project-execution-defaults.ts b/packages/db/src/data/project-execution-defaults.ts
 index 639fdab028d1e8b7ae4eeb1e7b833008e924bf68..b008dea4e18d2c6aeb13bf8a6d43fc20f3d9e6ae 100644
 --- a/packages/db/src/data/project-execution-defaults.ts
@@ -9688,10 +9805,10 @@ index 639fdab028d1e8b7ae4eeb1e7b833008e924bf68..b008dea4e18d2c6aeb13bf8a6d43fc20
  ): Map<string, ProjectExecutionDefaults> {
    const byProjectId = new Map<string, ProjectExecutionDefaults>();
 diff --git a/packages/db/src/data/queued-thread-messages.ts b/packages/db/src/data/queued-thread-messages.ts
-index b0d2484fc9d4e5c9adfc20a77af1c0f50ec0e9d9..c720334f077e01eed9fa330bb97faf32e236e9bf 100644
+index 1b45957fa19ca0e933b0b3a2fc8e4c234a0519ac..e62591c7a6f56e913d9d40fd7b27e5a62034e0b6 100644
 --- a/packages/db/src/data/queued-thread-messages.ts
 +++ b/packages/db/src/data/queued-thread-messages.ts
-@@ -22,6 +22,7 @@ import { alias } from "drizzle-orm/sqlite-core";
+@@ -23,6 +23,7 @@ import { alias } from "drizzle-orm/sqlite-core";
  import {
    QUEUED_MESSAGE_AUTOMATICALLY_DRAINABLE_STATES,
    QUEUED_MESSAGE_FAILED_STATES,
@@ -9699,7 +9816,7 @@ index b0d2484fc9d4e5c9adfc20a77af1c0f50ec0e9d9..c720334f077e01eed9fa330bb97faf32
    QUEUED_MESSAGE_PLUGIN_WAIT_HOLDER_PREFIX,
    evaluateQueuedMessageTransition,
    isQueuedMessageFailedState,
-@@ -119,6 +120,10 @@ export interface UpdateQueuedThreadMessageInput {
+@@ -120,6 +121,10 @@ export interface UpdateQueuedThreadMessageInput {
    content: PromptInput[] | null;
    execution: QueuedThreadMessageExecution | null;
    reschedule: { sendAt: number | null } | null;
@@ -9710,7 +9827,7 @@ index b0d2484fc9d4e5c9adfc20a77af1c0f50ec0e9d9..c720334f077e01eed9fa330bb97faf32
    expectedUpdatedAt: number;
    id: string;
    threadId: string;
-@@ -859,6 +864,19 @@ export function createQueuedThreadMessageInTransaction(
+@@ -863,6 +868,19 @@ export function createQueuedThreadMessageInTransaction(
        sendAt: input.sendAt,
        systemNotice:
          input.systemNotice === null ? null : JSON.stringify(input.systemNotice),
@@ -9730,7 +9847,7 @@ index b0d2484fc9d4e5c9adfc20a77af1c0f50ec0e9d9..c720334f077e01eed9fa330bb97faf32
        payloadKind: input.payload.kind,
        retryOfTurnRequestId:
          input.payload.kind === "retry"
-@@ -1032,6 +1050,7 @@ export function updateQueuedThreadMessage(
+@@ -1036,6 +1054,7 @@ export function updateQueuedThreadMessage(
        ) {
          return { kind: "invalid_execution_options" };
        }
@@ -9738,7 +9855,7 @@ index b0d2484fc9d4e5c9adfc20a77af1c0f50ec0e9d9..c720334f077e01eed9fa330bb97faf32
        const now = Date.now();
        const contentPatch =
          input.content === null
-@@ -1065,6 +1084,24 @@ export function updateQueuedThreadMessage(
+@@ -1069,6 +1088,24 @@ export function updateQueuedThreadMessage(
          .update(queuedThreadMessages)
          .set({
            ...contentPatch,
@@ -9763,7 +9880,7 @@ index b0d2484fc9d4e5c9adfc20a77af1c0f50ec0e9d9..c720334f077e01eed9fa330bb97faf32
            ...(input.execution ?? {}),
            ...schedulePatch,
            coalesceKey: null,
-@@ -2647,11 +2684,18 @@ export function deleteQueuedThreadMessage(
+@@ -2653,11 +2690,18 @@ export function deleteQueuedThreadMessage(
    db: DbConnection,
    notifier: DbNotifier,
    id: string,
@@ -10258,10 +10375,10 @@ index 0000000000000000000000000000000000000000..7df5f8b2d5abbf8d0d251dfc0b058348
 +  return { threadIds: page, hasMore: rows.length > page.length };
 +}
 diff --git a/packages/db/src/data/threads.ts b/packages/db/src/data/threads.ts
-index 93e8b20e4727df6e2bd8139ff348c607bcccea98..d70446880cbdf98575a523f687fc35a2b7151b7f 100644
+index 48dc05facc63af0fa4ec053ede8272812aeccaba..fe33d36b575d0b200049d5e2f4ba4c8ca957a0a3 100644
 --- a/packages/db/src/data/threads.ts
 +++ b/packages/db/src/data/threads.ts
-@@ -1504,6 +1504,20 @@ export function listThreadsWithPendingInteractionState(
+@@ -1483,6 +1483,20 @@ export function listThreadsWithPendingInteractionState(
    return rows.map(toThreadWithPendingInteractionState);
  }
  
@@ -10282,7 +10399,7 @@ index 93e8b20e4727df6e2bd8139ff348c607bcccea98..d70446880cbdf98575a523f687fc35a2
  export function hasActiveThreadAttention(db: DbConnection): boolean {
    const unreadThread = or(
      isNull(threads.lastReadAt),
-@@ -1951,6 +1965,69 @@ export interface ThreadExecutionOverride {
+@@ -1930,6 +1944,69 @@ export interface ThreadExecutionOverride {
    reasoningLevelOverride: ReasoningLevel | null;
  }
  
@@ -10352,7 +10469,7 @@ index 93e8b20e4727df6e2bd8139ff348c607bcccea98..d70446880cbdf98575a523f687fc35a2
  export function getThreadExecutionOverride(
    db: ThreadWriteConnection,
    id: string,
-@@ -1972,20 +2049,90 @@ export interface SetThreadExecutionOverrideInput {
+@@ -1951,20 +2028,90 @@ export interface SetThreadExecutionOverrideInput {
    reasoningLevelOverride?: ReasoningLevel | null;
  }
  
@@ -11650,10 +11767,10 @@ index 0d9f7eb239a0f0d3525cc2faabce90af62b189ae..6d167f013356c209a2eff273b4f8adfb
 +  assertForeignKeyIntegrity(db);
  }
 diff --git a/packages/db/src/schema.ts b/packages/db/src/schema.ts
-index ddc886417bd70cfcf26a2fec707b8912c015b0c0..0dd086d27308b6f32946d92513d50790007f7bab 100644
+index d015c0e83e5760dacf80069cf359ff937555e9e2..64c89c8197c1a853b94b24db235881dcb4bd8ff6 100644
 --- a/packages/db/src/schema.ts
 +++ b/packages/db/src/schema.ts
-@@ -40,6 +40,10 @@ import type {
+@@ -46,6 +46,10 @@ import type {
    ThreadEventItemType,
    ThreadEventScopeKind,
    ThreadEventType,
@@ -11664,7 +11781,7 @@ index ddc886417bd70cfcf26a2fec707b8912c015b0c0..0dd086d27308b6f32946d92513d50790
    ProjectKind,
  } from "@bb/domain";
  import type { RetainedEventOutputPath } from "./retained-event-output.js";
-@@ -210,6 +214,7 @@ export const environmentVariables = sqliteTable(
+@@ -216,6 +220,7 @@ export const environmentVariables = sqliteTable(
      name: text("name").notNull(),
      ciphertext: text("ciphertext").notNull(),
      encryptionVersion: integer("encryption_version").notNull(),
@@ -11672,7 +11789,7 @@ index ddc886417bd70cfcf26a2fec707b8912c015b0c0..0dd086d27308b6f32946d92513d50790
      note: text("note"),
      updatedAt: integer("updated_at").notNull(),
    },
-@@ -615,6 +620,7 @@ export const threads = sqliteTable(
+@@ -621,6 +626,7 @@ export const threads = sqliteTable(
      reasoningLevelOverride: text(
        "reasoning_level_override",
      ).$type<ReasoningLevel>(),
@@ -11680,7 +11797,7 @@ index ddc886417bd70cfcf26a2fec707b8912c015b0c0..0dd086d27308b6f32946d92513d50790
      title: text("title"),
      titleFallback: text("title_fallback"),
      sectionId: text("section_id").references(() => threadSections.id, {
-@@ -773,6 +779,133 @@ export const threadSearchSegments = sqliteTable(
+@@ -830,6 +836,133 @@ export const threadSearchSegments = sqliteTable(
    ],
  );
  
@@ -11814,7 +11931,7 @@ index ddc886417bd70cfcf26a2fec707b8912c015b0c0..0dd086d27308b6f32946d92513d50790
  export const threadConversationOutlines = sqliteTable(
    "thread_conversation_outlines",
    {
-@@ -1054,6 +1187,7 @@ export const queuedThreadMessages = sqliteTable(
+@@ -1111,6 +1244,7 @@ export const queuedThreadMessages = sqliteTable(
      failureReason: text("failure_reason"),
      failureCount: integer("failure_count").notNull().default(0),
      nextAttemptAt: integer("next_attempt_at"),
@@ -11823,10 +11940,10 @@ index ddc886417bd70cfcf26a2fec707b8912c015b0c0..0dd086d27308b6f32946d92513d50790
        .$type<QueuedMessagePayloadKind>()
        .notNull()
 diff --git a/packages/db/test/data/events.test.ts b/packages/db/test/data/events.test.ts
-index 1e50ff6a8b6e952ae0c5d85906382bc3ae84b7b5..47c0480dc03cf464fd7ffe2004771e222be16a1b 100644
+index 9dedfa0ba459c72d3196daf047e552799400fc96..e62b48d3916f556484ca5090f383a1660e8118bb 100644
 --- a/packages/db/test/data/events.test.ts
 +++ b/packages/db/test/data/events.test.ts
-@@ -1084,11 +1084,28 @@ describe("events", () => {
+@@ -1089,11 +1089,28 @@ describe("events", () => {
    it("indexes daemon-appended messages without parsing deltas or tool outputs", () => {
      const { db, thread } = setup();
      const inputs = searchNeedleDaemonEventInputs(thread.id);
@@ -11918,10 +12035,10 @@ index 15845d40ab1c5e5df19c361c97951b0864cca4e1..34578732bae38fc1633f139635e53635
      const { db, thread } = setup();
      const queuedMessage = createQueuedThreadMessage(db, noopNotifier, {
 diff --git a/packages/db/test/data/threads.test.ts b/packages/db/test/data/threads.test.ts
-index a2a29d102f6760d5d616528a0beb22845c45d984..a2fb5d41471fcc9e2950f2da1c86bec4ebac71d6 100644
+index 7e892458a49597129e5fa1c6067f5b71984d3b24..2f25034a708dbea8d09d30dec79c5a98d78f58d2 100644
 --- a/packages/db/test/data/threads.test.ts
 +++ b/packages/db/test/data/threads.test.ts
-@@ -10,8 +10,11 @@ import {
+@@ -12,8 +12,11 @@ import {
    countNonDeletedAssignedChildThreads,
    getThread,
    getThreadExecutionOverride,
@@ -11933,7 +12050,7 @@ index a2a29d102f6760d5d616528a0beb22845c45d984..a2fb5d41471fcc9e2950f2da1c86bec4
    listHostThreadIds,
    listActiveVisiblePinnedThreadRoots,
    listThreadMentionRowsByIds,
-@@ -319,6 +322,100 @@ describe("threads", () => {
+@@ -338,6 +341,100 @@ describe("threads", () => {
      });
    });
  
@@ -12429,7 +12546,7 @@ index 0000000000000000000000000000000000000000..6eefd1d5f7654f90a07cb775bc82641c
 +ALTER TABLE `context_magnet_contribution_trace_snapshots` ADD `admission_attempt_high_water_sequence` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
 +ALTER TABLE `context_magnet_contribution_trace_snapshots` ADD `admission_retention_high_water_sequence` integer DEFAULT 0 NOT NULL;
 diff --git a/packages/db/test/helpers/rewind.ts b/packages/db/test/helpers/rewind.ts
-index 2fc330dcb1abf7321888fe3e60b7a3faaf67d5c5..2a5cee15504810adca2146d1658c63da3fbf8267 100644
+index 68100c2980c45954ae0cc6dce218c9515d08d511..ee78fdce164ff0b806862b06ca43fb4c2e96cce5 100644
 --- a/packages/db/test/helpers/rewind.ts
 +++ b/packages/db/test/helpers/rewind.ts
 @@ -65,6 +65,14 @@ export function dropThreadParentNotificationsColumn(db: DbConnection): void {
@@ -12448,7 +12565,7 @@ index 2fc330dcb1abf7321888fe3e60b7a3faaf67d5c5..2a5cee15504810adca2146d1658c63da
  
  interface QueuedTableColumn {
 diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
-index 73fa0f3df9a9a274e5cf754bc8edcb9b4f1cfcc3..2bc413211c70adf944a8a77ce93398e990cb5c29 100644
+index 53433c969aa5e2a98936da319bfbc4303b41e696..d2522da3a498bfa41ebc76dfc2531139b76ce72c 100644
 --- a/packages/db/test/migrate.test.ts
 +++ b/packages/db/test/migrate.test.ts
 @@ -1,7 +1,9 @@
@@ -12463,15 +12580,15 @@ index 73fa0f3df9a9a274e5cf754bc8edcb9b4f1cfcc3..2bc413211c70adf944a8a77ce93398e9
  import { publishedMigrationWhensByTag } from "../src/migration-history.js";
  import {
    dropPluginEnabledFollowsDefaultColumn,
-@@ -13,6 +15,7 @@ import {
-   dropPluginFailureLabelColumns,
+@@ -15,6 +17,7 @@ import {
+   dropThreadRunStateTables,
    dropThreadStatusChangedAtColumn,
    restoreDiffViewedFilesTable,
 +  dropEnvironmentSecretClassificationColumn,
    dropQueuedMessageEditHeldUntilColumn,
    rewindQueuedMessageStateMigration,
  } from "./helpers/rewind.js";
-@@ -36,6 +39,7 @@ import {
+@@ -38,6 +41,7 @@ import {
  } from "../src/testing.js";
  
  type InsertMigrationParameters = [string, number];
@@ -12479,7 +12596,7 @@ index 73fa0f3df9a9a274e5cf754bc8edcb9b4f1cfcc3..2bc413211c70adf944a8a77ce93398e9
  type DeleteMigrationParameters = [number];
  type DeleteMigrationsParameters = [number, number, number, number];
  type TableNameParameters = [string];
-@@ -272,6 +276,257 @@ const projectSourcesDefaultIndexMigrationWhen = (
+@@ -274,6 +278,259 @@ const projectSourcesDefaultIndexMigrationWhen = (
  ).entries.find(
    (entry) => entry.tag === "0155_declare_project_sources_default_index",
  )!.when;
@@ -12543,6 +12660,8 @@ index 73fa0f3df9a9a274e5cf754bc8edcb9b4f1cfcc3..2bc413211c70adf944a8a77ce93398e9
 +// Undo upstream migrations from `createdAt` onward the way upstream's own
 +// rewind fixtures do, so Drizzle replays them on the next migrate().
 +function rewindToBeforeUpstreamMigration(db: DbConnection, createdAt: number): void {
++  dropThreadRunStateTables(db);
++  rewindMachineTeardownRecoveryColumns(db);
 +  dropThreadStatusChangedAtColumn(db);
 +  dropPluginFailureLabelColumns(db);
 +  dropQueuedMessageDeliveryColumns(db);
@@ -12737,7 +12856,7 @@ index 73fa0f3df9a9a274e5cf754bc8edcb9b4f1cfcc3..2bc413211c70adf944a8a77ce93398e9
  
  function restoreWideExperimentsTable(db: DbConnection): void {
    const columns = db.$client
-@@ -734,6 +989,41 @@ function dropMarketplaceStatsColumn(db: DbConnection): void {
+@@ -736,6 +993,41 @@ function dropMarketplaceStatsColumn(db: DbConnection): void {
    }
  }
  
@@ -12779,7 +12898,7 @@ index 73fa0f3df9a9a274e5cf754bc8edcb9b4f1cfcc3..2bc413211c70adf944a8a77ce93398e9
  /**
   * Undo migration 0110, the dispatch-queue rework.
   *
-@@ -822,6 +1112,7 @@ function dropQueuedMessageAttemptColumns(db: DbConnection): void {
+@@ -828,6 +1120,7 @@ function dropQueuedMessageAttemptColumns(db: DbConnection): void {
  function dropQueueReworkSchema(db: DbConnection): void {
    dropQueuedMessageAttemptColumns(db);
    rewindEnvironmentProvisioningMigration(db);
@@ -12787,32 +12906,130 @@ index 73fa0f3df9a9a274e5cf754bc8edcb9b4f1cfcc3..2bc413211c70adf944a8a77ce93398e9
    // Indexes first: SQLite refuses to drop a column an existing index names.
    for (const index of [
      "queued_thread_messages_due_idx",
-@@ -2632,6 +2923,7 @@ describe("migrate", () => {
+@@ -2698,6 +2991,7 @@ describe("migrate", () => {
          projectId: project.id,
          providerId: "codex",
        });
 +      dropEnvironmentSecretClassificationColumn(db);
        dropThreadStatusChangedAtColumn(db);
+       dropThreadRunStateTables(db);
        dropPluginFailureLabelColumns(db);
-       restoreDiffViewedFilesTable(db);
-@@ -3470,6 +3762,7 @@ describe("migrate", () => {
-       dropQueuedMessageDeliveryColumns(db);
-       dropThreadStatusChangedAtColumn(db);
+@@ -3540,6 +3834,7 @@ describe("migrate", () => {
+       dropThreadRunStateTables(db);
        dropPluginFailureLabelColumns(db);
+       rewindMachineTeardownRecoveryColumns(db);
 +      dropEnvironmentSecretClassificationColumn(db);
        db.$client.prepare("DROP INDEX projects_deleted_idx").run();
        db.$client.prepare("ALTER TABLE projects DROP COLUMN deleted_at").run();
        db.$client.prepare("ALTER TABLE events ADD producer_event_id text").run();
-@@ -4883,6 +5176,696 @@ describe("migrate", () => {
+@@ -4955,138 +5250,829 @@ describe("migrate", () => {
    });
  });
  
+-describe("environment providers migration", () => {
+-  const environmentProvidersMigrationWhen = 1788386943764;
+-
+-  function seedPreProviderEnvironments(db: DbConnection): void {
+-    db.$client.prepare("DROP TABLE provider_model_catalogs").run();
+-    db.$client.prepare("DROP TABLE IF EXISTS ui_preference_defaults").run();
+-    db.$client.prepare("DROP TABLE ui_preferences").run();
+-    db.$client.prepare("DROP TABLE retained_event_outputs").run();
+-    rewindEnvironmentRowFactsMigration(db);
+-    rewindEnvironmentProvidersMigration(db);
+-    dropQueuedMessageAttemptColumns(db);
+-    db.$client
+-      .prepare<[number]>(
+-        "DELETE FROM __drizzle_migrations WHERE created_at >= ?",
+-      )
+-      .run(environmentProvidersMigrationWhen);
+-    db.$client.exec(`
+-      INSERT INTO hosts (id, name, type, created_at, updated_at)
+-      VALUES ('host_ep', 'provider host', 'persistent', 1000, 1000);
+-
+-      INSERT INTO projects (id, name, created_at, updated_at)
+-      VALUES ('proj_ep', 'provider project', 1000, 1000);
+-
+-      INSERT INTO environments (
+-        id, project_id, host_id, path, managed, base_branch,
+-        retire_requested_at, destroy_attempt_id, workspace_provision_type,
+-        status, created_at, updated_at
+-      ) VALUES
+-        ('env_named', 'proj_ep', 'host_ep', '/w/named', 1, 'release/1.2',
+-         NULL, NULL, 'managed-worktree', 'ready', 1000, 1000),
+-        ('env_default', 'proj_ep', 'host_ep', '/w/default', 1, NULL,
+-         NULL, NULL, 'managed-worktree', 'ready', 1000, 1000),
+-        ('env_personal', 'proj_ep', 'host_ep', '/w/personal', 1, NULL,
+-         NULL, NULL, 'personal', 'ready', 1000, 1000),
+-        ('env_personal_gone', 'proj_ep', 'host_ep', NULL, 1, NULL,
+-         NULL, NULL, 'personal', 'destroyed', 1000, 1000),
+-        ('env_retiring', 'proj_ep', 'host_ep', '/w/retiring', 1, NULL,
+-         5000, NULL, 'managed-worktree', 'retiring', 1000, 1000),
+-        ('env_destroying', 'proj_ep', 'host_ep', '/w/destroying', 1, NULL,
+-         5000, 'rpc_attempt', 'managed-worktree', 'destroying', 1000, 1000),
+-        ('env_unmanaged', 'proj_ep', 'host_ep', '/w/unmanaged', 0, NULL,
+-         NULL, NULL, 'unmanaged', 'ready', 1000, 1000);
+-    `);
+-    const insertPendingThread = db.$client.prepare<[string, string]>(
+-      `INSERT INTO threads (
+-         id, project_id, provider_id, status, pending_start_context,
+-         latest_attention_at, created_at, updated_at
+-       ) VALUES (?, 'proj_ep', 'codex', 'pending', ?, 1000, 1000, 1000)`,
+-    );
+-    insertPendingThread.run(
+-      "thr_worktree_pending",
+-      JSON.stringify({
+-        environmentIntent: {
+-          type: "direct-managed",
+-          hostId: "host_ep",
+-          sourcePath: "/checkouts/bb",
+-          baseBranch: { kind: "named", name: "release/1.2" },
+-          workspaceProvisionType: "managed-worktree",
+-        },
+-      }),
+-    );
+-    insertPendingThread.run(
+-      "thr_personal_pending",
+-      JSON.stringify({
+-        environmentIntent: {
+-          type: "direct-personal",
+-          hostId: "host_ep",
+-          workspaceProvisionType: "personal",
+-        },
+-      }),
+-    );
+-  }
+-
+-  function readPendingStartContext(db: DbConnection, threadId: string) {
+-    const row = db.$client
+-      .prepare<[string], { startupContext: string | null }>(
+-        `SELECT startup_context AS startupContext
+-           FROM threads WHERE id = ?`,
+-      )
+-      .get(threadId);
+-    return JSON.parse(row?.startupContext ?? "null") as unknown;
+-  }
 +describe("identity and context magnet migration bridge", () => {
 +  it("migrates a clean target database through the target-native 0131 bridge", () => {
 +    const db = createConnection(":memory:");
-+
-+    try {
-+      migrate(db);
+ 
+-  it("records bundled plugin owners while migrating legacy environments", () => {
+-    const db = createMigratedConnection();
+     try {
+-      seedPreProviderEnvironments(db);
+       migrate(db);
+-      const rows = db.$client
+-        .prepare<[], { provider: string; owner: string | null }>(
+-          "SELECT DISTINCT environment_provider_id AS provider, environment_provider_plugin_id AS owner FROM environments ORDER BY provider",
+-        )
+-        .all();
+-      expect(rows).toEqual([
+-        { provider: "git-worktree", owner: "environment-git-worktree" },
+-        {
+-          provider: "personal-workspace",
+-          owner: "environment-personal-workspace",
+-        },
+-        { provider: "project-checkout", owner: "environment-project-checkout" },
+-      ]);
 +
 +      expect(
 +        db.$client
@@ -12836,32 +13053,50 @@ index 73fa0f3df9a9a274e5cf754bc8edcb9b4f1cfcc3..2bc413211c70adf944a8a77ce93398e9
 +          .map((column) => column.name),
 +      ).toContain("execution_revision");
 +      expect(readLatestAppliedMigrationCreatedAt(db)).toBe(latestMigrationWhen);
-+    } finally {
+     } finally {
+-      db.$client.close();
 +      closeConnection(db);
-+    }
-+  });
-+
+     }
+   });
+ 
+-  it("hands managed worktree, personal, and attached rows to their providers", () => {
+-    const db = createMigratedConnection();
 +  it("upgrades credential-free legacy identity and context magnet history without data loss", () => {
 +    const db = createConnection(":memory:");
-+
-+    try {
+ 
+     try {
+-      seedPreProviderEnvironments(db);
+-
 +      createLegacyIdentityAndContextMagnetHistory(db);
-+      migrate(db);
-+
+       migrate(db);
+ 
 +      const appliedCreatedAts = readAppliedMigrationCreatedAts(db);
 +      for (const createdAt of legacyIdentityAndContextMagnetMigrationWhens) {
 +        expect(appliedCreatedAts).toContain(createdAt);
 +      }
 +      expect(appliedCreatedAts).toContain(latestMigrationWhen);
-+      expect(
-+        db.$client
+       expect(
+         db.$client
+-          .prepare<[], BackfilledEnvironmentRow>(
 +          .prepare(
-+            `
+             `
+-              SELECT id,
+-                     environment_provider_id AS environmentProviderId,
+-                     environment_provider_selection AS environmentProviderSelection,
+-                     environment_provider_instance_key AS environmentProviderInstanceKey
+-              FROM environments
+-              ORDER BY id
 +              SELECT principal_key, identity_kind, display_name, image_url
 +              FROM thread_facet_principal_profiles
 +              WHERE principal_key = 'machine:legacy'
-+            `,
-+          )
+             `,
+           )
+-          .all(),
+-      ).toEqual([
+-        {
+-          id: "env_default",
+-          environmentProviderId: "git-worktree",
+-          environmentProviderSelection:
 +          .get(),
 +      ).toEqual({
 +        principal_key: "machine:legacy",
@@ -13497,18 +13732,143 @@ index 73fa0f3df9a9a274e5cf754bc8edcb9b4f1cfcc3..2bc413211c70adf944a8a77ce93398e9
 +  });
 +});
 +
- describe("environment providers migration", () => {
-   const environmentProvidersMigrationWhen = 1788386943764;
- 
-@@ -4891,6 +5874,7 @@ describe("environment providers migration", () => {
-     db.$client.prepare("DROP TABLE IF EXISTS ui_preference_defaults").run();
-     db.$client.prepare("DROP TABLE ui_preferences").run();
-     db.$client.prepare("DROP TABLE retained_event_outputs").run();
++describe("environment providers migration", () => {
++  const environmentProvidersMigrationWhen = 1788386943764;
++
++  function seedPreProviderEnvironments(db: DbConnection): void {
++    db.$client.prepare("DROP TABLE provider_model_catalogs").run();
++    db.$client.prepare("DROP TABLE IF EXISTS ui_preference_defaults").run();
++    db.$client.prepare("DROP TABLE ui_preferences").run();
++    db.$client.prepare("DROP TABLE retained_event_outputs").run();
 +    dropIdentityKernelSchema(db);
-     rewindEnvironmentRowFactsMigration(db);
-     rewindEnvironmentProvidersMigration(db);
-     dropQueuedMessageAttemptColumns(db);
-@@ -5305,6 +6289,7 @@ describe("environment and thread startup ownership migration", () => {
++    rewindEnvironmentRowFactsMigration(db);
++    rewindEnvironmentProvidersMigration(db);
++    dropQueuedMessageAttemptColumns(db);
++    db.$client
++      .prepare<[number]>(
++        "DELETE FROM __drizzle_migrations WHERE created_at >= ?",
++      )
++      .run(environmentProvidersMigrationWhen);
++    db.$client.exec(`
++      INSERT INTO hosts (id, name, type, created_at, updated_at)
++      VALUES ('host_ep', 'provider host', 'persistent', 1000, 1000);
++
++      INSERT INTO projects (id, name, created_at, updated_at)
++      VALUES ('proj_ep', 'provider project', 1000, 1000);
++
++      INSERT INTO environments (
++        id, project_id, host_id, path, managed, base_branch,
++        retire_requested_at, destroy_attempt_id, workspace_provision_type,
++        status, created_at, updated_at
++      ) VALUES
++        ('env_named', 'proj_ep', 'host_ep', '/w/named', 1, 'release/1.2',
++         NULL, NULL, 'managed-worktree', 'ready', 1000, 1000),
++        ('env_default', 'proj_ep', 'host_ep', '/w/default', 1, NULL,
++         NULL, NULL, 'managed-worktree', 'ready', 1000, 1000),
++        ('env_personal', 'proj_ep', 'host_ep', '/w/personal', 1, NULL,
++         NULL, NULL, 'personal', 'ready', 1000, 1000),
++        ('env_personal_gone', 'proj_ep', 'host_ep', NULL, 1, NULL,
++         NULL, NULL, 'personal', 'destroyed', 1000, 1000),
++        ('env_retiring', 'proj_ep', 'host_ep', '/w/retiring', 1, NULL,
++         5000, NULL, 'managed-worktree', 'retiring', 1000, 1000),
++        ('env_destroying', 'proj_ep', 'host_ep', '/w/destroying', 1, NULL,
++         5000, 'rpc_attempt', 'managed-worktree', 'destroying', 1000, 1000),
++        ('env_unmanaged', 'proj_ep', 'host_ep', '/w/unmanaged', 0, NULL,
++         NULL, NULL, 'unmanaged', 'ready', 1000, 1000);
++    `);
++    const insertPendingThread = db.$client.prepare<[string, string]>(
++      `INSERT INTO threads (
++         id, project_id, provider_id, status, pending_start_context,
++         latest_attention_at, created_at, updated_at
++       ) VALUES (?, 'proj_ep', 'codex', 'pending', ?, 1000, 1000, 1000)`,
++    );
++    insertPendingThread.run(
++      "thr_worktree_pending",
++      JSON.stringify({
++        environmentIntent: {
++          type: "direct-managed",
++          hostId: "host_ep",
++          sourcePath: "/checkouts/bb",
++          baseBranch: { kind: "named", name: "release/1.2" },
++          workspaceProvisionType: "managed-worktree",
++        },
++      }),
++    );
++    insertPendingThread.run(
++      "thr_personal_pending",
++      JSON.stringify({
++        environmentIntent: {
++          type: "direct-personal",
++          hostId: "host_ep",
++          workspaceProvisionType: "personal",
++        },
++      }),
++    );
++  }
++
++  function readPendingStartContext(db: DbConnection, threadId: string) {
++    const row = db.$client
++      .prepare<[string], { startupContext: string | null }>(
++        `SELECT startup_context AS startupContext
++           FROM threads WHERE id = ?`,
++      )
++      .get(threadId);
++    return JSON.parse(row?.startupContext ?? "null") as unknown;
++  }
++
++  it("records bundled plugin owners while migrating legacy environments", () => {
++    const db = createMigratedConnection();
++    try {
++      seedPreProviderEnvironments(db);
++      migrate(db);
++      const rows = db.$client
++        .prepare<[], { provider: string; owner: string | null }>(
++          "SELECT DISTINCT environment_provider_id AS provider, environment_provider_plugin_id AS owner FROM environments ORDER BY provider",
++        )
++        .all();
++      expect(rows).toEqual([
++        { provider: "git-worktree", owner: "environment-git-worktree" },
++        {
++          provider: "personal-workspace",
++          owner: "environment-personal-workspace",
++        },
++        { provider: "project-checkout", owner: "environment-project-checkout" },
++      ]);
++    } finally {
++      db.$client.close();
++    }
++  });
++
++  it("hands managed worktree, personal, and attached rows to their providers", () => {
++    const db = createMigratedConnection();
++
++    try {
++      seedPreProviderEnvironments(db);
++
++      migrate(db);
++
++      expect(
++        db.$client
++          .prepare<[], BackfilledEnvironmentRow>(
++            `
++              SELECT id,
++                     environment_provider_id AS environmentProviderId,
++                     environment_provider_selection AS environmentProviderSelection,
++                     environment_provider_instance_key AS environmentProviderInstanceKey
++              FROM environments
++              ORDER BY id
++            `,
++          )
++          .all(),
++      ).toEqual([
++        {
++          id: "env_default",
++          environmentProviderId: "git-worktree",
++          environmentProviderSelection:
+             '{"machine":{"type":"existing","hostId":"host_ep"},"inputs":{"branch":{"kind":"default"}}}',
+           environmentProviderInstanceKey: null,
+         },
+@@ -5377,6 +6363,7 @@ describe("environment and thread startup ownership migration", () => {
      (phase) => {
        const db = createMigratedConnection();
        try {
@@ -13516,7 +13876,7 @@ index 73fa0f3df9a9a274e5cf754bc8edcb9b4f1cfcc3..2bc413211c70adf944a8a77ce93398e9
          rewindMachineProvidersMigration(db);
          rewindEnvironmentProvisioningMigration(db);
          dropQueuedMessageAttemptColumns(db);
-@@ -5431,3 +6416,35 @@ describe("environment and thread startup ownership migration", () => {
+@@ -5503,3 +6490,35 @@ describe("environment and thread startup ownership migration", () => {
      },
    );
  });
@@ -13553,85 +13913,85 @@ index 73fa0f3df9a9a274e5cf754bc8edcb9b4f1cfcc3..2bc413211c70adf944a8a77ce93398e9
 +  });
 +});
 diff --git a/packages/db/test/pane-focus-bindings-migration.test.ts b/packages/db/test/pane-focus-bindings-migration.test.ts
-index 1062bad0a17f0a665b507c0066f56a698ce02782..ebe8b95e2f34a7405482fc50ce276dca69fd9c4d 100644
+index ebe704e566dd6c78a16e51d08ae352b95a2ed322..32df10b0652b78294d165e34a2b9ac36523f78ce 100644
 --- a/packages/db/test/pane-focus-bindings-migration.test.ts
 +++ b/packages/db/test/pane-focus-bindings-migration.test.ts
-@@ -15,6 +15,7 @@ import {
-   dropQueuedMessageDeliveryColumns,
-   dropPluginFailureLabelColumns,
+@@ -17,6 +17,7 @@ import {
+   rewindMachineTeardownRecoveryColumns,
+   dropThreadRunStateTables,
    dropThreadStatusChangedAtColumn,
 +  dropEnvironmentSecretClassificationColumn,
    dropQueuedMessageEditHeldUntilColumn,
  } from "./helpers/rewind.js";
  
-@@ -60,6 +61,7 @@ function upgradeDatabase(overrides: AppKeybindingOverrides | undefined) {
-   dropQueuedMessageDeliveryColumns(db);
-   dropThreadStatusChangedAtColumn(db);
+@@ -64,6 +65,7 @@ function upgradeDatabase(overrides: AppKeybindingOverrides | undefined) {
+   dropThreadRunStateTables(db);
    dropPluginFailureLabelColumns(db);
+   rewindMachineTeardownRecoveryColumns(db);
 +  dropEnvironmentSecretClassificationColumn(db);
    db.$client
      .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
      .run(migrationTimestamp);
 diff --git a/packages/db/test/queued-message-state-migration.test.ts b/packages/db/test/queued-message-state-migration.test.ts
-index 51c17ddcd849e2c2041177b901180744b80286cd..0da2a3b1c072a40427ce38105316e50baf4673a1 100644
+index ea76f796f78956e55dbbb206dc28c90287eef7e3..de7461462b2a999e4bbb607bceae73ee4ff63d33 100644
 --- a/packages/db/test/queued-message-state-migration.test.ts
 +++ b/packages/db/test/queued-message-state-migration.test.ts
-@@ -12,6 +12,7 @@ import {
-   dropQueuedMessageDeliveryColumns,
-   dropPluginFailureLabelColumns,
+@@ -14,6 +14,7 @@ import {
+   rewindMachineTeardownRecoveryColumns,
+   dropThreadRunStateTables,
    dropThreadStatusChangedAtColumn,
 +  dropEnvironmentSecretClassificationColumn,
    rewindQueuedMessageStateMigration,
  } from "./helpers/rewind.js";
  
-@@ -63,6 +64,7 @@ function rewoundDatabase(): { db: DbConnection; threadId: string } {
-   dropQueuedMessageDeliveryColumns(db);
-   dropThreadStatusChangedAtColumn(db);
+@@ -67,6 +68,7 @@ function rewoundDatabase(): { db: DbConnection; threadId: string } {
+   dropThreadRunStateTables(db);
    dropPluginFailureLabelColumns(db);
+   rewindMachineTeardownRecoveryColumns(db);
 +  dropEnvironmentSecretClassificationColumn(db);
    return { db, threadId: thread.id };
  }
  
 diff --git a/packages/db/test/sidebar-installation-defaults.test.ts b/packages/db/test/sidebar-installation-defaults.test.ts
-index ff8f7630c32dc3a5e5f418e59d6994f9e42eae83..dcd6a09c612327da5ebbc0203517a5b9270a39df 100644
+index 4e05f31988d3424fee5bef5b7a9c610a4b46afa4..51c5398015dbecd5ae7ea912c299c8a14a52a0f4 100644
 --- a/packages/db/test/sidebar-installation-defaults.test.ts
 +++ b/packages/db/test/sidebar-installation-defaults.test.ts
-@@ -17,6 +17,7 @@ import {
-   dropQueuedMessageDeliveryColumns,
-   dropPluginFailureLabelColumns,
+@@ -19,6 +19,7 @@ import {
+   rewindMachineTeardownRecoveryColumns,
+   dropThreadRunStateTables,
    dropThreadStatusChangedAtColumn,
 +  dropEnvironmentSecretClassificationColumn,
    dropQueuedMessageEditHeldUntilColumn,
  } from "./helpers/rewind.js";
  
-@@ -98,6 +99,7 @@ describe.each(["project", "thread", "preference"] as const)(
-           dropQueuedMessageDeliveryColumns(db);
-           dropThreadStatusChangedAtColumn(db);
+@@ -102,6 +103,7 @@ describe.each(["project", "thread", "preference"] as const)(
+           dropThreadRunStateTables(db);
            dropPluginFailureLabelColumns(db);
+           rewindMachineTeardownRecoveryColumns(db);
 +  dropEnvironmentSecretClassificationColumn(db);
            db.$client
              .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
              .run(SIDEBAR_INSTALLATION_DEFAULTS_MIGRATION_TIMESTAMP);
 diff --git a/packages/db/test/thread-drafts-migration.test.ts b/packages/db/test/thread-drafts-migration.test.ts
-index 9f900cb9d42bc8c53dba72868eafeb839ec6e8cc..f69cd76e3ce6afe49ffe75f3224a99f2b1c2e5e1 100644
+index bdd49cf8aed8553515ded0d61435b876b4cf4fdb..d2573ce5bb39ee3ea3d7c0e8cbbaef523992318c 100644
 --- a/packages/db/test/thread-drafts-migration.test.ts
 +++ b/packages/db/test/thread-drafts-migration.test.ts
-@@ -18,6 +18,7 @@ import {
-   dropQueuedMessageDeliveryColumns,
-   dropPluginFailureLabelColumns,
+@@ -20,6 +20,7 @@ import {
+   rewindMachineTeardownRecoveryColumns,
+   dropThreadRunStateTables,
    dropThreadStatusChangedAtColumn,
 +  dropEnvironmentSecretClassificationColumn,
    dropQueuedMessageEditHeldUntilColumn,
  } from "./helpers/rewind.js";
  
-@@ -124,6 +125,7 @@ it.each([false, true])(
-       dropQueuedMessageDeliveryColumns(db);
-       dropThreadStatusChangedAtColumn(db);
+@@ -128,6 +129,7 @@ it.each([false, true])(
+       dropThreadRunStateTables(db);
        dropPluginFailureLabelColumns(db);
+       rewindMachineTeardownRecoveryColumns(db);
 +      dropEnvironmentSecretClassificationColumn(db);
        migrate(db);
        migrate(db);
  
 -- 
-2.50.1 (Apple Git-155)
+2.43.0
 

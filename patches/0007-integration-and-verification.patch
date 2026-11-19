@@ -1,13 +1,14 @@
-From 0e36dc4622f19860b94d418fadf5a36c832874b7 Mon Sep 17 00:00:00 2001
+From ee95784d871a7a2cc1f547e97a6e1d67d0a9d008 Mon Sep 17 00:00:00 2001
 From: Cole Lawrence <cole@colelawrence.com>
 Date: Fri, 13 Nov 2026 20:23:59 -0300
 Subject: [PATCH] Integration and verification
 
 ---
- .oxlintrc.json                                |  62 ++-
+ .oxlintrc.json                                |   6 +
  .../machine-environment.test.ts               |  53 ++-
  .../thread-organization.test.ts               |   1 +
  .../command-output/thread-wait.test.ts        |   1 +
+ .../__tests__/failing-server-guard.test.ts    |   1 +
  apps/cli/src/commands/machine-environment.ts  |  23 +-
  apps/cli/src/commands/settings.ts             |  26 ++
  apps/demo-server/src/fixtures/world.ts        |   1 +
@@ -37,11 +38,10 @@ Subject: [PATCH] Integration and verification
  .../project-environment-hooks.test.ts         |   2 +-
  .../services/plugins/heroes-phase2.test.ts    |   9 +-
  .../plugin-agent-contributions.test.ts        |  99 ++++-
- .../plugins/plugin-authoring-docs.test.ts     |   6 +
  .../plugins/plugin-mention-providers.test.ts  |  74 +++-
  .../plugin-p6r-admission-boundary.test.ts     | 361 ++++++++++++++++++
  .../plugin-presentation-context.test.ts       | 103 +++++
- .../test/services/plugins/plugin-sdk.test.ts  | 197 +++++++++-
+ .../test/services/plugins/plugin-sdk.test.ts  | 205 +++++++++-
  .../test/services/plugins/plugin-wire.test.ts |  81 +++-
  .../thread-manager-native-parity.test.ts      | 272 +++++++++++++
  .../thread-progress-native-facet.test.ts      |  97 +++++
@@ -61,8 +61,6 @@ Subject: [PATCH] Integration and verification
  plugins/bb-guide/skills/bb-cli/SKILL.md       |   8 +
  .../skills/bb-cli/references/command-index.md |   1 +
  .../skills/bb-plugin-authoring/SKILL.md       |   3 +
- .../references/backend-api-index.md           |  10 +
- .../references/frontend-api-index.md          |   3 +
  .../references/frontend-core-slots.md         |   6 +
  .../identity-and-native-projections.md        |  64 ++++
  .../references/providers.md                   |  13 +-
@@ -81,9 +79,10 @@ Subject: [PATCH] Integration and verification
  pnpm-lock.yaml                                |  22 +-
  scripts/provider-literal-baseline.json        |  23 +-
  .../fake/smoke/dynamic-acp-agent.test.ts      |   9 +-
+ .../fake/smoke/withdrawn-approvals.test.ts    |   3 +-
  tests/integration/helpers/harness.ts          |   2 +
- turbo.json                                    |  16 +-
- 79 files changed, 3842 insertions(+), 149 deletions(-)
+ turbo.json                                    |   3 +
+ 78 files changed, 3780 insertions(+), 135 deletions(-)
  create mode 100644 apps/server/test/app/hub-backpressure-native.test.ts
  create mode 100644 apps/server/test/app/hub-backpressure.test.ts
  create mode 100644 apps/server/test/helpers/p6r-authorship.ts
@@ -100,145 +99,16 @@ Subject: [PATCH] Integration and verification
  create mode 100644 plugins/environment-modal-sandbox/providers/modal/tailnet.ts
 
 diff --git a/.oxlintrc.json b/.oxlintrc.json
-index a28daf90d0b4b57ec70ea7056834b2d497c5af19..36c2a170ec608afc81a85fed54e2534a9f74a495 100644
+index 91bd0dfcb8a93f5b58418f38203e50e40bd607fb..11b187893adf210a02e5baa286f0e9b6125810ab 100644
 --- a/.oxlintrc.json
 +++ b/.oxlintrc.json
-@@ -1,7 +1,9 @@
- {
-   "$schema": "./node_modules/oxlint/configuration_schema.json",
-   "plugins": [],
--  "jsPlugins": ["./scripts/oxlint-plugin.mjs"],
-+  "jsPlugins": [
-+    "./scripts/oxlint-plugin.mjs"
-+  ],
-   "categories": {
-     "correctness": "off"
-   },
-@@ -36,8 +38,12 @@
-       }
-     },
-     {
--      "files": ["**/*.{ts,tsx}"],
--      "plugins": ["react"],
-+      "files": [
-+        "**/*.{ts,tsx}"
-+      ],
-+      "plugins": [
-+        "react"
-+      ],
+@@ -312,6 +312,12 @@
        "rules": {
-         "react/rules-of-hooks": "error",
-         "react/exhaustive-deps": "error",
-@@ -57,7 +63,10 @@
-       }
-     },
-     {
--      "files": ["apps/**/*.{ts,tsx}", "packages/**/*.{ts,tsx}"],
-+      "files": [
-+        "apps/**/*.{ts,tsx}",
-+        "packages/**/*.{ts,tsx}"
-+      ],
-       "rules": {
-         "no-restricted-imports": [
-           "error",
-@@ -65,12 +74,20 @@
-             "paths": [
-               {
-                 "name": "node:child_process",
--                "importNames": ["spawnSync", "execSync", "execFileSync"],
-+                "importNames": [
-+                  "spawnSync",
-+                  "execSync",
-+                  "execFileSync"
-+                ],
-                 "message": "Use async child_process APIs instead of blocking sync variants."
-               },
-               {
-                 "name": "child_process",
--                "importNames": ["spawnSync", "execSync", "execFileSync"],
-+                "importNames": [
-+                  "spawnSync",
-+                  "execSync",
-+                  "execFileSync"
-+                ],
-                 "message": "Use async child_process APIs instead of blocking sync variants."
-               }
-             ]
-@@ -143,7 +160,9 @@
-       }
-     },
-     {
--      "files": ["apps/server/src/**/*.ts"],
-+      "files": [
-+        "apps/server/src/**/*.ts"
-+      ],
-       "rules": {
-         "no-restricted-imports": [
-           "error",
-@@ -159,11 +178,11 @@
-               },
-               {
-                 "name": "node:fs",
--                "message": "Server must not use node:fs. Use daemon commands for workspace access. (attachments.ts is the only exception — it manages server-local storage.)"
-+                "message": "Server must not use node:fs. Use daemon commands for workspace access. (attachments.ts is the only exception \u2014 it manages server-local storage.)"
-               },
-               {
-                 "name": "node:fs/promises",
--                "message": "Server must not use node:fs/promises. Use daemon commands for workspace access. (attachments.ts is the only exception — it manages server-local storage.)"
-+                "message": "Server must not use node:fs/promises. Use daemon commands for workspace access. (attachments.ts is the only exception \u2014 it manages server-local storage.)"
-               }
-             ]
-           }
-@@ -180,7 +199,9 @@
-       }
-     },
-     {
--      "files": ["apps/mobile/**/*.{ts,tsx}"],
-+      "files": [
-+        "apps/mobile/**/*.{ts,tsx}"
-+      ],
-       "rules": {
-         "no-restricted-imports": [
-           "error",
-@@ -193,7 +214,10 @@
-             ],
-             "patterns": [
-               {
--                "group": ["@bb/shared-ui", "@bb/shared-ui/*"],
-+                "group": [
-+                  "@bb/shared-ui",
-+                  "@bb/shared-ui/*"
-+                ],
-                 "message": "@bb/shared-ui is React DOM + Radix. Use the mobile primitives instead."
-               }
-             ]
-@@ -202,7 +226,9 @@
-       }
-     },
-     {
--      "files": ["apps/app/src/**/*.{ts,tsx}"],
-+      "files": [
-+        "apps/app/src/**/*.{ts,tsx}"
-+      ],
-       "rules": {
-         "bb/no-native-title-with-aria-label": "error",
-         "bb/no-native-title-on-button": "error"
-@@ -220,10 +246,20 @@
-       }
-     },
-     {
--      "files": ["plugins/**/*.{ts,tsx,mts,cts,js,mjs,cjs}"],
-+      "files": [
-+        "plugins/**/*.{ts,tsx,mts,cts,js,mjs,cjs}"
-+      ],
-       "rules": {
-         "bb/forkable-plugin-imports": "error"
+         "bb/no-raw-resize-observer": "off"
        }
 +    },
 +    {
-+      "files": [
-+        "plugins/provider-claude-code/src/bridge/__tests__/bridge.test.ts"
-+      ],
++      "files": ["plugins/provider-claude-code/src/bridge/__tests__/bridge.test.ts"],
 +      "rules": {
 +        "bb/forkable-plugin-imports": "off"
 +      }
@@ -358,8 +228,20 @@ index 924264d287748e00bd9640b63c72b8bc8fd8c4c7..dc736ec63f156b2d1561ce113b978fb2
      origin: null,
      originPluginId: null,
      initiator: "system",
+diff --git a/apps/cli/src/__tests__/failing-server-guard.test.ts b/apps/cli/src/__tests__/failing-server-guard.test.ts
+index 49669aa51ad232f50dbd7f396ca15d2193fc765e..c8067b135605d3158fb1a9c78c260847539e38b4 100644
+--- a/apps/cli/src/__tests__/failing-server-guard.test.ts
++++ b/apps/cli/src/__tests__/failing-server-guard.test.ts
+@@ -95,6 +95,7 @@ const ARGUMENTS_BY_COMMAND: Record<string, readonly string[]> = {
+     "Default",
+   ],
+   "environment update": [IDS.environment, "--name", "x"],
++  "machine env set": ["x", "--plain"],
+   "plugin install": ["path:/tmp/x", "--yes"],
+   "terminal close": [IDS.terminal, "--if-clean"],
+   "file write": ["/tmp/x", "--host", IDS.host, "--content", "x"],
 diff --git a/apps/cli/src/commands/machine-environment.ts b/apps/cli/src/commands/machine-environment.ts
-index f4fb0f5065dc02a6de7d2d440c6dee754bc653ae..ee92a6d888b1aaa5dd820db9585f62dffad07d3f 100644
+index aedb962bb6f7d2f9b2d5f9ba64eafe9e6855a445..49927753733ac7e9f8993cd2c457db5a6d3b4546 100644
 --- a/apps/cli/src/commands/machine-environment.ts
 +++ b/apps/cli/src/commands/machine-environment.ts
 @@ -69,7 +69,7 @@ export function registerMachineEnvironmentCommands(
@@ -410,10 +292,10 @@ index f4fb0f5065dc02a6de7d2d440c6dee754bc653ae..ee92a6d888b1aaa5dd820db9585f62df
            };
            printEnvironment(
 diff --git a/apps/cli/src/commands/settings.ts b/apps/cli/src/commands/settings.ts
-index b94778ba360cb1cfc6de8ad7e7d3275d2c38a70b..0afda1367ac4c4ded091cedd69a8c40e9cf8df3c 100644
+index 42eaf00ed1fc93ade509cd76b1ba4f4f54376f68..cf123ec1105776aa11aa7629fb0b6773ae70df82 100644
 --- a/apps/cli/src/commands/settings.ts
 +++ b/apps/cli/src/commands/settings.ts
-@@ -388,6 +388,32 @@ export function registerSettingsCommands(
+@@ -392,6 +392,32 @@ export function registerSettingsCommands(
      .command("settings")
      .description("Inspect and update BB settings");
  
@@ -459,7 +341,7 @@ index 0653b73a848a7bc819800d2ae33a093c4b33cb39..351ef6f3179370b45f9628ac0e38109b
      content: args.content,
      model: THREAD_DEFAULT_EXECUTION_OPTIONS.model,
 diff --git a/apps/server/package.json b/apps/server/package.json
-index 62814305b00d07a65dc4fc6c7a3587dfb299604e..414fb86e4bd89c3de8301a1f49eee4fbbd933eb8 100644
+index e10325d70e7cd1ec2801aa53a5ea29a70a16188b..3b13fc0fa86f6835677949069bdace5a48408103 100644
 --- a/apps/server/package.json
 +++ b/apps/server/package.json
 @@ -4,7 +4,7 @@
@@ -471,7 +353,7 @@ index 62814305b00d07a65dc4fc6c7a3587dfb299604e..414fb86e4bd89c3de8301a1f49eee4fb
      "start": "node dist/index.js",
      "dev": "node --conditions=source --import tsx scripts/dev-supervisor.mjs",
      "clean": "rimraf dist",
-@@ -17,6 +17,7 @@
+@@ -18,6 +18,7 @@
    },
    "dependencies": {
      "@bb/async-cache": "workspace:*",
@@ -479,14 +361,14 @@ index 62814305b00d07a65dc4fc6c7a3587dfb299604e..414fb86e4bd89c3de8301a1f49eee4fb
      "@bb/config": "workspace:*",
      "@bb/core-ui": "workspace:*",
      "@bb/db": "workspace:*",
-@@ -58,7 +59,6 @@
+@@ -59,7 +60,6 @@
    },
    "devDependencies": {
      "@bb/agent-runtime": "workspace:*",
 -    "@bb/client-core": "workspace:*",
-     "@bb/frp-client": "workspace:*",
      "@bb/scripts": "workspace:*",
      "@bb/test-helpers": "workspace:*",
+     "@bb/tsconfig": "workspace:*",
 diff --git a/apps/server/scripts/generate-bb-official-marketplace.ts b/apps/server/scripts/generate-bb-official-marketplace.ts
 index 7dc4a324cb5d5687fdf1eb9907c1b0c85601c689..c7a30f7bd0134975723c0b6b73f58e2d715c7ffc 100644
 --- a/apps/server/scripts/generate-bb-official-marketplace.ts
@@ -902,7 +784,7 @@ index 0000000000000000000000000000000000000000..65ec73c8b966c303b083eee9230f07d0
 +  });
 +}
 diff --git a/apps/server/test/helpers/test-app.ts b/apps/server/test/helpers/test-app.ts
-index 0aac30554809159659ffc2f27990216d62200514..6b3a627cba065cc576af407e56f9bb3166cd77b6 100644
+index e46eb49c07bb5d28e7bdc549a7af0e54d9ab96f6..08f68324f13822cc33c6ef8f99f6b5777c1dccfd 100644
 --- a/apps/server/test/helpers/test-app.ts
 +++ b/apps/server/test/helpers/test-app.ts
 @@ -1,3 +1,4 @@
@@ -910,7 +792,7 @@ index 0aac30554809159659ffc2f27990216d62200514..6b3a627cba065cc576af407e56f9bb31
  import { installDefaultEnvironmentProviders } from "./environment-provider.js";
  import { registerTestHarnessWarmup } from "./test-harness-warmup.js";
  import { setPluginEnvironmentProviderBridge } from "../../src/services/plugins/plugin-environment-provider-registry.js";
-@@ -158,6 +159,7 @@ export function createTestDaemonHostKey(
+@@ -155,6 +156,7 @@ export function createTestDaemonHostKey(
  
  export function createTestDb(): DbConnection {
    const db = createMigratedConnection();
@@ -1585,7 +1467,7 @@ index 85ae5c13279bc937c509eb5cebd250c4f935daf7..1b8eb976e0f1f30c0328538e90d7086e
          });
          const response = harness.app.fetch(
 diff --git a/apps/server/test/public/public-terminals.test.ts b/apps/server/test/public/public-terminals.test.ts
-index 474513144d72d2afd352cbdd04f60a3de0518204..810466bada6dfd0494efd4f259b05746bc4bcdfe 100644
+index 6839bbe01a677c4d370bd0dc1aab1c128f372fb0..179a856aa87a9d764279590c720e190e030917ef 100644
 --- a/apps/server/test/public/public-terminals.test.ts
 +++ b/apps/server/test/public/public-terminals.test.ts
 @@ -422,6 +422,7 @@ describe("public terminal routes", () => {
@@ -1611,10 +1493,10 @@ index 474513144d72d2afd352cbdd04f60a3de0518204..810466bada6dfd0494efd4f259b05746
            },
          );
 diff --git a/apps/server/test/public/public-thread-compaction.test.ts b/apps/server/test/public/public-thread-compaction.test.ts
-index 68d1dd417cedcc6bdd805f9ef6948465773f6d61..42db61e73df84c760a8af3d2dee2ac15da75542e 100644
+index d1227b609b340aa55eaa1e17e8566ffca4b79edf..5f10a27a4e8ecb4457edad79d1aa632f8d836dfc 100644
 --- a/apps/server/test/public/public-thread-compaction.test.ts
 +++ b/apps/server/test/public/public-thread-compaction.test.ts
-@@ -737,7 +737,7 @@ describe("public thread compaction", () => {
+@@ -722,7 +722,7 @@ describe("public thread compaction", () => {
        ).toBe(true);
        await expect.poll(() => turnSubmits().length).toBe(2);
        expect(turnSubmits()[1]).toMatchObject({
@@ -1624,7 +1506,7 @@ index 68d1dd417cedcc6bdd805f9ef6948465773f6d61..42db61e73df84c760a8af3d2dee2ac15
      });
    });
 diff --git a/apps/server/test/public/public-thread-data.test.ts b/apps/server/test/public/public-thread-data.test.ts
-index 540afac9683891fece3fbaf47a9122221dba8cbc..accd8532acbf016a111ded548ffab6b09436ea36 100644
+index fad07115d8694f4066aba3d5f57a431b2514c898..aab8319777bebed31dff8474851193cfa5ab3b1d 100644
 --- a/apps/server/test/public/public-thread-data.test.ts
 +++ b/apps/server/test/public/public-thread-data.test.ts
 @@ -1,4 +1,8 @@
@@ -1684,7 +1566,7 @@ index 540afac9683891fece3fbaf47a9122221dba8cbc..accd8532acbf016a111ded548ffab6b0
  
        const timelineResponse = await harness.app.request(
          `/api/v1/threads/${createdThread.id}/timeline`,
-@@ -3460,14 +3490,23 @@ describe("public thread data routes", () => {
+@@ -3463,14 +3493,23 @@ describe("public thread data routes", () => {
          ({ command }) =>
            command.type === "turn.submit" && command.threadId === thread.id,
        );
@@ -1710,7 +1592,7 @@ index 540afac9683891fece3fbaf47a9122221dba8cbc..accd8532acbf016a111ded548ffab6b0
        const requestedEvent = harness.db
          .select({ data: events.data })
          .from(events)
-@@ -3477,8 +3516,18 @@ describe("public thread data routes", () => {
+@@ -3480,8 +3519,18 @@ describe("public thread data routes", () => {
              eq(events.type, "client/turn/requested"),
            ),
          )
@@ -1729,7 +1611,7 @@ index 540afac9683891fece3fbaf47a9122221dba8cbc..accd8532acbf016a111ded548ffab6b0
        expect(
          Object.hasOwn(JSON.parse(requestedEvent!.data), "inputGroups"),
        ).toBe(false);
-@@ -4668,6 +4717,147 @@ describe("public thread data routes", () => {
+@@ -4671,6 +4720,147 @@ describe("public thread data routes", () => {
      });
    });
  
@@ -2186,7 +2068,7 @@ index 0000000000000000000000000000000000000000..be7b8435899b345a342730f3ebc0427a
 +  );
 +});
 diff --git a/apps/server/test/public/public-thread-fork.test.ts b/apps/server/test/public/public-thread-fork.test.ts
-index f80d9050dd339f669a48fdf84e3c7638c5c51115..d82a494f815a643fa072a2503ddd7ded5da4e75a 100644
+index 199f21c3a6949f71199f11863ac2cc84b55ae43a..0fce24d6f55860e749a4b65704168e72a0896d7d 100644
 --- a/apps/server/test/public/public-thread-fork.test.ts
 +++ b/apps/server/test/public/public-thread-fork.test.ts
 @@ -2,6 +2,10 @@ import { availableModelFixture } from "../helpers/available-models.js";
@@ -2304,7 +2186,7 @@ index f80d9050dd339f669a48fdf84e3c7638c5c51115..d82a494f815a643fa072a2503ddd7ded
    });
  
 diff --git a/apps/server/test/public/public-thread-offline-followup.test.ts b/apps/server/test/public/public-thread-offline-followup.test.ts
-index b8d1d1cbaed4f66db5cdf693976b8def1c05e920..895189fe94dce0b571284440899a13c70f34b5c7 100644
+index 9464c1f12790b9f4ed25d621e1fcbc9c17e0f2a5..64418035fe69d1ba1beaeea1230a3af8277dfe26 100644
 --- a/apps/server/test/public/public-thread-offline-followup.test.ts
 +++ b/apps/server/test/public/public-thread-offline-followup.test.ts
 @@ -1,5 +1,12 @@
@@ -2312,7 +2194,7 @@ index b8d1d1cbaed4f66db5cdf693976b8def1c05e920..895189fe94dce0b571284440899a13c7
 +  p6rMachineWrappedInput,
 +  expectP6rMachineAuthor,
 +} from "../helpers/p6r-authorship.js";
- import { listEvents, listQueuedThreadMessages } from "@bb/db";
+ import { listQueuedThreadMessages } from "@bb/db";
 -import { queuedMessageWaitingOnSchema } from "@bb/domain";
 +import {
 +  queuedMessageWaitingOnSchema,
@@ -2320,10 +2202,10 @@ index b8d1d1cbaed4f66db5cdf693976b8def1c05e920..895189fe94dce0b571284440899a13c7
 +} from "@bb/domain";
  import { sendMessageResponseSchema } from "@bb/server-contract";
  import { describe, expect, it } from "vitest";
- import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
-@@ -24,6 +31,15 @@ import {
- } from "../helpers/seed.js";
+ import { moveThreadStatus } from "../helpers/thread-status.js";
+@@ -25,6 +32,15 @@ import {
  import { withTestHarness } from "../helpers/test-app.js";
+ import { listEvents } from "@bb/db/testing";
  
 +function expectStoredMachineAttribution(raw: string | null): void {
 +  expect(raw).toEqual(expect.any(String));
@@ -2337,7 +2219,7 @@ index b8d1d1cbaed4f66db5cdf693976b8def1c05e920..895189fe94dce0b571284440899a13c7
  describe("offline host follow-ups", () => {
    it("queues a follow-up for a host whose socket just dropped", async () => {
      await withTestHarness(async (harness) => {
-@@ -164,7 +180,10 @@ describe("offline host follow-ups", () => {
+@@ -165,7 +181,10 @@ describe("offline host follow-ups", () => {
          id: body.queuedMessage.id,
          sendAt: null,
          failureReason: null,
@@ -2348,13 +2230,13 @@ index b8d1d1cbaed4f66db5cdf693976b8def1c05e920..895189fe94dce0b571284440899a13c7
        expect(listEvents(harness.db, { threadId: thread.id })).toHaveLength(
          eventCountBeforeSend,
        );
-@@ -214,9 +233,22 @@ describe("offline host follow-ups", () => {
+@@ -215,9 +234,22 @@ describe("offline host follow-ups", () => {
        }
        expect(dispatched.command).toMatchObject({
          threadId: thread.id,
 -        input,
 +        input: p6rMachineWrappedInput(input),
-         target: { mode: "start" },
+         target: { mode: "auto", expectedTurnId: null },
        });
 +      expect(dispatched.command.input.slice(1, -1)).toEqual(input);
 +      const requested = listEvents(harness.db, { threadId: thread.id })
@@ -2373,10 +2255,10 @@ index b8d1d1cbaed4f66db5cdf693976b8def1c05e920..895189fe94dce0b571284440899a13c7
        expect(listEvents(harness.db, { threadId: thread.id })).toHaveLength(
          eventCountBeforeSend + 1,
 diff --git a/apps/server/test/server-move/imported-daemon-sessions.test.ts b/apps/server/test/server-move/imported-daemon-sessions.test.ts
-index 5e207bde61ac4329ea161e1a5e9667f53b63e662..a0cc81b128f6523ccb61d46865829dbe886aef3e 100644
+index cdd247cfeed1010cbc6be075a0f63e2fc1c00cde..6243f6d7e057313947a0ec107c27ad9959c59d99 100644
 --- a/apps/server/test/server-move/imported-daemon-sessions.test.ts
 +++ b/apps/server/test/server-move/imported-daemon-sessions.test.ts
-@@ -177,11 +177,26 @@ describe("daemon sessions in an imported server snapshot", () => {
+@@ -178,11 +178,26 @@ describe("daemon sessions in an imported server snapshot", () => {
        fileURLToPath(new URL("../../src/start-server.ts", import.meta.url)),
        "utf8",
      );
@@ -2636,48 +2518,6 @@ index 6ab2d57a6e951c637b6fdea9325742ccef0bdf7e..07a55eed93fa0b1fbdb01dd5b55c6fc2
 +    }
    });
  });
-diff --git a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-index 552df69f12d9f99c29838af56b4cba2d9ddb90f3..2d4fd7f02b07d6ff4a69681e7fc1c96c62ec9b35 100644
---- a/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-+++ b/apps/server/test/services/plugins/plugin-authoring-docs.test.ts
-@@ -8,6 +8,7 @@ import {
-   type BbPluginApi,
-   type ExperimentalAppOverlayProps,
-   type ExperimentalMessageMetadataProps,
-+  type ExperimentalSidebarLayoutProviderProps,
-   type PluginAppBuilder,
-   type PluginAppSlots,
-   type PluginContentScriptContext,
-@@ -185,10 +186,13 @@ const BB_PLUGIN_API_KEYS = [
-   "server",
-   "hosts",
-   "experimental_aiServices",
-+  "experimental_facets",
-   "experimental_hooks",
-   "experimental_environments",
-   "experimental_machines",
-   "experimental_serverAccess",
-+  "experimental_p6rIdentity",
-+  "experimental_p6rRoutes",
-   "sdk",
-   "onDispose",
-   "onInstall",
-@@ -287,6 +291,7 @@ type SlotPropsByName = {
-   experimental_newThreadPanelAction: PluginNewThreadPanelProps;
-   pendingInteraction: PluginPendingInteractionProps;
-   sidebarFooterAction: PluginSidebarFooterActionProps;
-+  experimental_sidebarLayoutProvider: ExperimentalSidebarLayoutProviderProps;
-   experimental_threadList: PluginThreadListProps;
-   experimental_sidebarNavigation: ExperimentalSidebarNavigationProps;
-   experimental_threadContextSegment: ExperimentalThreadContextSegmentProps;
-@@ -380,6 +385,7 @@ const FRONTEND_SLOT_PROP_FIELDS = {
-   experimental_newThreadPanelAction: ["projectId", "params"],
-   pendingInteraction: ["interaction", "submit", "cancel"],
-   sidebarFooterAction: [],
-+  experimental_sidebarLayoutProvider: ["publish", "subscribeChanges"],
-   experimental_threadList: [
-     "activeThreadId",
-     "activeProjectId",
 diff --git a/apps/server/test/services/plugins/plugin-mention-providers.test.ts b/apps/server/test/services/plugins/plugin-mention-providers.test.ts
 index 240799a294d78a94da3669bd94259545033cdf14..2f38015a95e24aa2aa6b7646fe7f332a0b9a41da 100644
 --- a/apps/server/test/services/plugins/plugin-mention-providers.test.ts
@@ -3281,22 +3121,22 @@ index 0000000000000000000000000000000000000000..b18c1778f6aa72136199223a51a26801
 +  });
 +});
 diff --git a/apps/server/test/services/plugins/plugin-sdk.test.ts b/apps/server/test/services/plugins/plugin-sdk.test.ts
-index 4d7e5619ca182b2d6d7e4e5373c135039d41bdcd..9615e41046caea884347f30236d88235e21073b3 100644
+index 0f189191f75c9680d8ddbee8520c985d9fef6995..46c7eadab381164cf20755a8b4025ecb922d90a9 100644
 --- a/apps/server/test/services/plugins/plugin-sdk.test.ts
 +++ b/apps/server/test/services/plugins/plugin-sdk.test.ts
-@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
+@@ -4,14 +4,17 @@ import { tmpdir } from "node:os";
  import { join } from "node:path";
  import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  import {
 +  getLatestThreadSequence,
-+  listEvents,
 +  listQueuedThreadMessages,
    archiveThread,
    createThread,
    getThread,
-@@ -11,7 +14,7 @@ import {
+   insertThreadPluginMetadata,
    type DbConnection,
  } from "@bb/db";
++import { listEvents } from "@bb/db/testing";
  import { createMigratedConnection } from "@bb/db/testing";
 -import { PERSONAL_PROJECT_ID } from "@bb/domain";
 +import { PERSONAL_PROJECT_ID, turnRequestEventDataSchema } from "@bb/domain";
@@ -3311,7 +3151,7 @@ index 4d7e5619ca182b2d6d7e4e5373c135039d41bdcd..9615e41046caea884347f30236d88235
    seedThreadRuntimeState,
  } from "../../helpers/seed.js";
  import {
-@@ -1216,6 +1220,197 @@ describe("plugin bb.sdk against a running server", () => {
+@@ -1155,6 +1159,205 @@ describe("plugin bb.sdk against a running server", () => {
        vi.unstubAllGlobals();
        await server.pluginService.stop();
        await rm(workDir, { recursive: true, force: true });
@@ -3386,7 +3226,11 @@ index 4d7e5619ca182b2d6d7e4e5373c135039d41bdcd..9615e41046caea884347f30236d88235
 +          mode: "auto",
 +          input: producerInput,
 +        }),
-+      ).resolves.toEqual({ ok: true, delivery: "sent" });
++      ).resolves.toEqual({
++        ok: true,
++        delivery: "sent",
++        messageSequence: expect.any(Number),
++      });
 +      const producerCommand = await waitForQueuedCommand(
 +        server,
 +        ({ command }) =>
@@ -3454,7 +3298,11 @@ index 4d7e5619ca182b2d6d7e4e5373c135039d41bdcd..9615e41046caea884347f30236d88235
 +            },
 +          ],
 +        }),
-+      ).resolves.toEqual({ ok: true, delivery: "sent" });
++      ).resolves.toEqual({
++        ok: true,
++        delivery: "sent",
++        messageSequence: expect.any(Number),
++      });
 +      await waitForQueuedCommand(
 +        server,
 +        ({ command }) =>
@@ -4005,13 +3853,13 @@ index 0000000000000000000000000000000000000000..01b48dc3b3d3a2b265696e9cce5ffd95
 +  }, 75_000);
 +});
 diff --git a/apps/server/test/threads/environment-providers.test.ts b/apps/server/test/threads/environment-providers.test.ts
-index 5ad38427affc98296df4144bb3f10795d013969f..b7bff86f2f18891ee5b4093b593e69a5069b90dd 100644
+index acd95e640829e4929ba865c0b53ad706bf745a7c..71d0b95111c2ef41789424159ab477729bbe35c1 100644
 --- a/apps/server/test/threads/environment-providers.test.ts
 +++ b/apps/server/test/threads/environment-providers.test.ts
 @@ -88,6 +88,7 @@ import {
-   seedThreadRuntimeState,
  } from "../helpers/seed.js";
  import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
+ import { listEvents } from "@bb/db/testing";
 +import { p6rMachineWrappedInput } from "../helpers/p6r-authorship.js";
  
  const WORKSPACE_PATH = "/tmp/environment-providers-project";
@@ -4026,10 +3874,10 @@ index 5ad38427affc98296df4144bb3f10795d013969f..b7bff86f2f18891ee5b4093b593e69a5
      expect(getThread(harness.db, created.id)?.environmentId).not.toBe(
        environmentId,
 diff --git a/apps/server/test/threads/queue-drain-failure.test.ts b/apps/server/test/threads/queue-drain-failure.test.ts
-index e3dd078efb408bb921d3a23ff27fb0e7033b463e..0e2e36b534f88ae89eb1228e690c1c8bd4fd3a20 100644
+index 8cbad4d0b75ebcbe7212bee70fe98edab0690042..16e7708107fdbbdb8665d0a59509cf130f9b9adc 100644
 --- a/apps/server/test/threads/queue-drain-failure.test.ts
 +++ b/apps/server/test/threads/queue-drain-failure.test.ts
-@@ -123,6 +123,66 @@ describe("host-connected queue dispatch", () => {
+@@ -121,6 +121,66 @@ describe("host-connected queue dispatch", () => {
    });
  });
  
@@ -4097,10 +3945,10 @@ index e3dd078efb408bb921d3a23ff27fb0e7033b463e..0e2e36b534f88ae89eb1228e690c1c8b
    it("hides a failed row from the wakes that are not its booked retry", async () => {
      await withTestHarness(async (harness) => {
 diff --git a/apps/server/test/threads/thread-edit-message.test.ts b/apps/server/test/threads/thread-edit-message.test.ts
-index 9227e614438db82710da20faa7afe22ee0e66867..ac515a12be9b0e429b02e57ee1e3558b71a65ca5 100644
+index 168398ee1b3880cf9e2dcaa22bd64fdde68a74c6..5d2f0dba10bb67f031681f48f0302dbcf86a5b46 100644
 --- a/apps/server/test/threads/thread-edit-message.test.ts
 +++ b/apps/server/test/threads/thread-edit-message.test.ts
-@@ -15,6 +15,8 @@ import {
+@@ -14,6 +14,8 @@ import {
    encodeClientTurnRequestIdNumber,
    threadScope,
    turnScope,
@@ -4109,8 +3957,8 @@ index 9227e614438db82710da20faa7afe22ee0e66867..ac515a12be9b0e429b02e57ee1e3558b
    type PromptInput,
    type ThreadEventTurnStatus,
    type ThreadStatus,
-@@ -42,6 +44,12 @@ import { readJson } from "../helpers/json.js";
- import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
+@@ -42,6 +44,12 @@ import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
+ import { listEvents } from "@bb/db/testing";
  
  const MESSAGE_EDIT_PROVIDERS = ["codex", "pi", "claude-code"] as const;
 +
@@ -4252,10 +4100,10 @@ index 9227e614438db82710da20faa7afe22ee0e66867..ac515a12be9b0e429b02e57ee1e3558b
      await withTestHarness(async (harness) => {
        const { environment, thread } = seedEditableThread(harness, {
 diff --git a/apps/server/test/threads/thread-provisioning-recovery.test.ts b/apps/server/test/threads/thread-provisioning-recovery.test.ts
-index 7a7d02ca7878389fbaade5b00c673ac695b2f41d..210abd7a9fbce41d73c46d5d3077047c4e05d5e6 100644
+index b7103405c86660e51d19b469b1e802fe148e2d61..5cd2a914769a0ee593c9bfef8c598fb42bf09503 100644
 --- a/apps/server/test/threads/thread-provisioning-recovery.test.ts
 +++ b/apps/server/test/threads/thread-provisioning-recovery.test.ts
-@@ -50,6 +50,7 @@ import {
+@@ -49,6 +49,7 @@ import {
    type QueuedCommand,
  } from "../helpers/commands.js";
  import { textInput } from "../helpers/prompt-input.js";
@@ -4263,7 +4111,7 @@ index 7a7d02ca7878389fbaade5b00c673ac695b2f41d..210abd7a9fbce41d73c46d5d3077047c
  import {
    seedEnvironment,
    seedEvent,
-@@ -1151,7 +1152,7 @@ it.each(["pending", "starting"] as const)(
+@@ -1153,7 +1154,7 @@ it.each(["pending", "starting"] as const)(
            command.type === "thread.start" && command.threadId === thread.id,
        );
        expect(start.command).toMatchObject({
@@ -4273,10 +4121,10 @@ index 7a7d02ca7878389fbaade5b00c673ac695b2f41d..210abd7a9fbce41d73c46d5d3077047c
        });
        expect(getThread(harness.db, thread.id)?.environmentId).toBe(
 diff --git a/apps/server/test/threads/thread-turn-dispatch.test.ts b/apps/server/test/threads/thread-turn-dispatch.test.ts
-index a059761f080a61fdc9cc8c9ef8f8b20c4550bdfd..ef4bdd9a02589c693eb78f5d77cbf3371465f846 100644
+index 81db5a5e84a78a0681c5e82c24843f3f4719ad5c..a370c45a7819f96e3ae666dee4e9f342e2f510fa 100644
 --- a/apps/server/test/threads/thread-turn-dispatch.test.ts
 +++ b/apps/server/test/threads/thread-turn-dispatch.test.ts
-@@ -75,3 +75,38 @@ it("leaves reprovision unstarted when dispatch admission rejects the request", a
+@@ -76,3 +76,38 @@ it("leaves reprovision unstarted when dispatch admission rejects the request", a
      expect(notifyThread).not.toHaveBeenCalled();
    });
  });
@@ -4316,10 +4164,10 @@ index a059761f080a61fdc9cc8c9ef8f8b20c4550bdfd..ef4bdd9a02589c693eb78f5d77cbf337
 +  });
 +});
 diff --git a/docs/api_to_audit.md b/docs/api_to_audit.md
-index ce7471b1747434444889b6c79a794abc8ecd215e..7439a3c40addf7a9ffa320399332e9792089b274 100644
+index 7746895fcc691c478cc0ea213139879a24ea13e3..96734e918aa1a004e9fbe2519d91d37962e3e266 100644
 --- a/docs/api_to_audit.md
 +++ b/docs/api_to_audit.md
-@@ -475,6 +475,17 @@ with a `null` thread and project. Each entry is a literal or a
+@@ -549,6 +549,17 @@ with a `null` thread and project. Each entry is a literal or a
  server-relative path the host expands. Conflicts resolve in plugin load
  order, and the values override the shell environment.
  
@@ -4337,7 +4185,7 @@ index ce7471b1747434444889b6c79a794abc8ecd215e..7439a3c40addf7a9ffa320399332e979
  Docs: `providers.md`.
  
  **Audit before stabilizing.**
-@@ -490,6 +501,9 @@ Docs: `providers.md`.
+@@ -564,6 +575,9 @@ Docs: `providers.md`.
     stable machine-readable purpose beside it.
  6. Decide whether the context and entry types should stabilize with the method
     or remain experimental for a longer compatibility window.
@@ -4347,7 +4195,7 @@ index ce7471b1747434444889b6c79a794abc8ecd215e..7439a3c40addf7a9ffa320399332e979
  
  ## Compatibility windows
  
-@@ -2726,6 +2740,27 @@ Docs: `frontend-core-slots.md`.
+@@ -2834,6 +2848,27 @@ Docs: `frontend-core-slots.md`.
     disclosure replacement, plugin reload, crash isolation, and removal while
     open across desktop and compact sidebar layouts.
  
@@ -4375,7 +4223,7 @@ index ce7471b1747434444889b6c79a794abc8ecd215e..7439a3c40addf7a9ffa320399332e979
  ## `app.slots.experimental_threadList` (`@get-bb/plugin-sdk/app`)
  
  **Kept experimental (2026-08-22).** Only examples use it. No shipped consumer
-@@ -4841,3 +4876,30 @@ precedence, bounded discovery failure, and module-ABI preservation after Node
+@@ -5008,3 +5043,30 @@ precedence, bounded discovery failure, and module-ABI preservation after Node
  replacement. Settle the shared process-local instance lifecycle across SDK
  bundle versions and whether `bundledNpmCli` belongs on the public surface before
  removing the prefix.
@@ -4407,7 +4255,7 @@ index ce7471b1747434444889b6c79a794abc8ecd215e..7439a3c40addf7a9ffa320399332e979
 +viewer or a claimed message author. Audit canonical source and mapper retention
 +when changing the thread-list contract.
 diff --git a/docs/configuration.md b/docs/configuration.md
-index 1e642a06e00ae48c2024b92a292c5efdcebd7d77..e3becfeb45b75cdec77b756d303951ef3cc4807b 100644
+index 0de98d3fde222dfd39f13985c30da95ca6c2d13f..7673b54198c7e944dd477fa2674016ae97e3022c 100644
 --- a/docs/configuration.md
 +++ b/docs/configuration.md
 @@ -1,5 +1,19 @@
@@ -4430,7 +4278,7 @@ index 1e642a06e00ae48c2024b92a292c5efdcebd7d77..e3becfeb45b75cdec77b756d303951ef
  The packaged `npx bb-app` flow stores persistent package settings under
  `~/.bb/config.json`, provider environment values under `~/.bb/env.json`, and
  client SSH target mappings under `~/.bb/client.json`.
-@@ -901,9 +915,14 @@ value. Existing terminals keep their launch environment, and agent turns pick
+@@ -934,9 +948,14 @@ value. Existing terminals keep their launch environment, and agent turns pick
  up changes on their next turn.
  
  Values are encrypted with the key in `<dataDir>/machine-environment-key`; back
@@ -4552,18 +4400,18 @@ index 0000000000000000000000000000000000000000..9532a51dd53cf027030c8df84b59d79d
 +suites before retiring the core implementation. Do not remove the guard by
 +allowing local credential fallback.
 diff --git a/packages/scripts/test/pr-approval-workflows.test.ts b/packages/scripts/test/pr-approval-workflows.test.ts
-index ec0dbd8d6658e60c4e5e7fe52285f318dbc9bc59..fac3cc47b333af3ecab9948253b300513a8b36f0 100644
+index 21d0cf7cc619c1e6e7b846395a80479d9c78b31b..785d7ec1c6139f1cec2b1c95be94b7df1dda3e39 100644
 --- a/packages/scripts/test/pr-approval-workflows.test.ts
 +++ b/packages/scripts/test/pr-approval-workflows.test.ts
-@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
- import { expect, it } from "vitest";
+@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
+ import { afterAll, beforeAll, expect, it } from "vitest";
  
  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 +const WORKFLOW_SHELL_TEST_TIMEOUT_MS = 15_000;
  
- function stepScript(workflow: string, step: string): string {
-   const lines = readFileSync(
-@@ -59,7 +60,7 @@ it("keeps trusted automation pull requests open", ({ skip }) => {
+ let fixtureRoot: string;
+ 
+@@ -79,7 +80,7 @@ it("keeps trusted automation pull requests open", ({ skip }) => {
      expect(result.stdout).not.toContain("pr close");
    }
    expect(gate("untrusted-automation[bot]").stdout).toContain("pr close");
@@ -4572,14 +4420,14 @@ index ec0dbd8d6658e60c4e5e7fe52285f318dbc9bc59..fac3cc47b333af3ecab9948253b30051
  
  it("closes personal fork pull requests that block maintainer edits", ({
    skip,
-@@ -198,4 +199,4 @@ it("parses only complete GitHub user and bot approval commands", ({ skip }) => {
+@@ -218,4 +219,4 @@ it("parses only complete GitHub user and bot approval commands", ({ skip }) => {
    ]) {
      expect(run(parser, { COMMENT_BODY: comment }).status).not.toBe(0);
    }
 -});
 +}, WORKFLOW_SHELL_TEST_TIMEOUT_MS);
 diff --git a/packages/templates/src/templates/bb-guide-customization.md b/packages/templates/src/templates/bb-guide-customization.md
-index dc6338432b91a0d4067ff8d9d8cb730215bc0b2a..990436295cee5d6e9a7e2871b4e0a74c7f1d4fbb 100644
+index 279ed713c9701f32324d93600b93b24daabcab7c..2d189d3f1136140aaa19b69a041980bc669c8091 100644
 --- a/packages/templates/src/templates/bb-guide-customization.md
 +++ b/packages/templates/src/templates/bb-guide-customization.md
 @@ -59,6 +59,7 @@ Server-backed settings
@@ -4590,7 +4438,7 @@ index dc6338432b91a0d4067ff8d9d8cb730215bc0b2a..990436295cee5d6e9a7e2871b4e0a74c
  bb settings ai-services
  bb settings ai-services set <thread-title|commit-message|voice> <automatic|off|service-id> [--plugin <plugin-id>]
  bb settings ai-services test <thread-title|commit-message>
-@@ -242,6 +243,24 @@ or reverse proxy, run `npx bb-app config set BB_APP_URL https://bb.example.com`
+@@ -249,6 +250,24 @@ or reverse proxy, run `npx bb-app config set BB_APP_URL https://bb.example.com`
  before connecting, including from the CLI or SDK; forwarded host headers cannot
  authorize an unconfigured name. BB Connect needs no additional configuration.
  
@@ -4616,10 +4464,10 @@ index dc6338432b91a0d4067ff8d9d8cb730215bc0b2a..990436295cee5d6e9a7e2871b4e0a74c
  
  Settings → Keyboard records per-command shortcut overrides, persisted
 diff --git a/packages/templates/src/templates/bb-guide-machines.md b/packages/templates/src/templates/bb-guide-machines.md
-index 5e669b0ac03a7bac9a3794a1577925fd68171630..58ba28fca6fde92d27b8a5b2520f1b9121bf52c2 100644
+index 2b7ee2b3795d68102f8f22dc48646d802cc594e1..2442443bf3508a2dd20c6d19be81c4b525a3aa70 100644
 --- a/packages/templates/src/templates/bb-guide-machines.md
 +++ b/packages/templates/src/templates/bb-guide-machines.md
-@@ -396,18 +396,24 @@ original `BB_DATA_DIR` if explicitly configured, to remove its installation.
+@@ -434,18 +434,24 @@ original `BB_DATA_DIR` if explicitly configured, to remove its installation.
  ## Machine environment
  
    bb machine env list [--project <id>] [--json]
@@ -4780,7 +4628,7 @@ index 62554d2c198b319e8f99dab7938fa25b4a25d5a4..3ed4d59892e430b1f03bc54d8ca1989b
  bb project list --json
  bb machine list --json
 diff --git a/plugins/bb-guide/skills/bb-cli/references/command-index.md b/plugins/bb-guide/skills/bb-cli/references/command-index.md
-index c3cd2e951dc445a44eb5c72b67f6da9882e86e46..b871b00db3cbafc2e840aa20596958e2590573f9 100644
+index e6cdbcec19f0c18f185b1142366d6dfa25d2b6fc..cb26bb08b079b604a647d0e8d4f24193456a6d0d 100644
 --- a/plugins/bb-guide/skills/bb-cli/references/command-index.md
 +++ b/plugins/bb-guide/skills/bb-cli/references/command-index.md
 @@ -35,6 +35,7 @@ This index lists every command path that the core CLI registers, including alias
@@ -4802,40 +4650,8 @@ index 5f0197c4c4a2b71656c9bddc980fa643ad30f952..e639bdd076e4c9ef8c2f72444e0753a2
 +
 +For optional fork identity, native facets/participant projection, and plugin-owned
 +token validation, read [Identity and native projections](references/identity-and-native-projections.md).
-diff --git a/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md b/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
-index 169a9d20edeb809791b598acf1f6ef0f746872e6..03f0c731297d0209ba8bb4b076982d12aa3c7aa2 100644
---- a/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
-+++ b/plugins/bb-guide/skills/bb-plugin-authoring/references/backend-api-index.md
-@@ -498,3 +498,13 @@ Check imports here, behavior in the Plugin Guide, and signatures in the installe
- 
- The keyed method and row types are inferred from the `contract` option.
- Read-state and error behavior is documented in [Frontend hooks and UI](frontend-hooks-and-ui.md).
-+
-+## Enhanced identity capability
-+
-+`bb.experimental_p6rIdentity` is an optional host capability consumed through
-+`@phosphorco/bb-identity/bb`. Identity-aware features call `bindBbIdentity(bb)`
-+and use its public request, provider, state, and acceptance interfaces. Do not
-+construct raw invocation scopes or infer an actor from headers or loopback.
-+A configured provider failure remains blocked; an absent capability uses the
-+package's documented baseline behavior. Native app presence and ordinary-message
-+attribution are separate host features, not implied by this capability.
-diff --git a/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-api-index.md b/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-api-index.md
-index 9a4d1f943e1a390035f9835b3f963f0581ba321b..8fb7a38f5ef2787c1e57a48a725c396beeeeaaf2 100644
---- a/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-api-index.md
-+++ b/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-api-index.md
-@@ -146,6 +146,9 @@ Read the installed SDK declarations for the exact current signatures.
- - `PluginMachineProviderInputsRegistration`
- - `PluginSidebarFooterActionProps`
- - `ExperimentalSidebarFooterDisclosureProps`
-+- `ExperimentalSidebarLayout`
-+- `ExperimentalSidebarLayoutProviderProps`
-+- `ExperimentalSidebarLayoutProviderRegistration`
- - `PluginThreadListProps`
- - `ExperimentalThreadInfoProps`
- - `ExperimentalThreadHeaderRowProps`
 diff --git a/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-core-slots.md b/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-core-slots.md
-index 37d6e146e74f1a2b3dda641d43366271fd361a20..0276ca664c3e70fea30ab519f72d0af826a5de02 100644
+index 8c85cca16154b7b356cbf783043d8a456db603ff..12dcb04e64a5a582932690d3fc01a1a0b1666e53 100644
 --- a/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-core-slots.md
 +++ b/plugins/bb-guide/skills/bb-plugin-authoring/references/frontend-core-slots.md
 @@ -246,6 +246,12 @@ experimental_Original }` — draws the sidebar navigation. Registration:
@@ -4922,7 +4738,7 @@ index 0000000000000000000000000000000000000000..73aeabc7d61ece16d96543d7c7511891
 +- `P6rParticipantProfile`
 +- `P6rPluginRequestContext`
 diff --git a/plugins/bb-guide/skills/bb-plugin-authoring/references/providers.md b/plugins/bb-guide/skills/bb-plugin-authoring/references/providers.md
-index 028033c0627266df0b84978655eff7a1b8acabd1..240a6975d23a5e1ac8108135f8e88b32cc992898 100644
+index 74fbbae296481877cf274b650c08268d30c61caa..2652ff26e2eaf42e3cc7d2e6cb836e2aea8a7029 100644
 --- a/plugins/bb-guide/skills/bb-plugin-authoring/references/providers.md
 +++ b/plugins/bb-guide/skills/bb-plugin-authoring/references/providers.md
 @@ -125,6 +125,7 @@ bb.providers.experimental_contributeEnv("claude-code", async (context) => [
@@ -4933,16 +4749,16 @@ index 028033c0627266df0b84978655eff7a1b8acabd1..240a6975d23a5e1ac8108135f8e88b32
      reason: "Route Claude through the plugin's authenticated proxy",
    },
  ]);
-@@ -135,7 +136,7 @@ command, and when it lists the provider's models on a host. Its
- `ExperimentalPluginProviderEnvContext` has `threadId`, `projectId`, and
- `hostId`; `threadId` and `projectId` are `null` for model listing, which serves
- no thread. Return at most 32 `ExperimentalPluginProviderEnvEntry` values.
+@@ -140,7 +141,7 @@ executable path or home directory (`BB_CLAUDE_CODE_EXECUTABLE`,
+ `BB_CODEX_BRIDGE_APP_SERVER_COMMAND`, `CODEX_HOME`, `BB_PI_BRIDGE_COMMAND`)
+ selects the CLI that threads, the model picker, and the installation status
+ all use. Return at most 32 `ExperimentalPluginProviderEnvEntry` values.
 -Names must match `[A-Z_][A-Z0-9_]*`; `reason` is required. A
 +Names must match `[A-Z_][A-Z0-9_]*`; `reason` and `experimental_secret: boolean` are required. Mark only actual authentication secrets `true`; ordinary URLs, flags and paths are `false`. A
  literal `value` is forwarded as-is. `{ serverPath: "/..." }` is expanded by
  the selected host against its authenticated `BB_SERVER_URL`, which is the
  right form for a server route that must work from enrolled machines.
-@@ -143,9 +144,13 @@ right form for a server route that must work from enrolled machines.
+@@ -148,9 +149,13 @@ right form for a server route that must work from enrolled machines.
  Contributions override the host shell environment. If multiple plugins return
  the same name, the earlier registration wins and BB logs the conflict. A
  resolver that throws, times out after five seconds, or returns invalid entries
@@ -5647,7 +5463,7 @@ index fffc2841011a033ee8be4668f74ba8c722f57824..66d1d9a28d3ef63be5d468fdb98205d0
  into the Dockerfile, save it, and run a new sandbox to verify them.
  
 diff --git a/plugins/plugin-api-docs/src/surfaces.ts b/plugins/plugin-api-docs/src/surfaces.ts
-index 3b1ec5623e9cc710f710a5a2132d934147860141..00035fa55d95ab54d92deed510d5f3709c490868 100644
+index 9e9ff2640883d1f6c05c796fee9aad35de91a5b5..6886e7a0ccb66ddd6e5bdc3141815d26da3ca360 100644
 --- a/plugins/plugin-api-docs/src/surfaces.ts
 +++ b/plugins/plugin-api-docs/src/surfaces.ts
 @@ -86,10 +86,14 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
@@ -5673,7 +5489,7 @@ index 3b1ec5623e9cc710f710a5a2132d934147860141..00035fa55d95ab54d92deed510d5f370
          ],
          firstParty: ["Thread list"],
          experimental: true,
-@@ -771,9 +776,11 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+@@ -776,9 +781,11 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
            "Search the plugin's own data as the person types",
            "Claim its own trigger, such as # or $",
            "Turn a pick into a chip whose content reaches the agent on send",
@@ -5685,7 +5501,7 @@ index 3b1ec5623e9cc710f710a5a2132d934147860141..00035fa55d95ab54d92deed510d5f370
            "PluginMentionSearchContext",
            "PluginMentionItem",
          ],
-@@ -821,6 +828,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+@@ -826,6 +833,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
            "Run every thread started with it through a bridge the plugin ships",
            "Report context usage, service tiers, and install status",
            "Distinguish unknown reasoning from confirmed models with no selectable levels",
@@ -5693,7 +5509,7 @@ index 3b1ec5623e9cc710f710a5a2132d934147860141..00035fa55d95ab54d92deed510d5f370
          ],
          apiSymbols: [
            "contextSnapshotSchema",
-@@ -1039,6 +1047,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+@@ -1045,6 +1053,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
        {
          title: "Data & platform",
          surfaceIds: [
@@ -5701,7 +5517,7 @@ index 3b1ec5623e9cc710f710a5a2132d934147860141..00035fa55d95ab54d92deed510d5f370
            "storage",
            "bb-sdk",
            "thread-plugin-metadata",
-@@ -1203,6 +1212,8 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+@@ -1209,6 +1218,8 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
            "ExperimentalPluginRpcCaller",
            "PluginBbSdk.plugins.experimental_discoverRpc",
            "PluginHttp",
@@ -5710,7 +5526,7 @@ index 3b1ec5623e9cc710f710a5a2132d934147860141..00035fa55d95ab54d92deed510d5f370
            "PluginRealtime",
            "useRpc",
            "experimental_useRpcQuery",
-@@ -1589,6 +1600,19 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
+@@ -1602,6 +1613,19 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
          ],
          experimental: true,
        },
@@ -5731,10 +5547,10 @@ index 3b1ec5623e9cc710f710a5a2132d934147860141..00035fa55d95ab54d92deed510d5f370
          id: "storage",
          tagline: "Namespaced KV plus your own SQLite",
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index fcd3c66eb9541e9a9c6236570cabd94afcf88188..77edbac9ec4326b0f855ede591b605c2d0c38f9b 100644
+index 378221485c3c686481e129383d70a895f6702afa..577baabaf85a5b311b00b9cdbb4c40b9002a7f9b 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
-@@ -792,8 +792,8 @@ importers:
+@@ -752,8 +752,8 @@ importers:
          specifier: ^8.18.2
          version: 8.18.2
        electron:
@@ -5745,7 +5561,7 @@ index fcd3c66eb9541e9a9c6236570cabd94afcf88188..77edbac9ec4326b0f855ede591b605c2
        electron-builder:
          specifier: ^26.18.0
          version: 26.18.0(electron-builder-squirrel-windows@26.18.0)
-@@ -1171,6 +1171,9 @@ importers:
+@@ -1131,6 +1131,9 @@ importers:
        '@bb/async-cache':
          specifier: workspace:*
          version: link:../../packages/async-cache
@@ -5755,17 +5571,17 @@ index fcd3c66eb9541e9a9c6236570cabd94afcf88188..77edbac9ec4326b0f855ede591b605c2
        '@bb/config':
          specifier: workspace:*
          version: link:../../packages/config
-@@ -1289,9 +1292,6 @@ importers:
+@@ -1249,9 +1252,6 @@ importers:
        '@bb/agent-runtime':
          specifier: workspace:*
          version: link:../../packages/agent-runtime
 -      '@bb/client-core':
 -        specifier: workspace:*
 -        version: link:../../packages/client-core
-       '@bb/frp-client':
+       '@bb/scripts':
          specifier: workspace:*
-         version: link:../../packages/frp-client
-@@ -2644,6 +2644,9 @@ importers:
+         version: link:../../packages/scripts
+@@ -2585,6 +2585,9 @@ importers:
          specifier: 4.6.7
          version: 4.6.7
      devDependencies:
@@ -5775,7 +5591,7 @@ index fcd3c66eb9541e9a9c6236570cabd94afcf88188..77edbac9ec4326b0f855ede591b605c2
        '@bb/domain':
          specifier: workspace:*
          version: link:../domain
-@@ -7997,7 +8000,7 @@ packages:
+@@ -7962,7 +7965,7 @@ packages:
  
    '@expo/bunyan@4.0.1':
      resolution: {integrity: sha512-+Lla7nYSiHZirgK+U/uYzsLv/X+HaJienbD5AKX1UQZHYfWaP+9uuQluRB4GrEVWF0GZ7vEVp/jzaOT9k/SQlg==}
@@ -5784,7 +5600,7 @@ index fcd3c66eb9541e9a9c6236570cabd94afcf88188..77edbac9ec4326b0f855ede591b605c2
  
    '@expo/cli@58.1.19':
      resolution: {integrity: sha512-zoLhSlFnln0xn1fiW0+kb1J0lNv06HAy+FQ27HHwEEWoAClCE13FnTQBOW5bOVYc3c7hsGM8ypKcZGS7RGqjQA==}
-@@ -13070,8 +13073,8 @@ packages:
+@@ -13029,8 +13032,8 @@ packages:
      resolution: {integrity: sha512-bO3y10YikuUwUuDUQRM4KfwNkKhnpVO7IPdbsrejwN9/AABJzzTQ4GeHwyzNSrVO+tEH3/Np255a3sVZpZDjvg==}
      engines: {node: '>=8.0.0'}
  
@@ -5795,7 +5611,7 @@ index fcd3c66eb9541e9a9c6236570cabd94afcf88188..77edbac9ec4326b0f855ede591b605c2
      engines: {node: '>= 22.12.0'}
      hasBin: true
  
-@@ -17393,6 +17396,7 @@ packages:
+@@ -17342,6 +17345,7 @@ packages:
  
    tldts-core@7.4.20:
      resolution: {integrity: sha512-C630TWXZCZmLq0F2bW4QqwnaaxCQ/svpAqvJwnC4JvgEM5ohhBnGsEzTLSOXcN+xjz+kEaHS5uoWIw2klnqd0A==}
@@ -5803,7 +5619,7 @@ index fcd3c66eb9541e9a9c6236570cabd94afcf88188..77edbac9ec4326b0f855ede591b605c2
  
    tldts@7.4.19:
      resolution: {integrity: sha512-48dH6aSpQnpbzDUc4vIQZ1VjB8tkK+e8c1yx05/SZK+rkssgjEOlxDd/yU8/a4vGYQ9vRgJr9dwMq9TJ0b3X2Q==}
-@@ -25465,7 +25469,7 @@ snapshots:
+@@ -25408,7 +25412,7 @@ snapshots:
      transitivePeerDependencies:
        - supports-color
  
@@ -5901,8 +5717,26 @@ index 362e970e9122b33740efe0cb6b7fd35d198230c3..8fa9fa28179a3f363f8bcc31ae28a973
            TURN_TIMEOUT_MS,
          );
        }),
+diff --git a/tests/integration/fake/smoke/withdrawn-approvals.test.ts b/tests/integration/fake/smoke/withdrawn-approvals.test.ts
+index 0dc98294318ff7be3ddfe24c70525489884a8819..dab9b8d809ffea9cff221caa1d0c93f8832330e0 100644
+--- a/tests/integration/fake/smoke/withdrawn-approvals.test.ts
++++ b/tests/integration/fake/smoke/withdrawn-approvals.test.ts
+@@ -1,3 +1,4 @@
++import { hostname } from "node:os";
+ import type { TimelineRow } from "@bb/server-contract";
+ import { describe, expect, it } from "vitest";
+ import {
+@@ -82,7 +83,7 @@ describe.sequential("fake provider withdrawn approvals", () => {
+       await waitForThreadOutputContaining(
+         harness.api,
+         thread.id,
+-        "Response to: follow up",
++        `Response to: [sender=machine:${hostname()}]\n follow up \n[/sender=machine:${hostname()}]`,
+         TURN_TIMEOUT_MS,
+       );
+     }));
 diff --git a/tests/integration/helpers/harness.ts b/tests/integration/helpers/harness.ts
-index 82f1834e7cc30c74d109b3d268fd701f56404f9e..34e56e09a9caca92fa506f21258a9598ea1e1a93 100644
+index 29ee16d9d3949070c6207117a812739602937a63..7bf5cccb3e724091d6b3f08f6db907c7f600efc3 100644
 --- a/tests/integration/helpers/harness.ts
 +++ b/tests/integration/helpers/harness.ts
 @@ -1,3 +1,4 @@
@@ -5910,46 +5744,19 @@ index 82f1834e7cc30c74d109b3d268fd701f56404f9e..34e56e09a9caca92fa506f21258a9598
  import { sweepProviderLifecycles } from "../../../apps/server/src/services/environments/environment-engine.js";
  import { randomUUID } from "node:crypto";
  import fs from "node:fs/promises";
-@@ -204,6 +205,7 @@ async function startIntegrationServer(
+@@ -208,6 +209,7 @@ async function startIntegrationServer(
    });
  
    const db = createMigratedConnection();
 +  migrateP6rSidecars(db);
    const walCheckpointer = startWalCheckpointer({ logger: testLogger });
    ensurePersonalProject(db);
-   const hub = new NotificationHub();
+   if (options.experiments !== undefined) {
 diff --git a/turbo.json b/turbo.json
-index 4055dfffdbefcdc94a67cd3670918bb73cde9f3a..59f46402e5ea2286a542f8a2c8a5f843c175b35b 100644
+index b7713093ac708655d5619b29f5f9f5f4fee98e34..8e5dd7005d461fd66d0d1dd0eccf8d93a741847a 100644
 --- a/turbo.json
 +++ b/turbo.json
-@@ -713,7 +713,11 @@
-       "passThroughEnv": ["UPDATE_PARITY_ROW_COUNTS"]
-     },
-     "test": {
--      "env": ["BB_QUERY_PLAN_EXECUTED", "BB_QUERY_PLAN_REPORT", "VITEST_MAX_WORKERS"],
-+      "env": [
-+        "BB_QUERY_PLAN_EXECUTED",
-+        "BB_QUERY_PLAN_REPORT",
-+        "VITEST_MAX_WORKERS"
-+      ],
-       "dependsOn": ["//#ensure-native-modules", "topo"],
-       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/vitest*.ts"],
-       "outputs": [".query-plan/**"],
-@@ -752,7 +756,12 @@
-     // bundling step — so the SDK dist must exist before the suite runs. The
-     // marketplace parity suites read apps/web's published JSON schemas.
-     "@bb/server#test": {
--      "env": ["BB_CI_TEST_SHARD", "BB_QUERY_PLAN_EXECUTED", "BB_QUERY_PLAN_REPORT", "VITEST_MAX_WORKERS"],
-+      "env": [
-+        "BB_CI_TEST_SHARD",
-+        "BB_QUERY_PLAN_EXECUTED",
-+        "BB_QUERY_PLAN_REPORT",
-+        "VITEST_MAX_WORKERS"
-+      ],
-       "outputs": [".query-plan/**"],
-       "dependsOn": [
-         "@bb/agent-runtime#generate:test-bridges",
-@@ -1318,6 +1327,9 @@
+@@ -1429,6 +1429,9 @@
          "$TURBO_ROOT$/packages/plugin-registry/flavors/**"
        ]
      },
@@ -5960,5 +5767,5 @@ index 4055dfffdbefcdc94a67cd3670918bb73cde9f3a..59f46402e5ea2286a542f8a2c8a5f843
        "dependsOn": ["@get-bb/plugin-sdk#build:types", "topo"],
        "inputs": [
 -- 
-2.50.1 (Apple Git-155)
+2.43.0
 

@@ -1,4 +1,4 @@
-From 887a87a4ac2fc3b29fad23afc874bb70fbb62eff Mon Sep 17 00:00:00 2001
+From c4a9b90479783ce969519bad3e0f498d26b0d881 Mon Sep 17 00:00:00 2001
 From: Cole Lawrence <cole@colelawrence.com>
 Date: Fri, 13 Nov 2026 20:23:59 -0300
 Subject: [PATCH] Team navigation and diagnostics
@@ -16,7 +16,7 @@ Subject: [PATCH] Team navigation and diagnostics
  .../sidebar/SidebarNavigationModel.tsx        | 106 ++++++++++++
  .../sidebar/SidebarNavigationRail.test.tsx    |  27 +++
  .../useSidebarNavigationArrangement.ts        |  32 ++--
- .../composer/useQueuedMessageActions.ts       |  13 ++
+ .../composer/useQueuedMessageActions.ts       |  12 ++
  .../timeline/ConversationMessageContent.tsx   |  13 ++
  .../thread/timeline/P6rMessageAuthorLabel.tsx |  54 ++++++
  .../thread/timeline/ThreadTimelineRows.tsx    |   2 +
@@ -39,7 +39,7 @@ Subject: [PATCH] Team navigation and diagnostics
  plugins/monaco-editor/lib/pkl-highlight.ts    | 135 +++++++++++++++
  plugins/monaco-editor/lib/pkl-language.ts     |  56 +++++++
  plugins/monaco-editor/monaco-bundle/editor.js |   4 +
- 35 files changed, 1558 insertions(+), 52 deletions(-)
+ 35 files changed, 1557 insertions(+), 52 deletions(-)
  create mode 100644 apps/app/src/components/settings/P6rIdentitySettingsSection.test.tsx
  create mode 100644 apps/app/src/components/settings/P6rIdentitySettingsSection.tsx
  create mode 100644 apps/app/src/components/thread/timeline/P6rMessageAuthorLabel.tsx
@@ -922,7 +922,7 @@ index 2b8f333a8e28532753cc8b2cb9eca7d33255ac32..5b13658ca51c0abd5d055e7ab6135b18
    { icon: "AiBrain01", id: "ai-services", label: "AI services" },
    { icon: "Palette", id: "appearance", label: "Appearance" },
 diff --git a/apps/app/src/components/sidebar/SidebarNavigationModel.tsx b/apps/app/src/components/sidebar/SidebarNavigationModel.tsx
-index 13e7c41af66c119b7398b02b1145440c7b4775ec..fb05ba3659e5b150e1b926354f336a64a91e1898 100644
+index a8ee5f19a6aedb392c8646e46cc343c2717be678..a39cb3ed7ff5b6a12c3243b8c4545433cc259ff6 100644
 --- a/apps/app/src/components/sidebar/SidebarNavigationModel.tsx
 +++ b/apps/app/src/components/sidebar/SidebarNavigationModel.tsx
 @@ -1,5 +1,6 @@
@@ -996,7 +996,7 @@ index 13e7c41af66c119b7398b02b1145440c7b4775ec..fb05ba3659e5b150e1b926354f336a64
  const HOST_ICON_NAMES: Record<
    Extract<ExperimentalSidebarNavigationIcon, { kind: "host" }>["name"],
    IconName
-@@ -154,9 +205,56 @@ export function SidebarNavigationModelProvider({
+@@ -175,9 +226,56 @@ export function SidebarNavigationModelProvider({
      () => createSidebarNavigationRows(panelEntries),
      [panelEntries],
    );
@@ -1053,7 +1053,7 @@ index 13e7c41af66c119b7398b02b1145440c7b4775ec..fb05ba3659e5b150e1b926354f336a64
    );
    const rowsById = useMemo(
      () => new Map(rows.map((row) => [getPluginNavPanelKey(row), row])),
-@@ -425,6 +523,14 @@ export function SidebarNavigationModelProvider({
+@@ -436,6 +534,14 @@ export function SidebarNavigationModelProvider({
    return (
      <SidebarNavigationModelContext.Provider value={model}>
        <NavigationBadgeSources panels={badgedPanels} setBadges={setBadges} />
@@ -1069,7 +1069,7 @@ index 13e7c41af66c119b7398b02b1145440c7b4775ec..fb05ba3659e5b150e1b926354f336a64
      </SidebarNavigationModelContext.Provider>
    );
 diff --git a/apps/app/src/components/sidebar/SidebarNavigationRail.test.tsx b/apps/app/src/components/sidebar/SidebarNavigationRail.test.tsx
-index 220c0a8e596a6549f5fae682769aeaa414af106c..41fa3e15bae1fc559324abc6b177b1698df63dde 100644
+index f3813eb4bfaad0635813f132aea345832388605a..042ed1ffd1c78f5bbbd605b542fa1d8e94968b07 100644
 --- a/apps/app/src/components/sidebar/SidebarNavigationRail.test.tsx
 +++ b/apps/app/src/components/sidebar/SidebarNavigationRail.test.tsx
 @@ -11,6 +11,7 @@ import {
@@ -1079,8 +1079,8 @@ index 220c0a8e596a6549f5fae682769aeaa414af106c..41fa3e15bae1fc559324abc6b177b169
 +import { useEffect } from "react";
  import { createStore, Provider } from "jotai";
  import { MemoryRouter, useLocation } from "react-router-dom";
- import {
-@@ -69,6 +70,7 @@ import { NavRailSettingsButton } from "./NavRailSettingsButton";
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+@@ -61,6 +62,7 @@ import { NavRailSettingsButton } from "./NavRailSettingsButton";
  import { SidebarVisibilityCustomize } from "./SidebarVisibilityControls";
  import { SidebarNavigationModelProvider } from "./SidebarNavigationModel";
  
@@ -1088,7 +1088,7 @@ index 220c0a8e596a6549f5fae682769aeaa414af106c..41fa3e15bae1fc559324abc6b177b169
  const mocks = vi.hoisted(() => ({
    dispatch: vi.fn(),
    onNavigate: vi.fn(),
-@@ -775,6 +777,31 @@ describe("Rail", () => {
+@@ -765,6 +767,31 @@ describe("Rail", () => {
      ).toBe("warning");
    });
  
@@ -1215,31 +1215,51 @@ index 5d8ed2ce6684790a7b69edf1823256bc6e992d7a..47e3404208aedac38fdb09dd8c154c43
  
    const setVisible = useCallback(
 diff --git a/apps/app/src/components/thread/composer/useQueuedMessageActions.ts b/apps/app/src/components/thread/composer/useQueuedMessageActions.ts
-index 5803b72ee7f9849512c83f14e52aca8ae31e9ab7..e78e1f18f728481356a041d40f78ef19575d2e6e 100644
+index 812229c16ea1937f67e4e3a45f4e5c2e05d1908f..a38af5fb74ab291ab3a5316da6c9ac041337419f 100644
 --- a/apps/app/src/components/thread/composer/useQueuedMessageActions.ts
 +++ b/apps/app/src/components/thread/composer/useQueuedMessageActions.ts
-@@ -158,6 +158,19 @@ export function useQueuedMessageActions({
-           error,
-           fallbackMessage: "Failed to send queued message",
-           lifecycleOperation: "send_queued_message",
-+          details: {
-+            threadId,
-+            queuedMessageId: messageId,
-+            mode,
-+            queuedMessageState:
-+              queuedMessagesRef.current.find(
-+                (message) => message.id === messageId,
-+              )?.state ?? null,
-+            queuedMessageWaitingOn:
-+              queuedMessagesRef.current.find(
-+                (message) => message.id === messageId,
-+              )?.waitingOn?.kind ?? null,
-+          },
-         });
-       }
+@@ -106,6 +106,7 @@ async function sendQueuedMessageWithProcessing({
+   sendQueuedMessage,
+   onSendSuccess,
+   setProcessingQueuedMessage,
++  findQueuedMessage,
+ }: {
+   messageId: string;
+   mode: SendQueuedMessageMode;
+@@ -117,6 +118,7 @@ async function sendQueuedMessageWithProcessing({
+   >;
+   onSendSuccess: (() => void) | undefined;
+   setProcessingQueuedMessage: SetProcessingQueuedMessage;
++  findQueuedMessage: (id: string) => ThreadQueuedMessage | undefined;
+ }): Promise<void> {
+   setProcessingQueuedMessage({ id: messageId, action: "send" });
+   try {
+@@ -139,6 +141,14 @@ async function sendQueuedMessageWithProcessing({
+       error,
+       fallbackMessage: "Failed to send queued message",
+       lifecycleOperation: "send_queued_message",
++      details: {
++        threadId,
++        queuedMessageId: messageId,
++        mode,
++        queuedMessageState: findQueuedMessage(messageId)?.state ?? null,
++        queuedMessageWaitingOn:
++          findQueuedMessage(messageId)?.waitingOn?.kind ?? null,
++      },
+     });
+   }
+ }
+@@ -254,6 +264,8 @@ export function useQueuedMessageActions({
+         sendQueuedMessage,
+         onSendSuccess,
+         setProcessingQueuedMessage,
++        findQueuedMessage: (id) =>
++          queuedMessagesRef.current.find((message) => message.id === id),
+       });
      },
+     [onSendSuccess, sendProcessingPersistence, sendQueuedMessage, threadId],
 diff --git a/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx b/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx
-index 6690da607e2c8f9ce1d0d1b819e10e58424853b1..9a56d467add21becb3f524ff5b5c40f35c23a4c4 100644
+index 52ecff2576095d4e42bc50c90c4aeffd0269600e..2cef8d9a2920e9d2a1a888ea501db2d9b35ffe91 100644
 --- a/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx
 +++ b/apps/app/src/components/thread/timeline/ConversationMessageContent.tsx
 @@ -6,6 +6,8 @@ import {
@@ -1251,7 +1271,7 @@ index 6690da607e2c8f9ce1d0d1b819e10e58424853b1..9a56d467add21becb3f524ff5b5c40f3
  import type {
    TimelineConversationAttachments,
    TimelineRowBase,
-@@ -103,6 +105,8 @@ interface ConversationMessageContentUserProps extends ConversationMessageContent
+@@ -101,6 +103,8 @@ interface ConversationMessageContentUserProps extends ConversationMessageContent
    onEdit?: () => void;
    resolveMentionLink?: PromptMentionLinkResolver;
    onTitleAction?: TimelineTitleActionResolver;
@@ -1260,7 +1280,7 @@ index 6690da607e2c8f9ce1d0d1b819e10e58424853b1..9a56d467add21becb3f524ff5b5c40f3
    senderThreadId: TimelineUserConversationRow["senderThreadId"];
    senderThreadProjectId?: string;
    senderThreadTitle: string | null;
-@@ -164,6 +168,8 @@ interface UserConversationMessageProps {
+@@ -157,6 +161,8 @@ interface UserConversationMessageProps {
    projectId?: string;
    resolveMentionLink?: PromptMentionLinkResolver;
    onTitleAction?: TimelineTitleActionResolver;
@@ -1269,7 +1289,7 @@ index 6690da607e2c8f9ce1d0d1b819e10e58424853b1..9a56d467add21becb3f524ff5b5c40f3
    senderThreadId: TimelineUserConversationRow["senderThreadId"];
    senderThreadProjectId: string | null;
    senderThreadTitle: string | null;
-@@ -344,6 +350,8 @@ function UserConversationMessage({
+@@ -337,6 +343,8 @@ function UserConversationMessage({
    projectId,
    resolveMentionLink,
    onTitleAction,
@@ -1278,7 +1298,7 @@ index 6690da607e2c8f9ce1d0d1b819e10e58424853b1..9a56d467add21becb3f524ff5b5c40f3
    senderThreadId,
    senderThreadProjectId,
    senderThreadTitle,
-@@ -429,6 +437,9 @@ function UserConversationMessage({
+@@ -422,6 +430,9 @@ function UserConversationMessage({
    return (
      <div className="w-full" data-message-column="">
        <div className="group/message ml-auto flex w-fit max-w-[70%] flex-col items-end">
@@ -1288,7 +1308,7 @@ index 6690da607e2c8f9ce1d0d1b819e10e58424853b1..9a56d467add21becb3f524ff5b5c40f3
          {requestLabel ? (
            <div className="mb-1 flex items-center justify-end gap-2">
              <TurnRequestLabel
-@@ -693,6 +704,8 @@ export function ConversationMessageContent(
+@@ -652,6 +663,8 @@ export function ConversationMessageContent(
          projectId={projectId}
          resolveMentionLink={props.resolveMentionLink}
          onTitleAction={props.onTitleAction}
@@ -1358,10 +1378,10 @@ index 0000000000000000000000000000000000000000..0703782db51a4b59226693130d7e4140
 +  );
 +}
 diff --git a/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx b/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
-index a3d18741012f12b3741ab2250ce83fe0b3e8e797..c2fff0364882d6e01d837d2b638a5053fac5fddd 100644
+index 37d51429c41281e369b2285c22a015dfc78b904b..3877fb77b45d5e54270da188cebcb1ad1c92884e 100644
 --- a/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
 +++ b/apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx
-@@ -996,6 +996,8 @@ const ConversationRowContent = memo(function ConversationRowContent({
+@@ -1004,6 +1004,8 @@ const ConversationRowContent = memo(function ConversationRowContent({
            projectId={projectId}
            resolveMentionLink={resolveMentionLink}
            resolveUserAttachmentImageSrc={resolveUserAttachmentImageSrc}
@@ -1513,7 +1533,7 @@ index 368f0d5c023bbe68dd4aae62bb5b7d3d339ffbb9..bd00808c6a970b3428300e0e5a50900e
 +  return render({ value: code, lines });
 +}
 diff --git a/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts b/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts
-index e7c5ffb397772ff09e9cc04f0164d14003e69978..187d7812d185724fe56ca483a715ba515d752c22 100644
+index 3e100299f626b852de14090838bdd2fbfcc3c0e5..54dfbdd62568e16ad67dd69feafa3a4a8ac1741b 100644
 --- a/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts
 +++ b/apps/app/src/hooks/cache-owners/realtime-cache-registry.ts
 @@ -431,6 +431,14 @@ export const REALTIME_THREAD_CHANGE_REGISTRY = {
@@ -1544,10 +1564,10 @@ index 0810fc091aaa40113f972f4a8f28c0fe2294e54e..efc4ce8af0c8e229f48e7a83015432d7
    pinSortKey: true,
    hasPendingInteraction: true,
 diff --git a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
-index 136d78f53c7f7342f732d2dd3960ec5af11b99a4..b030d52e4753607ffce47925cfc995bca77a3e5f 100644
+index 7dc9458f82ea095e1e72d55c228532b3ac15e6d7..b17691cf9fdf195cb855a1625cf147a096caf22d 100644
 --- a/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
 +++ b/apps/app/src/hooks/cache-owners/thread-runtime-cache-owner.ts
-@@ -378,6 +378,7 @@ function buildOptimisticQueuedMessage({
+@@ -379,6 +379,7 @@ function buildOptimisticQueuedMessage({
      origin: null,
      originPluginId: null,
      initiator: "user",
@@ -1556,10 +1576,10 @@ index 136d78f53c7f7342f732d2dd3960ec5af11b99a4..b030d52e4753607ffce47925cfc995bc
      threadId: request.id,
      content: request.input,
 diff --git a/apps/app/src/hooks/realtime-cache-effects.test.ts b/apps/app/src/hooks/realtime-cache-effects.test.ts
-index 143e18c11004839ab2e6287084f7509a882b41d4..376f2da042bbceb751d6905ef67fc60acc814946 100644
+index e256a34bca13b7c389d98e8c7f51530e275f4522..5de91a2b2c865c25bceddf80ab15531357f26732 100644
 --- a/apps/app/src/hooks/realtime-cache-effects.test.ts
 +++ b/apps/app/src/hooks/realtime-cache-effects.test.ts
-@@ -1586,6 +1586,32 @@ describe("createRealtimeCacheEffects", () => {
+@@ -1595,6 +1595,32 @@ describe("createRealtimeCacheEffects", () => {
      effects.dispose();
    });
  
@@ -1991,10 +2011,10 @@ index efea5f415e7662d49896b7a665545afbac48ca44..94113ddb6e20ef5be6d885996b842ef0
      pinnedAt: entry.pinnedAt,
      pinSortKey: entry.pinSortKey,
 diff --git a/apps/app/src/lib/plugin-slots.ts b/apps/app/src/lib/plugin-slots.ts
-index 03046d006415c6a007c0eb808d0d1701b3d383b7..981b8c3242c6e6d988c947f5c3079ad06d8f421b 100644
+index daa649b492438fb03a13a4e0c2a10ed9fb3ec4a1..54cb6418d93f7cd7dd0db100a399e9f936101d59 100644
 --- a/apps/app/src/lib/plugin-slots.ts
 +++ b/apps/app/src/lib/plugin-slots.ts
-@@ -23,6 +23,7 @@ import type {
+@@ -22,6 +22,7 @@ import type {
    ExperimentalIconRegistration,
    PluginSettingsSectionRegistration,
    PluginSidebarFooterActionRegistration,
@@ -2035,7 +2055,7 @@ index 03046d006415c6a007c0eb808d0d1701b3d383b7..981b8c3242c6e6d988c947f5c3079ad0
    threadLists: [],
    experimentalSidebarNavigations: [],
    threadHeaderActions: [],
-@@ -293,6 +299,7 @@ const SLOT_KINDS: readonly SlotKind[] = [
+@@ -294,6 +300,7 @@ const SLOT_KINDS: readonly SlotKind[] = [
    "composerCustomizations",
    "pendingInteractions",
    "sidebarFooterItems",
@@ -2043,7 +2063,7 @@ index 03046d006415c6a007c0eb808d0d1701b3d383b7..981b8c3242c6e6d988c947f5c3079ad0
    "threadLists",
    "experimentalSidebarNavigations",
    "threadHeaderActions",
-@@ -389,6 +396,7 @@ function flattenRegistrations(
+@@ -390,6 +397,7 @@ function flattenRegistrations(
      composerCustomizations: stamp(set.composerCustomizations),
      pendingInteractions: stamp(set.pendingInteractions),
      sidebarFooterItems: stamp<CollectedSidebarFooterItem>(sidebarFooterItems),
@@ -2052,7 +2072,7 @@ index 03046d006415c6a007c0eb808d0d1701b3d383b7..981b8c3242c6e6d988c947f5c3079ad0
      experimentalSidebarNavigations: stamp(set.experimentalSidebarNavigations),
      threadHeaderActions: stamp(set.threadHeaderActions),
 diff --git a/apps/app/src/views/SettingsView.tsx b/apps/app/src/views/SettingsView.tsx
-index 43dea1a4ca085c692fddd21d6feb7052939028fd..1bd35db631bc139a48c3b0c2fcdaa396b3a96ba8 100644
+index 48294f9fed8f3168e4f49355b2773b686280ea7d..6b89331344b6b19d0210ded425ee687db0da3116 100644
 --- a/apps/app/src/views/SettingsView.tsx
 +++ b/apps/app/src/views/SettingsView.tsx
 @@ -2,6 +2,7 @@ import { ApplicationLinkApprovalsSettings } from "@/components/settings/Applicat
@@ -2063,7 +2083,7 @@ index 43dea1a4ca085c692fddd21d6feb7052939028fd..1bd35db631bc139a48c3b0c2fcdaa396
  import { useMemo, useRef, useState, type ReactNode } from "react";
  import {
    Navigate,
-@@ -1343,6 +1344,8 @@ export function SettingsView() {
+@@ -1357,6 +1358,8 @@ export function SettingsView() {
      );
    } else if (activeSection === "ai-services") {
      content = <AiServicesSettingsSection />;
@@ -2073,10 +2093,10 @@ index 43dea1a4ca085c692fddd21d6feb7052939028fd..1bd35db631bc139a48c3b0c2fcdaa396
      content = (
        <AppearanceSettingsSection
 diff --git a/apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx b/apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx
-index e94360ffba9859f5ded1d9fdde54352d8ec81cf4..002b185366c745b54886af0f089525815cad864f 100644
+index 1718d43441b831f3a2c54160dfce9c16226fd8a2..56684e2cb13cbb2e45631e514f794cbc45e5d895 100644
 --- a/apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx
 +++ b/apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx
-@@ -1516,6 +1516,7 @@ describe("ThreadDetailPromptArea", () => {
+@@ -1583,6 +1583,7 @@ describe("ThreadDetailPromptArea", () => {
          "Failed to update queued message",
          {
            description: "Queued message changed",
@@ -2085,10 +2105,10 @@ index e94360ffba9859f5ded1d9fdde54352d8ec81cf4..002b185366c745b54886af0f08952581
        ),
      );
 diff --git a/packages/shared-ui/package.json b/packages/shared-ui/package.json
-index de35652b4085c52a028134e8999e60f01f672b99..294d1c20042b2bd1933206ff2d5e0f88a2f83389 100644
+index a7f0616e92c33a5d2a03e6fb85cd31610abe431a..6fe88263a082395e7f81a4b29aeeda5bf71f2624 100644
 --- a/packages/shared-ui/package.json
 +++ b/packages/shared-ui/package.json
-@@ -538,6 +538,11 @@
+@@ -558,6 +558,11 @@
        "source": "./src/components/ui/list-loading-placeholder.tsx",
        "types": "./src/components/ui/list-loading-placeholder.tsx",
        "default": "./src/components/ui/list-loading-placeholder.tsx"
@@ -2468,5 +2488,5 @@ index 2b6ea63e0ada1cd3712102f7372e65774204dd9b..32421336c2a5754ea1e619548894f032
 +import { registerPkl } from "../lib/pkl-language.ts";
 +registerPkl(monacoApi);
 -- 
-2.50.1 (Apple Git-155)
+2.43.0
 
