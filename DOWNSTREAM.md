@@ -9,12 +9,12 @@ The prior 75-patch queue is preserved under [__archived/01aff-overlay/](__archiv
 - Artifact format 2 and its compatibility copies: use the native upstream plugin artifact format and rebuild plugins with the matched CLI/SDK.
 - Runtime prompt rendering/replacement and Prompt Rules: authored guide wording changes live in their own source patch; interpolated user bodies are not rewritten.
 - Old Context Magnet native trace APIs: the Workbench-backed panel remains the supported presentation.
-- The custom native admission runtime: upstream's sender hook supplies accept/reject semantics. The Message Rules consumer port remains a separate integration obligation; passing core sender-hook tests does not prove that plugin.
+- The custom native admission runtime: upstream's sender hook supplies accept/reject semantics. Message Rules is retired; there is no consumer port or compatibility obligation.
 - Obsolete sidebar/timeline cache backports and outdated fixtures: accept the native upstream implementation first.
 
 ## Retained database history
 
-The identity and environment bridge SQL bytes and historical receipt timestamps remain unchanged. Exact retired-admission receipts are recognized so missing native migrations 145–156 are applied transactionally, once, rather than silently skipped because of historical timestamp ordering. Retired tables/columns are retained and unused. Tests cover fresh, historical and repeated-start migration cohorts.
+The identity and environment bridge SQL bytes and historical receipt timestamps remain unchanged. Unknown migration ledger timestamps now fail before writes instead of receiving branch-specific recognition or replay. The supported identity/context bridges remain. Retired tables/columns are retained and unused; unsupported receipts require an explicitly reviewed offline copy conversion. See [the retirement record](MESSAGE-RULES-RETIREMENT.md).
 
 ## Qualification and deployment
 

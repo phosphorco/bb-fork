@@ -49,13 +49,13 @@ The deployable source is the upstream submodule and `upstream.lock`, the ordered
 
 ## Retired source
 
-The complete preceding queue and rationale are in [`__archived/01aff-overlay/`](__archived/01aff-overlay/). Runtime prompt interception patches and their design notes are in [`__archived/patch-prompt-rewriting/`](__archived/patch-prompt-rewriting/). These folders are tracked history, outside every selected patch/build path. Do not load or port them automatically.
+The preceding queue's unrelated patches, historical manifests and rationale remain in [`__archived/01aff-overlay/`](__archived/01aff-overlay/). Retired Message Rules and Prompt Rules patches and design notes are in the central [plugin archive](../plugins/__archive/bb-message-rules/fork/). These folders are tracked history, outside every selected patch/build path. Do not load or port them automatically.
 
 The [prompt policy](PROMPT-POLICY.md) records the intended behavior, rationale,
 producer ownership and verification requirements for future prompt and CLI guide
 changes. Cite its relevant section when reviewing wording patches.
 
-Prompt wording is now the focused `0008-prompt-wording.patch`, applied to authored BB Guide template source before interpolation. The retired Prompt Rules plugin lives in the organization plugin repository's tracked `__archive/plugins/prompt-rules/`.
+Prompt wording is now the focused `0008-prompt-wording.patch`, applied to authored BB Guide template source before interpolation. The retired rules plugins and historical fork sources share the organization repository's `__archive/bb-message-rules/` archive. See [retirement and offline qualification](MESSAGE-RULES-RETIREMENT.md).
 
 ## Updating upstream
 

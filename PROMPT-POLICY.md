@@ -49,7 +49,7 @@ stock template separately. Verify the enabled producer when changing
 `bb.plugin.bb-guide.instructions`: a source edit alone does not prove that agents
 receive it.
 
-Runtime Prompt Rules is [retired](__archived/patch-prompt-rewriting/README.md).
+Runtime Prompt Rules is [retired](../plugins/__archive/bb-message-rules/fork/__archived/patch-prompt-rewriting/README.md).
 Keep source wording changes in the dedicated prompt patch capability. Preserve
 useful upstream guidance and retire patches when upstream meets the need.
 
