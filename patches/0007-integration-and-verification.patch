@@ -5700,3 +5700,74 @@ index 8cbad4d0b7..0dd3936058 100644
  describe("a failed row's booked retry", () => {
    const [FIRST_DELAY_MS, SECOND_DELAY_MS] = QUEUED_MESSAGE_RETRY_DELAYS_MS;
  
+diff --git a/apps/server/test/app/skeleton.test.ts b/apps/server/test/app/skeleton.test.ts
+index 62dc4a2f02..e4a2f505eb 100644
+--- a/apps/server/test/app/skeleton.test.ts
++++ b/apps/server/test/app/skeleton.test.ts
+@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import {
++  createConnection,
+   getPersonalProject,
+   getProjectExecutionDefaults,
+   type DbConnection,
+@@ -339,7 +340,7 @@ describe("server skeleton", () => {
+     }
+   });
+ 
+-  it("warns when startup finds future-dated applied migrations", () => {
++  it("rejects startup without writes for an unsupported future migration receipt", () => {
+     const dataDir = mkdtempSync(join(tmpdir(), "bb-server-db-startup-"));
+     try {
+       const dbPath = join(dataDir, "bb.db");
+@@ -369,22 +370,36 @@ describe("server skeleton", () => {
+         info: vi.fn(),
+         warn: vi.fn(),
+       };
+-      const db = initDb(dbPath, { logger });
++      const inspectDb = createConnection(dbPath);
+       try {
+-        expect(logger.warn).toHaveBeenCalledWith(
+-          {
+-            migrations: [
+-              {
+-                createdAt: futureCreatedAt,
+-                hash: "future-migration-hash",
+-              },
+-            ],
+-            now: expect.any(Number),
+-          },
+-          "Applied database migrations have future timestamps",
++        // Connection pragmas can advance SQLite's header counter. Compare
++        // the complete persistent schema and rows to detect migration writes.
++        const snapshot = () => {
++          const schema = inspectDb.$client
++            .prepare<[], { name: string; type: string }>(
++              "SELECT * FROM sqlite_master ORDER BY type, name",
++            )
++            .all();
++          return {
++            schema,
++            tables: schema
++              .filter((row) => row.type === "table")
++              .map((row) => ({
++                name: row.name,
++                rows: inspectDb.$client
++                  .prepare(`SELECT * FROM "${row.name.replaceAll('"', '""')}"`)
++                  .all(),
++              })),
++          };
++        };
++        const before = snapshot();
++        expect(() => initDb(dbPath, { logger })).toThrow(
++          `Unsupported migration ledger receipt (when=${futureCreatedAt}, hash=future-migration-hash). Unknown timestamps can silently skip native migrations; convert an offline database copy before starting this release.`,
+         );
++        expect(snapshot()).toEqual(before);
++        expect(logger.warn).not.toHaveBeenCalled();
+       } finally {
+-        db.$client.close();
++        inspectDb.$client.close();
+       }
+     } finally {
+       rmSync(dataDir, { force: true, recursive: true });

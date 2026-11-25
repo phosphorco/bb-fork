@@ -5,7 +5,7 @@
 This is the selected source delta: **8 capabilities / 9 patches**. It is not a deployment or live-test receipt.
 
 - Reviewed upstream: `df9619d8e8aac4aff00c0c3ff9b8ef4e2823e4f2`
-- Reviewed result tree: `f4f5bb792c2196c1b0f94b0f384da3fc0f207ec6`
+- Reviewed result tree: `31bd31c6872bed7229844b02b14ac1da58e8ac9b`
 
 The checker enforces explicit source coverage and review freshness. Each capability digest binds its primary patches and all selected patches touching the same source files, requiring shared-source dependency review. Human review establishes whether explanations and state/API identities are semantically complete. Historical notes remain in [DOWNSTREAM.md](DOWNSTREAM.md).
 
@@ -1329,6 +1329,7 @@ The selected native server, CLI, daemon and SDK must build as one cohort and ret
 
 - The selected native server, CLI, daemon and SDK must build as one cohort and retain native sandbox and dependency policy.
 - Upstream owns generated SDK API indexes and the declaration-derived documentation check; downstream tests use the testing-only event reader and the native thread-status helper.
+- Startup regression coverage requires an unsupported future __drizzle_migrations receipt to throw before initDb returns, preserving the complete persistent schema and rows instead of merely logging a warning.
 
 ### Responsibility
 
@@ -1570,6 +1571,9 @@ The selected native server, CLI, daemon and SDK must build as one cohort and ret
 - **Injects one reconnect claim-loss error at the native send boundary, verifies persisted retry booking, then restores real native send and checks queue removal and exactly one requested event, including repeated due-retry and reconnect wakes.**
   - Why: Qualify bounded native recovery after removing the retired shim. Does not reproduce the historical race, establish general exactly-once delivery, or qualify retained live queues or cancellation.
   - Source: `apps/server/test/threads/queue-drain-failure.test.ts`
+- **Startup rejects unknown future migration receipts with the explicit Unsupported migration ledger receipt error.**
+  - Why: The server startup fixture seeds an isolated database, asserts initDb cannot return, and compares all persistent schema and table rows across failed startup. Connection pragmas may advance SQLite header counters; the strict production migration invariant remains unchanged.
+  - Source: `apps/server/test/app/skeleton.test.ts`
 
 ### Verification references
 
@@ -1589,7 +1593,7 @@ Reevaluate every integration adjustment on the next upstream upgrade rather than
 
 - [0007-integration-and-verification.patch](patches/0007-integration-and-verification.patch)
 
-Reviewed source digest: `509b67763e27fe52b4b943a109993023975d468069e7ad2cd3e3734c87989409`
+Reviewed source digest: `cb2e5d8ebc4c13e9134e70d2de13af94c1f59b39ec1c936e7747699e525f5b9d`
 
 </details>
 
@@ -1631,6 +1635,6 @@ Retire this wording patch when native guide configuration supports the same text
 
 - [0008-prompt-wording.patch](patches/0008-prompt-wording.patch)
 
-Reviewed source digest: `509b67763e27fe52b4b943a109993023975d468069e7ad2cd3e3734c87989409`
+Reviewed source digest: `cb2e5d8ebc4c13e9134e70d2de13af94c1f59b39ec1c936e7747699e525f5b9d`
 
 </details>
