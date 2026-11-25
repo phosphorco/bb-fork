@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "reviewedUpstream": "df9619d8e8aac4aff00c0c3ff9b8ef4e2823e4f2",
-  "reviewedResultTree": "a126efa48b58ca6b86ef17e226a9da201defbc1b",
+  "reviewedResultTree": "f4f5bb792c2196c1b0f94b0f384da3fc0f207ec6",
   "capabilities": [
     {
       "id": "retained-state-and-migrations",
@@ -17,7 +17,7 @@
       "patches": [
         "0001-retained-state-and-migrations.patch"
       ],
-      "sourceDigest": "037a564faf61c020bb294d8621795fd5b24b1375a15ecd56827556d9d1252a85",
+      "sourceDigest": "a3ecf9d6a0db2226f2a08c9721d8f4e366cb2ab5686edfa67c3288bf5a9d61dd",
       "surfaces": [
         {
           "kind": "database",
@@ -344,7 +344,7 @@
           "paths": [
             "packages/db/src/data/queued-thread-messages.ts"
           ],
-          "summary": "Retains p6r_authors when creating queued input and carries the accepted-author/editor evidence through queue edits. This capability does not introduce admission intent or original-manifest fields.",
+          "summary": "Retains p6r_authors when creating queued input and carries the accepted-author/editor evidence through queue edits.",
           "why": "Queueing and editing must preserve the accepted attribution attached to the original input.",
           "symbols": [
             "queued_thread_messages.p6r_authors",
@@ -394,7 +394,7 @@
           "paths": [
             "packages/db/src/migrate.ts"
           ],
-          "summary": "Adds a pre-mutation classification guard for populated environment_variables and legacy app_settings_values machineEnvironment:* records; requires explicit valid secret classification. Does not create the identity bridge/staging tables.",
+          "summary": "Adds a pre-mutation classification guard for populated environment_variables and legacy app_settings_values machineEnvironment:* records; requires explicit valid secret classification. Does not create the identity bridge/staging tables. Unsupported ledger timestamps fail before writes; schema from unknown branch receipts is never inferred or replayed.",
           "why": "An operator must classify retained values using provenance before the new diagnostic policy is applied; the migration must not guess or silently mask every ordinary value.",
           "symbols": [
             "assertEnvironmentSecretClassification",
@@ -459,7 +459,7 @@
             "packages/db/test/environment-classification-migration.test.ts"
           ],
           "summary": "Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.",
-          "why": "Protect the accepted behavior and its failure cases across source refreshes. NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle."
+          "why": "Verify explicit environment secret classification refuses populated unclassified state and supports the reviewed offline classification path."
         },
         {
           "kind": "verification",
@@ -499,7 +499,7 @@
             "packages/db/test/helpers/rewind.ts"
           ],
           "summary": "Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.",
-          "why": "Protect the accepted behavior and its failure cases across source refreshes. NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle."
+          "why": "Remove the downstream secret-classification column when reconstructing historical migration fixtures."
         },
         {
           "kind": "verification",
@@ -539,7 +539,7 @@
             "packages/db/test/thread-drafts-migration.test.ts"
           ],
           "summary": "Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.",
-          "why": "Protect the accepted behavior and its failure cases across source refreshes. NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle."
+          "why": "Reconstruct the pre-drafts schema without the downstream secret-classification column so native draft migration can replay."
         },
         {
           "kind": "verification",
@@ -551,7 +551,7 @@
         }
       ],
       "verification": [
-        "Migration tests cover fresh, historical, retired-admission and repeat-start cohorts."
+        "Migration tests cover fresh, supported historical and repeat-start cohorts, plus refusal of unsupported installed ledgers before writes."
       ],
       "retirement": "Remove bridge logic only when no supported retained database has its exact historical receipts.",
       "limitations": [
@@ -575,7 +575,7 @@
         "0002-trusted-authorship-and-dispatch.patch",
         "0009-optimistic-message-authorship.patch"
       ],
-      "sourceDigest": "7f6d69d140b7feff4d85c7f62737fcc7ab0bb83ef8d3c76448e8f625a5e54378",
+      "sourceDigest": "c0a91584964dae312846cadf2320e3cf9a613b0b31e5954c7e237bdc5a52c861",
       "surfaces": [
         {
           "kind": "runtime",
@@ -591,7 +591,7 @@
             "apps/server/src/routes/threads/actions.ts"
           ],
           "summary": "Existing send, edit, queue-create, queue-update and compact actions capture native request authorship before accepting content.",
-          "why": "Freeze accepted author/editor evidence from the server request rather than reconstruct it from a later viewer. Admission operation lookup/cancel routes belong to message-acceptance-delivery.",
+          "why": "Freeze accepted author/editor evidence from the server request rather than reconstruct it from a later viewer.",
           "symbols": [
             "registerThreadActionRoutes"
           ],
@@ -773,8 +773,8 @@
           "paths": [
             "apps/server/src/services/threads/child-thread-notifications.ts"
           ],
-          "summary": "Server effect and read owners. Native create/send/queue/edit/correction flows evaluate submissions under published message policies and retain operation identities, evaluations, immutable accepted originals, acknowledgements, advice and preparation state.",
-          "why": "NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle. packages/db/src/data/message-admission.ts owns operations, publications, evaluations, originals and transition transactions. Thread queue/send/edit/provision owners perform the concrete effect under frozen accepted data; client submission-identity store preserves retry identity."
+          "summary": "Native child-thread notifications retain captured author evidence.",
+          "why": "Carry accepted authorship through the native notification send path."
         },
         {
           "kind": "runtime",
@@ -791,14 +791,6 @@
           ],
           "summary": "Server effect and read owners. A configured identity provider enriches request-scoped actors; configured Serve ownership can select the Tailnet provider automatically. A dedicated loopback Tailnet ingress keeps that route distinct from local CLI ingress.",
           "why": "Server P6R provider-admission/provider-registry resolve actors; invocation-registry owns request/generation lifetimes. Native request/authorship and external-contribution capture accepted snapshots; sidecar-store retains contributions/attempts; thread events retain native author/editor arrays. Plugin runtime owns registration, activation, retirement and transport error mapping."
-        },
-        {
-          "kind": "runtime",
-          "paths": [
-            "apps/server/src/services/threads/queued-message-dispatch.ts"
-          ],
-          "summary": "Owns automatic queued dispatch and revisits host-offline waits for currently connected hosts during periodic idle recovery; reconnect and periodic recovery share the same attempt path. Failed attempts include resulting row state/wait/retry and connection evidence.",
-          "why": "An interrupted reconnect or lost claim must not leave an accepted row parked indefinitely after its host is back. This repairs the native-admission overlay recovery gap without new state, public APIs or daemon wire fields."
         },
         {
           "kind": "runtime",
@@ -1006,7 +998,7 @@
             "apps/server/test/services/threads/test-fault-barriers.test.ts"
           ],
           "summary": "Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.",
-          "why": "Protect the accepted behavior and its failure cases across source refreshes. NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle."
+          "why": "Verify fault-barrier isolation and the child-notification and queued-request boundaries without enabling barriers in ordinary operation."
         },
         {
           "kind": "verification",
@@ -1067,7 +1059,6 @@
       ],
       "retirement": "Retire custom authorship plumbing when upstream exposes equivalent provenance and lifetime semantics.",
       "limitations": [
-        "Message Rules uses native static sender accept/reject; paid evaluation and delivery changes refuse explicitly. Native hook bypass and edited-resend boundaries remain upstream behavior.",
         "Cold or failed identity reads omit optimistic attribution until confirmation; existing queued-message DTOs do not expose original-author snapshots. This changes presentation only, with no new access or impersonation capability."
       ]
     },
@@ -1150,7 +1141,7 @@
             "packages/domain/src/queued-message.ts"
           ],
           "summary": "Inline queued payloads gain optional p6rAuthors/p6rEditors arrays of nullable actor snapshots, at most256 originals.",
-          "why": "Retain authorship through queued delivery and edits without inventing an actor for unknown history. The message-originals barrel addition is documented under message-acceptance-delivery.",
+          "why": "Retain authorship through queued delivery and edits without inventing an actor for unknown history.",
           "symbols": [
             "queuedMessagePayloadSchema"
           ],
@@ -1162,7 +1153,7 @@
             "packages/domain/src/thread-events.ts"
           ],
           "summary": "turn.request gains optional p6rAuthors, p6rEditors and p6rMentionedTargets. Verified mention targets freeze identity, presentation and plugin/generation source independently of authorship.",
-          "why": "Keep authors, editors and mentioned people distinct through grouped/replayed inputs. Each array is bounded256; the host resolves person selectors rather than trusting supplied profiles. originalManifest is documented under message-acceptance-delivery.",
+          "why": "Keep authors, editors and mentioned people distinct through grouped/replayed inputs. Each array is bounded256; the host resolves person selectors rather than trusting supplied profiles.",
           "symbols": [
             "p6rMentionTargetSchema",
             "P6rMentionTarget",
@@ -1190,7 +1181,7 @@
             "packages/domain/src/thread.ts"
           ],
           "summary": "Thread list entries gain optional p6rParticipants snapshots containing principal key, display name and nullable image URL.",
-          "why": "Display canonical participant presentation in native/plugin lists without treating display data as authority. The initialForkSeed queue-content exception belongs to message-acceptance-delivery.",
+          "why": "Display canonical participant presentation in native/plugin lists without treating display data as authority.",
           "symbols": [
             "threadListEntrySchema.p6rParticipants"
           ],
@@ -1489,7 +1480,7 @@
             "packages/sdk/test/sdk.test.ts"
           ],
           "summary": "Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.",
-          "why": "Protect the accepted behavior and its failure cases across source refreshes. NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle."
+          "why": "Preserve agent message phase and causal identity through SDK thread event listing and waiting."
         },
         {
           "kind": "api",
@@ -1747,7 +1738,7 @@
             "apps/host-daemon/test/command/thread-dispatch.test.ts"
           ],
           "summary": "Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.",
-          "why": "Protect the accepted behavior and its failure cases across source refreshes. NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle."
+          "why": "Verify the start command result includes provider observations and provider thread identity."
         },
         {
           "kind": "api",
@@ -2643,7 +2634,7 @@
             "apps/app/src/views/thread-detail/ThreadDetailPromptArea.test.tsx"
           ],
           "summary": "Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.",
-          "why": "Protect the accepted behavior and its failure cases across source refreshes. NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle."
+          "why": "Verify the error toast exposes its Copy details action."
         },
         {
           "kind": "dependency",
@@ -2718,7 +2709,7 @@
       "patches": [
         "0006-service-lifecycle-and-transport.patch"
       ],
-      "sourceDigest": "0cb5b39448b652a091ff0d5d52b6d591ba13163a46dd2a97691d2e200bb2cf52",
+      "sourceDigest": "a3ecf9d6a0db2226f2a08c9721d8f4e366cb2ab5686edfa67c3288bf5a9d61dd",
       "surfaces": [
         {
           "kind": "dependency",
@@ -2974,7 +2965,7 @@
             "apps/server/src/testing/test-fault-barriers.ts"
           ],
           "summary": "Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.",
-          "why": "Protect the accepted behavior and its failure cases across source refreshes. NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle."
+          "why": "Provide explicitly armed, token-bound fault barriers confined to private temporary state for child-output and queue transaction recovery verification."
         },
         {
           "kind": "runtime",
@@ -3081,14 +3072,6 @@
           "why": "Integration tests compile server source with host-daemon declarations instead of the complete native ws types. Keep that existing compile-time boundary faithful to the real native option without casts, runtime shims or new protocol fields."
         },
         {
-          "kind": "runtime",
-          "paths": [
-            "apps/server/src/services/threads/queued-message-dispatch.ts"
-          ],
-          "summary": "Reconcile missed interaction/workspace wakes within the existing idle queue recovery owner. Clear only resolved interaction waits or completed startup with a ready environment, then use unchanged automatic dispatch.",
-          "why": "A durable wait can outlive its one-shot event. Native queue transitions restore ordinary manual-stop semantics; plugins cannot safely replace this with Send now. No new timer, SDK/API, routing or retry policy."
-        },
-        {
           "kind": "database",
           "paths": [
             "packages/db/src/data/queued-thread-messages.ts"
@@ -3116,6 +3099,14 @@
           ],
           "summary": "Startup thread-lifecycle recovery (native server.restarted) is a separately callable step; the detached recovery sweep can skip it once it has run.",
           "why": "Native server.restarted is not idempotent: a second application would discard answers the new process accepted and reset stops it sent. It must run once, before daemon ingress is admitted, while the remaining recovery stays detached after listener binding."
+        },
+        {
+          "kind": "runtime",
+          "paths": [
+            "apps/server/src/services/threads/queued-message-dispatch.ts"
+          ],
+          "summary": "Reconcile missed interaction/workspace wakes within the existing idle queue recovery owner. Clear only resolved interaction waits or completed startup with a ready environment, then use unchanged automatic dispatch.",
+          "why": "A durable wait can outlive its one-shot event. Native queue transitions restore ordinary manual-stop semantics; plugins cannot safely replace this with Send now. No new timer, SDK/API, routing or retry policy."
         }
       ],
       "verification": [
@@ -3143,7 +3134,7 @@
       "patches": [
         "0007-integration-and-verification.patch"
       ],
-      "sourceDigest": "513b1ea90d702dcc167cbfb0ddb19d8128b6d2944c91c85c516fbfd842ad8aa8",
+      "sourceDigest": "509b67763e27fe52b4b943a109993023975d468069e7ad2cd3e3734c87989409",
       "surfaces": [
         {
           "kind": "runtime",
@@ -3468,14 +3459,6 @@
         {
           "kind": "verification",
           "paths": [
-            "apps/server/test/threads/queue-drain-failure.test.ts"
-          ],
-          "summary": "Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.",
-          "why": "Protect the accepted behavior and its failure cases across source refreshes. NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle."
-        },
-        {
-          "kind": "verification",
-          "paths": [
             "apps/server/test/threads/thread-edit-message.test.ts"
           ],
           "summary": "Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.",
@@ -3495,7 +3478,7 @@
             "apps/server/test/threads/thread-turn-dispatch.test.ts"
           ],
           "summary": "Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.",
-          "why": "Protect the accepted behavior and its failure cases across source refreshes. NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle."
+          "why": "Verify reprovision retains captured authors/editors and rolls back when the acceptance commit fails."
         },
         {
           "kind": "runtime",
@@ -3559,7 +3542,7 @@
             "packages/templates/test/plugin-scaffold-external.test.ts"
           ],
           "summary": "Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.",
-          "why": "Protect the accepted behavior and its failure cases across source refreshes. NativeMessageAdmission/message-admission.ts and its capture/input/placement/runtime/dispatch/recovery modules own the lifecycle."
+          "why": "Bound external scaffold pack-failure diagnostics and redact credentials from diagnostic output."
         },
         {
           "kind": "runtime",
@@ -3768,6 +3751,14 @@
           ],
           "summary": "Regression/fixture coverage for the behavior above. These paths identify the relevant instruments, not a claim that every suite or live scenario has passed.",
           "why": "Native fake-provider integration expectations follow the downstream machine sender envelope on provider input."
+        },
+        {
+          "kind": "verification",
+          "paths": [
+            "apps/server/test/threads/queue-drain-failure.test.ts"
+          ],
+          "summary": "Injects one reconnect claim-loss error at the native send boundary, verifies persisted retry booking, then restores real native send and checks queue removal and exactly one requested event, including repeated due-retry and reconnect wakes.",
+          "why": "Qualify bounded native recovery after removing the retired shim. Does not reproduce the historical race, establish general exactly-once delivery, or qualify retained live queues or cancellation."
         }
       ],
       "verification": [
@@ -3792,7 +3783,7 @@
       "patches": [
         "0008-prompt-wording.patch"
       ],
-      "sourceDigest": "513b1ea90d702dcc167cbfb0ddb19d8128b6d2944c91c85c516fbfd842ad8aa8",
+      "sourceDigest": "509b67763e27fe52b4b943a109993023975d468069e7ad2cd3e3734c87989409",
       "surfaces": [
         {
           "kind": "runtime",

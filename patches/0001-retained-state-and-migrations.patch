@@ -3,80 +3,10 @@ From: Cole Lawrence <cole@colelawrence.com>
 Date: Fri, 13 Nov 2026 20:23:59 -0300
 Subject: [PATCH] Retained state and migrations
 
----
- .../p6r/drizzle/0000_lying_energizer.sql      |   51 +
- .../p6r/drizzle/0001_aromatic_leopardon.sql   |    4 +
- .../drizzle/0002_pending_queued_dispatch.sql  |    9 +
- .../drizzle/0003_participant_watermarks.sql   |    9 +
- .../p6r/drizzle/meta/0000_snapshot.json       |  343 +
- .../p6r/drizzle/meta/0001_snapshot.json       |  367 +
- .../p6r/drizzle/meta/0002_snapshot.json       |  420 ++
- .../p6r/drizzle/meta/0003_snapshot.json       |  479 ++
- .../services/p6r/drizzle/meta/_journal.json   |   34 +
- .../services/p6r/sidecar-drizzle.config.mjs   |    6 +
- .../src/services/p6r/sidecar-migrate.ts       |   14 +
- .../server/src/services/p6r/sidecar-schema.ts |  126 +
- apps/server/src/services/p6r/sidecar-store.ts |  696 ++
- ...d-cache-equivalence-thread-columns.test.ts |    1 +
- .../p6r/sidecar-built-artifact.test.ts        |   93 +
- .../p6r/sidecar-startup-migration.test.ts     |   20 +
- .../test/services/p6r/sidecar-store.test.ts   |  296 +
- .../drizzle/0145_identity_context_bridge.sql  |  186 +
- ...0146_environment_secret_classification.sql |    1 +
- packages/db/drizzle/meta/0161_snapshot.json   | 6299 +++++++++++++++++
- packages/db/drizzle/meta/_journal.json        |   16 +-
- packages/db/src/data/events.ts                |   47 +
- packages/db/src/data/index.ts                 |    1 +
- .../db/src/data/project-execution-defaults.ts |    6 +-
- .../db/src/data/queued-thread-messages.ts     |   44 +
- packages/db/src/data/thread-facets.ts         |  469 ++
- packages/db/src/data/threads.ts               |  163 +-
- packages/db/src/migrate.ts                    | 1078 ++-
- packages/db/src/schema.ts                     |  134 +
- packages/db/test/data/events.test.ts          |   21 +-
- .../test/data/queued-thread-messages.test.ts  |   37 +
- packages/db/test/data/threads.test.ts         |   97 +
- ...vironment-classification-migration.test.ts |  176 +
- .../0119_soft_pandemic.sql                    |  102 +
- .../0120_early_virginia_dare.sql              |   33 +
- .../0121_sticky_king_bedlam.sql               |    4 +
- .../0122_living_quasimodo.sql                 |   49 +
- packages/db/test/helpers/rewind.ts            |    8 +
- packages/db/test/migrate.test.ts              | 1255 +++-
- .../pane-focus-bindings-migration.test.ts     |    2 +
- .../queued-message-state-migration.test.ts    |    2 +
- .../sidebar-installation-defaults.test.ts     |    2 +
- .../db/test/thread-drafts-migration.test.ts   |    2 +
- 43 files changed, 13069 insertions(+), 133 deletions(-)
- create mode 100644 apps/server/src/services/p6r/drizzle/0000_lying_energizer.sql
- create mode 100644 apps/server/src/services/p6r/drizzle/0001_aromatic_leopardon.sql
- create mode 100644 apps/server/src/services/p6r/drizzle/0002_pending_queued_dispatch.sql
- create mode 100644 apps/server/src/services/p6r/drizzle/0003_participant_watermarks.sql
- create mode 100644 apps/server/src/services/p6r/drizzle/meta/0000_snapshot.json
- create mode 100644 apps/server/src/services/p6r/drizzle/meta/0001_snapshot.json
- create mode 100644 apps/server/src/services/p6r/drizzle/meta/0002_snapshot.json
- create mode 100644 apps/server/src/services/p6r/drizzle/meta/0003_snapshot.json
- create mode 100644 apps/server/src/services/p6r/drizzle/meta/_journal.json
- create mode 100644 apps/server/src/services/p6r/sidecar-drizzle.config.mjs
- create mode 100644 apps/server/src/services/p6r/sidecar-migrate.ts
- create mode 100644 apps/server/src/services/p6r/sidecar-schema.ts
- create mode 100644 apps/server/src/services/p6r/sidecar-store.ts
- create mode 100644 apps/server/test/services/p6r/sidecar-built-artifact.test.ts
- create mode 100644 apps/server/test/services/p6r/sidecar-startup-migration.test.ts
- create mode 100644 apps/server/test/services/p6r/sidecar-store.test.ts
- create mode 100644 packages/db/drizzle/0145_identity_context_bridge.sql
- create mode 100644 packages/db/drizzle/0146_environment_secret_classification.sql
- create mode 100644 packages/db/drizzle/meta/0161_snapshot.json
- create mode 100644 packages/db/src/data/thread-facets.ts
- create mode 100644 packages/db/test/environment-classification-migration.test.ts
- create mode 100644 packages/db/test/fixtures/legacy-identity-context-magnet/0119_soft_pandemic.sql
- create mode 100644 packages/db/test/fixtures/legacy-identity-context-magnet/0120_early_virginia_dare.sql
- create mode 100644 packages/db/test/fixtures/legacy-identity-context-magnet/0121_sticky_king_bedlam.sql
- create mode 100644 packages/db/test/fixtures/legacy-identity-context-magnet/0122_living_quasimodo.sql
 
 diff --git a/apps/server/src/services/p6r/drizzle/0000_lying_energizer.sql b/apps/server/src/services/p6r/drizzle/0000_lying_energizer.sql
 new file mode 100644
-index 0000000000000000000000000000000000000000..6ad682954775ab55aaa74a003cc0e93947124404
+index 0000000000..6ad6829547
 --- /dev/null
 +++ b/apps/server/src/services/p6r/drizzle/0000_lying_energizer.sql
 @@ -0,0 +1,51 @@
@@ -134,7 +64,7 @@ index 0000000000000000000000000000000000000000..6ad682954775ab55aaa74a003cc0e939
 \ No newline at end of file
 diff --git a/apps/server/src/services/p6r/drizzle/0001_aromatic_leopardon.sql b/apps/server/src/services/p6r/drizzle/0001_aromatic_leopardon.sql
 new file mode 100644
-index 0000000000000000000000000000000000000000..9a71fa76b5039b93f0c086abde9ef06768728c29
+index 0000000000..9a71fa76b5
 --- /dev/null
 +++ b/apps/server/src/services/p6r/drizzle/0001_aromatic_leopardon.sql
 @@ -0,0 +1,4 @@
@@ -144,7 +74,7 @@ index 0000000000000000000000000000000000000000..9a71fa76b5039b93f0c086abde9ef067
 +);
 diff --git a/apps/server/src/services/p6r/drizzle/0002_pending_queued_dispatch.sql b/apps/server/src/services/p6r/drizzle/0002_pending_queued_dispatch.sql
 new file mode 100644
-index 0000000000000000000000000000000000000000..e3e3d81c7a0816b02ac09b3a76f0428ef90eba49
+index 0000000000..e3e3d81c7a
 --- /dev/null
 +++ b/apps/server/src/services/p6r/drizzle/0002_pending_queued_dispatch.sql
 @@ -0,0 +1,9 @@
@@ -160,7 +90,7 @@ index 0000000000000000000000000000000000000000..e3e3d81c7a0816b02ac09b3a76f0428e
 \ No newline at end of file
 diff --git a/apps/server/src/services/p6r/drizzle/0003_participant_watermarks.sql b/apps/server/src/services/p6r/drizzle/0003_participant_watermarks.sql
 new file mode 100644
-index 0000000000000000000000000000000000000000..93b25c7bb6c85f2f581f164a4ece3be7506c3981
+index 0000000000..93b25c7bb6
 --- /dev/null
 +++ b/apps/server/src/services/p6r/drizzle/0003_participant_watermarks.sql
 @@ -0,0 +1,9 @@
@@ -175,7 +105,7 @@ index 0000000000000000000000000000000000000000..93b25c7bb6c85f2f581f164a4ece3be7
 +);
 diff --git a/apps/server/src/services/p6r/drizzle/meta/0000_snapshot.json b/apps/server/src/services/p6r/drizzle/meta/0000_snapshot.json
 new file mode 100644
-index 0000000000000000000000000000000000000000..ed79f0a944d12af90217cdb58e6b0d400e582b04
+index 0000000000..ed79f0a944
 --- /dev/null
 +++ b/apps/server/src/services/p6r/drizzle/meta/0000_snapshot.json
 @@ -0,0 +1,343 @@
@@ -525,7 +455,7 @@ index 0000000000000000000000000000000000000000..ed79f0a944d12af90217cdb58e6b0d40
 \ No newline at end of file
 diff --git a/apps/server/src/services/p6r/drizzle/meta/0001_snapshot.json b/apps/server/src/services/p6r/drizzle/meta/0001_snapshot.json
 new file mode 100644
-index 0000000000000000000000000000000000000000..d7e34eb2faa2831b2b7ece30ebe7479e0d35a06e
+index 0000000000..d7e34eb2fa
 --- /dev/null
 +++ b/apps/server/src/services/p6r/drizzle/meta/0001_snapshot.json
 @@ -0,0 +1,367 @@
@@ -899,7 +829,7 @@ index 0000000000000000000000000000000000000000..d7e34eb2faa2831b2b7ece30ebe7479e
 \ No newline at end of file
 diff --git a/apps/server/src/services/p6r/drizzle/meta/0002_snapshot.json b/apps/server/src/services/p6r/drizzle/meta/0002_snapshot.json
 new file mode 100644
-index 0000000000000000000000000000000000000000..320fe0de7e06bf513eb6ed16b5630dd34c43d100
+index 0000000000..320fe0de7e
 --- /dev/null
 +++ b/apps/server/src/services/p6r/drizzle/meta/0002_snapshot.json
 @@ -0,0 +1,420 @@
@@ -1326,7 +1256,7 @@ index 0000000000000000000000000000000000000000..320fe0de7e06bf513eb6ed16b5630dd3
 \ No newline at end of file
 diff --git a/apps/server/src/services/p6r/drizzle/meta/0003_snapshot.json b/apps/server/src/services/p6r/drizzle/meta/0003_snapshot.json
 new file mode 100644
-index 0000000000000000000000000000000000000000..b474d0f249e1be6dc683b7c0de49d8782ba6ccab
+index 0000000000..b474d0f249
 --- /dev/null
 +++ b/apps/server/src/services/p6r/drizzle/meta/0003_snapshot.json
 @@ -0,0 +1,479 @@
@@ -1812,7 +1742,7 @@ index 0000000000000000000000000000000000000000..b474d0f249e1be6dc683b7c0de49d878
 \ No newline at end of file
 diff --git a/apps/server/src/services/p6r/drizzle/meta/_journal.json b/apps/server/src/services/p6r/drizzle/meta/_journal.json
 new file mode 100644
-index 0000000000000000000000000000000000000000..dad5a2214d7aa1005600388964fef1a4d425a55a
+index 0000000000..dad5a2214d
 --- /dev/null
 +++ b/apps/server/src/services/p6r/drizzle/meta/_journal.json
 @@ -0,0 +1,34 @@
@@ -1853,7 +1783,7 @@ index 0000000000000000000000000000000000000000..dad5a2214d7aa1005600388964fef1a4
 \ No newline at end of file
 diff --git a/apps/server/src/services/p6r/sidecar-drizzle.config.mjs b/apps/server/src/services/p6r/sidecar-drizzle.config.mjs
 new file mode 100644
-index 0000000000000000000000000000000000000000..b451742a2657593c7b4f75e8e7871f09b370e89f
+index 0000000000..b451742a26
 --- /dev/null
 +++ b/apps/server/src/services/p6r/sidecar-drizzle.config.mjs
 @@ -0,0 +1,6 @@
@@ -1865,7 +1795,7 @@ index 0000000000000000000000000000000000000000..b451742a2657593c7b4f75e8e7871f09
 +});
 diff --git a/apps/server/src/services/p6r/sidecar-migrate.ts b/apps/server/src/services/p6r/sidecar-migrate.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..fa248b2f2447f8b33dd2ab2c109659835ef2ddeb
+index 0000000000..fa248b2f24
 --- /dev/null
 +++ b/apps/server/src/services/p6r/sidecar-migrate.ts
 @@ -0,0 +1,14 @@
@@ -1885,7 +1815,7 @@ index 0000000000000000000000000000000000000000..fa248b2f2447f8b33dd2ab2c10965983
 +}
 diff --git a/apps/server/src/services/p6r/sidecar-schema.ts b/apps/server/src/services/p6r/sidecar-schema.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..2d036e920d89cffdccd2f2920763a6fe2462672d
+index 0000000000..2d036e920d
 --- /dev/null
 +++ b/apps/server/src/services/p6r/sidecar-schema.ts
 @@ -0,0 +1,126 @@
@@ -2017,7 +1947,7 @@ index 0000000000000000000000000000000000000000..2d036e920d89cffdccd2f2920763a6fe
 +);
 diff --git a/apps/server/src/services/p6r/sidecar-store.ts b/apps/server/src/services/p6r/sidecar-store.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..6bb4d4d3fccd00ce59cfeefff5613a3db81ed540
+index 0000000000..6bb4d4d3fc
 --- /dev/null
 +++ b/apps/server/src/services/p6r/sidecar-store.ts
 @@ -0,0 +1,696 @@
@@ -2718,7 +2648,7 @@ index 0000000000000000000000000000000000000000..6bb4d4d3fccd00ce59cfeefff5613a3d
 +  return row === undefined ? null : receiptFromRow(row, operationNamespace, operationId);
 +}
 diff --git a/apps/server/test/public/thread-derived-cache-equivalence-thread-columns.test.ts b/apps/server/test/public/thread-derived-cache-equivalence-thread-columns.test.ts
-index d3976f4eca99a6b6d88f674674b1870a535159ac..40bd36c59723de57ffda640dbe899f743c379ae0 100644
+index d3976f4eca..40bd36c597 100644
 --- a/apps/server/test/public/thread-derived-cache-equivalence-thread-columns.test.ts
 +++ b/apps/server/test/public/thread-derived-cache-equivalence-thread-columns.test.ts
 @@ -73,6 +73,7 @@ const THREAD_COLUMN_CHANGES: {
@@ -2731,7 +2661,7 @@ index d3976f4eca99a6b6d88f674674b1870a535159ac..40bd36c59723de57ffda640dbe899f74
  const COLUMN_ROWS = Object.keys(THREAD_COLUMN_CHANGES).map((column) => ({
 diff --git a/apps/server/test/services/p6r/sidecar-built-artifact.test.ts b/apps/server/test/services/p6r/sidecar-built-artifact.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..8b808bd4721cb35ce465e1d4fe97377cc265d934
+index 0000000000..8b808bd472
 --- /dev/null
 +++ b/apps/server/test/services/p6r/sidecar-built-artifact.test.ts
 @@ -0,0 +1,93 @@
@@ -2830,7 +2760,7 @@ index 0000000000000000000000000000000000000000..8b808bd4721cb35ce465e1d4fe97377c
 +);
 diff --git a/apps/server/test/services/p6r/sidecar-startup-migration.test.ts b/apps/server/test/services/p6r/sidecar-startup-migration.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..e3e048d86cf8c8e0896ac1a3826658270576113e
+index 0000000000..e3e048d86c
 --- /dev/null
 +++ b/apps/server/test/services/p6r/sidecar-startup-migration.test.ts
 @@ -0,0 +1,20 @@
@@ -2856,7 +2786,7 @@ index 0000000000000000000000000000000000000000..e3e048d86cf8c8e0896ac1a382665827
 +});
 diff --git a/apps/server/test/services/p6r/sidecar-store.test.ts b/apps/server/test/services/p6r/sidecar-store.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..57147577fef0103ba45a04e5fd4b878f94b4f4e5
+index 0000000000..57147577fe
 --- /dev/null
 +++ b/apps/server/test/services/p6r/sidecar-store.test.ts
 @@ -0,0 +1,296 @@
@@ -3158,7 +3088,7 @@ index 0000000000000000000000000000000000000000..57147577fef0103ba45a04e5fd4b878f
 +});
 diff --git a/packages/db/drizzle/0145_identity_context_bridge.sql b/packages/db/drizzle/0145_identity_context_bridge.sql
 new file mode 100644
-index 0000000000000000000000000000000000000000..fe5ef2479889fe5fcf9fe3a6192ceceac4fe2110
+index 0000000000..fe5ef24798
 --- /dev/null
 +++ b/packages/db/drizzle/0145_identity_context_bridge.sql
 @@ -0,0 +1,186 @@
@@ -3350,7 +3280,7 @@ index 0000000000000000000000000000000000000000..fe5ef2479889fe5fcf9fe3a6192cecea
 +CREATE INDEX IF NOT EXISTS `thread_facet_snapshots_generation_thread_idx` ON `thread_facet_snapshots` (`type_scope`,`type_owner`,`local_name`,`assignment_scope`,`owner_generation`,`thread_id`);
 diff --git a/packages/db/drizzle/0146_environment_secret_classification.sql b/packages/db/drizzle/0146_environment_secret_classification.sql
 new file mode 100644
-index 0000000000000000000000000000000000000000..77c71ee83811faf9421197b9cbe673eeaf3b1695
+index 0000000000..77c71ee838
 --- /dev/null
 +++ b/packages/db/drizzle/0146_environment_secret_classification.sql
 @@ -0,0 +1 @@
@@ -3358,7 +3288,7 @@ index 0000000000000000000000000000000000000000..77c71ee83811faf9421197b9cbe673ee
 \ No newline at end of file
 diff --git a/packages/db/drizzle/meta/0161_snapshot.json b/packages/db/drizzle/meta/0161_snapshot.json
 new file mode 100644
-index 0000000000000000000000000000000000000000..5b3a360f344609fbaa89d654598589de48a41ae0
+index 0000000000..5b3a360f34
 --- /dev/null
 +++ b/packages/db/drizzle/meta/0161_snapshot.json
 @@ -0,0 +1,6299 @@
@@ -9663,7 +9593,7 @@ index 0000000000000000000000000000000000000000..5b3a360f344609fbaa89d654598589de
 +}
 \ No newline at end of file
 diff --git a/packages/db/drizzle/meta/_journal.json b/packages/db/drizzle/meta/_journal.json
-index 1c4e11e97f6d0ec809004da9b8d28d09bf3db19c..031b967c7bd9dcff6880cfb59f3ae6ffa9a977f5 100644
+index 1c4e11e97f..031b967c7b 100644
 --- a/packages/db/drizzle/meta/_journal.json
 +++ b/packages/db/drizzle/meta/_journal.json
 @@ -1121,6 +1121,20 @@
@@ -9690,7 +9620,7 @@ index 1c4e11e97f6d0ec809004da9b8d28d09bf3db19c..031b967c7bd9dcff6880cfb59f3ae6ff
 \ No newline at end of file
 +}
 diff --git a/packages/db/src/data/events.ts b/packages/db/src/data/events.ts
-index 8a4778f506258d030cc9275b8af52700e20e2a34..e41a870d9bbe010311c83c18db780058fc770d59 100644
+index 8a4778f506..e41a870d9b 100644
 --- a/packages/db/src/data/events.ts
 +++ b/packages/db/src/data/events.ts
 @@ -308,6 +308,10 @@ export interface StoredTurnRequestEventRow {
@@ -9762,7 +9692,7 @@ index 8a4778f506258d030cc9275b8af52700e20e2a34..e41a870d9bbe010311c83c18db780058
    db: DbQueryConnection,
    threadId: string,
 diff --git a/packages/db/src/data/index.ts b/packages/db/src/data/index.ts
-index 6af7cff986bc91836912038b71a5d7d3b9c09170..4d43e01743c02fab71922f32e2e6034176943eb4 100644
+index 6af7cff986..4d43e01743 100644
 --- a/packages/db/src/data/index.ts
 +++ b/packages/db/src/data/index.ts
 @@ -33,6 +33,7 @@ export * from "./sweep-item-failures.js";
@@ -9774,7 +9704,7 @@ index 6af7cff986bc91836912038b71a5d7d3b9c09170..4d43e01743c02fab71922f32e2e60341
  export * from "./thread-pruning.js";
  export * from "./thread-purges.js";
 diff --git a/packages/db/src/data/project-execution-defaults.ts b/packages/db/src/data/project-execution-defaults.ts
-index 639fdab028d1e8b7ae4eeb1e7b833008e924bf68..b008dea4e18d2c6aeb13bf8a6d43fc20f3d9e6ae 100644
+index 639fdab028..b008dea4e1 100644
 --- a/packages/db/src/data/project-execution-defaults.ts
 +++ b/packages/db/src/data/project-execution-defaults.ts
 @@ -5,7 +5,7 @@ import type {
@@ -9805,7 +9735,7 @@ index 639fdab028d1e8b7ae4eeb1e7b833008e924bf68..b008dea4e18d2c6aeb13bf8a6d43fc20
  ): Map<string, ProjectExecutionDefaults> {
    const byProjectId = new Map<string, ProjectExecutionDefaults>();
 diff --git a/packages/db/src/data/queued-thread-messages.ts b/packages/db/src/data/queued-thread-messages.ts
-index 1b45957fa19ca0e933b0b3a2fc8e4c234a0519ac..e62591c7a6f56e913d9d40fd7b27e5a62034e0b6 100644
+index 1b45957fa1..e62591c7a6 100644
 --- a/packages/db/src/data/queued-thread-messages.ts
 +++ b/packages/db/src/data/queued-thread-messages.ts
 @@ -23,6 +23,7 @@ import { alias } from "drizzle-orm/sqlite-core";
@@ -9901,7 +9831,7 @@ index 1b45957fa19ca0e933b0b3a2fc8e4c234a0519ac..e62591c7a6f56e913d9d40fd7b27e5a6
          .where(eq(queuedThreadMessages.id, id))
 diff --git a/packages/db/src/data/thread-facets.ts b/packages/db/src/data/thread-facets.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..7df5f8b2d5abbf8d0d251dfc0b0583487c323be9
+index 0000000000..7df5f8b2d5
 --- /dev/null
 +++ b/packages/db/src/data/thread-facets.ts
 @@ -0,0 +1,469 @@
@@ -10375,7 +10305,7 @@ index 0000000000000000000000000000000000000000..7df5f8b2d5abbf8d0d251dfc0b058348
 +  return { threadIds: page, hasMore: rows.length > page.length };
 +}
 diff --git a/packages/db/src/data/threads.ts b/packages/db/src/data/threads.ts
-index 48dc05facc63af0fa4ec053ede8272812aeccaba..fe33d36b575d0b200049d5e2f4ba4c8ca957a0a3 100644
+index 48dc05facc..fe33d36b57 100644
 --- a/packages/db/src/data/threads.ts
 +++ b/packages/db/src/data/threads.ts
 @@ -1483,6 +1483,20 @@ export function listThreadsWithPendingInteractionState(
@@ -10569,7 +10499,7 @@ index 48dc05facc63af0fa4ec053ede8272812aeccaba..fe33d36b575d0b200049d5e2f4ba4c8c
      .returning()
      .get();
 diff --git a/packages/db/src/migrate.ts b/packages/db/src/migrate.ts
-index 0d9f7eb239a0f0d3525cc2faabce90af62b189ae..6d167f013356c209a2eff273b4f8adfbd7a64c73 100644
+index 0d9f7eb239..ac939c3e9a 100644
 --- a/packages/db/src/migrate.ts
 +++ b/packages/db/src/migrate.ts
 @@ -14,10 +14,12 @@ export interface ResolveMigrationsFolderForModuleDirArgs {
@@ -10623,7 +10553,7 @@ index 0d9f7eb239a0f0d3525cc2faabce90af62b189ae..6d167f013356c209a2eff273b4f8adfb
  interface PendingInteractionProviderRequestDuplicateRow {
    duplicateCount: number;
    providerId: string;
-@@ -160,6 +179,106 @@ const reorderedCleanupMigrationTags = [
+@@ -160,6 +179,64 @@ const reorderedCleanupMigrationTags = [
    "0034_drop_stop_requested_at",
    "0035_warm_kingpin",
  ] as const satisfies readonly ReorderedCleanupMigrationTag[];
@@ -10658,48 +10588,6 @@ index 0d9f7eb239a0f0d3525cc2faabce90af62b189ae..6d167f013356c209a2eff273b4f8adfb
 +    tag: "0122_living_quasimodo",
 +  },
 +] as const;
-+// Retired native-admission tables stay in retained databases as history. Their
-+// original receipt identities are immutable; they are not executable migrations
-+// in this upstream-based release. New upstream migrations must not be skipped
-+// merely because these previously installed branch timestamps sort later.
-+const retiredAdmissionMigrations = new Map<number, string>([
-+  [1794441122244, "95ca6fd454c843e18ffe0b45c99183b076a4693b38ceed8838561450a27d9946"],
-+  [1794443087515, "f50464b97618c01ae095b1a5c6d36d30818b2fc6757ab81c08a477778e7bee91"],
-+  [1794445604608, "cb74d13974717c4cee9079bf28d3ff18402fdb6cec713d0d64f610dd7f2bd19b"],
-+  [1794445975893, "0d567298c1ccd7fe91efa1237e220734cccdf07d4ff5923d3320dfe53c985cff"],
-+]);
-+
-+function isRetiredAdmissionMigration(row: AppliedMigrationIdentityRow): boolean {
-+  return row.createdAt !== null && retiredAdmissionMigrations.get(row.createdAt) === row.hash;
-+}
-+
-+function applyUpstreamMigrationsSkippedByRetiredAdmissionHistory(
-+  db: DbConnection, migrationsFolder: string,
-+): void {
-+  if (!tableExists(db, "__drizzle_migrations")) return;
-+  const rows = db.$client.prepare<[], AppliedMigrationIdentityRow>(
-+    "SELECT hash, created_at AS createdAt FROM __drizzle_migrations",
-+  ).all();
-+  const retired = rows.filter(row => row.createdAt !== null && retiredAdmissionMigrations.has(row.createdAt));
-+  if (retired.length === 0) return;
-+  if (retired.some(row => !isRetiredAdmissionMigration(row))) {
-+    throw new Error("Retired admission migration receipt differs from the reviewed installed history; refusing to infer its schema.");
-+  }
-+  const expected = readExpectedAppliedMigrations(migrationsFolder);
-+  const last = Math.max(...retired.map(row => row.createdAt!));
-+  const native = expected.filter(row => /^01(?:4[5-9]|5[0-6])_/.test(row.tag) && !row.tag.includes("identity_context") && !row.tag.includes("environment_secret"));
-+  db.$client.transaction(() => {
-+    for (const migration of native) {
-+      const installed = rows.find(row => row.createdAt === migration.createdAt);
-+      if (installed !== undefined) {
-+        if (installed.hash !== migration.hash) throw new Error(`Upstream migration ${migration.tag} receipt does not match its source.`);
-+      } else if (migration.createdAt <= last) {
-+        applyMigrationStatements(db, migration);
-+      }
-+    }
-+  })();
-+}
-+
 +const identityContextBridgeCompletionTable = "bb_schema_bridge_completions";
 +const identityContextBridgeCompletionName = "identity-context-0131";
 +
@@ -10730,7 +10618,7 @@ index 0d9f7eb239a0f0d3525cc2faabce90af62b189ae..6d167f013356c209a2eff273b4f8adfb
  const pendingInteractionColumns: ExpectedColumn[] = [
    { name: "id", type: "text", notNull: true, primaryKey: true },
    { name: "thread_id", type: "text", notNull: true, primaryKey: false },
-@@ -273,20 +392,24 @@ function parseTableInfoColumn(value: unknown): SqliteTableInfoColumn {
+@@ -273,20 +350,24 @@ function parseTableInfoColumn(value: unknown): SqliteTableInfoColumn {
    const type = value.type;
    const notNull = value.notnull;
    const primaryKey = value.pk;
@@ -10756,7 +10644,7 @@ index 0d9f7eb239a0f0d3525cc2faabce90af62b189ae..6d167f013356c209a2eff273b4f8adfb
    };
  }
  
-@@ -403,6 +526,41 @@ function tableExists(db: DbConnection, tableName: string): boolean {
+@@ -403,6 +484,41 @@ function tableExists(db: DbConnection, tableName: string): boolean {
    );
  }
  
@@ -10798,7 +10686,7 @@ index 0d9f7eb239a0f0d3525cc2faabce90af62b189ae..6d167f013356c209a2eff273b4f8adfb
  function columnExists(
    db: DbConnection,
    tableName: string,
-@@ -498,6 +656,30 @@ function readAppliedMigrationCreatedAts(db: DbConnection): Set<number> {
+@@ -498,6 +614,30 @@ function readAppliedMigrationCreatedAts(db: DbConnection): Set<number> {
    return new Set(rows.map((row) => row.createdAt));
  }
  
@@ -10829,7 +10717,7 @@ index 0d9f7eb239a0f0d3525cc2faabce90af62b189ae..6d167f013356c209a2eff273b4f8adfb
  export function countAppliedMigrations(db: DbConnection): number {
    if (!tableExists(db, "__drizzle_migrations")) {
      return 0;
-@@ -1194,6 +1376,891 @@ function stageQueuedMessageGroups(
+@@ -1194,6 +1334,891 @@ function stageQueuedMessageGroups(
    );
  }
  
@@ -10974,7 +10862,7 @@ index 0d9f7eb239a0f0d3525cc2faabce90af62b189ae..6d167f013356c209a2eff273b4f8adfb
 +    if (
 +      migration.createdAt === null ||
 +      migration.createdAt <= latestLegacyCreatedAt ||
-+      (isPriorIdentityContextBridge(migration) || isRetiredAdmissionMigration(migration))
++      isPriorIdentityContextBridge(migration)
 +    ) {
 +      continue;
 +    }
@@ -11721,15 +11609,38 @@ index 0d9f7eb239a0f0d3525cc2faabce90af62b189ae..6d167f013356c209a2eff273b4f8adfb
  const STAGED_CONNECT_MACHINE_ID_COLUMN = "_bb_connect_machine_id_pending";
  const STAGED_THREAD_STORAGE_DELETED_AT_COLUMN =
    "_bb_thread_storage_deleted_at_pending";
-@@ -1410,6 +2477,7 @@ function validateAppliedMigrationHistory(
+@@ -1409,8 +2434,30 @@ function validateAppliedMigrationHistory(
+   );
  }
  
++// Drizzle selects work by the greatest installed timestamp. An unknown branch
++// receipt can therefore suppress native migrations. Refuse it before any writes;
++// convert unsupported ledgers offline rather than infer or replay their schema.
++function assertSupportedMigrationLedger(db: DbConnection, migrationsFolder: string): void {
++  if (!tableExists(db, "__drizzle_migrations")) return;
++  const supported = new Set([
++    ...readExpectedAppliedMigrations(migrationsFolder).map(row => row.createdAt),
++    ...legacyIdentityAndContextMagnetMigrationCreatedAts,
++    ...historicalBranchMigrationsBeforeLegacyIdentity.map(row => row.createdAt),
++  ]);
++  const rows = db.$client.prepare<[], AppliedMigrationIdentityRow>(
++    "SELECT hash, created_at AS createdAt FROM __drizzle_migrations",
++  ).all();
++  for (const row of rows) {
++    if (row.createdAt === null || (!supported.has(row.createdAt) && !isPriorIdentityContextBridge(row))) {
++      throw new Error(`Unsupported migration ledger receipt (when=${row.createdAt}, hash=${row.hash}). Unknown timestamps can silently skip native migrations; convert an offline database copy before starting this release.`);
++    }
++  }
++}
++
  export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
-+  assertEnvironmentSecretClassification(db);
    const migrationsFolder = resolveMigrationsFolder();
++  assertSupportedMigrationLedger(db, migrationsFolder);
++  assertEnvironmentSecretClassification(db);
    const sqlite = db.$client;
  
-@@ -1443,23 +2511,30 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
+   const existingInstallation =
+@@ -1443,23 +2490,29 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
    }
    sqlite.pragma("foreign_keys = OFF");
    try {
@@ -11745,7 +11656,6 @@ index 0d9f7eb239a0f0d3525cc2faabce90af62b189ae..6d167f013356c209a2eff273b4f8adfb
      );
      const stagedThreadStorageDeletedAt =
        stageExistingThreadStorageDeletedAtColumn(db, migrationsFolder);
-+    applyUpstreamMigrationsSkippedByRetiredAdmissionHistory(db, migrationsFolder);
 +    applyTargetMigrationsSkippedByLegacyIdentityHistory(db, migrationsFolder);
      try {
        drizzleMigrate(db, { migrationsFolder });
@@ -11760,14 +11670,14 @@ index 0d9f7eb239a0f0d3525cc2faabce90af62b189ae..6d167f013356c209a2eff273b4f8adfb
      applyReorderedCleanupMigrations(db, migrationsFolder);
      seedKeepAwakePluginConfiguration(db);
    } finally {
-@@ -1469,4 +2544,5 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
+@@ -1469,4 +2522,5 @@ export function migrate(db: DbConnection, options: MigrateOptions = {}): void {
    warnAboutFutureAppliedMigrations(db, options);
    validateAppliedMigrationHistory(db, migrationsFolder);
    validatePendingInteractionsSchema(db);
 +  assertForeignKeyIntegrity(db);
  }
 diff --git a/packages/db/src/schema.ts b/packages/db/src/schema.ts
-index d015c0e83e5760dacf80069cf359ff937555e9e2..64c89c8197c1a853b94b24db235881dcb4bd8ff6 100644
+index d015c0e83e..64c89c8197 100644
 --- a/packages/db/src/schema.ts
 +++ b/packages/db/src/schema.ts
 @@ -46,6 +46,10 @@ import type {
@@ -11940,7 +11850,7 @@ index d015c0e83e5760dacf80069cf359ff937555e9e2..64c89c8197c1a853b94b24db235881dc
        .$type<QueuedMessagePayloadKind>()
        .notNull()
 diff --git a/packages/db/test/data/events.test.ts b/packages/db/test/data/events.test.ts
-index 9dedfa0ba459c72d3196daf047e552799400fc96..e62b48d3916f556484ca5090f383a1660e8118bb 100644
+index 9dedfa0ba4..e62b48d391 100644
 --- a/packages/db/test/data/events.test.ts
 +++ b/packages/db/test/data/events.test.ts
 @@ -1089,11 +1089,28 @@ describe("events", () => {
@@ -11975,7 +11885,7 @@ index 9dedfa0ba459c72d3196daf047e552799400fc96..e62b48d3916f556484ca5090f383a166
        expect(
          inputs
 diff --git a/packages/db/test/data/queued-thread-messages.test.ts b/packages/db/test/data/queued-thread-messages.test.ts
-index 15845d40ab1c5e5df19c361c97951b0864cca4e1..34578732bae38fc1633f139635e536357292d017 100644
+index 15845d40ab..34578732ba 100644
 --- a/packages/db/test/data/queued-thread-messages.test.ts
 +++ b/packages/db/test/data/queued-thread-messages.test.ts
 @@ -1,4 +1,5 @@
@@ -12035,7 +11945,7 @@ index 15845d40ab1c5e5df19c361c97951b0864cca4e1..34578732bae38fc1633f139635e53635
      const { db, thread } = setup();
      const queuedMessage = createQueuedThreadMessage(db, noopNotifier, {
 diff --git a/packages/db/test/data/threads.test.ts b/packages/db/test/data/threads.test.ts
-index 7e892458a49597129e5fa1c6067f5b71984d3b24..2f25034a708dbea8d09d30dec79c5a98d78f58d2 100644
+index 7e892458a4..2f25034a70 100644
 --- a/packages/db/test/data/threads.test.ts
 +++ b/packages/db/test/data/threads.test.ts
 @@ -12,8 +12,11 @@ import {
@@ -12153,7 +12063,7 @@ index 7e892458a49597129e5fa1c6067f5b71984d3b24..2f25034a708dbea8d09d30dec79c5a98
      try {
 diff --git a/packages/db/test/environment-classification-migration.test.ts b/packages/db/test/environment-classification-migration.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..a9474be8920ea81c1dd3489728ca840f35fef1a2
+index 0000000000..a9474be892
 --- /dev/null
 +++ b/packages/db/test/environment-classification-migration.test.ts
 @@ -0,0 +1,176 @@
@@ -12335,7 +12245,7 @@ index 0000000000000000000000000000000000000000..a9474be8920ea81c1dd3489728ca840f
 +});
 diff --git a/packages/db/test/fixtures/legacy-identity-context-magnet/0119_soft_pandemic.sql b/packages/db/test/fixtures/legacy-identity-context-magnet/0119_soft_pandemic.sql
 new file mode 100644
-index 0000000000000000000000000000000000000000..6a8c34d747e9b23888ff2e954d4d00ad8ba0ef23
+index 0000000000..6a8c34d747
 --- /dev/null
 +++ b/packages/db/test/fixtures/legacy-identity-context-magnet/0119_soft_pandemic.sql
 @@ -0,0 +1,102 @@
@@ -12443,7 +12353,7 @@ index 0000000000000000000000000000000000000000..6a8c34d747e9b23888ff2e954d4d00ad
 +ALTER TABLE `threads` ADD `execution_revision` integer DEFAULT 0 NOT NULL;
 diff --git a/packages/db/test/fixtures/legacy-identity-context-magnet/0120_early_virginia_dare.sql b/packages/db/test/fixtures/legacy-identity-context-magnet/0120_early_virginia_dare.sql
 new file mode 100644
-index 0000000000000000000000000000000000000000..1e3a55ae6a1ee621867b5520243334c85466c3b1
+index 0000000000..1e3a55ae6a
 --- /dev/null
 +++ b/packages/db/test/fixtures/legacy-identity-context-magnet/0120_early_virginia_dare.sql
 @@ -0,0 +1,33 @@
@@ -12482,7 +12392,7 @@ index 0000000000000000000000000000000000000000..1e3a55ae6a1ee621867b5520243334c8
 +CREATE INDEX `context_magnet_trace_thread_operation_idx` ON `context_magnet_contribution_traces` (`thread_id`,`operation_event_sequence`,`contribution_id`);
 diff --git a/packages/db/test/fixtures/legacy-identity-context-magnet/0121_sticky_king_bedlam.sql b/packages/db/test/fixtures/legacy-identity-context-magnet/0121_sticky_king_bedlam.sql
 new file mode 100644
-index 0000000000000000000000000000000000000000..874fe9bfe31248389b95f98f14aa16e85dc173b2
+index 0000000000..874fe9bfe3
 --- /dev/null
 +++ b/packages/db/test/fixtures/legacy-identity-context-magnet/0121_sticky_king_bedlam.sql
 @@ -0,0 +1,4 @@
@@ -12492,7 +12402,7 @@ index 0000000000000000000000000000000000000000..874fe9bfe31248389b95f98f14aa16e8
 +ALTER TABLE `context_magnet_contribution_trace_snapshots` ADD `receipt_high_water_sequence` integer DEFAULT 0 NOT NULL;
 diff --git a/packages/db/test/fixtures/legacy-identity-context-magnet/0122_living_quasimodo.sql b/packages/db/test/fixtures/legacy-identity-context-magnet/0122_living_quasimodo.sql
 new file mode 100644
-index 0000000000000000000000000000000000000000..6eefd1d5f7654f90a07cb775bc82641c6194cbd2
+index 0000000000..6eefd1d5f7
 --- /dev/null
 +++ b/packages/db/test/fixtures/legacy-identity-context-magnet/0122_living_quasimodo.sql
 @@ -0,0 +1,49 @@
@@ -12546,7 +12456,7 @@ index 0000000000000000000000000000000000000000..6eefd1d5f7654f90a07cb775bc82641c
 +ALTER TABLE `context_magnet_contribution_trace_snapshots` ADD `admission_attempt_high_water_sequence` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
 +ALTER TABLE `context_magnet_contribution_trace_snapshots` ADD `admission_retention_high_water_sequence` integer DEFAULT 0 NOT NULL;
 diff --git a/packages/db/test/helpers/rewind.ts b/packages/db/test/helpers/rewind.ts
-index 68100c2980c45954ae0cc6dce218c9515d08d511..ee78fdce164ff0b806862b06ca43fb4c2e96cce5 100644
+index 68100c2980..ee78fdce16 100644
 --- a/packages/db/test/helpers/rewind.ts
 +++ b/packages/db/test/helpers/rewind.ts
 @@ -65,6 +65,14 @@ export function dropThreadParentNotificationsColumn(db: DbConnection): void {
@@ -12565,13 +12475,14 @@ index 68100c2980c45954ae0cc6dce218c9515d08d511..ee78fdce164ff0b806862b06ca43fb4c
  
  interface QueuedTableColumn {
 diff --git a/packages/db/test/migrate.test.ts b/packages/db/test/migrate.test.ts
-index 53433c969aa5e2a98936da319bfbc4303b41e696..d2522da3a498bfa41ebc76dfc2531139b76ce72c 100644
+index 53433c969a..1fb840e862 100644
 --- a/packages/db/test/migrate.test.ts
 +++ b/packages/db/test/migrate.test.ts
 @@ -1,7 +1,9 @@
- import { beforeAll, describe, expect, it, vi } from "vitest";
+-import { beforeAll, describe, expect, it, vi } from "vitest";
 -import { readFileSync } from "node:fs";
 -import { dirname, resolve } from "node:path";
++import { beforeAll, describe, expect, it } from "vitest";
 +import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 +import { dirname, join, resolve } from "node:path";
  import { fileURLToPath } from "node:url";
@@ -12588,7 +12499,15 @@ index 53433c969aa5e2a98936da319bfbc4303b41e696..d2522da3a498bfa41ebc76dfc2531139
    dropQueuedMessageEditHeldUntilColumn,
    rewindQueuedMessageStateMigration,
  } from "./helpers/rewind.js";
-@@ -38,6 +41,7 @@ import {
+@@ -30,7 +33,6 @@ import {
+   noopNotifier,
+   upsertHost,
+   type DbConnection,
+-  type MigrationWarningLogger,
+ } from "../src/index.js";
+ import {
+   createMigratedConnection,
+@@ -38,6 +40,7 @@ import {
  } from "../src/testing.js";
  
  type InsertMigrationParameters = [string, number];
@@ -12596,7 +12515,7 @@ index 53433c969aa5e2a98936da319bfbc4303b41e696..d2522da3a498bfa41ebc76dfc2531139
  type DeleteMigrationParameters = [number];
  type DeleteMigrationsParameters = [number, number, number, number];
  type TableNameParameters = [string];
-@@ -274,6 +278,259 @@ const projectSourcesDefaultIndexMigrationWhen = (
+@@ -274,6 +277,259 @@ const projectSourcesDefaultIndexMigrationWhen = (
  ).entries.find(
    (entry) => entry.tag === "0155_declare_project_sources_default_index",
  )!.when;
@@ -12856,7 +12775,7 @@ index 53433c969aa5e2a98936da319bfbc4303b41e696..d2522da3a498bfa41ebc76dfc2531139
  
  function restoreWideExperimentsTable(db: DbConnection): void {
    const columns = db.$client
-@@ -736,6 +993,41 @@ function dropMarketplaceStatsColumn(db: DbConnection): void {
+@@ -736,6 +992,41 @@ function dropMarketplaceStatsColumn(db: DbConnection): void {
    }
  }
  
@@ -12898,7 +12817,7 @@ index 53433c969aa5e2a98936da319bfbc4303b41e696..d2522da3a498bfa41ebc76dfc2531139
  /**
   * Undo migration 0110, the dispatch-queue rework.
   *
-@@ -828,6 +1120,7 @@ function dropQueuedMessageAttemptColumns(db: DbConnection): void {
+@@ -828,6 +1119,7 @@ function dropQueuedMessageAttemptColumns(db: DbConnection): void {
  function dropQueueReworkSchema(db: DbConnection): void {
    dropQueuedMessageAttemptColumns(db);
    rewindEnvironmentProvisioningMigration(db);
@@ -12906,7 +12825,7 @@ index 53433c969aa5e2a98936da319bfbc4303b41e696..d2522da3a498bfa41ebc76dfc2531139
    // Indexes first: SQLite refuses to drop a column an existing index names.
    for (const index of [
      "queued_thread_messages_due_idx",
-@@ -2698,6 +2991,7 @@ describe("migrate", () => {
+@@ -2698,6 +2990,7 @@ describe("migrate", () => {
          projectId: project.id,
          providerId: "codex",
        });
@@ -12914,7 +12833,64 @@ index 53433c969aa5e2a98936da319bfbc4303b41e696..d2522da3a498bfa41ebc76dfc2531139
        dropThreadStatusChangedAtColumn(db);
        dropThreadRunStateTables(db);
        dropPluginFailureLabelColumns(db);
-@@ -3540,6 +3834,7 @@ describe("migrate", () => {
+@@ -3479,50 +3772,15 @@ describe("migrate", () => {
+     }
+   });
+ 
+-  it("warns when applied migration timestamps are in the future", () => {
++  it("refuses an unknown future receipt before migration instead of only warning", () => {
+     const db = createConnection(":memory:");
+-    const logger = {
+-      warn: vi.fn(),
+-    } satisfies MigrationWarningLogger;
+-
+     try {
+       migrate(db);
+-      const latestMigrationCreatedAt = readLatestAppliedMigrationCreatedAt(db);
+-      vi.useFakeTimers();
+-      vi.setSystemTime(latestMigrationCreatedAt + 10_000);
+-
+-      migrate(db, { logger });
+-      expect(logger.warn).not.toHaveBeenCalled();
+-
+-      const futureCreatedAt = Date.now() + 60_000;
+-      db.$client
+-        .prepare<InsertMigrationParameters>(
+-          `
+-            INSERT INTO __drizzle_migrations (hash, created_at)
+-            VALUES (?, ?)
+-          `,
+-        )
+-        .run("future-migration-hash", futureCreatedAt);
+-
+-      migrate(db, { logger });
+-
+-      expect(logger.warn).toHaveBeenCalledTimes(1);
+-      expect(logger.warn).toHaveBeenCalledWith(
+-        {
+-          migrations: [
+-            {
+-              createdAt: futureCreatedAt,
+-              hash: "future-migration-hash",
+-            },
+-          ],
+-          now: expect.any(Number),
+-        },
+-        "Applied database migrations have future timestamps",
+-      );
+-    } finally {
+-      closeConnection(db);
+-      vi.useRealTimers();
+-    }
++      db.$client.prepare("INSERT INTO __drizzle_migrations(hash,created_at) VALUES (?,?)").run("future-migration-hash", Date.now() + 999999999);
++      const before = db.$client.serialize();
++      expect(() => migrate(db)).toThrow("Unsupported migration ledger receipt");
++      expect(db.$client.serialize()).toEqual(before);
++    } finally { closeConnection(db); }
+   });
+ 
+   it("defers destructive legacy cleanup while preserving state backfills", () => {
+@@ -3540,6 +3798,7 @@ describe("migrate", () => {
        dropThreadRunStateTables(db);
        dropPluginFailureLabelColumns(db);
        rewindMachineTeardownRecoveryColumns(db);
@@ -12922,7 +12898,7 @@ index 53433c969aa5e2a98936da319bfbc4303b41e696..d2522da3a498bfa41ebc76dfc2531139
        db.$client.prepare("DROP INDEX projects_deleted_idx").run();
        db.$client.prepare("ALTER TABLE projects DROP COLUMN deleted_at").run();
        db.$client.prepare("ALTER TABLE events ADD producer_event_id text").run();
-@@ -4955,138 +5250,829 @@ describe("migrate", () => {
+@@ -4955,114 +5214,805 @@ describe("migrate", () => {
    });
  });
  
@@ -13063,40 +13039,25 @@ index 53433c969aa5e2a98936da319bfbc4303b41e696..d2522da3a498bfa41ebc76dfc2531139
 -    const db = createMigratedConnection();
 +  it("upgrades credential-free legacy identity and context magnet history without data loss", () => {
 +    const db = createConnection(":memory:");
- 
-     try {
--      seedPreProviderEnvironments(db);
--
++
++    try {
 +      createLegacyIdentityAndContextMagnetHistory(db);
-       migrate(db);
- 
++      migrate(db);
++
 +      const appliedCreatedAts = readAppliedMigrationCreatedAts(db);
 +      for (const createdAt of legacyIdentityAndContextMagnetMigrationWhens) {
 +        expect(appliedCreatedAts).toContain(createdAt);
 +      }
 +      expect(appliedCreatedAts).toContain(latestMigrationWhen);
-       expect(
-         db.$client
--          .prepare<[], BackfilledEnvironmentRow>(
++      expect(
++        db.$client
 +          .prepare(
-             `
--              SELECT id,
--                     environment_provider_id AS environmentProviderId,
--                     environment_provider_selection AS environmentProviderSelection,
--                     environment_provider_instance_key AS environmentProviderInstanceKey
--              FROM environments
--              ORDER BY id
++            `
 +              SELECT principal_key, identity_kind, display_name, image_url
 +              FROM thread_facet_principal_profiles
 +              WHERE principal_key = 'machine:legacy'
-             `,
-           )
--          .all(),
--      ).toEqual([
--        {
--          id: "env_default",
--          environmentProviderId: "git-worktree",
--          environmentProviderSelection:
++            `,
++          )
 +          .get(),
 +      ).toEqual({
 +        principal_key: "machine:legacy",
@@ -13290,7 +13251,7 @@ index 53433c969aa5e2a98936da319bfbc4303b41e696..d2522da3a498bfa41ebc76dfc2531139
 +        createLiveShapedForkBridgeLedger(db, receipt);
 +        const before = readLedgerRows(db);
 +        expect(() => migrate(db)).toThrow(
-+          /Unsupported legacy identity\/context migration history/,
++          /Unsupported migration ledger receipt/,
 +        );
 +        expect(readLedgerRows(db)).toEqual(before);
 +      } finally {
@@ -13606,7 +13567,7 @@ index 53433c969aa5e2a98936da319bfbc4303b41e696..d2522da3a498bfa41ebc76dfc2531139
 +          "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
 +        )
 +        .run("unrelated", 1999999999999);
-+      expect(() => migrate(db)).toThrow("not an exact target migration");
++      expect(() => migrate(db)).toThrow("Unsupported migration ledger receipt");
 +    } finally {
 +      closeConnection(db);
 +    }
@@ -13841,34 +13802,10 @@ index 53433c969aa5e2a98936da319bfbc4303b41e696..d2522da3a498bfa41ebc76dfc2531139
 +
 +  it("hands managed worktree, personal, and attached rows to their providers", () => {
 +    const db = createMigratedConnection();
-+
-+    try {
-+      seedPreProviderEnvironments(db);
-+
-+      migrate(db);
-+
-+      expect(
-+        db.$client
-+          .prepare<[], BackfilledEnvironmentRow>(
-+            `
-+              SELECT id,
-+                     environment_provider_id AS environmentProviderId,
-+                     environment_provider_selection AS environmentProviderSelection,
-+                     environment_provider_instance_key AS environmentProviderInstanceKey
-+              FROM environments
-+              ORDER BY id
-+            `,
-+          )
-+          .all(),
-+      ).toEqual([
-+        {
-+          id: "env_default",
-+          environmentProviderId: "git-worktree",
-+          environmentProviderSelection:
-             '{"machine":{"type":"existing","hostId":"host_ep"},"inputs":{"branch":{"kind":"default"}}}',
-           environmentProviderInstanceKey: null,
-         },
-@@ -5377,6 +6363,7 @@ describe("environment and thread startup ownership migration", () => {
+ 
+     try {
+       seedPreProviderEnvironments(db);
+@@ -5377,6 +6327,7 @@ describe("environment and thread startup ownership migration", () => {
      (phase) => {
        const db = createMigratedConnection();
        try {
@@ -13876,44 +13813,57 @@ index 53433c969aa5e2a98936da319bfbc4303b41e696..d2522da3a498bfa41ebc76dfc2531139
          rewindMachineProvidersMigration(db);
          rewindEnvironmentProvisioningMigration(db);
          dropQueuedMessageAttemptColumns(db);
-@@ -5503,3 +6490,35 @@ describe("environment and thread startup ownership migration", () => {
+@@ -5503,3 +6454,48 @@ describe("environment and thread startup ownership migration", () => {
      },
    );
  });
 +
 +
-+describe("retired admission history with newer upstream migrations", () => {
-+  it("applies skipped upstream migrations once and preserves exact retired receipts and opaque history", () => {
++describe("strict migration ledger", () => {
++  const obsolete = [
++    [1794441122244, "95ca6fd454c843e18ffe0b45c99183b076a4693b38ceed8838561450a27d9946"],
++    [1794443087515, "f50464b97618c01ae095b1a5c6d36d30818b2fc6757ab81c08a477778e7bee91"],
++    [1794445604608, "cb74d13974717c4cee9079bf28d3ff18402fdb6cec713d0d64f610dd7f2bd19b"],
++    [1794445975893, "0d567298c1ccd7fe91efa1237e220734cccdf07d4ff5923d3320dfe53c985cff"],
++  ] as const;
++  it.each([false, true])("refuses unsupported installed history before writes (native receipt hole=%s)", hole => {
 +    const db = createConnection(":memory:");
 +    try {
 +      migrate(db);
-+      const retired = [
-+        [1794441122244, "95ca6fd454c843e18ffe0b45c99183b076a4693b38ceed8838561450a27d9946"],
-+        [1794443087515, "f50464b97618c01ae095b1a5c6d36d30818b2fc6757ab81c08a477778e7bee91"],
-+        [1794445604608, "cb74d13974717c4cee9079bf28d3ff18402fdb6cec713d0d64f610dd7f2bd19b"],
-+        [1794445975893, "0d567298c1ccd7fe91efa1237e220734cccdf07d4ff5923d3320dfe53c985cff"],
-+      ] as const;
-+      dropThreadStatusChangedAtColumn(db);
-+      dropPluginFailureLabelColumns(db);
-+      dropQueuedMessageDeliveryColumns(db);
-+      db.$client.exec("CREATE TABLE retained_admission_witness (body TEXT NOT NULL); INSERT INTO retained_admission_witness VALUES ('keep original body');");
-+      const journal = JSON.parse(readFileSync(resolve(__dirname, "../drizzle/meta/_journal.json"), "utf8")) as {entries: {idx:number;when:number}[]};
-+      for (const row of journal.entries.filter(row => row.idx >= 145 && row.idx <= 156)) {
-+        db.$client.prepare("DELETE FROM __drizzle_migrations WHERE created_at = ?").run(row.when);
-+      }
-+      for (const [at, hash] of retired) db.$client.prepare("INSERT INTO __drizzle_migrations(hash,created_at) VALUES (?,?)").run(hash,at);
++      db.$client.exec("CREATE TABLE retained_history (body TEXT); INSERT INTO retained_history VALUES ('preserve');");
++      if (hole) db.$client.prepare("DELETE FROM __drizzle_migrations WHERE created_at = ?").run(
++        readMigrationFiles({migrationsFolder: resolve(__dirname, "../drizzle")})[145]!.folderMillis,
++      );
++      for (const [at, hash] of obsolete) db.$client.prepare("INSERT INTO __drizzle_migrations(hash,created_at) VALUES (?,?)").run(hash, at);
++      const before = db.$client.serialize();
++      expect(() => migrate(db)).toThrow("Unsupported migration ledger receipt");
++      expect(db.$client.serialize()).toEqual(before);
++    } finally { closeConnection(db); }
++  });
++  it("accepts the installed native ledger after offline receipt conversion without removing inert data", () => {
++    const db = createConnection(":memory:");
++    try {
 +      migrate(db);
-+      const first = readLedgerRows(db);
++      const tables = ["feedback", "operations", "providers", "publications", "rechecks", "request_originals", "slots", "thread_creates"];
++      for (const name of tables) db.$client.exec(`CREATE TABLE message_admission_${name} (body TEXT); INSERT INTO message_admission_${name} VALUES ('opaque retained history');`);
++      const before = readLedgerRows(db);
 +      migrate(db);
-+      expect(readLedgerRows(db)).toEqual(first);
-+      for (const [createdAt, hash] of retired) expect(first).toContainEqual({createdAt,hash});
-+      expect(db.$client.prepare("SELECT body FROM retained_admission_witness").get()).toEqual({body:"keep original body"});
-+      expect(db.$client.prepare("PRAGMA table_info(queued_thread_messages)").all()).toEqual(expect.arrayContaining([expect.objectContaining({name:"delivery_mode"})]));
++      migrate(db);
++      expect(readLedgerRows(db)).toEqual(before);
++      for (const name of tables) expect(db.$client.prepare(`SELECT body FROM message_admission_${name}`).get()).toEqual({body: "opaque retained history"});
++    } finally { closeConnection(db); }
++  });
++  it("refuses an arbitrary unknown timestamp, without a retired-identity allowlist", () => {
++    const db = createConnection(":memory:");
++    try {
++      migrate(db);
++      db.$client.prepare("INSERT INTO __drizzle_migrations(hash,created_at) VALUES (?,?)").run("unknown", 9999999999999);
++      expect(() => migrate(db)).toThrow("Unknown timestamps can silently skip native migrations");
 +    } finally { closeConnection(db); }
 +  });
 +});
 diff --git a/packages/db/test/pane-focus-bindings-migration.test.ts b/packages/db/test/pane-focus-bindings-migration.test.ts
-index ebe704e566dd6c78a16e51d08ae352b95a2ed322..32df10b0652b78294d165e34a2b9ac36523f78ce 100644
+index ebe704e566..32df10b065 100644
 --- a/packages/db/test/pane-focus-bindings-migration.test.ts
 +++ b/packages/db/test/pane-focus-bindings-migration.test.ts
 @@ -17,6 +17,7 @@ import {
@@ -13933,7 +13883,7 @@ index ebe704e566dd6c78a16e51d08ae352b95a2ed322..32df10b0652b78294d165e34a2b9ac36
      .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
      .run(migrationTimestamp);
 diff --git a/packages/db/test/queued-message-state-migration.test.ts b/packages/db/test/queued-message-state-migration.test.ts
-index ea76f796f78956e55dbbb206dc28c90287eef7e3..de7461462b2a999e4bbb607bceae73ee4ff63d33 100644
+index ea76f796f7..de7461462b 100644
 --- a/packages/db/test/queued-message-state-migration.test.ts
 +++ b/packages/db/test/queued-message-state-migration.test.ts
 @@ -14,6 +14,7 @@ import {
@@ -13953,7 +13903,7 @@ index ea76f796f78956e55dbbb206dc28c90287eef7e3..de7461462b2a999e4bbb607bceae73ee
  }
  
 diff --git a/packages/db/test/sidebar-installation-defaults.test.ts b/packages/db/test/sidebar-installation-defaults.test.ts
-index 4e05f31988d3424fee5bef5b7a9c610a4b46afa4..51c5398015dbecd5ae7ea912c299c8a14a52a0f4 100644
+index 4e05f31988..51c5398015 100644
 --- a/packages/db/test/sidebar-installation-defaults.test.ts
 +++ b/packages/db/test/sidebar-installation-defaults.test.ts
 @@ -19,6 +19,7 @@ import {
@@ -13973,7 +13923,7 @@ index 4e05f31988d3424fee5bef5b7a9c610a4b46afa4..51c5398015dbecd5ae7ea912c299c8a1
              .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
              .run(SIDEBAR_INSTALLATION_DEFAULTS_MIGRATION_TIMESTAMP);
 diff --git a/packages/db/test/thread-drafts-migration.test.ts b/packages/db/test/thread-drafts-migration.test.ts
-index bdd49cf8aed8553515ded0d61435b876b4cf4fdb..d2573ce5bb39ee3ea3d7c0e8cbbaef523992318c 100644
+index bdd49cf8ae..d2573ce5bb 100644
 --- a/packages/db/test/thread-drafts-migration.test.ts
 +++ b/packages/db/test/thread-drafts-migration.test.ts
 @@ -20,6 +20,7 @@ import {
@@ -13992,6 +13942,3 @@ index bdd49cf8aed8553515ded0d61435b876b4cf4fdb..d2573ce5bb39ee3ea3d7c0e8cbbaef52
        migrate(db);
        migrate(db);
  
--- 
-2.43.0
-

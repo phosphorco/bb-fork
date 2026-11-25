@@ -3,88 +3,9 @@ From: Cole Lawrence <cole@colelawrence.com>
 Date: Fri, 13 Nov 2026 20:23:59 -0300
 Subject: [PATCH] Trusted authorship and dispatch
 
----
- apps/server/src/db.ts                         |    2 +
- apps/server/src/routes/threads/actions.ts     |   45 +-
- apps/server/src/routes/threads/base.ts        |   60 +-
- .../src/services/p6r/external-contribution.ts |   84 ++
- .../src/services/p6r/identity-protocol.ts     |  632 ++++++++
- .../src/services/p6r/invocation-registry.ts   |  202 +++
- .../src/services/p6r/native-acceptance.ts     |  141 ++
- .../src/services/p6r/native-authorship.ts     |   94 ++
- .../server/src/services/p6r/native-request.ts |   93 ++
- .../services/p6r/participant-projection.ts    |  286 ++++
- .../src/services/p6r/provider-admission.ts    |  380 +++++
- .../src/services/p6r/provider-contract.ts     |   39 +
- .../src/services/p6r/provider-registry.ts     |  299 ++++
- .../src/services/p6r/receipt-outcome.ts       |   45 +
- .../services/p6r/tool-correlation-registry.ts |  132 ++
- .../threads/child-thread-notifications.ts     |   10 +
- .../src/services/threads/dispatch-attempt.ts  |  172 ++-
- .../src/services/threads/queue-waits.ts       |    6 +
- .../threads/queued-message-dispatch.ts        |   72 +-
- .../src/services/threads/queued-messages.ts   |  181 ++-
- .../src/services/threads/thread-create.ts     |   32 +-
- .../services/threads/thread-edit-message.ts   |    7 +
- .../src/services/threads/thread-events.ts     |   29 +
- .../threads/thread-execution-batch.ts         |  479 ++++++
- .../threads/thread-execution-override.ts      |   21 +-
- .../services/threads/thread-facet-query.ts    |  683 +++++++++
- .../src/services/threads/thread-fork.ts       |    3 +
- .../services/threads/thread-provisioning.ts   |  137 +-
- .../threads/thread-queued-messages.ts         |   59 +-
- .../threads/thread-runtime-display.ts         |   14 +
- .../services/threads/thread-send-request.ts   |    4 +
- .../src/services/threads/thread-send.ts       |  165 +-
- .../services/threads/thread-turn-dispatch.ts  |   14 +
- .../services/p6r/contribution-lookup.test.ts  |  224 +++
- .../p6r/external-contribution.test.ts         |  595 ++++++++
- .../services/p6r/identity-protocol.test.ts    |  961 ++++++++++++
- .../services/p6r/invocation-registry.test.ts  |  157 ++
- .../p6r/mention-target-service-paths.test.ts  |  299 ++++
- .../test/services/p6r/mention-targets.test.ts |  193 +++
- .../services/p6r/native-acceptance.test.ts    |  993 ++++++++++++
- .../p6r/native-message-authorship.test.ts     | 1343 +++++++++++++++++
- .../p6r/participant-watermarks.test.ts        |  298 ++++
- .../services/p6r/provider-admission.test.ts   |  251 +++
- .../services/p6r/provider-registry.test.ts    |  279 ++++
- .../threads/test-fault-barriers.test.ts       |  409 +++++
- .../threads/thread-execution-batch.test.ts    |  118 ++
- .../threads/thread-execution-override.test.ts |   24 +
- .../threads/thread-queued-messages.test.ts    |  174 +++
- .../threads/thread-runtime-display.test.ts    |   45 +
- 49 files changed, 10852 insertions(+), 133 deletions(-)
- create mode 100644 apps/server/src/services/p6r/external-contribution.ts
- create mode 100644 apps/server/src/services/p6r/identity-protocol.ts
- create mode 100644 apps/server/src/services/p6r/invocation-registry.ts
- create mode 100644 apps/server/src/services/p6r/native-acceptance.ts
- create mode 100644 apps/server/src/services/p6r/native-authorship.ts
- create mode 100644 apps/server/src/services/p6r/native-request.ts
- create mode 100644 apps/server/src/services/p6r/participant-projection.ts
- create mode 100644 apps/server/src/services/p6r/provider-admission.ts
- create mode 100644 apps/server/src/services/p6r/provider-contract.ts
- create mode 100644 apps/server/src/services/p6r/provider-registry.ts
- create mode 100644 apps/server/src/services/p6r/receipt-outcome.ts
- create mode 100644 apps/server/src/services/p6r/tool-correlation-registry.ts
- create mode 100644 apps/server/src/services/threads/thread-execution-batch.ts
- create mode 100644 apps/server/src/services/threads/thread-facet-query.ts
- create mode 100644 apps/server/test/services/p6r/contribution-lookup.test.ts
- create mode 100644 apps/server/test/services/p6r/external-contribution.test.ts
- create mode 100644 apps/server/test/services/p6r/identity-protocol.test.ts
- create mode 100644 apps/server/test/services/p6r/invocation-registry.test.ts
- create mode 100644 apps/server/test/services/p6r/mention-target-service-paths.test.ts
- create mode 100644 apps/server/test/services/p6r/mention-targets.test.ts
- create mode 100644 apps/server/test/services/p6r/native-acceptance.test.ts
- create mode 100644 apps/server/test/services/p6r/native-message-authorship.test.ts
- create mode 100644 apps/server/test/services/p6r/participant-watermarks.test.ts
- create mode 100644 apps/server/test/services/p6r/provider-admission.test.ts
- create mode 100644 apps/server/test/services/p6r/provider-registry.test.ts
- create mode 100644 apps/server/test/services/threads/test-fault-barriers.test.ts
- create mode 100644 apps/server/test/services/threads/thread-execution-batch.test.ts
- create mode 100644 apps/server/test/services/threads/thread-queued-messages.test.ts
 
 diff --git a/apps/server/src/db.ts b/apps/server/src/db.ts
-index 53e98c0d9d3011b6a350a55f600e446594b08c14..5b4413d8dd17435054b8c223d151d842d24e6dc0 100644
+index 53e98c0d9d..5b4413d8dd 100644
 --- a/apps/server/src/db.ts
 +++ b/apps/server/src/db.ts
 @@ -14,6 +14,7 @@ import {
@@ -104,7 +25,7 @@ index 53e98c0d9d3011b6a350a55f600e446594b08c14..5b4413d8dd17435054b8c223d151d842
    } catch (error) {
      db.$client.close();
 diff --git a/apps/server/src/routes/threads/actions.ts b/apps/server/src/routes/threads/actions.ts
-index 61c20d881ce5b762e4176f47266415c21058583b..963a083dcbc9bd97f69e0a180ea7a7ec74503e82 100644
+index 61c20d881c..963a083dcb 100644
 --- a/apps/server/src/routes/threads/actions.ts
 +++ b/apps/server/src/routes/threads/actions.ts
 @@ -3,6 +3,8 @@ import {
@@ -220,7 +141,7 @@ index 61c20d881ce5b762e4176f47266415c21058583b..963a083dcbc9bd97f69e0a180ea7a7ec
    });
  
 diff --git a/apps/server/src/routes/threads/base.ts b/apps/server/src/routes/threads/base.ts
-index 1b4102d5300d33a042ff08c5c555a3ec035cc889..e53ddd98704244d5f3652b75d548cbcb821a3ba9 100644
+index 1b4102d530..e53ddd9870 100644
 --- a/apps/server/src/routes/threads/base.ts
 +++ b/apps/server/src/routes/threads/base.ts
 @@ -2,6 +2,7 @@ import { operationComplete } from "../../services/lib/operation-response.js";
@@ -325,7 +246,7 @@ index 1b4102d5300d33a042ff08c5c555a3ec035cc889..e53ddd98704244d5f3652b75d548cbcb
  
 diff --git a/apps/server/src/services/p6r/external-contribution.ts b/apps/server/src/services/p6r/external-contribution.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..a5c6cecdb54df3d714ddf58b1fa472c522ff6287
+index 0000000000..a5c6cecdb5
 --- /dev/null
 +++ b/apps/server/src/services/p6r/external-contribution.ts
 @@ -0,0 +1,84 @@
@@ -415,7 +336,7 @@ index 0000000000000000000000000000000000000000..a5c6cecdb54df3d714ddf58b1fa472c5
 +}
 diff --git a/apps/server/src/services/p6r/identity-protocol.ts b/apps/server/src/services/p6r/identity-protocol.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..ae1e254d10252345395a10b70fc5d8884eab31e2
+index 0000000000..ae1e254d10
 --- /dev/null
 +++ b/apps/server/src/services/p6r/identity-protocol.ts
 @@ -0,0 +1,632 @@
@@ -1053,7 +974,7 @@ index 0000000000000000000000000000000000000000..ae1e254d10252345395a10b70fc5d888
 +}
 diff --git a/apps/server/src/services/p6r/invocation-registry.ts b/apps/server/src/services/p6r/invocation-registry.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..6a5640c511d3103a682e30a65704a9faee26a055
+index 0000000000..6a5640c511
 --- /dev/null
 +++ b/apps/server/src/services/p6r/invocation-registry.ts
 @@ -0,0 +1,202 @@
@@ -1261,7 +1182,7 @@ index 0000000000000000000000000000000000000000..6a5640c511d3103a682e30a65704a9fa
 +}
 diff --git a/apps/server/src/services/p6r/native-acceptance.ts b/apps/server/src/services/p6r/native-acceptance.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..e37f2b64e4db58d1e27e41fca29c0e69851847df
+index 0000000000..e37f2b64e4
 --- /dev/null
 +++ b/apps/server/src/services/p6r/native-acceptance.ts
 @@ -0,0 +1,141 @@
@@ -1408,7 +1329,7 @@ index 0000000000000000000000000000000000000000..e37f2b64e4db58d1e27e41fca29c0e69
 +}
 diff --git a/apps/server/src/services/p6r/native-authorship.ts b/apps/server/src/services/p6r/native-authorship.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..9d9e3295afa629f02b4a2af9b177fa8263b3920f
+index 0000000000..9d9e3295af
 --- /dev/null
 +++ b/apps/server/src/services/p6r/native-authorship.ts
 @@ -0,0 +1,94 @@
@@ -1508,7 +1429,7 @@ index 0000000000000000000000000000000000000000..9d9e3295afa629f02b4a2af9b177fa82
 +}
 diff --git a/apps/server/src/services/p6r/native-request.ts b/apps/server/src/services/p6r/native-request.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..5b61e1b1177119bbbe2082f66fc8af09b143d901
+index 0000000000..5b61e1b117
 --- /dev/null
 +++ b/apps/server/src/services/p6r/native-request.ts
 @@ -0,0 +1,93 @@
@@ -1607,7 +1528,7 @@ index 0000000000000000000000000000000000000000..5b61e1b1177119bbbe2082f66fc8af09
 +}
 diff --git a/apps/server/src/services/p6r/participant-projection.ts b/apps/server/src/services/p6r/participant-projection.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..4f4349efcdf058185bded7d856fe2439214ef61b
+index 0000000000..4f4349efcd
 --- /dev/null
 +++ b/apps/server/src/services/p6r/participant-projection.ts
 @@ -0,0 +1,286 @@
@@ -1899,7 +1820,7 @@ index 0000000000000000000000000000000000000000..4f4349efcdf058185bded7d856fe2439
 +}
 diff --git a/apps/server/src/services/p6r/provider-admission.ts b/apps/server/src/services/p6r/provider-admission.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..a555d50201debbc08dac843428ffb244a9817770
+index 0000000000..a555d50201
 --- /dev/null
 +++ b/apps/server/src/services/p6r/provider-admission.ts
 @@ -0,0 +1,380 @@
@@ -2285,7 +2206,7 @@ index 0000000000000000000000000000000000000000..a555d50201debbc08dac843428ffb244
 +}
 diff --git a/apps/server/src/services/p6r/provider-contract.ts b/apps/server/src/services/p6r/provider-contract.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..0069536d90f50204b373a0290eeafc6609b39b8c
+index 0000000000..0069536d90
 --- /dev/null
 +++ b/apps/server/src/services/p6r/provider-contract.ts
 @@ -0,0 +1,39 @@
@@ -2330,7 +2251,7 @@ index 0000000000000000000000000000000000000000..0069536d90f50204b373a0290eeafc66
 +}
 diff --git a/apps/server/src/services/p6r/provider-registry.ts b/apps/server/src/services/p6r/provider-registry.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..f7bcd63a1d5958e5624de0debf12d4612444fb75
+index 0000000000..f7bcd63a1d
 --- /dev/null
 +++ b/apps/server/src/services/p6r/provider-registry.ts
 @@ -0,0 +1,299 @@
@@ -2635,7 +2556,7 @@ index 0000000000000000000000000000000000000000..f7bcd63a1d5958e5624de0debf12d461
 +}
 diff --git a/apps/server/src/services/p6r/receipt-outcome.ts b/apps/server/src/services/p6r/receipt-outcome.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..c0c47aebf415489383fc4845faf717f748e99d4e
+index 0000000000..c0c47aebf4
 --- /dev/null
 +++ b/apps/server/src/services/p6r/receipt-outcome.ts
 @@ -0,0 +1,45 @@
@@ -2686,7 +2607,7 @@ index 0000000000000000000000000000000000000000..c0c47aebf415489383fc4845faf717f7
 +}
 diff --git a/apps/server/src/services/p6r/tool-correlation-registry.ts b/apps/server/src/services/p6r/tool-correlation-registry.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..27054cfe96a64936dae912ccf5baa966073fba73
+index 0000000000..27054cfe96
 --- /dev/null
 +++ b/apps/server/src/services/p6r/tool-correlation-registry.ts
 @@ -0,0 +1,132 @@
@@ -2823,7 +2744,7 @@ index 0000000000000000000000000000000000000000..27054cfe96a64936dae912ccf5baa966
 +  return serverToolCorrelationRegistry;
 +}
 diff --git a/apps/server/src/services/threads/child-thread-notifications.ts b/apps/server/src/services/threads/child-thread-notifications.ts
-index e83db67f43b451e60297dbba783a0cfdc3efbec7..15f7011022b59507e0850ab72ec2072275bd8010 100644
+index e83db67f43..15f7011022 100644
 --- a/apps/server/src/services/threads/child-thread-notifications.ts
 +++ b/apps/server/src/services/threads/child-thread-notifications.ts
 @@ -13,6 +13,10 @@ import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
@@ -2851,7 +2772,7 @@ index e83db67f43b451e60297dbba783a0cfdc3efbec7..15f7011022b59507e0850ab72ec20722
    } catch (error) {
      deps.logger.error(
 diff --git a/apps/server/src/services/threads/dispatch-attempt.ts b/apps/server/src/services/threads/dispatch-attempt.ts
-index 2baab15e7c19eaaf2cd63e094763328218fedace..7ba1fa963a65acc5659bc6308d7870bb423b28b7 100644
+index 2baab15e7c..7ba1fa963a 100644
 --- a/apps/server/src/services/threads/dispatch-attempt.ts
 +++ b/apps/server/src/services/threads/dispatch-attempt.ts
 @@ -6,6 +6,11 @@ import {
@@ -3246,7 +3167,7 @@ index 2baab15e7c19eaaf2cd63e094763328218fedace..7ba1fa963a65acc5659bc6308d7870bb
        input: createStandaloneBuiltinCompactCommandInput(),
        mode: "start",
 diff --git a/apps/server/src/services/threads/queue-waits.ts b/apps/server/src/services/threads/queue-waits.ts
-index 888e7733fce141055bfa255b1a3282c44461513f..816fac04652c15442658d19bc80c45ee1a4c91fd 100644
+index 888e7733fc..816fac0465 100644
 --- a/apps/server/src/services/threads/queue-waits.ts
 +++ b/apps/server/src/services/threads/queue-waits.ts
 @@ -7,6 +7,7 @@ import {
@@ -3276,119 +3197,8 @@ index 888e7733fce141055bfa255b1a3282c44461513f..816fac04652c15442658d19bc80c45ee
          return args.placement === "front"
            ? moveQueuedThreadMessageToFrontInTransaction(tx, created)
            : created;
-diff --git a/apps/server/src/services/threads/queued-message-dispatch.ts b/apps/server/src/services/threads/queued-message-dispatch.ts
-index 78ef86201f703aa4833a707af5575454d3a61c3e..28afba6c3c852f93e1150ec46a2d98604471f3ce 100644
---- a/apps/server/src/services/threads/queued-message-dispatch.ts
-+++ b/apps/server/src/services/threads/queued-message-dispatch.ts
-@@ -26,6 +26,7 @@ import {
-   runtimeErrorLogFields,
- } from "../lib/error-log-fields.js";
- import {
-+  dispatchEnvironmentAndHost,
-   isDispatchRequeuedRecently,
-   isPluginDispatchRequeuedRecently,
- } from "./dispatch-hooks.js";
-@@ -257,21 +258,10 @@ async function executePreparedQueuedMessageDispatch(
- ): Promise<void> {
-   switch (wake.kind) {
-     case "host-connected":
--      for (const threadId of listThreadIdsWithHostOfflineQueueWaits(
--        deps.db,
--        wake.hostId,
--      )) {
--        for (const row of listQueuedThreadMessagesWaitingOnKind(deps.db, {
--          kind: "host-offline",
--          threadId,
--        })) {
--          await attemptAutomaticQueuedMessage(deps, row, {
--            now: Date.now(),
--            respectRequeuePacing: false,
--            retryingFailure: false,
--          });
--        }
--      }
-+      await runHostOfflineWaitDispatch(deps, {
-+        hostId: wake.hostId,
-+        respectRequeuePacing: false,
-+      });
-       return;
-     case "app-update-released":
-       for (const threadId of listThreadIdsWithAppUpdateQueueWaits(deps.db)) {
-@@ -317,6 +307,7 @@ async function executePreparedQueuedMessageDispatch(
-     case "idle-recovery":
-       releaseStaleQueuedMessageDispatchClaims(deps, wake.now);
-       await idleThreadQueueSweep(deps).run(deps, wake.now);
-+      await runConnectedHostOfflineWaitRecovery(deps);
-       return;
-     case "failed-retry":
-       await failedQueueRetrySweep(deps, wake.now).run(deps, wake.now);
-@@ -327,6 +318,56 @@ async function executePreparedQueuedMessageDispatch(
-   }
- }
- 
-+async function runHostOfflineWaitDispatch(
-+  deps: QueueDispatchDeps,
-+  args: { hostId: string; respectRequeuePacing: boolean },
-+): Promise<void> {
-+  for (const threadId of listThreadIdsWithHostOfflineQueueWaits(
-+    deps.db,
-+    args.hostId,
-+  )) {
-+    for (const row of listQueuedThreadMessagesWaitingOnKind(deps.db, {
-+      kind: "host-offline",
-+      threadId,
-+    })) {
-+      await attemptAutomaticQueuedMessage(deps, row, {
-+        now: Date.now(),
-+        respectRequeuePacing: args.respectRequeuePacing,
-+        retryingFailure: false,
-+      });
-+    }
-+  }
-+}
-+
-+async function runConnectedHostOfflineWaitRecovery(
-+  deps: QueueDispatchDeps,
-+): Promise<void> {
-+  for (const hostId of deps.hub.listConnectedHostIds()) {
-+    if (isMachineWaitingForExecution(deps, hostId)) continue;
-+    await runHostOfflineWaitDispatch(deps, {
-+      hostId,
-+      respectRequeuePacing: true,
-+    });
-+  }
-+}
-+
-+function queuedMessageAttemptLogFields(
-+  deps: QueueDispatchDeps,
-+  row: QueuedMessageDispatchRef,
-+  thread: { environmentId: string | null },
-+): Record<string, boolean | number | string | null> {
-+  const current = getQueuedThreadMessage(deps.db, row.id);
-+  const { host } = dispatchEnvironmentAndHost(deps, thread.environmentId);
-+  return {
-+    hostConnected: host === null ? null : deps.hub.hasDaemonForHost(host.id),
-+    hostId: host?.id ?? null,
-+    rowFailureCount: current?.failureCount ?? null,
-+    rowNextAttemptAt: current?.nextAttemptAt ?? null,
-+    rowState: current?.state ?? "removed",
-+    rowWaitingOn: current?.waitingOn ?? null,
-+  };
-+}
-+
- async function runThreadReadyDispatch(
-   deps: QueueDispatchDeps,
-   threadId: string,
-@@ -500,6 +541,7 @@ async function attemptAutomaticQueuedMessage(
-         queuedMessageId: row.id,
-         threadId: row.threadId,
-         ...runtimeErrorLogFields(deps.config, error),
-+        ...queuedMessageAttemptLogFields(deps, row, thread),
-       },
-       "Queued message dispatch failed",
-     );
 diff --git a/apps/server/src/services/threads/queued-messages.ts b/apps/server/src/services/threads/queued-messages.ts
-index 67cec80d8a2abe79b18c5ce51fe7d34a5904c4ef..3b1dd051bd8afa2eb21cc1fc346a17230d8345c6 100644
+index 67cec80d8a..3b1dd051bd 100644
 --- a/apps/server/src/services/threads/queued-messages.ts
 +++ b/apps/server/src/services/threads/queued-messages.ts
 @@ -1,3 +1,14 @@
@@ -3660,7 +3470,7 @@ index 67cec80d8a2abe79b18c5ce51fe7d34a5904c4ef..3b1dd051bd8afa2eb21cc1fc346a1723
      releaseQueuedMessageClaims(deps, queuedMessages);
      if (
 diff --git a/apps/server/src/services/threads/thread-create.ts b/apps/server/src/services/threads/thread-create.ts
-index 1255def9e6ff5acf74e8156d4ab451572c5dc0f5..42991d0ad8dcc4725a00d9f7f18f8f7c57af7d9d 100644
+index 1255def9e6..42991d0ad8 100644
 --- a/apps/server/src/services/threads/thread-create.ts
 +++ b/apps/server/src/services/threads/thread-create.ts
 @@ -5,6 +5,13 @@ import {
@@ -3754,7 +3564,7 @@ index 1255def9e6ff5acf74e8156d4ab451572c5dc0f5..42991d0ad8dcc4725a00d9f7f18f8f7c
      environmentIntent,
      defaultModel,
 diff --git a/apps/server/src/services/threads/thread-edit-message.ts b/apps/server/src/services/threads/thread-edit-message.ts
-index 3535154bfa4fc0468445ff767b62d215cb1b63ac..52954260b8a3b25eca4ba3e757200c1cb7574072 100644
+index 3535154bfa..52954260b8 100644
 --- a/apps/server/src/services/threads/thread-edit-message.ts
 +++ b/apps/server/src/services/threads/thread-edit-message.ts
 @@ -1,3 +1,5 @@
@@ -3797,7 +3607,7 @@ index 3535154bfa4fc0468445ff767b62d215cb1b63ac..52954260b8a3b25eca4ba3e757200c1c
          ...sendPayload,
          input: [...target.leadingAgentOnlyInput, ...sendPayload.input],
 diff --git a/apps/server/src/services/threads/thread-events.ts b/apps/server/src/services/threads/thread-events.ts
-index d78069e8e2b45bbc603b239b577e0ac6f2e7dbae..29cb43cb386660a21fdf475e6dc837a2fd0ff4b0 100644
+index d78069e8e2..29cb43cb38 100644
 --- a/apps/server/src/services/threads/thread-events.ts
 +++ b/apps/server/src/services/threads/thread-events.ts
 @@ -1,3 +1,9 @@
@@ -3856,7 +3666,7 @@ index d78069e8e2b45bbc603b239b577e0ac6f2e7dbae..29cb43cb386660a21fdf475e6dc837a2
      .filter(isThreadReadStateUpdate);
 diff --git a/apps/server/src/services/threads/thread-execution-batch.ts b/apps/server/src/services/threads/thread-execution-batch.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..dc4998cdf997834a11b0cce06e1b9712a88d061f
+index 0000000000..dc4998cdf9
 --- /dev/null
 +++ b/apps/server/src/services/threads/thread-execution-batch.ts
 @@ -0,0 +1,479 @@
@@ -4340,7 +4150,7 @@ index 0000000000000000000000000000000000000000..dc4998cdf997834a11b0cce06e1b9712
 +  };
 +}
 diff --git a/apps/server/src/services/threads/thread-execution-override.ts b/apps/server/src/services/threads/thread-execution-override.ts
-index 4383c28af717387833b126e46f20bca1f2b9bb3a..327cbd1e7d72bd982ed77393344b82eeea28c877 100644
+index 4383c28af7..327cbd1e7d 100644
 --- a/apps/server/src/services/threads/thread-execution-override.ts
 +++ b/apps/server/src/services/threads/thread-execution-override.ts
 @@ -43,6 +43,21 @@ interface RecoverThreadModelOverrideArgs {
@@ -4387,7 +4197,7 @@ index 4383c28af717387833b126e46f20bca1f2b9bb3a..327cbd1e7d72bd982ed77393344b82ee
      ? effectiveModelEntry.supportedReasoningEfforts.map(
 diff --git a/apps/server/src/services/threads/thread-facet-query.ts b/apps/server/src/services/threads/thread-facet-query.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..9f3a7d2d25a7531ce239b1a015cc9e6608e680d1
+index 0000000000..9f3a7d2d25
 --- /dev/null
 +++ b/apps/server/src/services/threads/thread-facet-query.ts
 @@ -0,0 +1,683 @@
@@ -5075,7 +4885,7 @@ index 0000000000000000000000000000000000000000..9f3a7d2d25a7531ce239b1a015cc9e66
 +  };
 +}
 diff --git a/apps/server/src/services/threads/thread-fork.ts b/apps/server/src/services/threads/thread-fork.ts
-index f4bf5c7a0805d8853da0900b681bd6cf8e5fda1e..ea0368d95d6a58d6a1df61e6c852965395487fc0 100644
+index f4bf5c7a08..ea0368d95d 100644
 --- a/apps/server/src/services/threads/thread-fork.ts
 +++ b/apps/server/src/services/threads/thread-fork.ts
 @@ -1,3 +1,4 @@
@@ -5100,7 +4910,7 @@ index f4bf5c7a0805d8853da0900b681bd6cf8e5fda1e..ea0368d95d6a58d6a1df61e6c8529653
        ...(isSeedOnlyIdleFork ? { providerInput: [] } : {}),
      },
 diff --git a/apps/server/src/services/threads/thread-provisioning.ts b/apps/server/src/services/threads/thread-provisioning.ts
-index 27822a87c966491ca5ec5396a3a639047476737e..2f938529c036db4bb91b82e8c4693523a19292a8 100644
+index 27822a87c9..2f938529c0 100644
 --- a/apps/server/src/services/threads/thread-provisioning.ts
 +++ b/apps/server/src/services/threads/thread-provisioning.ts
 @@ -1,3 +1,4 @@
@@ -5351,7 +5161,7 @@ index 27822a87c966491ca5ec5396a3a639047476737e..2f938529c036db4bb91b82e8c4693523
      },
      { behavior: "immediate" },
 diff --git a/apps/server/src/services/threads/thread-queued-messages.ts b/apps/server/src/services/threads/thread-queued-messages.ts
-index d68dd99d15d1dc6b3b01e689d4156b85b249a29a..9658df8e8f9f94560de8208f2975024be329a820 100644
+index d68dd99d15..9658df8e8f 100644
 --- a/apps/server/src/services/threads/thread-queued-messages.ts
 +++ b/apps/server/src/services/threads/thread-queued-messages.ts
 @@ -1,4 +1,6 @@
@@ -5464,7 +5274,7 @@ index d68dd99d15d1dc6b3b01e689d4156b85b249a29a..9658df8e8f9f94560de8208f2975024b
      reasoningLevel: row.reasoningLevel,
      permissionMode: row.permissionMode,
 diff --git a/apps/server/src/services/threads/thread-runtime-display.ts b/apps/server/src/services/threads/thread-runtime-display.ts
-index 632bcc7fe3ff401911e28426190e8053b3639896..d2b5e48ea9f5f35f5910f9386b5073c58aec9f84 100644
+index 632bcc7fe3..d2b5e48ea9 100644
 --- a/apps/server/src/services/threads/thread-runtime-display.ts
 +++ b/apps/server/src/services/threads/thread-runtime-display.ts
 @@ -4,6 +4,7 @@ import {
@@ -5517,7 +5327,7 @@ index 632bcc7fe3ff401911e28426190e8053b3639896..d2b5e48ea9f5f35f5910f9386b5073c5
        environmentHostId: args.thread.environmentHostId,
        hostConnected: args.hostConnected,
 diff --git a/apps/server/src/services/threads/thread-send-request.ts b/apps/server/src/services/threads/thread-send-request.ts
-index 3ac28da01c90ac25ea4f8d764fcbc40c42052586..3077181b63c2f84e29bd23a664fa21f83a9e1805 100644
+index 3ac28da01c..3077181b63 100644
 --- a/apps/server/src/services/threads/thread-send-request.ts
 +++ b/apps/server/src/services/threads/thread-send-request.ts
 @@ -3,6 +3,8 @@ import {
@@ -5546,7 +5356,7 @@ index 3ac28da01c90ac25ea4f8d764fcbc40c42052586..3077181b63c2f84e29bd23a664fa21f8
          payload,
          source: { kind: "inline" },
 diff --git a/apps/server/src/services/threads/thread-send.ts b/apps/server/src/services/threads/thread-send.ts
-index dcda68107025518ece46eaeb553cba7e42c51527..336351cb2aae87e3315d6b9efd4781aa0756b0d5 100644
+index dcda681070..336351cb2a 100644
 --- a/apps/server/src/services/threads/thread-send.ts
 +++ b/apps/server/src/services/threads/thread-send.ts
 @@ -1,3 +1,13 @@
@@ -5851,7 +5661,7 @@ index dcda68107025518ece46eaeb553cba7e42c51527..336351cb2aae87e3315d6b9efd4781aa
      beforeAppendInTransaction,
      db: deps.db,
 diff --git a/apps/server/src/services/threads/thread-turn-dispatch.ts b/apps/server/src/services/threads/thread-turn-dispatch.ts
-index d049e2623f44435935033e83c41a3553b9835a81..412a6fce59a2b97e61df397818c0cac0d57a61cc 100644
+index d049e2623f..412a6fce59 100644
 --- a/apps/server/src/services/threads/thread-turn-dispatch.ts
 +++ b/apps/server/src/services/threads/thread-turn-dispatch.ts
 @@ -1,3 +1,9 @@
@@ -5888,7 +5698,7 @@ index d049e2623f44435935033e83c41a3553b9835a81..412a6fce59a2b97e61df397818c0cac0
        initiator: args.initiator,
 diff --git a/apps/server/test/services/p6r/contribution-lookup.test.ts b/apps/server/test/services/p6r/contribution-lookup.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..e0a76d5cf13ca58344c159c3f50ce44999c8c4ec
+index 0000000000..e0a76d5cf1
 --- /dev/null
 +++ b/apps/server/test/services/p6r/contribution-lookup.test.ts
 @@ -0,0 +1,224 @@
@@ -6118,7 +5928,7 @@ index 0000000000000000000000000000000000000000..e0a76d5cf13ca58344c159c3f50ce449
 +});
 diff --git a/apps/server/test/services/p6r/external-contribution.test.ts b/apps/server/test/services/p6r/external-contribution.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..20d2f751c74b5e18c5f5e09d3ce58d6b09bc36fa
+index 0000000000..20d2f751c7
 --- /dev/null
 +++ b/apps/server/test/services/p6r/external-contribution.test.ts
 @@ -0,0 +1,595 @@
@@ -6719,7 +6529,7 @@ index 0000000000000000000000000000000000000000..20d2f751c74b5e18c5f5e09d3ce58d6b
 +});
 diff --git a/apps/server/test/services/p6r/identity-protocol.test.ts b/apps/server/test/services/p6r/identity-protocol.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..a430c4bec78e8a8e15de62416d34c89e5af33b5b
+index 0000000000..a430c4bec7
 --- /dev/null
 +++ b/apps/server/test/services/p6r/identity-protocol.test.ts
 @@ -0,0 +1,961 @@
@@ -7686,7 +7496,7 @@ index 0000000000000000000000000000000000000000..a430c4bec78e8a8e15de62416d34c89e
 +});
 diff --git a/apps/server/test/services/p6r/invocation-registry.test.ts b/apps/server/test/services/p6r/invocation-registry.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..57b92917de6397500bf6187336a1a5d6047d51a8
+index 0000000000..57b92917de
 --- /dev/null
 +++ b/apps/server/test/services/p6r/invocation-registry.test.ts
 @@ -0,0 +1,157 @@
@@ -7849,7 +7659,7 @@ index 0000000000000000000000000000000000000000..57b92917de6397500bf6187336a1a5d6
 +});
 diff --git a/apps/server/test/services/p6r/mention-target-service-paths.test.ts b/apps/server/test/services/p6r/mention-target-service-paths.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..a70aa9aec6496c5cf3196ed0bc0802319ec4c3d2
+index 0000000000..a70aa9aec6
 --- /dev/null
 +++ b/apps/server/test/services/p6r/mention-target-service-paths.test.ts
 @@ -0,0 +1,299 @@
@@ -8154,7 +7964,7 @@ index 0000000000000000000000000000000000000000..a70aa9aec6496c5cf3196ed0bc080231
 +});
 diff --git a/apps/server/test/services/p6r/mention-targets.test.ts b/apps/server/test/services/p6r/mention-targets.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..314c4c95d8e14fcfa89d1138601d84ade131885d
+index 0000000000..314c4c95d8
 --- /dev/null
 +++ b/apps/server/test/services/p6r/mention-targets.test.ts
 @@ -0,0 +1,193 @@
@@ -8353,7 +8163,7 @@ index 0000000000000000000000000000000000000000..314c4c95d8e14fcfa89d1138601d84ad
 +});
 diff --git a/apps/server/test/services/p6r/native-acceptance.test.ts b/apps/server/test/services/p6r/native-acceptance.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..77d189053d94b2b4846c82e47d298738d60430b3
+index 0000000000..77d189053d
 --- /dev/null
 +++ b/apps/server/test/services/p6r/native-acceptance.test.ts
 @@ -0,0 +1,993 @@
@@ -9352,7 +9162,7 @@ index 0000000000000000000000000000000000000000..77d189053d94b2b4846c82e47d298738
 +});
 diff --git a/apps/server/test/services/p6r/native-message-authorship.test.ts b/apps/server/test/services/p6r/native-message-authorship.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..575c89812ef47a92994b6ca2061b631b848e8fc4
+index 0000000000..575c89812e
 --- /dev/null
 +++ b/apps/server/test/services/p6r/native-message-authorship.test.ts
 @@ -0,0 +1,1343 @@
@@ -10701,7 +10511,7 @@ index 0000000000000000000000000000000000000000..575c89812ef47a92994b6ca2061b631b
 +});
 diff --git a/apps/server/test/services/p6r/participant-watermarks.test.ts b/apps/server/test/services/p6r/participant-watermarks.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..94232f81ddcf71033af241d6706201a4ad1e898e
+index 0000000000..94232f81dd
 --- /dev/null
 +++ b/apps/server/test/services/p6r/participant-watermarks.test.ts
 @@ -0,0 +1,298 @@
@@ -11005,7 +10815,7 @@ index 0000000000000000000000000000000000000000..94232f81ddcf71033af241d6706201a4
 +});
 diff --git a/apps/server/test/services/p6r/provider-admission.test.ts b/apps/server/test/services/p6r/provider-admission.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..54c9970ab65ca3dbd32d6f4db750cad7f9998dc9
+index 0000000000..54c9970ab6
 --- /dev/null
 +++ b/apps/server/test/services/p6r/provider-admission.test.ts
 @@ -0,0 +1,251 @@
@@ -11262,7 +11072,7 @@ index 0000000000000000000000000000000000000000..54c9970ab65ca3dbd32d6f4db750cad7
 +});
 diff --git a/apps/server/test/services/p6r/provider-registry.test.ts b/apps/server/test/services/p6r/provider-registry.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..972f86fc9c64efeb37f75b5159d691331733b865
+index 0000000000..972f86fc9c
 --- /dev/null
 +++ b/apps/server/test/services/p6r/provider-registry.test.ts
 @@ -0,0 +1,279 @@
@@ -11547,7 +11357,7 @@ index 0000000000000000000000000000000000000000..972f86fc9c64efeb37f75b5159d69133
 +});
 diff --git a/apps/server/test/services/threads/test-fault-barriers.test.ts b/apps/server/test/services/threads/test-fault-barriers.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..7423c5876f32443f0ceafbbd7b3fe8752c2d5650
+index 0000000000..7423c5876f
 --- /dev/null
 +++ b/apps/server/test/services/threads/test-fault-barriers.test.ts
 @@ -0,0 +1,409 @@
@@ -11962,7 +11772,7 @@ index 0000000000000000000000000000000000000000..7423c5876f32443f0ceafbbd7b3fe875
 +});
 diff --git a/apps/server/test/services/threads/thread-execution-batch.test.ts b/apps/server/test/services/threads/thread-execution-batch.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..f2687328882add2b6ed7b1dd36fb6f907db3c97f
+index 0000000000..f268732888
 --- /dev/null
 +++ b/apps/server/test/services/threads/thread-execution-batch.test.ts
 @@ -0,0 +1,118 @@
@@ -12085,7 +11895,7 @@ index 0000000000000000000000000000000000000000..f2687328882add2b6ed7b1dd36fb6f90
 +  });
 +});
 diff --git a/apps/server/test/services/threads/thread-execution-override.test.ts b/apps/server/test/services/threads/thread-execution-override.test.ts
-index 910e4909d37a1ee69384b5efa4d29e72244eb047..60fdd042dc8622fd3be6110c49d42f618b8d992d 100644
+index 910e4909d3..60fdd042dc 100644
 --- a/apps/server/test/services/threads/thread-execution-override.test.ts
 +++ b/apps/server/test/services/threads/thread-execution-override.test.ts
 @@ -15,6 +15,18 @@ const EMPTY = { modelOverride: null, reasoningLevelOverride: null };
@@ -12128,7 +11938,7 @@ index 910e4909d37a1ee69384b5efa4d29e72244eb047..60fdd042dc8622fd3be6110c49d42f61
        resolveThreadExecutionOverrideUpdate(registry, {
 diff --git a/apps/server/test/services/threads/thread-queued-messages.test.ts b/apps/server/test/services/threads/thread-queued-messages.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..d9e1a79e2458df396eb87fdc58473c510b95528e
+index 0000000000..d9e1a79e24
 --- /dev/null
 +++ b/apps/server/test/services/threads/thread-queued-messages.test.ts
 @@ -0,0 +1,174 @@
@@ -12307,7 +12117,7 @@ index 0000000000000000000000000000000000000000..d9e1a79e2458df396eb87fdc58473c51
 +  });
 +});
 diff --git a/apps/server/test/services/threads/thread-runtime-display.test.ts b/apps/server/test/services/threads/thread-runtime-display.test.ts
-index bfe3e061c6da31e8ae275dc18a81aa6c978125f9..220cf5b2d3daa344bffbc12184fa6be0c3a1c2c1 100644
+index bfe3e061c6..220cf5b2d3 100644
 --- a/apps/server/test/services/threads/thread-runtime-display.test.ts
 +++ b/apps/server/test/services/threads/thread-runtime-display.test.ts
 @@ -13,6 +13,7 @@ import {
@@ -12376,6 +12186,3 @@ index bfe3e061c6da31e8ae275dc18a81aa6c978125f9..220cf5b2d3daa344bffbc12184fa6be0
    it("reports each thread's queued work, with a failure outranking a wait and bb notices alone not counting as a wait", () => {
      const { db, hostId, hub } = setup();
      const empty = createThreadWithEnvironment({ db, hostId, status: "idle" });
--- 
-2.43.0
-
